@@ -70,7 +70,7 @@ jobs:
       with:
         tag_name: ${{ steps.current-time.outputs.time }}
         release_name: Release ${{ steps.current-time.outputs.time }}
-        target_commitish: iceweasel_release
+        commitish: iceweasel_release
         draft: false
         prerelease: false
         
