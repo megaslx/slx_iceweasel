@@ -43,7 +43,7 @@ if [ "$?" != "0" ]; then
   exit 1;
 fi
 
-if [ -n $LOCAL_WITH_VC15 ]; then
+if [ -n "$LOCAL_WITH_VC15" ]; then
   JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 else
   $PYTHON_SCRIPT/pip install -U selenium

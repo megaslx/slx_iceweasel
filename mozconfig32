@@ -77,7 +77,7 @@ ac_add_options --enable-update-channel=release
 ac_add_options --with-branding=browser/branding/iceweasel
 
 # crt dir
-if [ -n $LOCAL_WITH_VC15 ]; then
+if [ -n "$LOCAL_WITH_VC15" ]; then
   WIN32_REDIST_DIR=${VC_REDISTDIR%?}\\x86\\Microsoft.VC141.CRT
 else
   WIN32_REDIST_DIR=${VC_REDISTDIR%?}\\x86\\Microsoft.VC142.CRT
