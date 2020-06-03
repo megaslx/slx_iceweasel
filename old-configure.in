@@ -1777,6 +1777,8 @@ MOZ_ARG_WITH_STRING(branding,
 REAL_BRANDING_DIRECTORY="${MOZ_BRANDING_DIRECTORY}"
 if test -z "$REAL_BRANDING_DIRECTORY"; then
   REAL_BRANDING_DIRECTORY=${MOZ_BUILD_APP}/branding/nightly
+elif test "$REAL_BRANDING_DIRECTORY" == "${MOZ_BUILD_APP}/branding/iceweasel"; then
+  ICEWEASEL_BUILDING=1
 fi
 
 if test -f "${_topsrcdir}/$REAL_BRANDING_DIRECTORY/configure.sh"; then
@@ -1785,6 +1787,9 @@ elif test -f "${EXTERNAL_SOURCE_DIR}/$REAL_BRANDING_DIRECTORY/configure.sh"; the
   . "${EXTERNAL_SOURCE_DIR}/$REAL_BRANDING_DIRECTORY/configure.sh"
 fi
 
+if test -n "$ICEWEASEL_BUILDING"; then
+  AC_DEFINE_UNQUOTED(ICEWEASEL_BUILDING,$ICEWEASEL_BUILDING)
+fi
 AC_SUBST(MOZ_BRANDING_DIRECTORY)
 
 dnl ========================================================
@@ -2913,7 +2918,7 @@ AC_SUBST(MOZ_SIMPLE_PACKAGE_NAME)
 
 if test "$MOZILLA_OFFICIAL"; then
     # Build revisions should always be present in official builds
-    MOZ_INCLUDE_SOURCE_INFO=1
+    # MOZ_INCLUDE_SOURCE_INFO=1
 fi
 
 # External builds (specifically Ubuntu) may drop the hg repo information, so we allow to

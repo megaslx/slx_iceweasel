@@ -61,7 +61,7 @@ nmake -f Makefile.msvc CC=clang-cl install
 nmake clean
 nmake
 @if not "%errorlevel%" == "0" @echo compile upcheck failed.EXIT /B %errorlevel%
-@if exist "%LIBPORTABLE_PATH%" copy /y "Release\upcheck.exe" "!LIBPORTABLE_PATH!\bin"
+@if exist "%LIBPORTABLE_PATH%" copy /y "Release\upcheck*.exe" "!LIBPORTABLE_PATH!\bin"
 
 @echo ##########################
 @cd /d %GITHUB_WORKSPACE%

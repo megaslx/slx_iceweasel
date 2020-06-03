@@ -9,11 +9,18 @@ import sys
 import shutil
 import subprocess
 
+def handle_remove_read_only(func, path, exc):
+    excvalue = exc[1]
+    if func in (os.rmdir, os.remove, os.unlink) and excvalue.errno == errno.EACCES:
+      os.chmod(path, stat.S_IRWXU| stat.S_IRWXG| stat.S_IRWXO) # 0777
+      func(path)
+    else:
+        sys.exit(1)
 
 def make_7z(source, suffix, package):
     dist_source = source + suffix
     if os.path.exists(dist_source):
-        shutil.rmtree(dist_source)
+        shutil.rmtree(dist_source, onerror=handle_remove_read_only)
     if os.path.exists(package):
         os.remove(package)
     os.mkdir(dist_source)
@@ -28,13 +35,15 @@ def make_7z(source, suffix, package):
         if (suffix == '_x64'):
             if os.path.exists(user + '/bin/portable64.dll'):
                 path = shutil.copy(user + '/bin/portable64.dll', dist_source + '/App')
+            if os.path.exists(user + '/bin/upcheck64.exe'):
+                path = shutil.copy(user + '/bin/upcheck64.exe', dist_source + '/App/upcheck.exe')
         else:
             if os.path.exists(user + '/bin/portable32.dll'):
                 path = shutil.copy(user + '/bin/portable32.dll', dist_source + '/App')
+            if os.path.exists(user + '/bin/upcheck32.exe'):
+                path = shutil.copy(user + '/bin/upcheck32.exe', dist_source + '/App/upcheck.exe')
         if os.path.exists(user + '/bin/portable(example).ini'):
             path = shutil.copy(user + '/bin/portable(example).ini', dist_source + '/App')
-        if os.path.exists(user + '/bin/upcheck.exe'):
-            path = shutil.copy(user + '/bin/upcheck.exe', dist_source + '/App')
     subprocess.check_call(['7z', 'a', '-t7z', package, dist_source, '-mx9', '-r', '-y', '-x!.mkdir.done'])
 
 def main(args):

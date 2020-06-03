@@ -1,6 +1,10 @@
 #! /usr/bin/bash
 MYOBJ_DIR=
+ICEWEASEL_TREE=`pwd -W 2>/dev/null || pwd`
 FIND_FILE=".mozconfig"
+if [ ! -f "$FIND_FILE" ]; then
+  [[ -f mozconfig32 ]] && cp mozconfig32 $FIND_FILE 2>/dev/null || cp mozconfig64 $FIND_FILE 2>/dev/null
+fi
 if [ ! -f "$FIND_FILE" ]; then
   echo $FIND_FILE not exist!
   exit 1;
@@ -26,7 +30,7 @@ rm -f ./configure.old
 autoconf-2.13
 rm -rf ../$MYOBJ_DIR
 mkdir ../$MYOBJ_DIR && cd ../$MYOBJ_DIR
-../iceweasel/configure --enable-profile-generate=cross
+$ICEWEASEL_TREE/configure --enable-profile-generate=cross
 $MAKE -j4
 if [ "$?" != "0" ]; then
   echo First compilation failed. > error.log
@@ -34,8 +38,17 @@ if [ "$?" != "0" ]; then
 fi
 
 $MAKE package
-$PYTHON_SCRIPT/pip install -U selenium
-$PYTHON_SCRIPT/python ../iceweasel/build/pgo/profileserver2.py
+if [ "$?" != "0" ]; then
+  echo First package failed. > error.log
+  exit 1;
+fi
+
+if [ -n $LOCAL_WITH_VC15 ]; then
+  JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
+else
+  $PYTHON_SCRIPT/pip install -U selenium
+  $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver2.py
+fi
 
 ls *.profraw >/dev/null 2>&1
 if [ "$?" != "0" ]; then
@@ -44,7 +57,7 @@ if [ "$?" != "0" ]; then
 fi
 
 $MAKE maybe_clobber_profiledbuild
-../iceweasel/configure --enable-profile-use=cross --enable-lto=cross
+$ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
 $MAKE -j4
 if [ "$?" != "0" ]; then
   echo Second compilation failed. >> error.log
@@ -52,3 +65,4 @@ if [ "$?" != "0" ]; then
 fi
 $MAKE package
 echo Compile completed!
+rm -f $FIND_FILE

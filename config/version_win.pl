@@ -157,7 +157,8 @@ if (open(VERFILE, "<$srcdir/module.ver"))
 		if ($a eq "WIN32_MODULE_FILEVERSION_STRING") { $override_mfversion = $b; }
 		if ($a eq "WIN32_MODULE_NAME") { $override_module = $b; }
 		if ($a eq "WIN32_MODULE_COPYRIGHT") { $override_copyright = $b; }
-		if ($a eq "WIN32_MODULE_TRADEMARKS") { $override_trademarks = $b; }
+		if ($binary eq "Iceweasel.exe") { $override_trademarks = "Iceweasel is a fork of The Mozilla Foundation."; }
+		elsif ($a eq "WIN32_MODULE_TRADEMARKS") { $override_trademarks = $b; }
 		if ($a eq "WIN32_MODULE_ORIGINAL_FILENAME") { $override_filename = $b; }
 		if ($a eq "WIN32_MODULE_PRODUCTNAME") { $override_productname = $b; }
 		if ($a eq "WIN32_MODULE_PRODUCTVERSION") { $override_productversion = $b; }
@@ -358,15 +359,15 @@ BEGIN
         BLOCK "000004b0"
         BEGIN
             VALUE "Comments", "$comment"
-            VALUE "LegalCopyright", "$copyright"
+            VALUE "LegalCopyright", L"$copyright"
             VALUE "CompanyName", "$company"
-            VALUE "FileDescription", "Iceweasel Browser components"
+            VALUE "FileDescription", "$description"
             VALUE "FileVersion", "$mfversion"
             VALUE "ProductVersion", "$mpversion"
-            VALUE "InternalName", "Iceweasel"
+            VALUE "InternalName", "$module"
             VALUE "LegalTrademarks", "$trademarks"
             VALUE "OriginalFilename", "$binary"
-            VALUE "ProductName", "Iceweasel"
+            VALUE "ProductName", "$productname"
             VALUE "BuildID", "$buildid"
         END
     END
