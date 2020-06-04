@@ -40,13 +40,13 @@ jobs:
         .\taskcluster\dothing.bat "%SOURCE_DIR%"
       shell: cmd
      
-    - name: Start msys-shell
+    - name: Start msys2-shell
       id: msys_shell
       run: |
         cd /d %GITHUB_WORKSPACE%
-        if "%MY_BITS%" == "win32" echo we build Iceweasel %MY_BITS%&msysdo mv mozconfig32 .mozconfig
-        if "%MY_BITS%" == "win64" echo we build Iceweasel %MY_BITS%&msysdo mv mozconfig64 .mozconfig
-        if exist .mozconfig msysdo fx_build.sh
+        if "%MY_BITS%" == "win32" echo we build Iceweasel %MY_BITS%&msys2do mv mozconfig32 .mozconfig
+        if "%MY_BITS%" == "win64" echo we build Iceweasel %MY_BITS%&msys2do mv mozconfig64 .mozconfig
+        if exist .mozconfig msys2do ./fx_build.sh
       shell: cmd
       
     - name: Upload

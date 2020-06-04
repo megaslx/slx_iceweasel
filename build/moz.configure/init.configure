@@ -215,8 +215,6 @@ def shell(value, mozillabuild):
     if value:
         return find_program(value[0])
     shell = 'sh'
-    if mozillabuild:
-        shell = mozillabuild[0] + '/msys/bin/sh'
     if sys.platform == 'win32':
         shell = shell + '.exe'
     return find_program(shell)

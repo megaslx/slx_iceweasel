@@ -275,6 +275,9 @@ SOURCES += [
     '../../checkout/src/third_party/compiler/ArrayBoundsClamper.cpp',
 ]
 
+# hack by adonais
+SOURCES['../../checkout/src/compiler/translator/tree_util/IntermTraverse.cpp'].no_pgo = True
+
 USE_LIBS += [
     'angle_common',
     'preprocessor',
