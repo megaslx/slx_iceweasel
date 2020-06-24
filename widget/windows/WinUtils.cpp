@@ -2222,8 +2222,7 @@ bool WinUtils::PreparePathForTelemetry(nsAString& aPath,
   for (uint32_t i = 0; i < whitelistedPaths.length(); ++i) {
     const nsString& testPath = whitelistedPaths[i].first;
     const nsDependentString& substitution = whitelistedPaths[i].second;
-    if (StringBeginsWith(aPath, testPath,
-                         nsCaseInsensitiveStringComparator())) {
+    if (StringBeginsWith(aPath, testPath, nsCaseInsensitiveStringComparator)) {
       if (!substitution.IsVoid()) {
         aPath.Replace(0, testPath.Length(), substitution);
       }

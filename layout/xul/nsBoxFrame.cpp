@@ -570,7 +570,7 @@ nsSize nsBoxFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsIFrame::GetXULPrefSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULPrefSize(aBoxLayoutState);
     }
   }
 
@@ -593,7 +593,7 @@ nscoord nsBoxFrame::GetXULBoxAscent(nsBoxLayoutState& aBoxLayoutState) {
   if (mLayoutManager) {
     mAscent = mLayoutManager->GetAscent(this, aBoxLayoutState);
   } else {
-    mAscent = nsIFrame::GetXULBoxAscent(aBoxLayoutState);
+    mAscent = GetXULPrefSize(aBoxLayoutState).height;
   }
 
   return mAscent;
@@ -620,7 +620,7 @@ nsSize nsBoxFrame::GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsIFrame::GetXULMinSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULMinSize(aBoxLayoutState);
     }
   }
 
@@ -650,7 +650,7 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsIFrame::GetXULMaxSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULMaxSize(aBoxLayoutState);
     }
   }
 
@@ -660,11 +660,9 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
 }
 
 nscoord nsBoxFrame::GetXULFlex() {
-  if (!XULNeedsRecalc(mFlex)) {
-    return mFlex;
+  if (XULNeedsRecalc(mFlex)) {
+    nsIFrame::AddXULFlex(this, mFlex);
   }
-
-  mFlex = nsIFrame::GetXULFlex();
 
   return mFlex;
 }
@@ -972,10 +970,10 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 
     if (forceLayer) {
       // Wrap the list to make it its own layer
-      aLists.Content()->AppendNewToTop<nsDisplayOwnLayer>(
-          aBuilder, this, &masterList, ownLayerASR,
-          nsDisplayOwnLayerFlags::None, mozilla::layers::ScrollbarData{}, true,
-          true, nsDisplayOwnLayer::OwnLayerForBoxFrame);
+      aLists.Content()->AppendNewToTopWithIndex<nsDisplayOwnLayer>(
+          aBuilder, this, /* aIndex = */ nsDisplayOwnLayer::OwnLayerForBoxFrame,
+          &masterList, ownLayerASR, nsDisplayOwnLayerFlags::None,
+          mozilla::layers::ScrollbarData{}, true, true);
     }
   }
 }
@@ -1209,7 +1207,8 @@ void nsBoxFrame::WrapListsInRedirector(nsDisplayListBuilder* aBuilder,
 bool nsBoxFrame::GetEventPoint(WidgetGUIEvent* aEvent, nsPoint& aPoint) {
   LayoutDeviceIntPoint refPoint;
   bool res = GetEventPoint(aEvent, refPoint);
-  aPoint = nsLayoutUtils::GetEventCoordinatesRelativeTo(aEvent, refPoint, this);
+  aPoint = nsLayoutUtils::GetEventCoordinatesRelativeTo(aEvent, refPoint,
+                                                        RelativeTo{this});
   return res;
 }
 
