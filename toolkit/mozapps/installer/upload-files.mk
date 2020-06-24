@@ -146,7 +146,7 @@ endif
 
 ifeq ($(MOZ_PKG_FORMAT),7Z)
   PKG_SUFFIX	= .7z
-  INNER_MAKE_PACKAGE = $(call py3_action,make_7z,'$(MOZ_PKG_DIR)' '$(DIR_SUFFIX)' '$(PACKAGE)')
+  INNER_MAKE_PACKAGE = $(call py_action,make_7z,'$(MOZ_PKG_DIR)' '$(DIR_SUFFIX)' '$(PACKAGE)')
   INNER_UNMAKE_PACKAGE = $(shell echo un7z.)
 endif
 

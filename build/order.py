@@ -1,4 +1,5 @@
-#!python env
+#!/usr/bin/env python3
+
 #- * - coding : utf - 8 - * -
 import sys
 import os 
@@ -30,6 +31,6 @@ def write_order(obj_dir, bits) :
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
-        print >>sys.stderr, "Usage: order.py OBJ_DIR BITS[32|64]"
+        print("Usage:", file=sys.stderr)
         sys.exit(1)
     write_order(sys.argv[1], sys.argv[2])

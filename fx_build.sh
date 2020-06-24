@@ -10,10 +10,10 @@ if [ ! -f "$FIND_FILE" ]; then
   exit 1;
 fi
 FIND_STR="ac_add_options --target=i686-pc-mingw32"
+PYTHON_SCRIPT=_virtualenvs/init_py3/Scripts
 if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR=obju-linux64
-  PYTHON_SCRIPT=_virtualenvs/init/bin
   MAKE=make
 else
   if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
@@ -21,7 +21,6 @@ else
   else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR=obju64-release
   fi
-  PYTHON_SCRIPT=_virtualenvs/init/Scripts
   MAKE=mozmake
 fi
 
@@ -44,10 +43,10 @@ if [ "$?" != "0" ]; then
 fi
 
 if [ -n "$LOCAL_WITH_VC15" ]; then
+  echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
   JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 else
-  $PYTHON_SCRIPT/pip install -U selenium
-  $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver2.py
+  MOZ_HEADLESS=1 DISPLAY=22 JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 fi
 
 ls *.profraw >/dev/null 2>&1
