@@ -20,19 +20,17 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @if exist kdiff3.7z 7z x kdiff3.7z -aoa -o!BUID_DIR!
 @if exist rust-1.43.1.7z 7z x rust-1.43.1.7z -aoa -o!BUID_DIR!
 @if exist rust-tools.7z 7z x rust-tools.7z -aoa -o!BUID_DIR!
-@if exist python-2.7.18.7z 7z x python-2.7.18.7z -aoa -o!BUID_DIR!
+@if exist msys-1.0.7z 7z x msys-1.0.7z -aoa -o!BUID_DIR!
+@if exist msysdo.7z 7z x msysdo.7z -aoa -o!BUID_DIR!
 @if exist python-3.7.7.7z 7z x python-3.7.7.7z -aoa -o!BUID_DIR!\mozillabuild
-@if exist msys2-20200605.7z 7z x msys2-20200605.7z -aoa -o!BUID_DIR!\mozillabuild
-@if exist msys2do.7z 7z x msys2do.7z -aoa -o!BUID_DIR!
 
 @if not exist "!BUID_DIR!\mozillabuild\bin" @echo mozbin not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\clang" @echo clang not exist&EXIT /B 4
-@if not exist "!BUID_DIR!\mozillabuild\msys2" @echo msys2 not exist&EXIT /B 4
+@if not exist "!BUID_DIR!\mozillabuild\msys" @echo msys not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\nodejs" @echo nodejs not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\rust" @echo rust not exist&EXIT /B 4
-@if not exist "!BUID_DIR!\mozillabuild\python" @echo python not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\python3" @echo python3 not exist&EXIT /B 4
-@if not exist "!BUID_DIR!\mozillabuild\msys2do.exe" @echo msys2do not exist&EXIT /B 4
+@if not exist "!BUID_DIR!\mozillabuild\msysdo.exe" @echo msysdo not exist&EXIT /B 4
 
 @if "%MY_BITS%" == "win32" call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars32"
 @if "%MY_BITS%" == "win64" call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64"
@@ -52,8 +50,8 @@ dir /a
 @git clone --depth=1 https://github.com/adonais/libportable.git libportable-src
 @echo libportable-src:
 @cd /d "!SOURCE_DIR!\libportable-src"
-nmake -f Makefile.msvc CC=clang-cl clean
-nmake -f Makefile.msvc CC=clang-cl install
+nmake -f Makefile.msvc clean
+nmake -f Makefile.msvc install
 @if not "%errorlevel%" == "0" @echo compile libportable failed.&EXIT /B %errorlevel%
 
 @cd /d "!SOURCE_DIR!"
@@ -70,5 +68,5 @@ nmake
 @echo GITHUB_WORKSPACE: [%GITHUB_WORKSPACE%]
 @dir %GITHUB_WORKSPACE% /a
 @echo ##########################
-%BUID_DIR%\mozillabuild\msys2do ls -la d:/works/mozillabuild
+%BUID_DIR%\mozillabuild\msysdo ls -la d:/works/mozillabuild
 @echo ##########################
