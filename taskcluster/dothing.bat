@@ -51,7 +51,7 @@ dir /a
 @echo libportable-src:
 @cd /d "!SOURCE_DIR!\libportable-src"
 nmake -f Makefile.msvc clean
-nmake -f Makefile.msvc install
+nmake -f Makefile.msvc CC=clang-cl install
 @if not "%errorlevel%" == "0" @echo compile libportable failed.&EXIT /B %errorlevel%
 
 @cd /d "!SOURCE_DIR!"
@@ -68,5 +68,5 @@ nmake
 @echo GITHUB_WORKSPACE: [%GITHUB_WORKSPACE%]
 @dir %GITHUB_WORKSPACE% /a
 @echo ##########################
-%BUID_DIR%\mozillabuild\msysdo ls -la d:/works/mozillabuild
+%BUID_DIR%\mozillabuild\msysdo ls -la d:/works/mozillabuild/clang/bin
 @echo ##########################
