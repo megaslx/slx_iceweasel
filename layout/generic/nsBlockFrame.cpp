@@ -75,8 +75,9 @@ using namespace mozilla;
 using namespace mozilla::css;
 using namespace mozilla::dom;
 using namespace mozilla::layout;
+using AbsPosReflowFlags = nsAbsoluteContainingBlock::AbsPosReflowFlags;
+using ClearFloatsResult = BlockReflowInput::ClearFloatsResult;
 using ShapeType = nsFloatManager::ShapeType;
-typedef nsAbsoluteContainingBlock::AbsPosReflowFlags AbsPosReflowFlags;
 
 static void MarkAllDescendantLinesDirty(nsBlockFrame* aBlock) {
   for (auto& line : aBlock->Lines()) {
@@ -92,7 +93,7 @@ static void MarkAllDescendantLinesDirty(nsBlockFrame* aBlock) {
 
 static void MarkSameFloatManagerLinesDirty(nsBlockFrame* aBlock) {
   nsBlockFrame* blockWithFloatMgr = aBlock;
-  while (!(blockWithFloatMgr->GetStateBits() & NS_BLOCK_FLOAT_MGR)) {
+  while (!blockWithFloatMgr->HasAnyStateBits(NS_BLOCK_FLOAT_MGR)) {
     nsBlockFrame* bf = do_QueryFrame(blockWithFloatMgr->GetParent());
     if (!bf) {
       break;
@@ -454,7 +455,7 @@ void nsBlockFrame::DestroyFrom(nsIFrame* aDestructRoot,
     delete overflowLines;
   }
 
-  if (GetStateBits() & NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS) {
+  if (HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
     SafelyDestroyFrameListProp(aDestructRoot, aPostDestroyData, presShell,
                                OverflowOutOfFlowsProperty());
     RemoveStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS);
@@ -721,7 +722,7 @@ void nsBlockFrame::MarkIntrinsicISizesDirty() {
   nsBlockFrame* dirtyBlock = static_cast<nsBlockFrame*>(FirstContinuation());
   dirtyBlock->mCachedMinISize = NS_INTRINSIC_ISIZE_UNKNOWN;
   dirtyBlock->mCachedPrefISize = NS_INTRINSIC_ISIZE_UNKNOWN;
-  if (!(GetStateBits() & NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
+  if (!HasAnyStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
     for (nsIFrame* frame = dirtyBlock; frame;
          frame = frame->GetNextContinuation()) {
       frame->AddStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION);
@@ -737,8 +738,7 @@ void nsBlockFrame::CheckIntrinsicCacheAgainstShrinkWrapState() {
     return;
   }
   bool inflationEnabled = !presContext->mInflationDisabledForShrinkWrap;
-  if (inflationEnabled !=
-      !!(GetStateBits() & NS_BLOCK_FRAME_INTRINSICS_INFLATED)) {
+  if (inflationEnabled != HasAnyStateBits(NS_BLOCK_FRAME_INTRINSICS_INFLATED)) {
     mCachedMinISize = NS_INTRINSIC_ISIZE_UNKNOWN;
     mCachedPrefISize = NS_INTRINSIC_ISIZE_UNKNOWN;
     if (inflationEnabled) {
@@ -781,7 +781,7 @@ nscoord nsBlockFrame::GetMinISize(gfxContext* aRenderingContext) {
     curFrame->LazyMarkLinesDirty();
   }
 
-  if (GetStateBits() & NS_BLOCK_NEEDS_BIDI_RESOLUTION) {
+  if (HasAnyStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
     ResolveBidi();
   }
 
@@ -868,7 +868,9 @@ nscoord nsBlockFrame::GetPrefISize(gfxContext* aRenderingContext) {
     curFrame->LazyMarkLinesDirty();
   }
 
-  if (GetStateBits() & NS_BLOCK_NEEDS_BIDI_RESOLUTION) ResolveBidi();
+  if (HasAnyStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
+    ResolveBidi();
+  }
   InlinePrefISizeData data;
   for (nsBlockFrame* curFrame = this; curFrame;
        curFrame = static_cast<nsBlockFrame*>(curFrame->GetNextContinuation())) {
@@ -1270,7 +1272,7 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   // make sure our kids fit too.
   if (aReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE &&
       aReflowInput.ComputedBSize() != NS_UNCONSTRAINEDSIZE &&
-      ShouldApplyOverflowClipping(this, aReflowInput.mStyleDisplay)) {
+      ShouldApplyOverflowClipping(aReflowInput.mStyleDisplay)) {
     LogicalMargin blockDirExtras = aReflowInput.ComputedLogicalBorderPadding();
     if (GetLogicalSkipSides().BStart()) {
       blockDirExtras.BStart(wm) = 0;
@@ -1335,8 +1337,9 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   BlockReflowInput state(*reflowInput, aPresContext, this, blockStartMarginRoot,
                          blockEndMarginRoot, needFloatManager, consumedBSize);
 
-  if (GetStateBits() & NS_BLOCK_NEEDS_BIDI_RESOLUTION)
+  if (HasAnyStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
     static_cast<nsBlockFrame*>(FirstContinuation())->ResolveBidi();
+  }
 
   // Handle paginated overflow (see nsContainerFrame.h)
   nsOverflowAreas ocBounds;
@@ -1360,13 +1363,13 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   // If we're not dirty (which means we'll mark everything dirty later)
   // and our inline-size has changed, mark the lines dirty that we need to
   // mark dirty for a resize reflow.
-  if (!(GetStateBits() & NS_FRAME_IS_DIRTY) && reflowInput->IsIResize()) {
+  if (!HasAnyStateBits(NS_FRAME_IS_DIRTY) && reflowInput->IsIResize()) {
     PrepareResizeReflow(state);
   }
 
   // The same for percentage text-indent, except conditioned on the
   // parent resizing.
-  if (!(GetStateBits() & NS_FRAME_IS_DIRTY) && reflowInput->mCBReflowInput &&
+  if (!HasAnyStateBits(NS_FRAME_IS_DIRTY) && reflowInput->mCBReflowInput &&
       reflowInput->mCBReflowInput->IsIResize() &&
       reflowInput->mStyleText->mTextIndent.HasPercent() && !mLines.empty()) {
     mLines.front()->MarkDirty();
@@ -1390,7 +1393,7 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
     nsBlockFrame* nif = static_cast<nsBlockFrame*>(GetNextInFlow());
     while (nif) {
       if (nif->HasPushedFloatsFromPrevContinuation()) {
-        if (nif->GetStateBits() & NS_FRAME_IS_OVERFLOW_CONTAINER) {
+        if (nif->HasAnyStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER)) {
           state.mReflowStatus.SetOverflowIncomplete();
         } else {
           state.mReflowStatus.SetIncomplete();
@@ -1559,7 +1562,7 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
       // to mark them all with NS_FRAME_IS_DIRTY).  Sadly, we can't do much
       // better than that, because we don't really know what our size will be,
       // and it might in fact not change on the followup reflow!
-      if (haveInterrupt && (GetStateBits() & NS_FRAME_IS_DIRTY)) {
+      if (haveInterrupt && HasAnyStateBits(NS_FRAME_IS_DIRTY)) {
         absoluteContainer->MarkAllFramesDirty();
       } else {
         absoluteContainer->MarkSizeDependentFramesDirty();
@@ -1856,10 +1859,11 @@ void nsBlockFrame::ComputeFinalSize(const ReflowInput& aReflowInput,
   if (aState.mFlags.mBlockNeedsFloatManager) {
     // Include the float manager's state to properly account for the
     // block-end margin of any floated elements; e.g., inside a table cell.
-    nscoord floatHeight =
-        aState.ClearFloats(blockEndEdgeOfChildren, StyleClear::Both, nullptr,
-                           nsFloatManager::DONT_CLEAR_PUSHED_FLOATS);
-    blockEndEdgeOfChildren = std::max(blockEndEdgeOfChildren, floatHeight);
+    //
+    // Note: The block coordinate returned by ClearFloats is always greater than
+    // or equal to blockEndEdgeOfChildren.
+    std::tie(blockEndEdgeOfChildren, std::ignore) =
+        aState.ClearFloats(blockEndEdgeOfChildren, StyleClear::Both);
   }
 
   if (NS_UNCONSTRAINEDSIZE != aReflowInput.ComputedBSize()) {
@@ -1914,12 +1918,6 @@ void nsBlockFrame::ComputeFinalSize(const ReflowInput& aReflowInput,
   } else {
     NS_ASSERTION(aReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE,
                  "Shouldn't be incomplete if availableBSize is UNCONSTRAINED.");
-    if (aState.mBCoord == nscoord_MAX) {
-      // FIXME bug 1574046.
-      // This should never happen, but it does. nsFloatManager::ClearFloats
-      // returns |nscoord_MAX| when DONT_CLEAR_PUSHED_FLOATS is false.
-      blockEndEdgeOfChildren = aState.mBCoord = aReflowInput.AvailableBSize();
-    }
     nscoord bSize = std::max(aState.mBCoord, aReflowInput.AvailableBSize());
     if (aReflowInput.AvailableBSize() == NS_UNCONSTRAINEDSIZE) {
       // This should never happen, but it does. See bug 414255
@@ -2060,7 +2058,7 @@ void nsBlockFrame::ComputeOverflowAreas(const nsRect& aBounds,
   // XXX_perf: This can be done incrementally.  It is currently one of
   // the things that makes incremental reflow O(N^2).
   nsOverflowAreas areas(aBounds, aBounds);
-  if (!ShouldApplyOverflowClipping(this, aDisplay)) {
+  if (!ShouldApplyOverflowClipping(aDisplay)) {
     for (const auto& line : Lines()) {
       if (aDisplay->IsContainLayout()) {
         // If we have layout containment, we should only consider our child's
@@ -2152,7 +2150,7 @@ bool nsBlockFrame::ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas) {
 }
 
 void nsBlockFrame::LazyMarkLinesDirty() {
-  if (GetStateBits() & NS_BLOCK_LOOK_FOR_DIRTY_FRAMES) {
+  if (HasAnyStateBits(NS_BLOCK_LOOK_FOR_DIRTY_FRAMES)) {
     for (LineIterator line = LinesBegin(), line_end = LinesEnd();
          line != line_end; ++line) {
       int32_t n = line->GetChildCount();
@@ -2382,8 +2380,8 @@ void nsBlockFrame::PropagateFloatDamage(BlockReflowInput& aState,
 static bool LineHasClear(nsLineBox* aLine) {
   return aLine->IsBlock()
              ? (aLine->GetBreakTypeBefore() != StyleClear::None ||
-                (aLine->mFirstChild->GetStateBits() &
-                 NS_BLOCK_HAS_CLEAR_CHILDREN) ||
+                aLine->mFirstChild->HasAnyStateBits(
+                    NS_BLOCK_HAS_CLEAR_CHILDREN) ||
                 !nsBlockFrame::BlockCanIntersectFloats(aLine->mFirstChild))
              : aLine->HasFloatBreakAfter();
 }
@@ -2400,7 +2398,7 @@ void nsBlockFrame::ReparentFloats(nsIFrame* aFirstFrame,
   aOldParent->CollectFloats(aFirstFrame, list, aReparentSiblings);
   if (list.NotEmpty()) {
     for (nsIFrame* f : list) {
-      MOZ_ASSERT(!(f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT),
+      MOZ_ASSERT(!f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT),
                  "CollectFloats should've removed that bit");
       ReparentFrame(f, aOldParent, this);
     }
@@ -2453,9 +2451,9 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
   AutoNoisyIndenter indent(gNoisyReflow);
 #endif
 
-  bool selfDirty = (GetStateBits() & NS_FRAME_IS_DIRTY) ||
+  bool selfDirty = HasAnyStateBits(NS_FRAME_IS_DIRTY) ||
                    (aState.mReflowInput.IsBResize() &&
-                    (GetStateBits() & NS_FRAME_CONTAINS_RELATIVE_BSIZE));
+                    HasAnyStateBits(NS_FRAME_CONTAINS_RELATIVE_BSIZE));
 
   // Reflow our last line if our availableBSize has increased
   // so that we (and our last child) pull up content as necessary
@@ -2480,7 +2478,7 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
   // Float continuations were reflowed in ReflowPushedFloats
   bool reflowedFloat =
       mFloats.NotEmpty() &&
-      (mFloats.FirstChild()->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT);
+      mFloats.FirstChild()->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT);
   bool lastLineMovedUp = false;
   // We save up information about BR-clearance here
   StyleClear inlineFloatBreakType = aState.mFloatBreakType;
@@ -2506,7 +2504,7 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
     // elements inside them.
     // XXX what can we do smarter here?
     if (!line->IsDirty() && line->IsBlock() &&
-        (line->mFirstChild->GetStateBits() & NS_BLOCK_HAS_CLEAR_CHILDREN)) {
+        line->mFirstChild->HasAnyStateBits(NS_BLOCK_HAS_CLEAR_CHILDREN)) {
       line->MarkDirty();
     }
 
@@ -2524,15 +2522,16 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
       // See where we would be after applying any clearance due to
       // BRs.
       if (inlineFloatBreakType != StyleClear::None) {
-        curBCoord = aState.ClearFloats(curBCoord, inlineFloatBreakType);
+        std::tie(curBCoord, std::ignore) =
+            aState.ClearFloats(curBCoord, inlineFloatBreakType);
       }
 
-      nscoord newBCoord = aState.ClearFloats(
+      auto [newBCoord, result] = aState.ClearFloats(
           curBCoord, line->GetBreakTypeBefore(), replacedBlock);
 
       if (line->HasClearance()) {
         // Reflow the line if it might not have clearance anymore.
-        if (newBCoord == curBCoord
+        if (result == ClearFloatsResult::BCoordNoChange
             // aState.mBCoord is the clearance point which should be the
             // block-start border-edge of the block frame. If sliding the
             // block by deltaBCoord isn't going to put it in the predicted
@@ -2542,7 +2541,7 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
         }
       } else {
         // Reflow the line if the line might have clearance now.
-        if (curBCoord != newBCoord) {
+        if (result != ClearFloatsResult::BCoordNoChange) {
           line->MarkDirty();
         }
       }
@@ -2550,7 +2549,8 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
 
     // We might have to reflow a line that is after a clearing BR.
     if (inlineFloatBreakType != StyleClear::None) {
-      aState.mBCoord = aState.ClearFloats(aState.mBCoord, inlineFloatBreakType);
+      std::tie(aState.mBCoord, std::ignore) =
+          aState.ClearFloats(aState.mBCoord, inlineFloatBreakType);
       if (aState.mBCoord != line->BStart() + deltaBCoord) {
         // SlideLine is not going to put the line where the clearance
         // put it. Reflow the line to be sure.
@@ -2819,7 +2819,8 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
 
   // Handle BR-clearance from the last line of the block
   if (inlineFloatBreakType != StyleClear::None) {
-    aState.mBCoord = aState.ClearFloats(aState.mBCoord, inlineFloatBreakType);
+    std::tie(aState.mBCoord, std::ignore) =
+        aState.ClearFloats(aState.mBCoord, inlineFloatBreakType);
   }
 
   if (needToRecoverState) {
@@ -2854,7 +2855,7 @@ void nsBlockFrame::ReflowDirtyLines(BlockReflowInput& aState) {
   bool skipPull = willReflowAgain && heightConstrained;
   if (!skipPull && heightConstrained && aState.mNextInFlow &&
       (aState.mReflowInput.mFlags.mNextInFlowUntouched && !lastLineMovedUp &&
-       !(GetStateBits() & NS_FRAME_IS_DIRTY) && !reflowedFloat)) {
+       !HasAnyStateBits(NS_FRAME_IS_DIRTY) && !reflowedFloat)) {
     // We'll place lineIter at the last line of this block, so that
     // nsBlockInFlowLineIterator::Next() will take us to the first
     // line of my next-in-flow-chain.  (But first, check that I
@@ -3066,7 +3067,7 @@ void nsBlockFrame::MarkLineDirtyForInterrupt(nsLineBox* aLine) {
   // marked the lines that need to be marked dirty based on our
   // vertical resize stuff.  So we'll definitely reflow all those kids;
   // the only question is how they should behave.
-  if (GetStateBits() & NS_FRAME_IS_DIRTY) {
+  if (HasAnyStateBits(NS_FRAME_IS_DIRTY)) {
     // Mark all our child frames dirty so we make sure to reflow them
     // later.
     int32_t n = aLine->GetChildCount();
@@ -3341,7 +3342,7 @@ bool nsBlockFrame::IsSelfEmpty() {
   // Blocks which are margin-roots (including inline-blocks) cannot be treated
   // as empty for margin-collapsing and other purposes. They're more like
   // replaced elements.
-  if (GetStateBits() & NS_BLOCK_MARGIN_ROOT) {
+  if (HasAnyStateBits(NS_BLOCK_MARGIN_ROOT)) {
     return false;
   }
 
@@ -3489,9 +3490,11 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
   if (!treatWithClearance && !applyBStartMargin && mightClearFloats &&
       aState.mReflowInput.mDiscoveredClearance) {
     nscoord curBCoord = aState.mBCoord + aState.mPrevBEndMargin.get();
-    nscoord clearBCoord =
-        aState.ClearFloats(curBCoord, breakType, replacedBlock);
-    if (clearBCoord != curBCoord) {
+    if (auto [clearBCoord, result] =
+            aState.ClearFloats(curBCoord, breakType, replacedBlock);
+        result != ClearFloatsResult::BCoordNoChange) {
+      Unused << clearBCoord;
+
       // Only record the first frame that requires clearance
       if (!*aState.mReflowInput.mDiscoveredClearance) {
         *aState.mReflowInput.mDiscoveredClearance = frame;
@@ -3518,6 +3521,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
     nscoord bStartMargin = 0;
     bool mayNeedRetry = false;
     bool clearedFloats = false;
+    bool clearedPushedOrSplitFloat = false;
     if (applyBStartMargin) {
       // Precompute the blocks block-start margin value so that we can get the
       // correct available space (there might be a float that's
@@ -3566,9 +3570,11 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
         // decision is only allowed to be made under the optimistic
         // first pass.
         nscoord curBCoord = aState.mBCoord + aState.mPrevBEndMargin.get();
-        nscoord clearBCoord =
-            aState.ClearFloats(curBCoord, breakType, replacedBlock);
-        if (clearBCoord != curBCoord) {
+        if (auto [clearBCoord, result] =
+                aState.ClearFloats(curBCoord, breakType, replacedBlock);
+            result != ClearFloatsResult::BCoordNoChange) {
+          Unused << clearBCoord;
+
           // Looks like we need clearance and we didn't know about it already.
           // So recompute collapsed margin
           treatWithClearance = true;
@@ -3595,10 +3601,13 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
       if (treatWithClearance) {
         nscoord currentBCoord = aState.mBCoord;
         // advance mBCoord to the clear position.
-        aState.mBCoord =
+        auto [clearBCoord, result] =
             aState.ClearFloats(aState.mBCoord, breakType, replacedBlock);
+        aState.mBCoord = clearBCoord;
 
-        clearedFloats = aState.mBCoord != currentBCoord;
+        clearedFloats = result != ClearFloatsResult::BCoordNoChange;
+        clearedPushedOrSplitFloat =
+            result == ClearFloatsResult::FloatsPushedOrSplit;
 
         // Compute clearance. It's the amount we need to add to the block-start
         // border-edge of the frame, after applying collapsed margins
@@ -3637,17 +3646,13 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
     // margins at the top of the page as we ought to, it wouldn't be
     // needed.
     if ((!aState.mReflowInput.mFlags.mIsTopOfPage || clearedFloats) &&
-        availSpace.BSize(wm) < 0) {
+        (availSpace.BSize(wm) < 0 || clearedPushedOrSplitFloat)) {
       // We know already that this child block won't fit on this
       // page/column due to the block-start margin or the clearance.  So we
       // need to get out of here now.  (If we don't, most blocks will handle
       // things fine, and report break-before, but zero-height blocks
       // won't, and will thus make their parent overly-large and force
       // *it* to be pushed in its entirety.)
-      // Doing this means that we also don't need to worry about the
-      // |availSpace.BSize(wm) += bStartMargin| below interacting with
-      // pushed floats (which force nscoord_MAX clearance) to cause a
-      // constrained block size to turn into an unconstrained one.
       aState.mBCoord = startingBCoord;
       aState.mPrevBEndMargin = incomingMargin;
       *aKeepReflowGoing = false;
@@ -3821,8 +3826,9 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
           advanced = true;
         }
         // ClearFloats might be able to advance us further once we're there.
-        aState.mBCoord =
+        std::tie(aState.mBCoord, std::ignore) =
             aState.ClearFloats(newBCoord, StyleClear::None, replacedBlock);
+
         // Start over with a new available space rect at the new height.
         floatAvailableSpace = aState.GetFloatAvailableSpaceWithState(
             aState.mBCoord, ShapeType::ShapeOutside, &floatManagerState);
@@ -3951,7 +3957,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
             // If nextFrame used to be an overflow container, make it a normal
             // block
             if (!madeContinuation &&
-                (NS_FRAME_IS_OVERFLOW_CONTAINER & nextFrame->GetStateBits())) {
+                nextFrame->HasAnyStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER)) {
               nsOverflowContinuationTracker::AutoFinish fini(
                   aState.mOverflowTracker, frame);
               nsContainerFrame* parent = nextFrame->GetParent();
@@ -4019,7 +4025,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
           } else {  // frame is complete but its overflow is not complete
             // Disconnect the next-in-flow and put it in our overflow tracker
             if (!madeContinuation &&
-                !(NS_FRAME_IS_OVERFLOW_CONTAINER & nextFrame->GetStateBits())) {
+                !nextFrame->HasAnyStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER)) {
               // It already exists, but as a normal next-in-flow, so we need
               // to dig it out of the child lists.
               nsresult rv = nextFrame->GetParent()->StealFrame(nextFrame);
@@ -4646,7 +4652,7 @@ static bool CheckPlaceholderInLine(nsIFrame* aBlock, nsLineBox* aLine,
   if (!aFC) return true;
   NS_ASSERTION(!aFC->mFloat->GetPrevContinuation(),
                "float in a line should never be a continuation");
-  NS_ASSERTION(!(aFC->mFloat->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT),
+  NS_ASSERTION(!aFC->mFloat->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT),
                "float in a line should never be a pushed float");
   nsIFrame* ph = aFC->mFloat->FirstInFlow()->GetPlaceholderFrame();
   for (nsIFrame* f = ph; f; f = f->GetParent()) {
@@ -5000,7 +5006,7 @@ bool nsBlockFrame::PlaceLine(BlockReflowInput& aState,
   // Apply break-after clearing if necessary
   // This must stay in sync with |ReflowDirtyLines|.
   if (aLine->HasFloatBreakAfter()) {
-    aState.mBCoord =
+    std::tie(aState.mBCoord, std::ignore) =
         aState.ClearFloats(aState.mBCoord, aLine->GetBreakTypeAfter());
   }
   return true;
@@ -5025,7 +5031,7 @@ void nsBlockFrame::PushLines(BlockReflowInput& aState,
     if (floats.NotEmpty()) {
 #ifdef DEBUG
       for (nsIFrame* f : floats) {
-        MOZ_ASSERT(!(f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT),
+        MOZ_ASSERT(!f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT),
                    "CollectFloats should've removed that bit");
       }
 #endif
@@ -5194,7 +5200,7 @@ bool nsBlockFrame::DrainSelfOverflowList() {
     if (oofs.mList.NotEmpty()) {
 #ifdef DEBUG
       for (nsIFrame* f : oofs.mList) {
-        MOZ_ASSERT(!(f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT),
+        MOZ_ASSERT(!f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT),
                    "CollectFloats should've removed that bit");
       }
 #endif
@@ -5261,7 +5267,7 @@ void nsBlockFrame::DrainSelfPushedFloats() {
     // FIXME: This isn't quite right!  What if they're all pushed floats?
     nsIFrame* insertionPrevSibling = nullptr; /* beginning of list */
     for (nsIFrame* f = mFloats.FirstChild();
-         f && (f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT);
+         f && f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT);
          f = f->GetNextSibling()) {
       insertionPrevSibling = f;
     }
@@ -5354,7 +5360,7 @@ void nsBlockFrame::SetOverflowLines(FrameLines* aOverflowLines) {
   NS_ASSERTION(aOverflowLines->mLines.front()->mFirstChild ==
                    aOverflowLines->mFrames.FirstChild(),
                "invalid overflow lines / frames");
-  NS_ASSERTION(!(GetStateBits() & NS_BLOCK_HAS_OVERFLOW_LINES),
+  NS_ASSERTION(!HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_LINES),
                "Overwriting existing overflow lines");
 
   // Verify that we won't overwrite an existing overflow list
@@ -5364,7 +5370,7 @@ void nsBlockFrame::SetOverflowLines(FrameLines* aOverflowLines) {
 }
 
 nsFrameList* nsBlockFrame::GetOverflowOutOfFlows() const {
-  if (!(GetStateBits() & NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
+  if (!HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
     return nullptr;
   }
   nsFrameList* result = GetPropTableFrames(OverflowOutOfFlowsProperty());
@@ -5376,11 +5382,11 @@ nsFrameList* nsBlockFrame::GetOverflowOutOfFlows() const {
 void nsBlockFrame::SetOverflowOutOfFlows(const nsFrameList& aList,
                                          nsFrameList* aPropValue) {
   MOZ_ASSERT(
-      !!(GetStateBits() & NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS) == !!aPropValue,
+      HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS) == !!aPropValue,
       "state does not match value");
 
   if (aList.IsEmpty()) {
-    if (!(GetStateBits() & NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
+    if (!HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
       return;
     }
     nsFrameList* list = RemovePropTableFrames(OverflowOutOfFlowsProperty());
@@ -5388,7 +5394,7 @@ void nsBlockFrame::SetOverflowOutOfFlows(const nsFrameList& aList,
     list->Clear();
     list->Delete(PresShell());
     RemoveStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS);
-  } else if (GetStateBits() & NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS) {
+  } else if (HasAnyStateBits(NS_BLOCK_HAS_OVERFLOW_OUT_OF_FLOWS)) {
     NS_ASSERTION(aPropValue == GetPropTableFrames(OverflowOutOfFlowsProperty()),
                  "prop value mismatch");
     *aPropValue = aList;
@@ -5562,7 +5568,7 @@ void nsBlockFrame::RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) {
     NS_ASSERTION(!aOldFrame->GetPrevContinuation(),
                  "RemoveFrame should not be called on pushed floats.");
     for (nsIFrame* f = aOldFrame;
-         f && !(f->GetStateBits() & NS_FRAME_IS_OVERFLOW_CONTAINER);
+         f && !f->HasAnyStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER);
          f = f->GetNextContinuation()) {
       MarkSameFloatManagerLinesDirty(
           static_cast<nsBlockFrame*>(f->GetParent()));
@@ -5588,7 +5594,7 @@ static bool ShouldPutNextSiblingOnNewLine(nsIFrame* aLastFrame) {
   }
   // XXX the TEXT_OFFSETS_NEED_FIXING check is a wallpaper for bug 822910.
   if (type == LayoutFrameType::Text &&
-      !(aLastFrame->GetStateBits() & TEXT_OFFSETS_NEED_FIXING)) {
+      !aLastFrame->HasAnyStateBits(TEXT_OFFSETS_NEED_FIXING)) {
     return aLastFrame->HasSignificantTerminalNewline();
   }
   return false;
@@ -5901,7 +5907,7 @@ void nsBlockFrame::UpdateFirstLetterStyle(ServoRestyleState& aRestyleState) {
   // Figure out what the right style parent is.  This needs to match
   // nsCSSFrameConstructor::CreateLetterFrame.
   nsIFrame* inFlowFrame = letterFrame;
-  if (inFlowFrame->GetStateBits() & NS_FRAME_OUT_OF_FLOW) {
+  if (inFlowFrame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
     inFlowFrame = inFlowFrame->GetPlaceholderFrame();
   }
   nsIFrame* styleParent = CorrectStyleParentFrame(inFlowFrame->GetParent(),
@@ -5943,7 +5949,9 @@ static nsIFrame* FindChildContaining(nsBlockFrame* aFrame,
       block = block->GetNextContinuation();
     } while (block);
     if (!child) return nullptr;
-    if (!(child->GetStateBits() & NS_FRAME_OUT_OF_FLOW)) break;
+    if (!child->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
+      break;
+    }
     aFindFrame = child->GetPlaceholderFrame();
   }
 
@@ -6112,10 +6120,10 @@ void nsBlockFrame::DoRemoveFrameInternal(nsIFrame* aDeletedFrame,
   // Clear our line cursor, since our lines may change.
   ClearLineCursor();
 
-  if (aDeletedFrame->GetStateBits() &
-      (NS_FRAME_OUT_OF_FLOW | NS_FRAME_IS_OVERFLOW_CONTAINER)) {
+  if (aDeletedFrame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW |
+                                     NS_FRAME_IS_OVERFLOW_CONTAINER)) {
     if (!aDeletedFrame->GetPrevInFlow()) {
-      NS_ASSERTION(aDeletedFrame->GetStateBits() & NS_FRAME_OUT_OF_FLOW,
+      NS_ASSERTION(aDeletedFrame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW),
                    "Expected out-of-flow frame");
       DoRemoveOutOfFlowFrame(aDeletedFrame);
     } else {
@@ -6227,8 +6235,8 @@ void nsBlockFrame::DoRemoveFrameInternal(nsIFrame* aDeletedFrame,
 #endif
 
     // If next-in-flow is an overflow container, must remove it first.
-    if (deletedNextContinuation && deletedNextContinuation->GetStateBits() &
-                                       NS_FRAME_IS_OVERFLOW_CONTAINER) {
+    if (deletedNextContinuation && deletedNextContinuation->HasAnyStateBits(
+                                       NS_FRAME_IS_OVERFLOW_CONTAINER)) {
       deletedNextContinuation->GetParent()->DeleteNextInFlowChild(
           deletedNextContinuation, false);
       deletedNextContinuation = nullptr;
@@ -6391,7 +6399,7 @@ static bool FindLineFor(nsIFrame* aChild, const nsFrameList& aFrameList,
 nsresult nsBlockFrame::StealFrame(nsIFrame* aChild) {
   MOZ_ASSERT(aChild->GetParent() == this);
 
-  if ((aChild->GetStateBits() & NS_FRAME_OUT_OF_FLOW) && aChild->IsFloating()) {
+  if (aChild->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW) && aChild->IsFloating()) {
     RemoveFloat(aChild);
     return NS_OK;
   }
@@ -6400,7 +6408,7 @@ nsresult nsBlockFrame::StealFrame(nsIFrame* aChild) {
     return NS_OK;
   }
 
-  MOZ_ASSERT(!(aChild->GetStateBits() & NS_FRAME_OUT_OF_FLOW));
+  MOZ_ASSERT(!aChild->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW));
 
   nsLineList::iterator line;
   if (FindLineFor(aChild, mFrames, mLines.begin(), mLines.end(), &line)) {
@@ -6448,8 +6456,8 @@ void nsBlockFrame::DeleteNextInFlowChild(nsIFrame* aNextInFlow,
                                          bool aDeletingEmptyFrames) {
   MOZ_ASSERT(aNextInFlow->GetPrevInFlow(), "bad next-in-flow");
 
-  if (aNextInFlow->GetStateBits() &
-      (NS_FRAME_OUT_OF_FLOW | NS_FRAME_IS_OVERFLOW_CONTAINER)) {
+  if (aNextInFlow->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW |
+                                   NS_FRAME_IS_OVERFLOW_CONTAINER)) {
     nsContainerFrame::DeleteNextInFlowChild(aNextInFlow, aDeletingEmptyFrames);
   } else {
 #ifdef DEBUG
@@ -6500,7 +6508,7 @@ LogicalRect nsBlockFrame::AdjustFloatAvailableSpace(
 nscoord nsBlockFrame::ComputeFloatISize(BlockReflowInput& aState,
                                         const LogicalRect& aFloatAvailableSpace,
                                         nsIFrame* aFloat) {
-  MOZ_ASSERT(aFloat->GetStateBits() & NS_FRAME_OUT_OF_FLOW,
+  MOZ_ASSERT(aFloat->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW),
              "aFloat must be an out-of-flow frame");
 
   // Reflow the float.
@@ -6521,7 +6529,7 @@ void nsBlockFrame::ReflowFloat(BlockReflowInput& aState,
                                LogicalMargin& aFloatOffsets,
                                bool aFloatPushedDown,
                                nsReflowStatus& aReflowStatus) {
-  MOZ_ASSERT(aFloat->GetStateBits() & NS_FRAME_OUT_OF_FLOW,
+  MOZ_ASSERT(aFloat->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW),
              "aFloat must be an out-of-flow frame");
 
   // Reflow the float.
@@ -6652,7 +6660,7 @@ void nsBlockFrame::ReflowPushedFloats(BlockReflowInput& aState,
   // above nsBlockFrame::DrainPushedFloats.
   nsIFrame* f = mFloats.FirstChild();
   nsIFrame* prev = nullptr;
-  while (f && (f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT)) {
+  while (f && f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT)) {
     MOZ_ASSERT(prev == f->GetPrevSibling());
     // When we push a first-continuation float in a non-initial reflow,
     // it's possible that we end up with two continuations with the same
@@ -6708,8 +6716,11 @@ void nsBlockFrame::ReflowPushedFloats(BlockReflowInput& aState,
     f = next;
   }
 
-  // If there are continued floats, then we may need to continue BR clearance
-  if (0 != aState.ClearFloats(0, StyleClear::Both)) {
+  // If there are pushed or split floats, then we may need to continue BR
+  // clearance
+  if (auto [bCoord, result] = aState.ClearFloats(0, StyleClear::Both);
+      result != ClearFloatsResult::BCoordNoChange) {
+    Unused << bCoord;
     nsBlockFrame* prevBlock = static_cast<nsBlockFrame*>(GetPrevInFlow());
     if (prevBlock) {
       aState.mFloatBreakType = prevBlock->FindTrailingClear();
@@ -6844,7 +6855,10 @@ static void DisplayLine(nsDisplayListBuilder* aBuilder,
       collection,
       aLineInLine ? collection.Content() : collection.BlockBorderBackgrounds());
 
-  uint32_t flags = aLineInLine ? nsIFrame::DISPLAY_CHILD_INLINE : 0;
+  auto flags =
+      aLineInLine
+          ? nsIFrame::DisplayChildFlags(nsIFrame::DisplayChildFlag::Inline)
+          : nsIFrame::DisplayChildFlags();
 
   nsIFrame* kid = aLine->mFirstChild;
   int32_t n = aLine->GetChildCount();
@@ -6896,13 +6910,10 @@ void nsBlockFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   if (GetPrevInFlow()) {
     DisplayOverflowContainers(aBuilder, aLists);
     for (nsIFrame* f : mFloats) {
-      if (f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT) {
-#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
-         _mm_prefetch((char *)f->GetNextSibling(), _MM_HINT_T0);
-#endif
+      if (f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT)) {
         BuildDisplayListForChild(aBuilder, f, aLists);
+      }
     }
-  }
   }
 
   aBuilder->MarkFramesForDisplayList(this, mFloats);
@@ -6917,7 +6928,7 @@ void nsBlockFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
       TextOverflow::WillProcessLines(aBuilder, this);
 
   const bool hasDescendantPlaceHolders =
-      (GetStateBits() & NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO) ||
+      HasAnyStateBits(NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO) ||
       ForceDescendIntoIfVisible() || aBuilder->GetIncludeAllOutOfFlows();
 
   const auto ShouldDescendIntoLine = [&](const nsRect& aLineArea) -> bool {
@@ -6925,7 +6936,7 @@ void nsBlockFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     // some frame trees, building display list for child lines can change it.
     // See bug 1552789.
     const bool descendAlways =
-        (GetStateBits() & NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO) ||
+        HasAnyStateBits(NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO) ||
         aBuilder->GetIncludeAllOutOfFlows();
 
     return descendAlways || aLineArea.Intersects(aBuilder->GetDirtyRect()) ||
@@ -7126,7 +7137,7 @@ a11y::AccType nsBlockFrame::AccessibleType() {
 #endif
 
 void nsBlockFrame::ClearLineCursor() {
-  if (!(GetStateBits() & NS_BLOCK_HAS_LINE_CURSOR)) {
+  if (!HasAnyStateBits(NS_BLOCK_HAS_LINE_CURSOR)) {
     return;
   }
 
@@ -7135,7 +7146,7 @@ void nsBlockFrame::ClearLineCursor() {
 }
 
 void nsBlockFrame::SetupLineCursor() {
-  if (GetStateBits() & NS_BLOCK_HAS_LINE_CURSOR || mLines.empty()) {
+  if (HasAnyStateBits(NS_BLOCK_HAS_LINE_CURSOR) || mLines.empty()) {
     return;
   }
 
@@ -7144,7 +7155,7 @@ void nsBlockFrame::SetupLineCursor() {
 }
 
 nsLineBox* nsBlockFrame::GetFirstLineContaining(nscoord y) {
-  if (!(GetStateBits() & NS_BLOCK_HAS_LINE_CURSOR)) {
+  if (!HasAnyStateBits(NS_BLOCK_HAS_LINE_CURSOR)) {
     return nullptr;
   }
 
@@ -7173,7 +7184,7 @@ nsLineBox* nsBlockFrame::GetFirstLineContaining(nscoord y) {
 /* virtual */
 void nsBlockFrame::ChildIsDirty(nsIFrame* aChild) {
   // See if the child is absolutely positioned
-  if (aChild->GetStateBits() & NS_FRAME_OUT_OF_FLOW &&
+  if (aChild->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW) &&
       aChild->IsAbsolutelyPositioned()) {
     // do nothing
   } else if (aChild == GetOutsideMarker()) {
@@ -7206,7 +7217,7 @@ void nsBlockFrame::ChildIsDirty(nsIFrame* aChild) {
     // We need to take some care to handle the case where a float is in
     // a different continuation than its placeholder, including marking
     // an extra block with NS_BLOCK_LOOK_FOR_DIRTY_FRAMES.
-    if (!(aChild->GetStateBits() & NS_FRAME_OUT_OF_FLOW)) {
+    if (!aChild->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
       AddStateBits(NS_BLOCK_LOOK_FOR_DIRTY_FRAMES);
     } else {
       NS_ASSERTION(aChild->IsFloating(), "should be a float");
@@ -7260,7 +7271,7 @@ void nsBlockFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   nsContainerFrame::Init(aContent, aParent, aPrevInFlow);
 
   if (!aPrevInFlow ||
-      aPrevInFlow->GetStateBits() & NS_BLOCK_NEEDS_BIDI_RESOLUTION) {
+      aPrevInFlow->HasAnyStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION)) {
     AddStateBits(NS_BLOCK_NEEDS_BIDI_RESOLUTION);
   }
 
@@ -7287,9 +7298,7 @@ void nsBlockFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
     AddStateBits(NS_BLOCK_FORMATTING_CONTEXT_STATE_BITS);
   }
 
-  if ((GetStateBits() &
-       (NS_FRAME_FONT_INFLATION_CONTAINER | NS_BLOCK_FLOAT_MGR)) ==
-      (NS_FRAME_FONT_INFLATION_CONTAINER | NS_BLOCK_FLOAT_MGR)) {
+  if (HasAllStateBits(NS_FRAME_FONT_INFLATION_CONTAINER | NS_BLOCK_FLOAT_MGR)) {
     AddStateBits(NS_FRAME_FONT_INFLATION_FLOW_ROOT);
   }
 }
@@ -7334,8 +7343,8 @@ void nsBlockFrame::SetInitialChildList(ChildListID aListID,
 
 void nsBlockFrame::SetMarkerFrameForListItem(nsIFrame* aMarkerFrame) {
   MOZ_ASSERT(aMarkerFrame);
-  MOZ_ASSERT((GetStateBits() & (NS_BLOCK_FRAME_HAS_INSIDE_MARKER |
-                                NS_BLOCK_FRAME_HAS_OUTSIDE_MARKER)) == 0,
+  MOZ_ASSERT(!HasAnyStateBits(NS_BLOCK_FRAME_HAS_INSIDE_MARKER |
+                              NS_BLOCK_FRAME_HAS_OUTSIDE_MARKER),
              "How can we have a ::marker frame already?");
 
   if (StyleList()->mListStylePosition == NS_STYLE_LIST_STYLE_POSITION_INSIDE) {
@@ -7482,7 +7491,9 @@ void nsBlockFrame::CheckFloats(BlockReflowInput& aState) {
   bool equal = true;
   uint32_t i = 0;
   for (nsIFrame* f : mFloats) {
-    if (f->GetStateBits() & NS_FRAME_IS_PUSHED_FLOAT) continue;
+    if (f->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT)) {
+      continue;
+    }
     storedFloats.AppendElement(f);
     if (i < lineFloats.Length() && lineFloats.ElementAt(i) != f) {
       equal = false;
@@ -7526,7 +7537,7 @@ void nsBlockFrame::CheckFloats(BlockReflowInput& aState) {
 void nsBlockFrame::IsMarginRoot(bool* aBStartMarginRoot,
                                 bool* aBEndMarginRoot) {
   nsIFrame* parent = GetParent();
-  if (!(GetStateBits() & NS_BLOCK_MARGIN_ROOT)) {
+  if (!HasAnyStateBits(NS_BLOCK_MARGIN_ROOT)) {
     if (!parent || parent->IsFloatContainingBlock()) {
       *aBStartMarginRoot = false;
       *aBEndMarginRoot = false;
@@ -7553,7 +7564,7 @@ bool nsBlockFrame::BlockNeedsFloatManager(nsIFrame* aBlock) {
   NS_ASSERTION(aBlock->IsBlockFrameOrSubclass(), "aBlock must be a block");
 
   nsIFrame* parent = aBlock->GetParent();
-  return (aBlock->GetStateBits() & NS_BLOCK_FLOAT_MGR) ||
+  return aBlock->HasAnyStateBits(NS_BLOCK_FLOAT_MGR) ||
          (parent && !parent->IsFloatContainingBlock());
 }
 
@@ -7561,7 +7572,7 @@ bool nsBlockFrame::BlockNeedsFloatManager(nsIFrame* aBlock) {
 bool nsBlockFrame::BlockCanIntersectFloats(nsIFrame* aFrame) {
   return aFrame->IsBlockFrameOrSubclass() &&
          !aFrame->IsFrameOfType(nsIFrame::eReplaced) &&
-         !(aFrame->GetStateBits() & NS_BLOCK_FLOAT_MGR);
+         !aFrame->HasAnyStateBits(NS_BLOCK_FLOAT_MGR);
 }
 
 // Note that this width can vary based on the vertical position.
@@ -7755,7 +7766,7 @@ void nsBlockFrame::UpdatePseudoElementStyles(ServoRestyleState& aRestyleState) {
 }
 
 nsIFrame* nsBlockFrame::GetFirstLetter() const {
-  if (!(GetStateBits() & NS_BLOCK_HAS_FIRST_LETTER_STYLE)) {
+  if (!HasAnyStateBits(NS_BLOCK_HAS_FIRST_LETTER_STYLE)) {
     // Certainly no first-letter frame.
     return nullptr;
   }
