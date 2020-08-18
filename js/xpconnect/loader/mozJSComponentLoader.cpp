@@ -51,6 +51,7 @@
 #include "mozilla/scache/StartupCacheUtils.h"
 #include "mozilla/MacroForEach.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Omnijar.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/ScriptPreloader.h"
 #include "mozilla/ScopeExit.h"
@@ -235,15 +236,16 @@ class MOZ_STACK_CLASS ComponentLoaderInfo {
   }
   nsresult EnsureScriptChannel() {
     BEGIN_ENSURE(ScriptChannel, IOService, URI);
-    return NS_NewChannel(getter_AddRefs(mScriptChannel), mURI,
-                         nsContentUtils::GetSystemPrincipal(),
-                         nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                         nsIContentPolicy::TYPE_SCRIPT,
-                         nullptr,  // nsICookieJarSettings
-                         nullptr,  // aPerformanceStorage
-                         nullptr,  // aLoadGroup
-                         nullptr,  // aCallbacks
-                         nsIRequest::LOAD_NORMAL, mIOService);
+    return NS_NewChannel(
+        getter_AddRefs(mScriptChannel), mURI,
+        nsContentUtils::GetSystemPrincipal(),
+        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+        nsIContentPolicy::TYPE_SCRIPT,
+        nullptr,  // nsICookieJarSettings
+        nullptr,  // aPerformanceStorage
+        nullptr,  // aLoadGroup
+        nullptr,  // aCallbacks
+        nsIRequest::LOAD_NORMAL, mIOService);
   }
 
   nsIURI* ResolvedURI() {
@@ -347,7 +349,7 @@ static nsresult AnnotateScriptContents(CrashReporter::Annotation aName,
   // shouldn't have any here, but if we do because of data corruption, we
   // still want the annotation. So replace any embedded nuls before
   // annotating.
-  str.ReplaceSubstring(NS_LITERAL_CSTRING("\0"), NS_LITERAL_CSTRING("\\0"));
+  str.ReplaceSubstring("\0"_ns, "\\0"_ns);
 
   CrashReporter::AnnotateCrashReport(aName, str);
 
@@ -357,11 +359,11 @@ static nsresult AnnotateScriptContents(CrashReporter::Annotation aName,
 nsresult mozJSComponentLoader::AnnotateCrashReport() {
   Unused << AnnotateScriptContents(
       CrashReporter::Annotation::nsAsyncShutdownComponent,
-      NS_LITERAL_CSTRING("resource://gre/components/nsAsyncShutdown.js"));
+      "resource://gre/components/nsAsyncShutdown.js"_ns);
 
   Unused << AnnotateScriptContents(
       CrashReporter::Annotation::AsyncShutdownModule,
-      NS_LITERAL_CSTRING("resource://gre/modules/AsyncShutdown.jsm"));
+      "resource://gre/modules/AsyncShutdown.jsm"_ns);
 
   return NS_OK;
 }
@@ -401,8 +403,7 @@ const mozilla::Module* mozJSComponentLoader::LoadModule(FileLocation& aFile) {
   jsapi.Init();
   JSContext* cx = jsapi.cx();
 
-  bool isCriticalModule =
-      StringEndsWith(spec, NS_LITERAL_CSTRING("/nsAsyncShutdown.js"));
+  bool isCriticalModule = StringEndsWith(spec, "/nsAsyncShutdown.js"_ns);
 
   auto entry = MakeUnique<ModuleEntry>(RootingContext::get(cx));
   RootedValue exn(cx);
@@ -589,8 +590,7 @@ void mozJSComponentLoader::CreateLoaderGlobal(JSContext* aCx,
 JSObject* mozJSComponentLoader::GetSharedGlobal(JSContext* aCx) {
   if (!mLoaderGlobal) {
     JS::RootedObject globalObj(aCx);
-    CreateLoaderGlobal(aCx, NS_LITERAL_CSTRING("shared JSM global"),
-                       &globalObj);
+    CreateLoaderGlobal(aCx, "shared JSM global"_ns, &globalObj);
 
     // If we fail to create a module global this early, we're not going to
     // get very far, so just bail out now.
@@ -672,6 +672,10 @@ JSObject* mozJSComponentLoader::PrepareObjectForLocation(
 
 static mozilla::Result<nsCString, nsresult> ReadScript(
     ComponentLoaderInfo& aInfo) {
+  // We're going to cache the XDR encoded script data - suspend writes via the
+  // CacheAwareZipReader, otherwise we'll end up redundantly caching scripts.
+  AutoSuspendStartupCacheWrites suspendScache;
+
   MOZ_TRY(aInfo.EnsureScriptChannel());
 
   nsCOMPtr<nsIInputStream> scriptStream;
@@ -733,7 +737,15 @@ nsresult mozJSComponentLoader::ObjectForLocation(
   // to loading the script, since we can always slow-load.
 
   bool writeToCache = false;
-  StartupCache* cache = StartupCache::GetSingleton();
+
+  // Since we are intending to cache these buffers in the script preloader
+  // already, caching them in the StartupCache tends to be redundant. This
+  // ought to be addressed, but as in bug 1627075 we extended the
+  // StartupCache to be multi-process, we just didn't want to propagate
+  // this problem into yet more processes, so we pretend the StartupCache
+  // doesn't exist if we're not the parent process.
+  StartupCache* cache =
+      XRE_IsParentProcess() ? StartupCache::GetSingleton() : nullptr;
 
   aInfo.EnsureResolvedURI();
 

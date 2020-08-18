@@ -95,14 +95,14 @@ already_AddRefed<SharedFTFace> FT2FontEntry::GetFTFace(bool aCommit) {
   // here would be memory allocation, in which case mFace remains null.
   RefPtr<SharedFTFace> face;
   if (mFilename[0] != '/') {
-    RefPtr<nsZipArchive> reader = Omnijar::GetReader(Omnijar::Type::GRE);
+    RefPtr<CacheAwareZipReader> reader = Omnijar::GetReader(Omnijar::Type::GRE);
     nsZipItem* item = reader->GetItem(mFilename.get());
     NS_ASSERTION(item, "failed to find zip entry");
 
     uint32_t bufSize = item->RealSize();
     uint8_t* fontDataBuf = static_cast<uint8_t*>(malloc(bufSize));
     if (fontDataBuf) {
-      nsZipCursor cursor(item, reader, fontDataBuf, bufSize);
+      CacheAwareZipCursor cursor(item, reader, fontDataBuf, bufSize);
       cursor.Copy(&bufSize);
       NS_ASSERTION(bufSize == item->RealSize(), "error reading bundled font");
       RefPtr<FTUserFontData> ufd = new FTUserFontData(fontDataBuf, bufSize);
@@ -458,7 +458,8 @@ hb_blob_t* FT2FontEntry::GetFontTable(uint32_t aTableTag) {
     } else {
       // A relative path means an omnijar resource, which we may need to
       // decompress to a temporary buffer.
-      RefPtr<nsZipArchive> reader = Omnijar::GetReader(Omnijar::Type::GRE);
+      RefPtr<CacheAwareZipReader> reader =
+          Omnijar::GetReader(Omnijar::Type::GRE);
       nsZipItem* item = reader->GetItem(mFilename.get());
       MOZ_ASSERT(item, "failed to find zip entry");
       if (item) {
@@ -469,7 +470,7 @@ hb_blob_t* FT2FontEntry::GetFontTable(uint32_t aTableTag) {
         uint32_t length = item->RealSize();
         uint8_t* buffer = static_cast<uint8_t*>(malloc(length));
         if (buffer) {
-          nsZipCursor cursor(item, reader, buffer, length);
+          CacheAwareZipCursor cursor(item, reader, buffer, length);
           cursor.Copy(&length);
           MOZ_ASSERT(length == item->RealSize(), "error reading font");
           if (length == item->RealSize()) {
@@ -1159,7 +1160,7 @@ void gfxFT2FontList::FindFontsInOmnijar(FontNameCache* aCache) {
   static const char* sJarSearchPaths[] = {
       "res/fonts/*.ttf$",
   };
-  RefPtr<nsZipArchive> reader = Omnijar::GetReader(Omnijar::Type::GRE);
+  RefPtr<CacheAwareZipReader> reader = Omnijar::GetReader(Omnijar::Type::GRE);
   for (unsigned i = 0; i < ArrayLength(sJarSearchPaths); i++) {
     nsZipFind* find;
     if (NS_SUCCEEDED(reader->FindInit(sJarSearchPaths[i], &find))) {
@@ -1274,7 +1275,7 @@ void gfxFT2FontList::AddFaceToList(const nsCString& aEntryName, uint32_t aIndex,
   }
 }
 
-void gfxFT2FontList::AppendFacesFromOmnijarEntry(nsZipArchive* aArchive,
+void gfxFT2FontList::AppendFacesFromOmnijarEntry(CacheAwareZipReader* aArchive,
                                                  const nsCString& aEntryName,
                                                  FontNameCache* aCache,
                                                  bool aJarChanged) {
@@ -1313,7 +1314,7 @@ void gfxFT2FontList::AppendFacesFromOmnijarEntry(nsZipArchive* aArchive,
     return;
   }
 
-  nsZipCursor cursor(item, aArchive, (uint8_t*)buffer, bufSize);
+  CacheAwareZipCursor cursor(item, aArchive, (uint8_t*)buffer, bufSize);
   uint8_t* data = cursor.Copy(&bufSize);
   MOZ_ASSERT(data && bufSize == item->RealSize(), "error reading bundled font");
   if (!data) {
@@ -1420,7 +1421,7 @@ void gfxFT2FontList::FindFonts() {
     if (androidRoot) {
       root = androidRoot;
     } else {
-      root = NS_LITERAL_CSTRING("/system");
+      root = "/system"_ns;
     }
     root.AppendLiteral("/fonts");
 
@@ -1446,7 +1447,7 @@ void gfxFT2FontList::FindFonts() {
     nsresult rv = dirSvc->Get(NS_XPCOM_CURRENT_PROCESS_DIR, NS_GET_IID(nsIFile),
                               getter_AddRefs(appDir));
     if (NS_SUCCEEDED(rv)) {
-      appDir->AppendNative(NS_LITERAL_CSTRING("fonts"));
+      appDir->AppendNative("fonts"_ns);
       nsCString localPath;
       if (NS_SUCCEEDED(appDir->GetNativePath(localPath))) {
         FindFontsInDir(localPath, mFontNameCache.get());
@@ -1458,8 +1459,7 @@ void gfxFT2FontList::FindFonts() {
   nsCOMPtr<nsIFile> localDir;
   nsresult rv = NS_GetSpecialDirectory(NS_APP_USER_PROFILE_LOCAL_50_DIR,
                                        getter_AddRefs(localDir));
-  if (NS_SUCCEEDED(rv) &&
-      NS_SUCCEEDED(localDir->Append(NS_LITERAL_STRING("fonts")))) {
+  if (NS_SUCCEEDED(rv) && NS_SUCCEEDED(localDir->Append(u"fonts"_ns))) {
     nsCString localPath;
     rv = localDir->GetNativePath(localPath);
     if (NS_SUCCEEDED(rv)) {
@@ -1666,19 +1666,10 @@ gfxFontEntry* gfxFT2FontList::CreateFontEntry(fontlist::Face* aFace,
                                               const fontlist::Family* aFamily) {
   fontlist::FontList* list = SharedFontList();
   nsAutoCString desc(aFace->mDescriptor.AsString(list));
-  FontListEntry fle(aFamily->DisplayName().AsString(list), desc, desc,
-                    aFace->mWeight.AsScalar(), aFace->mStretch.AsScalar(),
-                    aFace->mStyle.AsScalar(), aFace->mIndex,
-                    aFamily->Visibility());
-  FT2FontEntry* fe = FT2FontEntry::CreateFontEntry(fle);
-
-  fe->mFixedPitch = aFace->mFixedPitch;
-  fe->mIsBadUnderlineFont = aFamily->IsBadUnderlineFamily();
-  fe->mShmemFace = aFace;
-  fe->mFamilyName = aFamily->DisplayName().AsString(list);
-
+  FT2FontEntry* fe =
+      FT2FontEntry::CreateFontEntry(desc, desc.get(), aFace->mIndex, nullptr);
+  fe->InitializeFrom(aFace, aFamily);
   fe->CheckForBrokenFont(aFamily->Key().AsString(list));
-
   return fe;
 }
 
@@ -1755,9 +1746,9 @@ FontFamily gfxFT2FontList::GetDefaultFontForPlatform(
     const gfxFontStyle* aStyle) {
   FontFamily ff;
 #if defined(MOZ_WIDGET_ANDROID)
-  ff = FindFamily(NS_LITERAL_CSTRING("Roboto"));
+  ff = FindFamily("Roboto"_ns);
   if (ff.IsNull()) {
-    ff = FindFamily(NS_LITERAL_CSTRING("Droid Sans"));
+    ff = FindFamily("Droid Sans"_ns);
   }
 #endif
   /* TODO: what about Qt or other platforms that may use this? */

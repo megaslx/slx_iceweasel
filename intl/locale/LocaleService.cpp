@@ -295,13 +295,26 @@ bool LocaleService::IsServer() { return mIsServer; }
 
 static bool GetGREFileContents(const char* aFilePath, nsCString* aOutString) {
   // Look for the requested file in omnijar.
-  RefPtr<nsZipArchive> zip = Omnijar::GetReader(Omnijar::GRE);
+  RefPtr<CacheAwareZipReader> zip = Omnijar::GetReader(Omnijar::GRE);
   if (zip) {
-    nsZipItemPtr<char> item(zip, aFilePath);
+    const auto item = zip->GetItem(aFilePath);
     if (!item) {
       return false;
     }
-    aOutString->Assign(item.Buffer(), item.Length());
+
+    MOZ_ASSERT(item->RealSize());
+
+    auto buf = MakeUnique<uint8_t[]>(item->RealSize());
+    CacheAwareZipCursor cursor(item, zip, buf.get(), item->RealSize());
+
+    uint32_t count;
+    uint8_t* data = cursor.Read(&count);
+
+    if (count != item->RealSize()) {
+      return false;
+    }
+
+    aOutString->Assign(reinterpret_cast<const char*>(data), count);
     return true;
   }
 
@@ -486,7 +499,7 @@ LocaleService::GetRegionalPrefsLocales(nsTArray<nsCString>& aRetVal) {
 NS_IMETHODIMP
 LocaleService::GetWebExposedLocales(nsTArray<nsCString>& aRetVal) {
   if (StaticPrefs::privacy_spoof_english() == 2) {
-    aRetVal = nsTArray<nsCString>({NS_LITERAL_CSTRING("en-US")});
+    aRetVal = nsTArray<nsCString>({"en-US"_ns});
     return NS_OK;
   }
 

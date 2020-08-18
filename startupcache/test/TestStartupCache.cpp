@@ -53,9 +53,9 @@ class TestStartupCache : public ::testing::Test {
 
 TestStartupCache::TestStartupCache() {
   NS_GetSpecialDirectory(NS_OS_TEMP_DIR, getter_AddRefs(mSCFile));
-  mSCFile->AppendNative(NS_LITERAL_CSTRING("test-startupcache.tmp"));
+  mSCFile->AppendNative("test-startupcache.tmp"_ns);
 #ifdef XP_WIN
-  nsAutoString env(NS_LITERAL_STRING("MOZ_STARTUP_CACHE="));
+  nsAutoString env(u"MOZ_STARTUP_CACHE="_ns);
   env.Append(mSCFile->NativePath());
   _wputenv(env.get());
 #else
@@ -66,6 +66,11 @@ TestStartupCache::TestStartupCache() {
   // We intentionally leak `env` here because it is required by PR_SetEnv
   MOZ_LSAN_INTENTIONALLY_LEAK_OBJECT(env);
 #endif
+
+  if (!StartupCache::GetSingleton()) {
+    StartupCache::PartialInitSingleton(nullptr);
+    StartupCache::FullyInitSingleton();
+  }
   StartupCache::GetSingleton()->InvalidateCache();
 }
 TestStartupCache::~TestStartupCache() {
@@ -121,7 +126,7 @@ TEST_F(TestStartupCache, WriteObject) {
 
   nsCOMPtr<nsIURI> obj;
 
-  NS_NAMED_LITERAL_CSTRING(spec, "http://www.mozilla.org");
+  constexpr auto spec = "http://www.mozilla.org"_ns;
   rv = NS_MutateURI(NS_SIMPLEURIMUTATOR_CONTRACTID).SetSpec(spec).Finalize(obj);
   EXPECT_TRUE(NS_SUCCEEDED(rv));
 

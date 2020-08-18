@@ -393,7 +393,7 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
       return NS_ERROR_FAILURE;
     }
 
-    rv = binaryFile->AppendNative(NS_LITERAL_CSTRING("nonexistent-executable"));
+    rv = binaryFile->AppendNative("nonexistent-executable"_ns);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -462,7 +462,7 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
   // Init mozilla::SharedThreadPool (which needs the service manager).
   mozilla::SharedThreadPool::InitStatics();
 
-  mozilla::scache::StartupCache::GetSingleton();
+  mozilla::scache::StartupCache::FullyInitSingleton();
   mozilla::AvailableMemoryTracker::Init();
 
   // Notify observers of xpcom autoregistration start

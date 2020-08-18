@@ -244,8 +244,8 @@ class MOZ_STACK_CLASS EntryWrapper final {
   nsCString ModuleDescription() {
     MATCH(nsCString,
           return entry->mModule ? entry->mModule->Description()
-                                : NS_LITERAL_CSTRING("<unknown module>"),
-          return NS_LITERAL_CSTRING("<unknown module>"));
+                                : "<unknown module>"_ns,
+          return "<unknown module>"_ns);
   }
 
  private:
@@ -395,6 +395,8 @@ nsresult nsComponentManagerImpl::Init() {
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_SOCKET_PROCESS);
     gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_RDD_PROCESS)] =
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_RDD_PROCESS);
+    gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_GPU_AND_MAIN_PROCESS)] =
+        ProcessSelectorMatches(ProcessSelector::ALLOW_IN_GPU_AND_MAIN_PROCESS);
     gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_GPU_AND_VR_PROCESS)] =
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_GPU_AND_VR_PROCESS);
     gProcessMatchTable[size_t(
@@ -491,17 +493,16 @@ nsresult nsComponentManagerImpl::Init() {
     InitializeModuleLocations();
     ComponentLocation* cl = sModuleLocations->AppendElement();
     cl->type = NS_APP_LOCATION;
-    RefPtr<nsZipArchive> greOmnijar =
+    RefPtr<CacheAwareZipReader> greOmnijar =
         mozilla::Omnijar::GetReader(mozilla::Omnijar::GRE);
     if (greOmnijar) {
       cl->location.Init(greOmnijar, "chrome.manifest");
     } else {
-      nsCOMPtr<nsIFile> lf =
-          CloneAndAppend(greDir, NS_LITERAL_CSTRING("chrome.manifest"));
+      nsCOMPtr<nsIFile> lf = CloneAndAppend(greDir, "chrome.manifest"_ns);
       cl->location.Init(lf);
     }
 
-    RefPtr<nsZipArchive> appOmnijar =
+    RefPtr<CacheAwareZipReader> appOmnijar =
         mozilla::Omnijar::GetReader(mozilla::Omnijar::APP);
     if (appOmnijar) {
       cl = sModuleLocations->AppendElement();
@@ -513,8 +514,7 @@ nsresult nsComponentManagerImpl::Init() {
       if (!equals) {
         cl = sModuleLocations->AppendElement();
         cl->type = NS_APP_LOCATION;
-        nsCOMPtr<nsIFile> lf =
-            CloneAndAppend(appDir, NS_LITERAL_CSTRING("chrome.manifest"));
+        nsCOMPtr<nsIFile> lf = CloneAndAppend(appDir, "chrome.manifest"_ns);
         cl->location.Init(lf);
       }
     }
@@ -1127,10 +1127,8 @@ nsComponentManagerImpl::CreateInstance(const nsCID& aClass,
 #ifdef SHOW_CI_ON_EXISTING_SERVICE
   if (entry->ServiceInstance()) {
     nsAutoCString message;
-    message =
-        NS_LITERAL_CSTRING("You are calling CreateInstance \"") +
-        AutoIDString(aClass) +
-        NS_LITERAL_CSTRING("\" when a service for this CID already exists!");
+    message = "You are calling CreateInstance \""_ns + AutoIDString(aClass) +
+              "\" when a service for this CID already exists!"_ns;
     NS_ERROR(message.get());
   }
 #endif
@@ -1210,9 +1208,9 @@ nsComponentManagerImpl::CreateInstanceByContractID(const char* aContractID,
   if (entry->ServiceInstance()) {
     nsAutoCString message;
     message =
-        NS_LITERAL_CSTRING("You are calling CreateInstance \"") +
+        "You are calling CreateInstance \""_ns +
         nsDependentCString(aContractID) +
-        NS_LITERAL_CSTRING(
+        nsLiteralCString(
             "\" when a service for this CID already exists! "
             "Add it to abusedContracts to track down the service consumer.");
     NS_ERROR(message.get());
@@ -1444,10 +1442,6 @@ nsresult nsComponentManagerImpl::GetService(ModuleID aId, const nsIID& aIID,
 
   MutexLock lock(mLock);
 
-  if (!entry.Active()) {
-    return NS_ERROR_FACTORY_NOT_REGISTERED;
-  }
-
   Maybe<EntryWrapper> wrapper;
   if (entry.Overridable()) {
     // If we expect this service to be overridden by test code, we need to look
@@ -1456,6 +1450,8 @@ nsresult nsComponentManagerImpl::GetService(ModuleID aId, const nsIID& aIID,
     if (!wrapper) {
       return NS_ERROR_FACTORY_NOT_REGISTERED;
     }
+  } else if (!entry.Active()) {
+    return NS_ERROR_FACTORY_NOT_REGISTERED;
   } else {
     wrapper.emplace(&entry);
   }
@@ -1924,8 +1920,7 @@ nsComponentManagerImpl::AddBootstrappedManifestLocation(nsIFile* aLocation) {
     return XRE_AddJarManifestLocation(NS_BOOTSTRAPPED_LOCATION, aLocation);
   }
 
-  nsCOMPtr<nsIFile> manifest =
-      CloneAndAppend(aLocation, NS_LITERAL_CSTRING("chrome.manifest"));
+  nsCOMPtr<nsIFile> manifest = CloneAndAppend(aLocation, "chrome.manifest"_ns);
   return XRE_AddManifestLocation(NS_BOOTSTRAPPED_LOCATION, manifest);
 }
 
@@ -1950,8 +1945,7 @@ nsComponentManagerImpl::RemoveBootstrappedManifestLocation(nsIFile* aLocation) {
   if (Substring(path, path.Length() - 4).EqualsLiteral(".xpi")) {
     elem.location.Init(aLocation, "chrome.manifest");
   } else {
-    nsCOMPtr<nsIFile> lf =
-        CloneAndAppend(aLocation, NS_LITERAL_CSTRING("chrome.manifest"));
+    nsCOMPtr<nsIFile> lf = CloneAndAppend(aLocation, "chrome.manifest"_ns);
     elem.location.Init(lf);
   }
 

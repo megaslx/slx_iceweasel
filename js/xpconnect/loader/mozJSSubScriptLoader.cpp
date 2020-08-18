@@ -24,6 +24,7 @@
 
 #include "mozilla/ContentPrincipal.h"
 #include "mozilla/dom/ScriptLoader.h"
+#include "mozilla/Omnijar.h"
 #include "mozilla/ScriptPreloader.h"
 #include "mozilla/SystemPrincipal.h"
 #include "mozilla/scache/StartupCache.h"
@@ -248,6 +249,10 @@ bool mozJSSubScriptLoader::ReadScript(JS::MutableHandle<JSScript*> script,
                                       const char* uriStr, nsIIOService* serv,
                                       bool wantReturnValue,
                                       bool useCompilationScope) {
+  // We're going to cache the XDR encoded script data - suspend writes via the
+  // CacheAwareZipReader, otherwise we'll end up redundantly caching scripts.
+  AutoSuspendStartupCacheWrites suspendScache;
+
   // We create a channel and call SetContentType, to avoid expensive MIME type
   // lookups (bug 632490).
   nsCOMPtr<nsIChannel> chan;
@@ -255,7 +260,7 @@ bool mozJSSubScriptLoader::ReadScript(JS::MutableHandle<JSScript*> script,
   nsresult rv;
   rv = NS_NewChannel(getter_AddRefs(chan), uri,
                      nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                      nsIContentPolicy::TYPE_OTHER,
                      nullptr,  // nsICookieJarSettings
                      nullptr,  // PerformanceStorage
@@ -264,7 +269,7 @@ bool mozJSSubScriptLoader::ReadScript(JS::MutableHandle<JSScript*> script,
                      nsIRequest::LOAD_NORMAL, serv);
 
   if (NS_SUCCEEDED(rv)) {
-    chan->SetContentType(NS_LITERAL_CSTRING("application/javascript"));
+    chan->SetContentType("application/javascript"_ns);
     rv = chan->Open(getter_AddRefs(instream));
   }
 
@@ -394,7 +399,7 @@ nsresult mozJSSubScriptLoader::DoLoadSubScriptWithOptions(
 
   nsCOMPtr<nsIIOService> serv = do_GetService(NS_IOSERVICE_CONTRACTID);
   if (!serv) {
-    ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOSERVICE));
+    ReportError(cx, nsLiteralCString(LOAD_ERROR_NOSERVICE));
     return NS_OK;
   }
 
@@ -408,13 +413,13 @@ nsresult mozJSSubScriptLoader::DoLoadSubScriptWithOptions(
   // canonicalized spec.
   rv = NS_NewURI(getter_AddRefs(uri), asciiUrl);
   if (NS_FAILED(rv)) {
-    ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOURI));
+    ReportError(cx, nsLiteralCString(LOAD_ERROR_NOURI));
     return NS_OK;
   }
 
   rv = uri->GetSpec(uriStr);
   if (NS_FAILED(rv)) {
-    ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOSPEC));
+    ReportError(cx, nsLiteralCString(LOAD_ERROR_NOSPEC));
     return NS_OK;
   }
 
@@ -450,7 +455,15 @@ nsresult mozJSSubScriptLoader::DoLoadSubScriptWithOptions(
   bool ignoreCache =
       options.ignoreCache || !isSystem || scheme.EqualsLiteral("blob");
 
-  StartupCache* cache = ignoreCache ? nullptr : StartupCache::GetSingleton();
+  // Since we are intending to cache these buffers in the script preloader
+  // already, caching them in the StartupCache tends to be redundant. This
+  // ought to be addressed, but as in bug 1627075 we extended the
+  // StartupCache to be multi-process, we just didn't want to propagate
+  // this problem into yet more processes, so we pretend the StartupCache
+  // doesn't exist if we're not the parent process.
+  StartupCache* cache = (ignoreCache || !XRE_IsParentProcess())
+                            ? nullptr
+                            : StartupCache::GetSingleton();
 
   nsAutoCString cachePath;
   SubscriptCachePath(cx, uri, targetObj, cachePath);

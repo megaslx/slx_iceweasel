@@ -32,6 +32,8 @@ compile_commands\.json
 ^config\.log$
 ^\.clang_complete
 ^\.?machrc$
+# pyenv artifact
+^\.python-version$
 
 # Empty marker file that's generated when we check out NSS
 ^security/manager/\.nss\.checkout$
@@ -217,3 +219,6 @@ gfx/wr/target/
 # Ignore this files in certviewer
 toolkit/components/certviewer/content/node_modules/
 toolkit/components/certviewer/content/package-lock.json
+
+# Ignore Rust/Cargo output from running `cargo` directly for image_builder docker image
+^taskcluster/docker/image_builder/build-image/target

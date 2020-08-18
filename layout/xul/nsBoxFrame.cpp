@@ -370,7 +370,7 @@ void nsBoxFrame::DidReflow(nsPresContext* aPresContext,
                            const ReflowInput* aReflowInput) {
   nsFrameState preserveBits =
       mState & (NS_FRAME_IS_DIRTY | NS_FRAME_HAS_DIRTY_CHILDREN);
-  nsFrame::DidReflow(aPresContext, aReflowInput);
+  nsIFrame::DidReflow(aPresContext, aReflowInput);
   AddStateBits(preserveBits);
   if (preserveBits & NS_FRAME_IS_DIRTY) {
     this->MarkSubtreeDirty();
@@ -929,7 +929,8 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     // Check for frames that are marked as a part of the region used
     // in calculating glass margins on Windows.
     const nsStyleDisplay* styles = StyleDisplay();
-    if (styles && styles->mAppearance == StyleAppearance::MozWinExcludeGlass) {
+    if (styles &&
+        styles->EffectiveAppearance() == StyleAppearance::MozWinExcludeGlass) {
       aBuilder->AddWindowExcludeGlassRegion(
           this, nsRect(aBuilder->ToReferenceFrame(this), GetSize()));
     }
@@ -997,7 +998,7 @@ void nsBoxFrame::BuildDisplayListForChildren(nsDisplayListBuilder* aBuilder,
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsBoxFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Box"), aResult);
+  return MakeFrameName(u"Box"_ns, aResult);
 }
 #endif
 
@@ -1058,7 +1059,7 @@ nsresult nsBoxFrame::LayoutChildAt(nsBoxLayoutState& aState, nsIFrame* aBox,
   nsRect oldRect(aBox->GetRect());
   aBox->SetXULBounds(aState, aRect);
 
-  bool layout = NS_SUBTREE_DIRTY(aBox);
+  bool layout = aBox->IsSubtreeDirty();
 
   if (layout ||
       (oldRect.width != aRect.width || oldRect.height != aRect.height)) {
