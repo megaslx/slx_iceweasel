@@ -66,6 +66,7 @@ let RemotePageAccessManager = {
       RPMAddToHistogram: ["*"],
     },
     "about:httpsonlyerror": {
+      RPMGetFormatURLPref: ["app.support.baseURL"],
       RPMSendAsyncMessage: ["goBack", "openInsecure"],
     },
     "about:certificate": {
@@ -130,6 +131,7 @@ let RemotePageAccessManager = {
         "OpenAboutLogins",
         "OpenSyncPreferences",
         "ClearMonitorCache",
+        "RecordEntryPoint",
       ],
       RPMSendQuery: [
         "FetchUserLoginsData",
@@ -137,6 +139,7 @@ let RemotePageAccessManager = {
         "FetchContentBlockingEvents",
         "FetchMobileDeviceConnected",
         "GetShowProxyCard",
+        "FetchEntryPoint",
       ],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
