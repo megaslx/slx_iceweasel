@@ -14,15 +14,15 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @git clone --depth=1 https://cppinfo@git.code.sf.net/p/libportable/gitweb mozillabuild-src
 @cd /d "!SOURCE_DIR!\mozillabuild-src"
 @if exist bin.7z 7z x bin.7z -aoa -o!BUID_DIR!
-@if exist clang-msvc-9.0.1.7z 7z x clang-msvc-9.0.1.7z -aoa -o!BUID_DIR!
+@if exist clang-msvc-10.0.1.7z 7z x clang-msvc-10.0.1.7z -aoa -o!BUID_DIR!
 @if exist nodejs.7z 7z x nodejs.7z -aoa -o!BUID_DIR!
 @if exist nsis301.7z 7z x nsis301.7z -aoa -o!BUID_DIR!
 @if exist kdiff3.7z 7z x kdiff3.7z -aoa -o!BUID_DIR!
-@if exist rust-1.43.1.7z 7z x rust-1.43.1.7z -aoa -o!BUID_DIR!
+@if exist rust-1.46.0.7z 7z x rust-1.46.0.7z -aoa -o!BUID_DIR!
 @if exist rust-tools.7z 7z x rust-tools.7z -aoa -o!BUID_DIR!
 @if exist msys-1.0.7z 7z x msys-1.0.7z -aoa -o!BUID_DIR!
 @if exist msysdo.7z 7z x msysdo.7z -aoa -o!BUID_DIR!
-@if exist python-3.7.7.7z 7z x python-3.7.7.7z -aoa -o!BUID_DIR!\mozillabuild
+@if exist python-3.7.9.7z 7z x python-3.7.9.7z -aoa -o!BUID_DIR!\mozillabuild
 
 @if not exist "!BUID_DIR!\mozillabuild\bin" @echo mozbin not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\clang" @echo clang not exist&EXIT /B 4
