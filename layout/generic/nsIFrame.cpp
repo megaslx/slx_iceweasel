@@ -6,6 +6,10 @@
 
 /* base class of all rendering objects */
 
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+#include <xmmintrin.h>
+#endif
+
 #include "nsIFrame.h"
 
 #include <stdarg.h>
@@ -2560,6 +2564,10 @@ void nsIFrame::DisplayBorderBackgroundOutline(nsDisplayListBuilder* aBuilder,
     return;
   }
 
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+  _mm_prefetch((char *)&StyleBorder()->GetComputedBorder(), _MM_HINT_NTA);
+#endif
+
   DisplayOutsetBoxShadowUnconditional(aBuilder, aLists.BorderBackground());
 
   bool bgIsThemed =
@@ -4091,6 +4099,10 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
     }
   }
 
+  const nsStyleDisplay* ourDisp = StyleDisplay();
+  const nsStyleDisplay* parentDisp =
+    parent == this ? ourDisp : parent->StyleDisplay();
+
   NS_ASSERTION(!child->IsPlaceholderFrame(),
                "Should have dealt with placeholders already");
 
@@ -4117,7 +4129,13 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
     pseudoStackingContext = true;
   }
 
-  const nsStyleDisplay* ourDisp = StyleDisplay();
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+  nsIContent* childContent = child->GetContent();
+  if (childContent) {
+    _mm_prefetch((char *)childContent, _MM_HINT_NTA);
+  }
+#endif
+
   // REVIEW: Taken from nsBoxFrame::Paint
   // Don't paint our children if the theme object is a leaf.
   if (IsThemed(ourDisp) && !PresContext()->Theme()->WidgetIsContainer(
@@ -4143,6 +4161,14 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
   const bool isStackingContext =
       aFlags.contains(DisplayChildFlag::ForceStackingContext) ||
       child->IsStackingContext(disp, effects);
+
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+  Element *childElement = nullptr;
+  if (childContent && childContent->IsElement()) {
+    childElement = childContent->AsElement();
+    childElement->PrefetchAttrs();
+  }
+#endif
 
   if (pseudoStackingContext || isStackingContext || isPositioned ||
       placeholder || (!isSVG && disp->IsFloating(child)) ||
@@ -4183,6 +4209,12 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
     // frame will setup the correct clip for itself.
     clipState.SetClipChainForContainingBlockDescendants(nullptr);
   }
+  
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+  if (childElement) {
+    childElement->PrefetchAttrsImpl();
+  }
+#endif
 
   // Setup clipping for the parent's overflow:clip,
   // or overflow:hidden on elements that don't support scrolling (and therefore
