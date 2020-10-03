@@ -153,12 +153,15 @@
  *
  */
 
-#if defined(XP_WIN) && defined(__clang__) && __has_declspec_attribute(guard)
+#if defined(XP_WIN) && defined(__clang__)
+#  if __has_declspec_attribute(guard)
 // Workaround for https://bugs.llvm.org/show_bug.cgi?id=47617
 // Some of the brokered function thunks don't get properly marked as call
 // targets, so we have to disable CFG when returning to the original function.
-// Unlike `INTERCEPTOR_DISABLE_CFGUARD`, this happens in 64-bit builds too.
-#  define BROKER_DISABLE_CFGUARD __declspec(guard(nocf))
+#    define BROKER_DISABLE_CFGUARD __declspec(guard(nocf))
+#  else
+#    define BROKER_DISABLE_CFGUARD /* nothing */
+#  endif
 #else
 #  define BROKER_DISABLE_CFGUARD /* nothing */
 #endif
