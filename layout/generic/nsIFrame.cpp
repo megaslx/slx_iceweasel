@@ -2525,6 +2525,22 @@ nscolor nsIFrame::GetCaretColorAt(int32_t aOffset) {
   return nsLayoutUtils::GetColor(this, &nsStyleUI::mCaretColor);
 }
 
+auto nsIFrame::ComputeShouldPaintBackground() const -> ShouldPaintBackground {
+  nsPresContext* pc = PresContext();
+  ShouldPaintBackground settings{pc->GetBackgroundColorDraw(),
+                                 pc->GetBackgroundImageDraw()};
+  if (settings.mColor && settings.mImage) {
+    return settings;
+  }
+
+  if (!HonorPrintBackgroundSettings() ||
+      StyleVisibility()->mColorAdjust == StyleColorAdjust::Exact) {
+    return {true, true};
+  }
+
+  return settings;
+}
+
 bool nsIFrame::DisplayBackgroundUnconditional(nsDisplayListBuilder* aBuilder,
                                               const nsDisplayListSet& aLists,
                                               bool aForceBackground) {
@@ -3172,12 +3188,12 @@ void nsIFrame::BuildDisplayListForStackingContext(
   bool inTransform = aBuilder->IsInTransform();
   if (isTransformed) {
     prerenderInfo = nsDisplayTransform::ShouldPrerenderTransformedContent(
-        aBuilder, this, &dirtyRect);
+        aBuilder, this, &visibleRect);
 
     switch (prerenderInfo.mDecision) {
       case nsDisplayTransform::PrerenderDecision::Full:
       case nsDisplayTransform::PrerenderDecision::Partial:
-        visibleRect = dirtyRect;
+        dirtyRect = visibleRect;
         break;
       case nsDisplayTransform::PrerenderDecision::No: {
         // If we didn't prerender an animated frame in a preserve-3d context,
@@ -5154,9 +5170,10 @@ NS_IMETHODIMP nsIFrame::HandleRelease(nsPresContext* aPresContext,
     frameSelection->SetDragState(false);
     frameSelection->StopAutoScrollTimer();
     if (wf.IsAlive()) {
-      nsIScrollableFrame* scrollFrame = nsLayoutUtils::GetNearestScrollableFrame(
-          this, nsLayoutUtils::SCROLLABLE_SAME_DOC |
-                    nsLayoutUtils::SCROLLABLE_INCLUDE_HIDDEN);
+      nsIScrollableFrame* scrollFrame =
+          nsLayoutUtils::GetNearestScrollableFrame(
+              this, nsLayoutUtils::SCROLLABLE_SAME_DOC |
+                        nsLayoutUtils::SCROLLABLE_INCLUDE_HIDDEN);
       if (scrollFrame) {
         // Perform any additional scrolling needed to maintain CSS snap point
         // requirements when autoscrolling is over.
@@ -6027,24 +6044,22 @@ static bool ShouldApplyAutomaticMinimumOnInlineAxis(
 nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
     gfxContext* aRenderingContext, WritingMode aWM, const LogicalSize& aCBSize,
     nscoord aAvailableISize, const LogicalSize& aMargin,
-    const LogicalSize& aBorder, const LogicalSize& aPadding,
-    ComputeSizeFlags aFlags) {
+    const LogicalSize& aBorderPadding, ComputeSizeFlags aFlags) {
   MOZ_ASSERT(!GetIntrinsicRatio(),
              "Please override this method and call "
-             "nsIFrame::ComputeSizeWithIntrinsicDimensions instead.");
+             "nsContainerFrame::ComputeSizeWithIntrinsicDimensions instead.");
   LogicalSize result =
       ComputeAutoSize(aRenderingContext, aWM, aCBSize, aAvailableISize, aMargin,
-                      aBorder, aPadding, aFlags);
+                      aBorderPadding, aFlags);
   const nsStylePosition* stylePos = StylePosition();
   const nsStyleDisplay* disp = StyleDisplay();
   auto aspectRatioUsage = AspectRatioUsage::None;
 
-  LogicalSize boxSizingAdjust(aWM);
-  if (stylePos->mBoxSizing == StyleBoxSizing::Border) {
-    boxSizingAdjust = aBorder + aPadding;
-  }
-  nscoord boxSizingToMarginEdgeISize = aMargin.ISize(aWM) + aBorder.ISize(aWM) +
-                                       aPadding.ISize(aWM) -
+  const auto boxSizingAdjust = stylePos->mBoxSizing == StyleBoxSizing::Border
+                                   ? aBorderPadding
+                                   : LogicalSize(aWM);
+  nscoord boxSizingToMarginEdgeISize = aMargin.ISize(aWM) +
+                                       aBorderPadding.ISize(aWM) -
                                        boxSizingAdjust.ISize(aWM);
 
   const auto* inlineStyleCoord = &stylePos->ISize(aWM);
@@ -6084,8 +6099,9 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
                        : eLogicalAxisBlock;
 
     // NOTE: The logic here should match the similar chunk for updating
-    // mainAxisCoord in nsIFrame::ComputeSizeWithIntrinsicDimensions() (aside
-    // from using a different dummy value in the IsUsedFlexBasisContent() case).
+    // mainAxisCoord in nsContainerFrame::ComputeSizeWithIntrinsicDimensions()
+    // (aside from using a different dummy value in the IsUsedFlexBasisContent()
+    // case).
     const auto* flexBasis = &stylePos->mFlexBasis;
     auto& mainAxisCoord =
         (flexMainAxis == eLogicalAxisInline ? inlineStyleCoord
@@ -6132,7 +6148,7 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
     // 'auto' inline-size for grid-level box - fill the CB for 'stretch' /
     // 'normal' and clamp it to the CB if requested:
     bool stretch = false;
-    if (!(aFlags & nsIFrame::eShrinkWrap) &&
+    if (!aFlags.contains(ComputeSizeFlag::ShrinkWrap) &&
         !StyleMargin()->HasInlineAxisAuto(aWM) &&
         !alignCB->IsMasonry(isOrthogonal ? eLogicalAxisBlock
                                          : eLogicalAxisInline)) {
@@ -6142,10 +6158,10 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
       stretch = inlineAxisAlignment == StyleAlignFlags::NORMAL ||
                 inlineAxisAlignment == StyleAlignFlags::STRETCH;
     }
-    if (stretch || (aFlags & ComputeSizeFlags::eIClampMarginBoxMinSize)) {
+    if (stretch || aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize)) {
       auto iSizeToFillCB =
-          std::max(nscoord(0), aCBSize.ISize(aWM) - aPadding.ISize(aWM) -
-                                   aBorder.ISize(aWM) - aMargin.ISize(aWM));
+          std::max(nscoord(0), aCBSize.ISize(aWM) - aBorderPadding.ISize(aWM) -
+                                   aMargin.ISize(aWM));
       if (stretch || result.ISize(aWM) > iSizeToFillCB) {
         result.ISize(aWM) = iSizeToFillCB;
       }
@@ -6172,21 +6188,22 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
     minISize = ComputeISizeValue(
         aRenderingContext, aCBSize.ISize(aWM), boxSizingAdjust.ISize(aWM),
         boxSizingToMarginEdgeISize, minISizeCoord, aFlags);
-  } else if (MOZ_UNLIKELY(aFlags & eIApplyAutoMinSize)) {
+  } else if (MOZ_UNLIKELY(
+                 aFlags.contains(ComputeSizeFlag::IApplyAutoMinSize))) {
     // This implements "Implied Minimum Size of Grid Items".
     // https://drafts.csswg.org/css-grid/#min-size-auto
     minISize = std::min(maxISize, GetMinISize(aRenderingContext));
     if (inlineStyleCoord->IsLengthPercentage()) {
       minISize = std::min(minISize, result.ISize(aWM));
-    } else if (aFlags & eIClampMarginBoxMinSize) {
+    } else if (aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize)) {
       // "if the grid item spans only grid tracks that have a fixed max track
       // sizing function, its automatic minimum size in that dimension is
       // further clamped to less than or equal to the size necessary to fit
       // its margin box within the resulting grid area (flooring at zero)"
       // https://drafts.csswg.org/css-grid/#min-size-auto
       auto maxMinISize =
-          std::max(nscoord(0), aCBSize.ISize(aWM) - aPadding.ISize(aWM) -
-                                   aBorder.ISize(aWM) - aMargin.ISize(aWM));
+          std::max(nscoord(0), aCBSize.ISize(aWM) - aBorderPadding.ISize(aWM) -
+                                   aMargin.ISize(aWM));
       minISize = std::min(minISize, maxMinISize);
     }
   } else if (aspectRatioUsage == AspectRatioUsage::ToComputeISize &&
@@ -6214,7 +6231,7 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
   // (but not if we have auto bsize or if we received the "eUseAutoBSize"
   // flag -- then, we'll just stick with the bsize that we already calculated
   // in the initial ComputeAutoSize() call.)
-  if (!(aFlags & nsIFrame::eUseAutoBSize)) {
+  if (!aFlags.contains(ComputeSizeFlag::UseAutoBSize)) {
     if (!nsLayoutUtils::IsAutoBSize(*blockStyleCoord, aCBSize.BSize(aWM))) {
       result.BSize(aWM) = nsLayoutUtils::ComputeBSizeValue(
           aCBSize.BSize(aWM), boxSizingAdjust.BSize(aWM),
@@ -6242,10 +6259,11 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
           stretch = blockAxisAlignment == StyleAlignFlags::NORMAL ||
                     blockAxisAlignment == StyleAlignFlags::STRETCH;
         }
-        if (stretch || (aFlags & ComputeSizeFlags::eBClampMarginBoxMinSize)) {
+        if (stretch ||
+            aFlags.contains(ComputeSizeFlag::BClampMarginBoxMinSize)) {
           auto bSizeToFillCB =
-              std::max(nscoord(0), cbSize - aPadding.BSize(aWM) -
-                                       aBorder.BSize(aWM) - aMargin.BSize(aWM));
+              std::max(nscoord(0),
+                       cbSize - aBorderPadding.BSize(aWM) - aMargin.BSize(aWM));
           if (stretch || (result.BSize(aWM) != NS_UNCONSTRAINEDSIZE &&
                           result.BSize(aWM) > bSizeToFillCB)) {
             result.BSize(aWM) = bSizeToFillCB;
@@ -6289,9 +6307,8 @@ nsIFrame::SizeComputationResult nsIFrame::ComputeSize(
                      nsSize(presContext->DevPixelsToAppUnits(widget.width),
                             presContext->DevPixelsToAppUnits(widget.height)));
 
-    // GMWS() returns border-box; we need content-box
-    size.ISize(aWM) -= aBorder.ISize(aWM) + aPadding.ISize(aWM);
-    size.BSize(aWM) -= aBorder.BSize(aWM) + aPadding.BSize(aWM);
+    // GetMinimumWidgetSize() returns border-box; we need content-box.
+    size -= aBorderPadding;
 
     if (size.BSize(aWM) > result.BSize(aWM) || !canOverride) {
       result.BSize(aWM) = size.BSize(aWM);
@@ -6321,15 +6338,15 @@ nsresult nsIFrame::GetPrefWidthTightBounds(gfxContext* aContext, nscoord* aX,
 LogicalSize nsIFrame::ComputeAutoSize(
     gfxContext* aRenderingContext, WritingMode aWM,
     const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-    const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-    const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) {
+    const mozilla::LogicalSize& aMargin,
+    const mozilla::LogicalSize& aBorderPadding, ComputeSizeFlags aFlags) {
   // Use basic shrink-wrapping as a default implementation.
   LogicalSize result(aWM, 0xdeadbeef, NS_UNCONSTRAINEDSIZE);
 
   // don't bother setting it if the result won't be used
   if (StylePosition()->ISize(aWM).IsAuto()) {
-    nscoord availBased = aAvailableISize - aMargin.ISize(aWM) -
-                         aBorder.ISize(aWM) - aPadding.ISize(aWM);
+    nscoord availBased =
+        aAvailableISize - aMargin.ISize(aWM) - aBorderPadding.ISize(aWM);
     result.ISize(aWM) = ShrinkWidthToFit(aRenderingContext, availBased, aFlags);
   }
   return result;
@@ -6345,7 +6362,7 @@ nscoord nsIFrame::ShrinkWidthToFit(gfxContext* aRenderingContext,
   nscoord result;
   nscoord minISize = GetMinISize(aRenderingContext);
   if (minISize > aISizeInCB) {
-    const bool clamp = aFlags & ComputeSizeFlags::eIClampMarginBoxMinSize;
+    const bool clamp = aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize);
     result = MOZ_UNLIKELY(clamp) ? aISizeInCB : minISize;
   } else {
     nscoord prefISize = GetPrefISize(aRenderingContext);
@@ -6376,7 +6393,8 @@ nscoord nsIFrame::ComputeISizeValue(gfxContext* aRenderingContext,
     case StyleExtremumLength::MinContent:
       result = GetMinISize(aRenderingContext);
       NS_ASSERTION(result >= 0, "inline-size less than zero");
-      if (MOZ_UNLIKELY(aFlags & ComputeSizeFlags::eIClampMarginBoxMinSize)) {
+      if (MOZ_UNLIKELY(
+              aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize))) {
         auto available = aContainingBlockISize -
                          (aBoxSizingToMarginEdge + aContentEdgeToBoxSizing);
         result = std::min(available, result);
@@ -6387,7 +6405,8 @@ nscoord nsIFrame::ComputeISizeValue(gfxContext* aRenderingContext,
               min = GetMinISize(aRenderingContext),
               fill = aContainingBlockISize -
                      (aBoxSizingToMarginEdge + aContentEdgeToBoxSizing);
-      if (MOZ_UNLIKELY(aFlags & ComputeSizeFlags::eIClampMarginBoxMinSize)) {
+      if (MOZ_UNLIKELY(
+              aFlags.contains(ComputeSizeFlag::IClampMarginBoxMinSize))) {
         min = std::min(min, fill);
       }
       result = std::max(min, std::min(pref, fill));
@@ -8445,6 +8464,9 @@ nsresult nsIFrame::PeekOffsetForCharacter(nsPeekOffsetStruct* aPos,
 nsresult nsIFrame::PeekOffsetForWord(nsPeekOffsetStruct* aPos,
                                      int32_t aOffset) {
   SelectablePeekReport current{this, aOffset};
+  bool shouldStopAtHardBreak =
+      aPos->mWordMovementType == eDefaultBehavior &&
+      StaticPrefs::layout_word_select_eat_space_to_next_word();
   bool wordSelectEatSpace = ShouldWordSelectionEatSpace(*aPos);
 
   PeekWordState state;
@@ -8479,11 +8501,35 @@ nsresult nsIFrame::PeekOffsetForWord(nsPeekOffsetStruct* aPos,
       break;
     }
 
+    if (shouldStopAtHardBreak && next.mJumpedHardBreak) {
+      /**
+       * Prev, always: Jump and stop right there
+       * Next, saw inline: just stop
+       * Next, no inline: Jump and consume whitespaces
+       */
+      if (aPos->mDirection == eDirPrevious) {
+        // Try moving to the previous line if exists
+        current.TransferTo(*aPos);
+        current.mFrame->PeekOffsetForCharacter(aPos, current.mOffset);
+        return NS_OK;
+      }
+      if (state.mSawInlineCharacter || current.mJumpedHardBreak) {
+        if (current.mFrame->HasSignificantTerminalNewline()) {
+          current.mOffset -= 1;
+        }
+        current.TransferTo(*aPos);
+        return NS_OK;
+      }
+      // Mark the state as whitespace and continue
+      state.Update(false, true);
+    }
+
     if (next.mJumpedLine) {
       state.mContext.Truncate();
     }
     current = next;
     // Jumping a line is equivalent to encountering whitespace
+    // This affects only when it already met an actual character
     if (wordSelectEatSpace && next.mJumpedLine) {
       state.SetSawBeforeType();
     }
@@ -8845,11 +8891,11 @@ Result<bool, nsresult> nsIFrame::IsVisuallyAtLineEdge(
   nsIFrame* firstFrame;
   nsIFrame* lastFrame;
 
-  nsAutoLineIterator it = aLineIterator;
-  bool lineIsRTL = it->GetDirection();
+  bool lineIsRTL = aLineIterator->GetDirection();
   bool isReordered;
 
-  MOZ_TRY(it->CheckLineOrder(aLine, &isReordered, &firstFrame, &lastFrame));
+  MOZ_TRY(aLineIterator->CheckLineOrder(aLine, &isReordered, &firstFrame,
+                                        &lastFrame));
 
   nsIFrame** framePtr = aDirection == eDirPrevious ? &firstFrame : &lastFrame;
   if (!*framePtr) {
@@ -8867,8 +8913,7 @@ Result<bool, nsresult> nsIFrame::IsVisuallyAtLineEdge(
 
 Result<bool, nsresult> nsIFrame::IsLogicallyAtLineEdge(
     nsILineIterator* aLineIterator, int32_t aLine, nsDirection aDirection) {
-  nsAutoLineIterator it = aLineIterator;
-  auto line = it->GetLine(aLine).unwrap();
+  auto line = aLineIterator->GetLine(aLine).unwrap();
 
   if (aDirection == eDirPrevious) {
     nsIFrame* firstFrame = line.mFirstFrameOnLine;
@@ -8880,7 +8925,7 @@ Result<bool, nsresult> nsIFrame::IsLogicallyAtLineEdge(
   nsIFrame* lastFrame = line.mFirstFrameOnLine;
   for (int32_t lineFrameCount = line.mNumFramesOnLine; lineFrameCount > 1;
        lineFrameCount--) {
-    MOZ_TRY(it->GetNextSiblingOnLine(lastFrame, aLine));
+    MOZ_TRY(aLineIterator->GetNextSiblingOnLine(lastFrame, aLine));
     if (!lastFrame) {
       NS_ERROR("should not be reached nsIFrame");
       return Err(NS_ERROR_FAILURE);
@@ -8915,7 +8960,7 @@ nsIFrame::SelectablePeekReport nsIFrame::GetFrameFromDirection(
     MOZ_TRY_VAR(thisLine,
                 traversedFrame->GetLineNumber(aScrollViewStop, &blockFrame));
 
-    nsILineIterator* it = blockFrame->GetLineIterator();
+    nsAutoLineIterator it = blockFrame->GetLineIterator();
 
     bool atLineEdge;
     MOZ_TRY_VAR(
@@ -8927,6 +8972,12 @@ nsIFrame::SelectablePeekReport nsIFrame::GetFrameFromDirection(
       result.mJumpedLine = true;
       if (!aJumpLines) {
         return result;  // we are done. cannot jump lines
+      }
+      int32_t lineToCheckWrap =
+          aDirection == eDirPrevious ? thisLine - 1 : thisLine;
+      if (lineToCheckWrap < 0 ||
+          !it->GetLine(lineToCheckWrap).unwrap().mIsWrapped) {
+        result.mJumpedHardBreak = true;
       }
     }
 
@@ -8950,7 +9001,9 @@ nsIFrame::SelectablePeekReport nsIFrame::GetFrameFromDirection(
       for (nsIFrame* current = traversedFrame->GetPrevSibling(); current;
            current = current->GetPrevSibling()) {
         if (!current->IsBlockOutside() && IsSelectable(current)) {
-          canSkipBr = true;
+          if (!current->IsBrFrame()) {
+            canSkipBr = true;
+          }
           break;
         }
       }
@@ -10253,7 +10306,7 @@ nsresult nsIFrame::DoXULLayout(nsBoxLayoutState& aState) {
     ReflowInput reflowInput(aState.PresContext(), this,
                             aState.GetRenderingContext(),
                             LogicalSize(ourWM, ISize(), NS_UNCONSTRAINEDSIZE),
-                            ReflowInput::DUMMY_PARENT_REFLOW_INPUT);
+                            ReflowInput::InitFlag::DummyParentReflowInput);
 
     AddStateBits(NS_FRAME_IN_REFLOW);
     // Set up a |reflowStatus| to pass into ReflowAbsoluteFrames
@@ -10355,9 +10408,10 @@ void nsIFrame::BoxReflow(nsBoxLayoutState& aState, nsPresContext* aPresContext,
 
     nsIFrame* parentFrame = GetParent();
     WritingMode parentWM = parentFrame->GetWritingMode();
-    ReflowInput parentReflowInput(aPresContext, parentFrame, aRenderingContext,
-                                  LogicalSize(parentWM, parentSize),
-                                  ReflowInput::DUMMY_PARENT_REFLOW_INPUT);
+    ReflowInput parentReflowInput(
+        aPresContext, parentFrame, aRenderingContext,
+        LogicalSize(parentWM, parentSize),
+        ReflowInput::InitFlag::DummyParentReflowInput);
 
     // This may not do very much useful, but it's probably worth trying.
     if (parentSize.width != NS_UNCONSTRAINEDSIZE)
@@ -10395,7 +10449,8 @@ void nsIFrame::BoxReflow(nsBoxLayoutState& aState, nsPresContext* aPresContext,
     LogicalSize logicalSize(wm, nsSize(aWidth, aHeight));
     logicalSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
     ReflowInput reflowInput(aPresContext, *parentRI, this, logicalSize,
-                            Nothing(), ReflowInput::DUMMY_PARENT_REFLOW_INPUT);
+                            Nothing(),
+                            ReflowInput::InitFlag::DummyParentReflowInput);
 
     // XXX_jwir3: This is somewhat fishy. If this is actually changing the value
     //            here (which it might be), then we should make sure that it's
@@ -10429,10 +10484,7 @@ void nsIFrame::BoxReflow(nsBoxLayoutState& aState, nsPresContext* aPresContext,
             ComputeSize(aRenderingContext, wm, logicalSize,
                         logicalSize.ISize(wm),
                         reflowInput.ComputedLogicalMargin().Size(wm),
-                        reflowInput.ComputedLogicalBorderPadding().Size(wm) -
-                            reflowInput.ComputedLogicalPadding().Size(wm),
-                        reflowInput.ComputedLogicalPadding().Size(wm),
-                        ComputeSizeFlags::eDefault)
+                        reflowInput.ComputedLogicalBorderPadding().Size(wm), {})
                 .mLogicalSize.Height(wm));
       }
     }
