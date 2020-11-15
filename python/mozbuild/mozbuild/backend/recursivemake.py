@@ -457,7 +457,7 @@ class RecursiveMakeBackend(MakeBackend):
             }
             variables = [suffix_map[obj.canonical_suffix]]
             if isinstance(obj, GeneratedSources):
-            	variables.append('GARBAGE')
+                variables.append('GARBAGE')
                 base = backend_file.objdir
                 cls = ObjDirPath
                 prefix = '!'
@@ -482,7 +482,7 @@ class RecursiveMakeBackend(MakeBackend):
             }
             variables = [suffix_map[obj.canonical_suffix]]
             if isinstance(obj, HostGeneratedSources):
-            	variables.append('GARBAGE')
+                variables.append('GARBAGE')
                 base = backend_file.objdir
                 cls = ObjDirPath
                 prefix = '!'
@@ -506,7 +506,7 @@ class RecursiveMakeBackend(MakeBackend):
             }
             variables = [suffix_map[obj.canonical_suffix]]
             if isinstance(obj, WasmGeneratedSources):
-            	variables.append('GARBAGE')
+                variables.append('GARBAGE')
                 base = backend_file.objdir
                 cls = ObjDirPath
                 prefix = '!'
