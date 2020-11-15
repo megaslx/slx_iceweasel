@@ -1004,7 +1004,7 @@ class Element : public FragmentOrElement {
 
 #ifdef DEBUG
   virtual void List(FILE* out = stdout, int32_t aIndent = 0) const override {
-    List(out, aIndent, EmptyCString());
+    List(out, aIndent, ""_ns);
   }
   virtual void DumpContent(FILE* out, int32_t aIndent,
                            bool aDumpAll) const override;
@@ -1252,7 +1252,7 @@ class Element : public FragmentOrElement {
   bool HasPointerCapture(long aPointerId) {
     PointerCaptureInfo* pointerCaptureInfo =
         PointerEventHandler::GetPointerCaptureInfo(aPointerId);
-    if (pointerCaptureInfo && pointerCaptureInfo->mPendingContent == this) {
+    if (pointerCaptureInfo && pointerCaptureInfo->mPendingElement == this) {
       return true;
     }
     return false;
