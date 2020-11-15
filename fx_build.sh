@@ -56,6 +56,10 @@ if [ "$?" != "0" ]; then
 fi
 
 $MAKE maybe_clobber_profiledbuild
+if [ "$?" != "0" ]; then
+  echo make maybe_clobber_profiledbuild failed. > error.log
+  exit 1;
+fi
 $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
 $MAKE -j4
 if [ "$?" != "0" ]; then
