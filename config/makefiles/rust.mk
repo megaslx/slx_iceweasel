@@ -53,14 +53,19 @@ ifeq (1,$(MOZ_PARALLEL_BUILD))
 cargo_build_flags += -j1
 endif
 
+# This should also be paired with -Zbuild-std, but that doesn't work yet.
+ifdef MOZ_TSAN
+RUSTFLAGS += -Zsanitizer=thread
+endif
+
 # These flags are passed via `cargo rustc` and only apply to the final rustc
 # invocation (i.e., only the top-level crate, not its dependencies).
 cargo_rustc_flags = $(CARGO_RUSTCFLAGS)
-ifndef MOZ_PROFILE_GENERATE
 ifndef DEVELOPER_OPTIONS
 ifndef MOZ_DEBUG_RUST
 # Enable link-time optimization for release builds, but not when linking
-# gkrust_gtest.
+# gkrust_gtest. And not when doing cross-language LTO.
+ifndef MOZ_LTO_RUST_CROSS
 ifeq (,$(findstring gkrust_gtest,$(RUST_LIBRARY_FILE)))
 cargo_rustc_flags += -Clto
 endif
@@ -193,14 +198,19 @@ target_rust_ltoable := force-cargo-library-build
 target_rust_nonltoable := force-cargo-test-run force-cargo-library-check $(foreach b,build check,force-cargo-program-$(b))
 
 ifdef MOZ_PGO_RUST
-rust_pgo_flags := $(if $(MOZ_PROFILE_GENERATE),-C profile-generate=$(topobjdir)) $(if $(MOZ_PROFILE_USE),-C profile-use=$(PGO_PROFILE_PATH))
-endif
-
 ifdef MOZ_PROFILE_GENERATE
-MOZ_LTO_RUST :=
+rust_pgo_flags := -C profile-generate=$(topobjdir)
+# The C compiler may be passed extra llvm flags for PGO that we also want to pass to rust as well.
+# In PROFILE_GEN_CFLAGS, they look like "-mllvm foo", and we want "-C llvm-args=foo", so first turn
+# "-mllvm foo" into "-mllvm:foo" so that it becomes a unique argument, that we can then filter for,
+# excluding other flags, and then turn into the right string.
+rust_pgo_flags += $(patsubst -mllvm:%,-C llvm-args=%,$(filter -mllvm:%,$(subst -mllvm ,-mllvm:,$(PROFILE_GEN_CFLAGS))))
+else # MOZ_PROFILE_USE
+rust_pgo_flags := -C profile-use=$(PGO_PROFILE_PATH)
+endif
 endif
 
-$(target_rust_ltoable): RUSTFLAGS:=$(rustflags_override) $(rustflags_sancov) $(RUSTFLAGS) $(rust_pgo_flags) $(if $(MOZ_LTO_RUST),-Clinker-plugin-lto)
+$(target_rust_ltoable): RUSTFLAGS:=$(rustflags_override) $(rustflags_sancov) $(RUSTFLAGS) $(if $(MOZ_LTO_RUST_CROSS),-Clinker-plugin-lto) $(rust_pgo_flags)
 $(target_rust_nonltoable): RUSTFLAGS:=$(rustflags_override) $(rustflags_sancov) $(RUSTFLAGS)
 
 TARGET_RECIPES := $(target_rust_ltoable) $(target_rust_nonltoable)
@@ -312,12 +322,12 @@ $(RUST_LIBRARY_FILE): force-cargo-library-build
 # When we are building in --enable-release mode; we add an additional check to confirm
 # that we are not importing any networking-related functions in rust code. This reduces
 # the chance of proxy bypasses originating from rust code.
-# The check only works when rust code is built with -Clto but without MOZ_LTO_RUST.
+# The check only works when rust code is built with -Clto but without MOZ_LTO_RUST_CROSS.
 # Sanitizers and sancov also fail because compiler-rt hooks network functions.
 ifndef MOZ_PROFILE_GENERATE
 ifeq ($(OS_ARCH), Linux)
 ifeq (,$(rustflags_sancov)$(MOZ_ASAN)$(MOZ_TSAN)$(MOZ_UBSAN))
-ifndef MOZ_LTO_RUST
+ifndef MOZ_LTO_RUST_CROSS
 ifneq (,$(filter -Clto,$(cargo_rustc_flags)))
 	$(call py_action,check_binary,--target --networking $@)
 endif
@@ -371,7 +381,6 @@ endif # HOST_RUST_LIBRARY_FILE
 ifdef RUST_PROGRAMS
 
 GARBAGE_DIRS += $(RUST_TARGET)
-
 force-cargo-program-build: $(call resfile,module)
 	$(REPORT_BUILD)
 	$(call CARGO_BUILD) $(addprefix --bin ,$(RUST_CARGO_PROGRAMS)) $(cargo_target_flag) -- $(addprefix -C link-arg=$(CURDIR)/,$(call resfile,module))
@@ -387,7 +396,6 @@ endif # RUST_PROGRAMS
 ifdef HOST_RUST_PROGRAMS
 
 GARBAGE_DIRS += $(RUST_HOST_TARGET)
-
 force-cargo-host-program-build:
 	$(REPORT_BUILD)
 	$(call CARGO_BUILD) $(addprefix --bin ,$(HOST_RUST_CARGO_PROGRAMS)) $(cargo_host_flag)

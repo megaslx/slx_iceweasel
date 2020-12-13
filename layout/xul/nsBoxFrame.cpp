@@ -50,6 +50,7 @@
 
 #include "gfxUtils.h"
 #include "mozilla/ComputedStyle.h"
+#include "mozilla/CSSOrderAwareFrameIterator.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
@@ -136,7 +137,6 @@ void nsBoxFrame::SetInitialChildList(ChildListID aListID,
   if (aListID == kPrincipalList) {
     // initialize our list of infos.
     nsBoxLayoutState state(PresContext());
-    CheckBoxOrder();
     if (mLayoutManager)
       mLayoutManager->ChildrenSet(this, state, mFrames.FirstChild());
   }
@@ -473,7 +473,7 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
   WritingMode wm = aReflowInput.GetWritingMode();
   LogicalSize computedSize = aReflowInput.ComputedSize();
 
-  LogicalMargin m = aReflowInput.ComputedLogicalBorderPadding();
+  LogicalMargin m = aReflowInput.ComputedLogicalBorderPadding(wm);
   // GetXULBorderAndPadding(m);
 
   LogicalSize prefSize(wm);
@@ -497,7 +497,7 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
     computedSize.BSize(wm) = prefSize.BSize(wm);
     // prefSize is border-box but min/max constraints are content-box.
     nscoord blockDirBorderPadding =
-        aReflowInput.ComputedLogicalBorderPadding().BStartEnd(wm);
+        aReflowInput.ComputedLogicalBorderPadding(wm).BStartEnd(wm);
     nscoord contentBSize = computedSize.BSize(wm) - blockDirBorderPadding;
     // Note: contentHeight might be negative, but that's OK because min-height
     // is never negative.
@@ -786,12 +786,6 @@ void nsBoxFrame::InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
   if (mLayoutManager)
     mLayoutManager->ChildrenInserted(this, state, aPrevFrame, newFrames);
 
-  // Make sure to check box order _after_ notifying the layout
-  // manager; otherwise the slice we give the layout manager will
-  // just be bogus.  If the layout manager cares about the order, we
-  // just lose.
-  CheckBoxOrder();
-
   PresShell()->FrameNeedsReflow(this, IntrinsicDirty::TreeChange,
                                 NS_FRAME_HAS_DIRTY_CHILDREN);
 }
@@ -806,12 +800,6 @@ void nsBoxFrame::AppendFrames(ChildListID aListID, nsFrameList& aFrameList) {
 
   // notify the layout manager
   if (mLayoutManager) mLayoutManager->ChildrenAppended(this, state, newFrames);
-
-  // Make sure to check box order _after_ notifying the layout
-  // manager; otherwise the slice we give the layout manager will
-  // just be bogus.  If the layout manager cares about the order, we
-  // just lose.
-  CheckBoxOrder();
 
   // XXXbz why is this NS_FRAME_FIRST_REFLOW check here?
   if (!HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
@@ -844,9 +832,6 @@ nsresult nsBoxFrame::AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
 
   if (aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height ||
       aAttribute == nsGkAtoms::align || aAttribute == nsGkAtoms::valign ||
-      aAttribute == nsGkAtoms::left || aAttribute == nsGkAtoms::top ||
-      aAttribute == nsGkAtoms::right || aAttribute == nsGkAtoms::bottom ||
-      aAttribute == nsGkAtoms::start || aAttribute == nsGkAtoms::end ||
       aAttribute == nsGkAtoms::minwidth || aAttribute == nsGkAtoms::maxwidth ||
       aAttribute == nsGkAtoms::minheight ||
       aAttribute == nsGkAtoms::maxheight || aAttribute == nsGkAtoms::flex ||
@@ -888,11 +873,6 @@ nsresult nsBoxFrame::AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
         AddStateBits(NS_STATE_AUTO_STRETCH);
       else
         RemoveStateBits(NS_STATE_AUTO_STRETCH);
-    } else if (aAttribute == nsGkAtoms::left || aAttribute == nsGkAtoms::top ||
-               aAttribute == nsGkAtoms::right ||
-               aAttribute == nsGkAtoms::bottom ||
-               aAttribute == nsGkAtoms::start || aAttribute == nsGkAtoms::end) {
-      RemoveStateBits(NS_STATE_STACK_NOT_POSITIONED);
     }
 
     PresShell()->FrameNeedsReflow(this, IntrinsicDirty::StyleChange,
@@ -918,7 +898,6 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 #if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
   _mm_prefetch((char *)StyleVisibility(), _MM_HINT_NTA);
 #endif
-
   bool forceLayer = false;
 
   if (GetContent()->IsXULElement()) {
@@ -939,7 +918,6 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 
   nsDisplayListCollection tempLists(aBuilder);
   const nsDisplayListSet& destination = (forceLayer) ? tempLists : aLists;
-
 #if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
   _mm_prefetch((char *)mFrames.FirstChild(), _MM_HINT_NTA);
 #endif
@@ -981,17 +959,17 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 
 void nsBoxFrame::BuildDisplayListForChildren(nsDisplayListBuilder* aBuilder,
                                              const nsDisplayListSet& aLists) {
-  nsIFrame* kid = mFrames.FirstChild();
+  // Iterate over the children in CSS order.
+  auto iter = CSSOrderAwareFrameIterator(
+      this, mozilla::layout::kPrincipalList,
+      CSSOrderAwareFrameIterator::ChildFilter::IncludeAll,
+      CSSOrderAwareFrameIterator::OrderState::Unknown,
+      CSSOrderAwareFrameIterator::OrderingProperty::BoxOrdinalGroup);
   // Put each child's background onto the BlockBorderBackgrounds list
   // to emulate the existing two-layer XUL painting scheme.
   nsDisplayListSet set(aLists, aLists.BlockBorderBackgrounds());
-  // The children should be in the right order
-  while (kid) {
-#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
-    _mm_prefetch((char *)kid->GetNextSibling(), _MM_HINT_T0);
-#endif
-    BuildDisplayListForChild(aBuilder, kid, set);
-    kid = kid->GetNextSibling();
+  for (; !iter.AtEnd(); iter.Next()) {
+    BuildDisplayListForChild(aBuilder, iter.get(), set);
   }
 }
 
@@ -1036,22 +1014,6 @@ void nsBoxFrame::AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) {
   }
 }
 
-// Helper less-than-or-equal function, used in CheckBoxOrder() as a
-// template-parameter for the sorting functions.
-static bool IsBoxOrdinalLEQ(nsIFrame* aFrame1, nsIFrame* aFrame2) {
-  // If we've got a placeholder frame, use its out-of-flow frame's ordinal val.
-  nsIFrame* aRealFrame1 = nsPlaceholderFrame::GetRealFrameFor(aFrame1);
-  nsIFrame* aRealFrame2 = nsPlaceholderFrame::GetRealFrameFor(aFrame2);
-  return aRealFrame1->StyleXUL()->mBoxOrdinal <=
-         aRealFrame2->StyleXUL()->mBoxOrdinal;
-}
-
-void nsBoxFrame::CheckBoxOrder() {
-  if (!nsIFrame::IsFrameListSorted<IsBoxOrdinalLEQ>(mFrames)) {
-    nsIFrame::SortFrameList<IsBoxOrdinalLEQ>(mFrames);
-  }
-}
-
 nsresult nsBoxFrame::LayoutChildAt(nsBoxLayoutState& aState, nsIFrame* aBox,
                                    const nsRect& aRect) {
   // get the current rect
@@ -1064,38 +1026,6 @@ nsresult nsBoxFrame::LayoutChildAt(nsBoxLayoutState& aState, nsIFrame* aBox,
       (oldRect.width != aRect.width || oldRect.height != aRect.height)) {
     return aBox->XULLayout(aState);
   }
-
-  return NS_OK;
-}
-
-nsresult nsBoxFrame::XULRelayoutChildAtOrdinal(nsIFrame* aChild) {
-  int32_t ord = aChild->StyleXUL()->mBoxOrdinal;
-
-  nsIFrame* child = mFrames.FirstChild();
-  nsIFrame* newPrevSib = nullptr;
-
-  while (child) {
-    if (ord < child->StyleXUL()->mBoxOrdinal) {
-      break;
-    }
-
-    if (child != aChild) {
-      newPrevSib = child;
-    }
-
-    child = GetNextXULBox(child);
-  }
-
-  if (aChild->GetPrevSibling() == newPrevSib) {
-    // This box is not moving.
-    return NS_OK;
-  }
-
-  // Take |aChild| out of its old position in the child list.
-  mFrames.RemoveFrame(aChild);
-
-  // Insert it after |newPrevSib| or at the start if it's null.
-  mFrames.InsertFrame(nullptr, newPrevSib, aChild);
 
   return NS_OK;
 }
