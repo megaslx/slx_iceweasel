@@ -457,13 +457,22 @@ class nsContextMenu {
       "context-savelink",
       this.onSaveableLink || this.onPlainTextLink
     );
-    
     // hack by adonais
     this.showItem(
       "context-downloadlink",
       this.onSaveableLink || this.onPlainTextLink
     );
-    
+    if (
+      (this.onSaveableLink || this.onPlainTextLink) &&
+      Services.policies.status === Services.policies.ACTIVE
+    ) {
+      this.setItemAttr(
+        "context-savelink",
+        "disabled",
+        !WebsiteFilter.isAllowed(this.linkURL)
+      );
+    }
+
     // Save image depends on having loaded its content, video and audio don't.
     this.showItem("context-saveimage", this.onLoadedImage || this.onCanvas);
     this.showItem("context-savevideo", this.onVideo);
@@ -1468,7 +1477,26 @@ class nsContextMenu {
             );
 
             const title = bundle.GetStringFromName("downloadErrorAlertTitle");
-            const msg = bundle.GetStringFromName("downloadErrorGeneric");
+            let msg = bundle.GetStringFromName("downloadErrorGeneric");
+
+            try {
+              const channel = aRequest.QueryInterface(Ci.nsIChannel);
+              const reason = channel.loadInfo.requestBlockingReason;
+              if (
+                reason == Ci.nsILoadInfo.BLOCKING_REASON_EXTENSION_WEBREQUEST
+              ) {
+                try {
+                  const properties = channel.QueryInterface(Ci.nsIPropertyBag);
+                  const id = properties.getProperty("cancelledByExtension");
+                  msg = bundle.formatStringFromName("downloadErrorBlockedBy", [
+                    WebExtensionPolicy.getByID(id).name,
+                  ]);
+                } catch (err) {
+                  // "cancelledByExtension" doesn't have to be available.
+                  msg = bundle.GetStringFromName("downloadErrorExtension");
+                }
+              }
+            } catch (ex) {}
 
             let window = Services.wm.getOuterWindowWithId(windowID);
             Services.prompt.alert(window, title, msg);
@@ -1642,7 +1670,6 @@ class nsContextMenu {
 	  process.run(false, ["-i", this.linkURL, "-b", cfile.path, "-m", "1"], 6);
     }
   }
-  
   // Backwards-compatibility wrapper
   saveImage() {
     if (this.onCanvas || this.onImage) {

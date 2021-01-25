@@ -132,6 +132,30 @@ class ChildProcess final {
       return 1;
     }
 
+    auto getDependentModulePaths =
+        reinterpret_cast<uint32_t (*)(uint32_t**)>(::GetProcAddress(
+            ::GetModuleHandleW(nullptr), "GetDependentModulePaths"));
+    if (!getDependentModulePaths) {
+      printf(
+          "TEST-FAILED | TestCrossProcessWin | "
+          "Failed to get a pointer to GetDependentModulePaths - %08lx.\n",
+          ::GetLastError());
+      return 1;
+    }
+
+#if !defined(DEBUG)
+    // GetDependentModulePaths does not allow a caller other than xul.dll.
+    // Skip on Debug build because it hits MOZ_ASSERT.
+    uint32_t* modulePathArray;
+    if (getDependentModulePaths(&modulePathArray) || modulePathArray) {
+      printf(
+          "TEST-FAILED | TestCrossProcessWin | "
+          "GetDependentModulePaths should return zero if the caller is "
+          "not xul.dll.\n");
+      return 1;
+    }
+#endif  // !defined(DEBUG)
+
     if (!VerifySharedSection(gSharedSection)) {
       return 1;
     }

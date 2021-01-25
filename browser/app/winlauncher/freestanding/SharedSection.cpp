@@ -6,6 +6,8 @@
 
 #include "SharedSection.h"
 
+#include "CheckForCaller.h"
+
 namespace mozilla {
 namespace freestanding {
 
@@ -226,6 +228,12 @@ extern "C" MOZ_EXPORT uint32_t GetDependentModulePaths(uint32_t** aOutArray) {
   // We enable pre-spawn CIG only in Nightly for now because it caused
   // a compat issue (bug 1682304).
 #if defined(NIGHTLY_BUILD)
+  const bool isCallerXul = CheckForAddress(RETURN_ADDRESS(), L"xul.dll");
+  MOZ_ASSERT(isCallerXul);
+  if (!isCallerXul) {
+    return 0;
+  }
+
   LauncherResult<SharedSection::Layout*> resultView = gSharedSection.GetView();
   if (resultView.isErr()) {
     return 0;

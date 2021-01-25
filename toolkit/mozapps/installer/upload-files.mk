@@ -285,6 +285,7 @@ NO_PKG_FILES += \
 	pk12util* \
 	BadCertAndPinningServer* \
 	DelegatedCredentialsServer* \
+	EncryptedClientHelloServer* \
 	OCSPStaplingServer* \
 	SanctionsTestServer* \
 	GenerateOCSPResponse* \
