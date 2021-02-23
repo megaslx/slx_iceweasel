@@ -291,7 +291,8 @@ static nsresult ConvertWinError(DWORD aWinErr) {
       printf_stderr(
           "ConvertWinError received an unrecognized WinError: 0x%" PRIx32 "\n",
           static_cast<uint32_t>(aWinErr));
-      rv = NS_ERROR_FAILURE;
+      MOZ_ASSERT((aWinErr & 0xFFFF) == aWinErr);
+      rv = NS_ERROR_GENERATE_FAILURE(NS_ERROR_MODULE_WIN32, aWinErr & 0xFFFF);
       break;
   }
   return rv;
@@ -745,8 +746,9 @@ class nsDirEnumerator final : public nsSimpleEnumerator,
       }
       if (name.IsEmpty()) {
         // end of dir entries
-        if (NS_FAILED(CloseDir(mDir))) {
-          return NS_ERROR_FAILURE;
+        rv = CloseDir(mDir);
+        if (NS_FAILED(rv)) {
+          return rv;
         }
 
         *aResult = false;
