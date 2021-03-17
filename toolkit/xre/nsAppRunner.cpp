@@ -27,7 +27,6 @@
 #include "mozilla/Printf.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/ScopeExit.h"
-#include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_fission.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Utf8.h"
@@ -252,6 +251,12 @@
 #  include "nsIPK11Token.h"
 #endif
 
+#ifdef MOZ_BACKGROUNDTASKS
+#  include "mozilla/BackgroundTasks.h"
+#  include "nsIPowerManagerService.h"
+#  include "nsIStringBundle.h"
+#endif
+
 extern uint32_t gRestartMode;
 extern void InstallSignalHandlers(const char* ProgramName);
 
@@ -300,6 +305,10 @@ bool gRestartedByOS = false;
 bool gIsGtest = false;
 
 nsString gAbsoluteArgv0Path;
+
+#if defined(XP_WIN)
+nsString gProcessStartupShortcut;
+#endif
 
 #if defined(MOZ_WIDGET_GTK)
 #  include <glib.h>
@@ -1306,6 +1315,17 @@ nsXULAppInfo::GetRestartedByOS(bool* aResult) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsXULAppInfo::GetProcessStartupShortcut(nsAString& aShortcut) {
+#if defined(XP_WIN)
+  if (XRE_IsParentProcess()) {
+    aShortcut.Assign(gProcessStartupShortcut);
+    return NS_OK;
+  }
+#endif
+  return NS_ERROR_NOT_AVAILABLE;
+}
+
 #if defined(XP_WIN) && defined(MOZ_LAUNCHER_PROCESS)
 // Forward declaration
 void SetupLauncherProcessPref();
@@ -1965,20 +1985,20 @@ static void ReflectSkeletonUIPrefToRegistry(const char* aPref, void* aData) {
     nsCString themeId;
     Preferences::GetCString(kPrefThemeId, themeId);
     if (themeId.EqualsLiteral("default-theme@mozilla.org")) {
-      SetPreXULSkeletonUIThemeId(ThemeMode::Default);
+      Unused << SetPreXULSkeletonUIThemeId(ThemeMode::Default);
     } else if (themeId.EqualsLiteral("firefox-compact-dark@mozilla.org")) {
-      SetPreXULSkeletonUIThemeId(ThemeMode::Dark);
+      Unused << SetPreXULSkeletonUIThemeId(ThemeMode::Dark);
     } else if (themeId.EqualsLiteral("firefox-compact-light@mozilla.org")) {
-      SetPreXULSkeletonUIThemeId(ThemeMode::Light);
+      Unused << SetPreXULSkeletonUIThemeId(ThemeMode::Light);
     } else {
       shouldBeEnabled = false;
     }
   } else if (shouldBeEnabled) {
-    SetPreXULSkeletonUIThemeId(ThemeMode::Default);
+    Unused << SetPreXULSkeletonUIThemeId(ThemeMode::Default);
   }
 
   if (GetPreXULSkeletonUIEnabled() != shouldBeEnabled) {
-    SetPreXULSkeletonUIEnabledIfAllowed(shouldBeEnabled);
+    Unused << SetPreXULSkeletonUIEnabledIfAllowed(shouldBeEnabled);
   }
 }
 
@@ -2181,10 +2201,7 @@ void UnlockProfile() {
   }
 }
 
-// If aBlankCommandLine is true, then the application will be launched with a
-// blank command line instead of being launched with the same command line that
-// it was initially started with.
-nsresult LaunchChild(bool aBlankCommandLine) {
+nsresult LaunchChild(bool aBlankCommandLine, bool aTryExec) {
   // Restart this process by exec'ing it into the current process
   // if supported by the platform.  Otherwise, use NSPR.
 
@@ -2233,19 +2250,25 @@ nsresult LaunchChild(bool aBlankCommandLine) {
   if (NS_FAILED(rv)) return rv;
 
 #      if defined(XP_UNIX)
-  if (execv(exePath.get(), gRestartArgv) == -1) return NS_ERROR_FAILURE;
-#      else
-  PRProcess* process =
-      PR_CreateProcess(exePath.get(), gRestartArgv, nullptr, nullptr);
-  if (!process) return NS_ERROR_FAILURE;
+  if (aTryExec) {
+    execv(exePath.get(), gRestartArgv);
 
-  int32_t exitCode;
-  PRStatus failed = PR_WaitProcess(process, &exitCode);
-  if (failed || exitCode) return NS_ERROR_FAILURE;
-#      endif  // XP_UNIX
-#    endif    // WP_WIN
-#  endif      // WP_MACOSX
-#endif        // MOZ_WIDGET_ANDROID
+    // If execv returns we know it's because it failed.
+    return NS_ERROR_FAILURE;
+  }
+#      endif
+  if (PR_CreateProcessDetached(exePath.get(), gRestartArgv, nullptr, nullptr) ==
+      PR_FAILURE) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Note that we don't know if the child process starts okay, if it
+  // immediately returns non-zero then we may mask that by returning a zero
+  // exit status.
+
+#    endif  // WP_WIN
+#  endif    // WP_MACOSX
+#endif      // MOZ_WIDGET_ANDROID
 
   return NS_ERROR_LAUNCHED_CHILD_PROCESS;
 }
@@ -2279,6 +2302,15 @@ class ReturnAbortOnError {
 }  // namespace
 
 static nsresult ProfileMissingDialog(nsINativeAppSupport* aNative) {
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    // We should never get to this point in background task mode.
+    Output(false,
+           "Could not determine any profile running in backgroundtask mode!\n");
+    return NS_ERROR_ABORT;
+  }
+#endif
+
   nsresult rv;
 
   ScopedXPCOMStartup xpcom;
@@ -2291,7 +2323,7 @@ static nsresult ProfileMissingDialog(nsINativeAppSupport* aNative) {
   {  // extra scoping is needed so we release these components before xpcom
      // shutdown
     nsCOMPtr<nsIStringBundleService> sbs =
-        mozilla::services::GetStringBundleService();
+        mozilla::components::StringBundle::Service();
     NS_ENSURE_TRUE(sbs, NS_ERROR_FAILURE);
 
     nsCOMPtr<nsIStringBundle> sb;
@@ -2345,7 +2377,7 @@ static ReturnAbortOnError ProfileLockedDialog(nsIFile* aProfileDir,
   {  // extra scoping is needed so we release these components before xpcom
      // shutdown
     nsCOMPtr<nsIStringBundleService> sbs =
-        mozilla::services::GetStringBundleService();
+        mozilla::components::StringBundle::Service();
     NS_ENSURE_TRUE(sbs, NS_ERROR_FAILURE);
 
     nsCOMPtr<nsIStringBundle> sb;
@@ -2408,7 +2440,7 @@ static ReturnAbortOnError ProfileLockedDialog(nsIFile* aProfileDir,
         SaveFileToEnv("XRE_PROFILE_PATH", aProfileDir);
         SaveFileToEnv("XRE_PROFILE_LOCAL_PATH", aProfileLocalDir);
 
-        return LaunchChild(false);
+        return LaunchChild(false, true);
       }
     } else {
 #ifdef MOZ_WIDGET_ANDROID
@@ -2518,7 +2550,7 @@ static ReturnAbortOnError ShowProfileManager(
     gRestartArgv[gRestartArgc] = nullptr;
   }
 
-  return LaunchChild(false);
+  return LaunchChild(false, true);
 }
 
 static bool gDoMigration = false;
@@ -2938,7 +2970,7 @@ static ReturnAbortOnError CheckDowngrade(nsIFile* aProfileDir,
     SaveFileToEnv("XRE_PROFILE_PATH", profD);
     SaveFileToEnv("XRE_PROFILE_LOCAL_PATH", profLD);
 
-    return LaunchChild(false);
+    return LaunchChild(false, true);
   }
 
   // Cancel
@@ -3465,10 +3497,26 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
   DisableAppNap();
 #endif
 
+#ifdef MOZ_BACKGROUNDTASKS
+  Maybe<nsCString> backgroundTask = Nothing();
+  const char* backgroundTaskName = nullptr;
+  if (ARG_FOUND == CheckArg("backgroundtask", &backgroundTaskName)) {
+    backgroundTask = Some(backgroundTaskName);
+  }
+  BackgroundTasks::Init(backgroundTask);
+
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    printf_stderr("*** You are running in background task mode. ***\n");
+  }
+#endif
+
 #ifndef ANDROID
   if (PR_GetEnv("MOZ_RUN_GTEST")
 #  ifdef FUZZING
       || PR_GetEnv("FUZZER")
+#  endif
+#  ifdef MOZ_BACKGROUNDTASKS
+      || BackgroundTasks::IsBackgroundTaskMode()
 #  endif
   ) {
     // Enable headless mode and assert that it worked, since gfxPlatform
@@ -3816,6 +3864,11 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
   if (!safeModeRequested) {
     return 1;
   }
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    safeModeRequested = Some(false);
+  }
+#endif
 
   gSafeMode = safeModeRequested.value();
 
@@ -4128,13 +4181,6 @@ bool IsWaylandDisabled() {
 }
 #endif
 
-#if defined(MOZ_X11)
-bool IsX11EGLEnabled() {
-  const char* eglPref = PR_GetEnv("MOZ_X11_EGL");
-  return (eglPref && *eglPref);
-}
-#endif
-
 namespace mozilla::startup {
 Result<nsCOMPtr<nsIFile>, nsresult> GetIncompleteStartupFile(nsIFile* aProfLD) {
   nsCOMPtr<nsIFile> crashFile;
@@ -4221,6 +4267,20 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     mDesktopStartupID.Assign(desktopStartupIDEnv);
   }
 #endif
+
+#if defined(XP_WIN)
+  {
+    // Save the shortcut path before lpTitle is replaced by an AUMID,
+    // such as by WinTaskbar
+    STARTUPINFOW si;
+    GetStartupInfoW(&si);
+    if (si.dwFlags & STARTF_TITLEISAPPID) {
+      NS_WARNING("AUMID was already set, shortcut may have been lost.");
+    } else if ((si.dwFlags & STARTF_TITLEISLINKNAME) && si.lpTitle) {
+      gProcessStartupShortcut.Assign(si.lpTitle);
+    }
+  }
+#endif /* XP_WIN */
 
 #if defined(MOZ_WIDGET_GTK)
   // setup for private colormap.  Ideally we'd like to do this
@@ -4407,6 +4467,19 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     ProfileMissingDialog(mNativeApp);
     return 1;
   }
+
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    nsCOMPtr<nsIFile> file;
+    nsresult rv = BackgroundTasks::GetOrCreateTemporaryProfileDirectory(
+        getter_AddRefs(file));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return 1;
+    }
+
+    SaveFileToEnv("XRE_PROFILE_PATH", file);
+  }
+#endif
 
   bool wasDefaultSelection;
   nsCOMPtr<nsIToolkitProfile> profile;
@@ -4745,6 +4818,9 @@ nsresult XREMain::XRE_mainRun() {
   // We need the appStartup pointer to span multiple scopes, so we declare
   // it here.
   nsCOMPtr<nsIAppStartup> appStartup;
+  // Ditto with the command line.
+  nsCOMPtr<nsICommandLineRunner> cmdLine;
+
   {
 #ifdef XP_MACOSX
     // In this scope, create an autorelease pool that will leave scope with
@@ -4970,8 +5046,6 @@ nsresult XREMain::XRE_mainRun() {
 
     appStartup->GetShuttingDown(&mShuttingDown);
 
-    nsCOMPtr<nsICommandLineRunner> cmdLine;
-
     nsCOMPtr<nsIFile> workingDir;
     rv = NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR,
                                 getter_AddRefs(workingDir));
@@ -5028,6 +5102,13 @@ nsresult XREMain::XRE_mainRun() {
           Preferences::GetBool("toolkit.lazyHiddenWindow", false);
 #endif
 
+#ifdef MOZ_BACKGROUNDTASKS
+      if (BackgroundTasks::IsBackgroundTaskMode()) {
+        // Background tasks aren't going to load a chrome XUL document.
+        lazyHiddenWindow = true;
+      }
+#endif
+
       if (!lazyHiddenWindow) {
         rv = appStartup->CreateHiddenWindow();
         NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
@@ -5043,18 +5124,26 @@ nsresult XREMain::XRE_mainRun() {
       SetupLauncherProcessPref();
 #  endif  // defined(MOZ_LAUNCHER_PROCESS)
 #  if defined(MOZ_DEFAULT_BROWSER_AGENT)
-      Preferences::RegisterCallbackAndCall(&OnDefaultAgentTelemetryPrefChanged,
-                                           kPrefHealthReportUploadEnabled);
-      Preferences::RegisterCallbackAndCall(&OnDefaultAgentTelemetryPrefChanged,
-                                           kPrefDefaultAgentEnabled);
+#    if defined(MOZ_BACKGROUNDTASKS)
+      // The backgroundtask profile is not a browsing profile, let alone the new
+      // default profile, so don't mirror its properties into the registry.
+      if (!BackgroundTasks::IsBackgroundTaskMode())
+#    endif  // defined(MOZ_BACKGROUNDTASKS)
+      {
+        Preferences::RegisterCallbackAndCall(
+            &OnDefaultAgentTelemetryPrefChanged,
+            kPrefHealthReportUploadEnabled);
+        Preferences::RegisterCallbackAndCall(
+            &OnDefaultAgentTelemetryPrefChanged, kPrefDefaultAgentEnabled);
 
-      Preferences::RegisterCallbackAndCall(
-          &OnDefaultAgentRemoteSettingsPrefChanged,
-          kPrefServicesSettingsServer);
-      Preferences::RegisterCallbackAndCall(
-          &OnDefaultAgentRemoteSettingsPrefChanged,
-          kPrefSecurityContentSignatureRootHash);
-      SetDefaultAgentLastRunTime();
+        Preferences::RegisterCallbackAndCall(
+            &OnDefaultAgentRemoteSettingsPrefChanged,
+            kPrefServicesSettingsServer);
+        Preferences::RegisterCallbackAndCall(
+            &OnDefaultAgentRemoteSettingsPrefChanged,
+            kPrefSecurityContentSignatureRootHash);
+        SetDefaultAgentLastRunTime();
+      }
 #  endif  // defined(MOZ_DEFAULT_BROWSER_AGENT)
 #endif
 
@@ -5165,6 +5254,30 @@ nsresult XREMain::XRE_mainRun() {
 
     mProfileSvc->CompleteStartup();
   }
+
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    // In background task mode, we don't fire various delayed initialization
+    // notifications, which in the regular browser is how startup crash tracking
+    // is marked as finished.  Here, getting this far means we don't have a
+    // startup crash.
+    rv = appStartup->TrackStartupCrashEnd();
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // We never open a window, but don't want to exit immediately.
+    rv = appStartup->EnterLastWindowClosingSurvivalArea();
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // Avoid some small differences in initialization order across platforms.
+    nsCOMPtr<nsIPowerManagerService> powerManagerService =
+        do_GetService(POWERMANAGERSERVICE_CONTRACTID);
+    nsCOMPtr<nsIStringBundleService> stringBundleService =
+        do_GetService(NS_STRINGBUNDLE_CONTRACTID);
+
+    rv = BackgroundTasks::RunBackgroundTask(cmdLine);
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
+#endif
 
   {
     rv = appStartup->Run();
@@ -5393,6 +5506,10 @@ undo_it();
   // has gone out of scope.  see bug #386739 for more details
   mProfileLock->Unlock();
   gProfileLock = nullptr;
+
+#ifdef MOZ_BACKGROUNDTASKS
+  BackgroundTasks::Shutdown();
+#endif
 
   gLastAppVersion.Truncate();
   gLastAppBuildID.Truncate();
