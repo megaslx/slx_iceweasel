@@ -111,9 +111,7 @@
 #  include "mozilla/WindowsProcessMitigations.h"
 #  include "mozilla/WinHeaderOnlyUtils.h"
 #  include "mozilla/mscom/ProcessRuntime.h"
-#  if defined(MOZ_GECKO_PROFILER)
-#    include "mozilla/mscom/ProfilerMarkers.h"
-#  endif  // defined(MOZ_GECKO_PROFILER)
+#  include "mozilla/mscom/ProfilerMarkers.h"
 #  include "mozilla/widget/AudioSession.h"
 #  include "WinTokenUtils.h"
 
@@ -500,9 +498,6 @@ static const char kPrefFissionExperimentEnrollmentStatus[] =
 static const char kPrefFissionExperimentStartupEnrollmentStatus[] =
     "fission.experiment.startupEnrollmentStatus";
 
-static const char kPrefNonNativeThemeEnabled[] =
-    "widget.non-native-theme.enabled";
-
 // The computed FissionAutostart value for the session, read by content
 // processes to initialize gFissionAutostart.
 //
@@ -736,12 +731,6 @@ static void EnsureFissionAutostartInitialized() {
   Preferences::SetBool(kPrefFissionAutostartSession, gFissionAutostart,
                        PrefValueKind::Default);
   Preferences::Lock(kPrefFissionAutostartSession);
-
-  if (gFissionExperimentStatus == nsIXULRuntime::eExperimentStatusControl ||
-      gFissionExperimentStatus == nsIXULRuntime::eExperimentStatusTreatment) {
-    Preferences::SetBool(kPrefNonNativeThemeEnabled, true,
-                         PrefValueKind::Default);
-  }
 
   // If we're actively enrolled in the fission experiment, disqualify the user
   // from the experiment if the fission pref is modified.
@@ -982,7 +971,6 @@ nsXULAppInfo::GetWidgetToolkit(nsACString& aResult) {
                 "nsIXULRuntime.idl");
 
 SYNC_ENUMS(DEFAULT, Default)
-SYNC_ENUMS(PLUGIN, Plugin)
 SYNC_ENUMS(CONTENT, Content)
 SYNC_ENUMS(IPDLUNITTEST, IPDLUnitTest)
 SYNC_ENUMS(GMPLUGIN, GMPlugin)
@@ -3520,7 +3508,8 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
 #ifdef MOZ_BACKGROUNDTASKS
   Maybe<nsCString> backgroundTask = Nothing();
   const char* backgroundTaskName = nullptr;
-  if (ARG_FOUND == CheckArg("backgroundtask", &backgroundTaskName)) {
+  if (ARG_FOUND ==
+      CheckArg("backgroundtask", &backgroundTaskName, CheckArgFlag::None)) {
     backgroundTask = Some(backgroundTaskName);
   }
   BackgroundTasks::Init(backgroundTask);
@@ -3887,6 +3876,12 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
 #ifdef MOZ_BACKGROUNDTASKS
   if (BackgroundTasks::IsBackgroundTaskMode()) {
     safeModeRequested = Some(false);
+
+    // Remove the --backgroundtask arg now that it has been saved in
+    // gRestartArgv.
+    const char* tmpBackgroundTaskName = nullptr;
+    Unused << CheckArg("backgroundtask", &tmpBackgroundTaskName,
+                       CheckArgFlag::RemoveArg);
   }
 #endif
 
@@ -4532,6 +4527,25 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     return 0;
   }
 
+#ifdef MOZ_BACKGROUNDTASKS
+  if (BackgroundTasks::IsBackgroundTaskMode()) {
+    // Allow tests to specify profile path via the environment.
+    if (!EnvHasValue("XRE_PROFILE_PATH")) {
+      nsString installHash;
+      mDirProvider.GetInstallHash(installHash);
+
+      nsCOMPtr<nsIFile> file;
+      nsresult rv = BackgroundTasks::CreateTemporaryProfileDirectory(
+          NS_LossyConvertUTF16toASCII(installHash), getter_AddRefs(file));
+      if (NS_WARN_IF(NS_FAILED(rv))) {
+        return 1;
+      }
+
+      SaveFileToEnv("XRE_PROFILE_PATH", file);
+    }
+  }
+#endif
+
   rv = NS_NewToolkitProfileService(getter_AddRefs(mProfileSvc));
   if (rv == NS_ERROR_FILE_ACCESS_DENIED) {
     PR_fprintf(PR_STDERR,
@@ -4543,22 +4557,6 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     ProfileMissingDialog(mNativeApp);
     return 1;
   }
-
-#ifdef MOZ_BACKGROUNDTASKS
-  if (BackgroundTasks::IsBackgroundTaskMode()) {
-    if (!EnvHasValue("XRE_PROFILE_PATH")) {
-      // Allow tests to specify profile path via the environment.
-      nsCOMPtr<nsIFile> file;
-      nsresult rv = BackgroundTasks::GetOrCreateTemporaryProfileDirectory(
-          getter_AddRefs(file));
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return 1;
-      }
-
-      SaveFileToEnv("XRE_PROFILE_PATH", file);
-    }
-  }
-#endif
 
   bool wasDefaultSelection;
   nsCOMPtr<nsIToolkitProfile> profile;
@@ -4899,10 +4897,8 @@ nsresult XREMain::XRE_mainRun() {
   auto dllServicesDisable =
       MakeScopeExit([&dllServices]() { dllServices->DisableFull(); });
 
-#  if defined(MOZ_GECKO_PROFILER)
   mozilla::mscom::InitProfilerMarkers();
-#  endif  // defined(MOZ_GECKO_PROFILER)
-#endif    // defined(XP_WIN)
+#endif  // defined(XP_WIN)
 
   // We need the appStartup pointer to span multiple scopes, so we declare
   // it here.
@@ -5579,10 +5575,6 @@ undo_it();
   mProfileLock->Unlock();
   gProfileLock = nullptr;
 
-#ifdef MOZ_BACKGROUNDTASKS
-  BackgroundTasks::Shutdown();
-#endif
-
   gLastAppVersion.Truncate();
   gLastAppBuildID.Truncate();
 
@@ -5616,6 +5608,11 @@ int XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 
   int result = main.XRE_main(argc, argv, aConfig);
   mozilla::RecordShutdownEndTimeStamp();
+#ifdef MOZ_BACKGROUNDTASKS
+  // This is well after the profile has been unlocked, so it's okay if this does
+  // delete this background task's temporary profile.
+  mozilla::BackgroundTasks::Shutdown();
+#endif
   return result;
 }
 
@@ -5689,9 +5686,10 @@ bool XRE_IsE10sParentProcess() {
 #endif
 }
 
-#define GECKO_PROCESS_TYPE(enum_name, string_name, xre_name, bin_type) \
-  bool XRE_Is##xre_name##Process() {                                   \
-    return XRE_GetProcessType() == GeckoProcessType_##enum_name;       \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
+                           bin_type)                                     \
+  bool XRE_Is##xre_name##Process() {                                     \
+    return XRE_GetProcessType() == GeckoProcessType_##enum_name;         \
   }
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE
@@ -5796,8 +5794,9 @@ mozilla::BinPathType XRE_GetChildProcBinPathType(
   }
 
   switch (aProcessType) {
-#define GECKO_PROCESS_TYPE(enum_name, string_name, xre_name, bin_type) \
-  case GeckoProcessType_##enum_name:                                   \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
+                           bin_type)                                     \
+  case GeckoProcessType_##enum_name:                                     \
     return BinPathType::bin_type;
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE

@@ -101,7 +101,8 @@ const test = new SearchConfigTest({
           regions: ["au"],
         },
       ],
-      noSuggestionsURL: true,
+      suggestionUrlBase: "https://completion.amazon.com.au/search/complete",
+      suggestUrlCode: "mkt=111172",
     },
     {
       domain: "amazon.ca",
@@ -112,6 +113,7 @@ const test = new SearchConfigTest({
           regions: ["ca"],
         },
       ],
+      searchUrlCode: "tag=mozillacanada-20",
       suggestionUrlBase: "https://completion.amazon.ca/search/complete",
       suggestUrlCode: "mkt=7",
     },
