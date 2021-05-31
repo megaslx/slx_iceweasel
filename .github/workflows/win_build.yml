@@ -12,6 +12,7 @@ jobs:
   fx_build:
     name: Iceweasel build
     runs-on: windows-latest
+    timeout-minutes: 480
     steps:        
     - uses: actions/checkout@v1
       with:
@@ -44,9 +45,11 @@ jobs:
       shell: cmd
      
     - name: Start msys2-shell
+      timeout-minutes: 420
       id: msys_shell
       run: |
         cd /d %GITHUB_WORKSPACE%
+        if exist .mozconfig  del /f .mozconfig
         if "%MY_BITS%" == "win32" echo we build Iceweasel %MY_BITS%&msysdo mv mozconfig32 .mozconfig
         if "%MY_BITS%" == "win64" echo we build Iceweasel %MY_BITS%&msysdo mv mozconfig64 .mozconfig
         if exist .mozconfig msysdo ./fx_build.sh
