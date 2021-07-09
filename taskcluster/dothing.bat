@@ -14,7 +14,7 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @git config --global http.postBuffer 524288000
 @git config --global http.lowSpeedLimit 0
 @git config --global http.lowSpeedTime 999999
-@git clone https://gitee.com/libportable/mozillabuild.git mozillabuild-src
+@git clone --depth=1 https://gitee.com/libportable/mozillabuild.git mozillabuild-src
 @cd /d "!SOURCE_DIR!\mozillabuild-src"
 @if exist bin.7z 7z x bin.7z -aoa -o!BUID_DIR!
 @if exist clang\clang-bin.7z 7z x clang\clang-bin.7z -aoa -o!BUID_DIR!
