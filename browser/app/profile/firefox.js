@@ -2086,6 +2086,7 @@ pref("app.normandy.onsync_skew_sec", 600);
 #endif
 // by adonais
 pref("browser.newtabpage.activity-stream.feeds.snippets", false);
+pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
 pref("browser.newtabpage.enhanced", false);
 pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr", false);
 pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons", false);
