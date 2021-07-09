@@ -11,7 +11,7 @@ mk_add_options MOZ_MAKE_FLAGS=-j4
 ac_add_options --host=x86_64-pc-mingw32
 ac_add_options --target=i686-pc-mingw32
 
-export LIB="/d/works/mozillabuild/clang/lib:/d/works/mozillabuild/clang/lib/clang/11.1.0/lib/windows"
+export LIB="/d/works/mozillabuild/clang/lib:/d/works/mozillabuild/clang/lib/clang/12.0.1/lib/windows"
 
 # for X86
 ac_add_options MOZ_PGO=1
