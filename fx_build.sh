@@ -10,7 +10,7 @@ if [ ! -f "$FIND_FILE" ]; then
   exit 1;
 fi
 FIND_STR="ac_add_options --target=i686-pc-mingw32"
-PYTHON_SCRIPT=_virtualenvs/init_py3/Scripts
+PYTHON_SCRIPT=_virtualenvs/common/Scripts
 if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR=obju-linux64
