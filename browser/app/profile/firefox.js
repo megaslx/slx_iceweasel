@@ -46,10 +46,6 @@ pref("extensions.getAddons.discovery.api_url", "https://services.addons.mozilla.
 
 // Enable the HTML-based discovery panel at about:addons.
 pref("extensions.htmlaboutaddons.discover.enabled", false);
-// Use bloomfilters for the addons blocklist, instead of JSON only.
-pref("extensions.blocklist.useMLBF", true);
-pref("extensions.blocklist.useMLBF.stashes", true);
-
 // The URL for the privacy policy related to recommended extensions.
 pref("extensions.recommendations.privacyPolicyUrl", "https://www.mozilla.org/privacy/firefox/?utm_source=firefox-browser&utm_medium=firefox-browser&utm_content=privacy-policy-link#addons");
 // The URL for Firefox Color, recommended on the theme page in about:addons.
@@ -182,7 +178,14 @@ pref("app.update.langpack.enabled", true);
   // out of the background update feature via Normandy.  (The per-installation
   // pref allows profiles beyond the default profile to enable and disable the
   // background update feature manually.)
-#if defined(NIGHTLY_BUILD) && defined(XP_WIN)
+  //
+  // This preprocessor if statement is a bit ugly because the preprocessor does
+  // not currently support using parentheses for grouping. If it did, this could
+  // be more cleanly expressed as
+  // (defined(EARLY_BETA_OR_EARLIER) || defined(MOZ_DEV_EDITION)) && defined(XP_WIN)
+  // Since it does not, however, we must rely on the order of operations that it
+  // implements, which evaluates && operations before || operations
+#if defined(EARLY_BETA_OR_EARLIER) && defined(XP_WIN) || defined(MOZ_DEV_EDITION) && defined(XP_WIN)
   pref("app.update.background.scheduling.enabled", true);
   pref("app.update.background.experimental", true);
 #else
@@ -269,6 +272,12 @@ pref("browser.shell.mostRecentDateSetAsDefault", "");
 pref("browser.shell.skipDefaultBrowserCheckOnFirstRun", true);
 pref("browser.shell.didSkipDefaultBrowserCheckOnFirstRun", false);
 pref("browser.shell.defaultBrowserCheckCount", 0);
+#if defined(XP_WIN)
+// Attempt to set the default browser on Windows 10 using the UserChoice registry keys,
+// before falling back to launching the modern Settings dialog.
+pref("browser.shell.setDefaultBrowserUserChoice", true);
+#endif
+
 
 // 0 = blank, 1 = home (browser.startup.homepage), 2 = last visited page, 3 = resume previous browser session
 // The behavior of option 3 is detailed at: http://wiki.mozilla.org/Session_Restore
@@ -296,11 +305,7 @@ pref("browser.startup.firstrunSkipsHomepage", true);
 // Show a skeleton UI window prior to loading libxul. Only visible for windows
 // users as it is not implemented anywhere else.
 #if defined(XP_WIN)
-#ifdef NIGHTLY_BUILD
 pref("browser.startup.preXulSkeletonUI", true);
-#else
-pref("browser.startup.preXulSkeletonUI", false);
-#endif
 #endif
 
 // Show an upgrade dialog on major upgrades.
@@ -1078,13 +1083,9 @@ pref("places.frecency.defaultVisitBonus", 0);
 pref("places.frecency.unvisitedBookmarkBonus", 140);
 pref("places.frecency.unvisitedTypedBonus", 200);
 
-#ifdef NIGHTLY_BUILD
-  // Clear data by base domain (including partitioned storage) when the user
-  // selects "Forget About This Site".
-  pref("places.forgetThisSite.clearByBaseDomain", true);
-#else
-  pref("places.forgetThisSite.clearByBaseDomain", false);
-#endif
+// Clear data by base domain (including partitioned storage) when the user
+// selects "Forget About This Site".
+pref("places.forgetThisSite.clearByBaseDomain", true);
 
 // Controls behavior of the "Add Exception" dialog launched from SSL error pages
 // 0 - don't pre-populate anything
@@ -1338,7 +1339,6 @@ pref("services.sync.prefs.sync.browser.tabs.warnOnClose", true);
 pref("services.sync.prefs.sync.browser.tabs.warnOnOpen", true);
 pref("services.sync.prefs.sync.browser.taskbar.previews.enable", true);
 pref("services.sync.prefs.sync.browser.urlbar.maxRichResults", true);
-pref("services.sync.prefs.sync.browser.urlbar.resultBuckets", true);
 pref("services.sync.prefs.sync.browser.urlbar.showSearchSuggestionsFirst", true);
 pref("services.sync.prefs.sync.browser.urlbar.suggest.bookmark", true);
 pref("services.sync.prefs.sync.browser.urlbar.suggest.history", true);
@@ -1535,9 +1535,6 @@ pref("browser.aboutwelcome.skipFocus", true);
 
 // The pref that controls if the What's New panel is enabled.
 pref("browser.messaging-system.whatsNewPanel.enabled", true);
-// Used for CFR messages with scores. See Bug 1594422.
-pref("browser.messaging-system.personalized-cfr.scores", "{}");
-pref("browser.messaging-system.personalized-cfr.score-threshold", 5000);
 
 // Experiment Manager
 // See Console.jsm LOG_LEVELS for all possible values
@@ -2050,6 +2047,9 @@ pref("browser.suppress_first_window_animation", true);
 
 // Preference that allows individual users to disable Screenshots.
 pref("extensions.screenshots.disabled", false);
+
+// Preference that determines whether Screenshots is opened as a dedicated browser component
+pref("screenshots.browser.component.enabled", false);
 
 // DoH Rollout: whether to clear the mode value at shutdown.
 pref("doh-rollout.clearModeOnShutdown", false);
