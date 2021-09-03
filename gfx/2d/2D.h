@@ -1084,6 +1084,7 @@ class DrawTarget : public external::AtomicRefCounted<DrawTarget> {
    * Method to generate hyperlink in PDF output (with appropriate backend).
    */
   virtual void Link(const char* aDestination, const Rect& aRect) {}
+  virtual void Destination(const char* aDestination, const Point& aPoint) {}
 
   /**
    * Returns a SourceSurface which is a snapshot of the current contents of the
@@ -1788,8 +1789,7 @@ class GFX2D_API Factory {
                                                        SurfaceFormat aFormat);
 
   /**
-   * Create a simple PathBuilder, which uses SKIA backend. If USE_SKIA is not
-   * defined, this returns nullptr;
+   * Create a simple PathBuilder, which uses SKIA backend.
    */
   static already_AddRefed<PathBuilder> CreateSimplePathBuilder();
 
@@ -1952,10 +1952,8 @@ class GFX2D_API Factory {
   static bool mBGRSubpixelOrder;
 
  public:
-#ifdef USE_SKIA
   static already_AddRefed<DrawTarget> CreateDrawTargetWithSkCanvas(
       SkCanvas* aCanvas);
-#endif
 
 #ifdef MOZ_ENABLE_FREETYPE
   static void SetFTLibrary(FT_Library aFTLibrary);
@@ -2014,9 +2012,7 @@ class GFX2D_API Factory {
   static already_AddRefed<ScaledFont> CreateScaledFontForDWriteFont(
       IDWriteFontFace* aFontFace, const gfxFontStyle* aStyle,
       const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
-      bool aUseEmbeddedBitmap, int aRenderingMode,
-      IDWriteRenderingParams* aParams, Float aGamma, Float aContrast,
-      Float aClearTypeLevel);
+      bool aUseEmbeddedBitmap, bool aGDIForced);
 
   static already_AddRefed<ScaledFont> CreateScaledFontForGDIFont(
       const void* aLogFont, const RefPtr<UnscaledFont>& aUnscaledFont,

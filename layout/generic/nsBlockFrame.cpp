@@ -239,13 +239,15 @@ static Maybe<nscolor> GetBackplateColor(nsIFrame* aFrame) {
     if (!drawColor && !drawImage) {
       continue;
     }
-    if (NS_GET_A(backgroundColor) != 0) {
-      // NOTE: We intentionally disregard the alpha channel here for the purpose
-      // of the backplate, in order to guarantee contrast.
-      return Some(NS_RGB(NS_GET_R(backgroundColor), NS_GET_G(backgroundColor),
-                         NS_GET_B(backgroundColor)));
+    if (NS_GET_A(backgroundColor) == 0) {
+      // Even if there's a background image, if there's no background color we
+      // keep going up the frame tree, see bug 1723938.
+      continue;
     }
-    break;
+    // NOTE: We intentionally disregard the alpha channel here for the purpose
+    // of the backplate, in order to guarantee contrast.
+    return Some(NS_RGB(NS_GET_R(backgroundColor), NS_GET_G(backgroundColor),
+                       NS_GET_B(backgroundColor)));
   }
   return Some(aFrame->PresContext()->DefaultBackgroundColor());
 }
@@ -579,12 +581,12 @@ nscoord nsBlockFrame::GetLogicalBaseline(WritingMode aWM) const {
 bool nsBlockFrame::GetNaturalBaselineBOffset(
     mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
     nscoord* aBaseline) const {
-  if (aBaselineGroup == BaselineSharingGroup::First) {
-    return nsLayoutUtils::GetFirstLineBaseline(aWM, this, aBaseline);
-  }
-
   if (StyleDisplay()->IsContainLayout()) {
     return false;
+  }
+
+  if (aBaselineGroup == BaselineSharingGroup::First) {
+    return nsLayoutUtils::GetFirstLineBaseline(aWM, this, aBaseline);
   }
 
   for (ConstReverseLineIterator line = LinesRBegin(), line_end = LinesREnd();
@@ -3753,6 +3755,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
       *aKeepReflowGoing = false;
       if (ShouldAvoidBreakInside(aState.mReflowInput)) {
         aState.mReflowStatus.SetInlineLineBreakBeforeAndReset();
+        aLine->MarkDirty();
       } else {
         PushLines(aState, aLine.prev());
         aState.mReflowStatus.SetIncomplete();
@@ -4003,6 +4006,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
       *aKeepReflowGoing = false;
       if (ShouldAvoidBreakInside(aState.mReflowInput)) {
         aState.mReflowStatus.SetInlineLineBreakBeforeAndReset();
+        aLine->MarkDirty();
       } else {
         PushLines(aState, aLine.prev());
         aState.mReflowStatus.SetIncomplete();
@@ -4026,6 +4030,7 @@ void nsBlockFrame::ReflowBlockFrame(BlockReflowInput& aState,
       if (!frameReflowStatus.IsFullyComplete() &&
           ShouldAvoidBreakInside(aState.mReflowInput)) {
         *aKeepReflowGoing = false;
+        aLine->MarkDirty();
       }
 
       if (aLine->SetCarriedOutBEndMargin(collapsedBEndMargin)) {
