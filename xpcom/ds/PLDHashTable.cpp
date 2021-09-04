@@ -19,13 +19,6 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/ChaosMode.h"
 
-#if _MSC_VER >= 1400
-#include <intrin.h>
-#endif
-#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
-#include <xmmintrin.h>
-#endif
-
 using namespace mozilla;
 
 #ifdef MOZ_HASH_TABLE_CHECKS_ENABLED
@@ -101,29 +94,13 @@ bool PLDHashTable::MatchStringKey(const PLDHashEntryHdr* aEntry,
 void PLDHashTable::MoveEntryStub(PLDHashTable* aTable,
                                  const PLDHashEntryHdr* aFrom,
                                  PLDHashEntryHdr* aTo) {
-#if _MSC_VER >= 1400
-  if ((aTable->mEntrySize & 3) == 0) {
-    __movsd((unsigned long*)aTo, (unsigned long*)aFrom, aTable->mEntrySize >> 2);
-  } else {
   memcpy(aTo, aFrom, aTable->mEntrySize);
-}
-#else
-  memcpy(aTo, aFrom, aTable->mEntrySize);
-#endif
 }
 
 /* static */
 void PLDHashTable::ClearEntryStub(PLDHashTable* aTable,
                                   PLDHashEntryHdr* aEntry) {
-#if _MSC_VER >= 1400
-  if ((aTable->mEntrySize & 3) == 0) {
-    __stosd((unsigned long*)aEntry, 0, aTable->mEntrySize >> 2);
-  } else {
   memset(aEntry, 0, aTable->mEntrySize);
-}
-#else
-  memset(aEntry, 0, aTable->mEntrySize);
-#endif
 }
 
 static const PLDHashTableOps gStubOps = {

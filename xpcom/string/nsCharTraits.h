@@ -123,10 +123,6 @@ struct nsCharTraits<char16_t> {
   static char_type* copy(char_type* aStr1, const char_type* aStr2, size_t aN) {
     return static_cast<char_type*>(
         memcpy(aStr1, aStr2, aN * sizeof(char_type)));
-    if (1 == aN) {
-      *aStr1 = *aStr2;
-      return aStr1;
-    }	  
   }
 
   static void uninitialize(char_type* aStr, size_t aN) {
