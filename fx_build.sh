@@ -2,6 +2,7 @@
 MYOBJ_DIR=
 ICEWEASEL_TREE=`pwd -W 2>/dev/null || pwd`
 FIND_FILE=".mozconfig"
+export CARGO_TARGET_DIR=/tmp/cargo_target
 if [ ! -f "$FIND_FILE" ]; then
   [[ -f mozconfig32 ]] && cp mozconfig32 $FIND_FILE 2>/dev/null || cp mozconfig64 $FIND_FILE 2>/dev/null
 fi
@@ -10,11 +11,12 @@ if [ ! -f "$FIND_FILE" ]; then
   exit 1;
 fi
 FIND_STR="ac_add_options --target=i686-pc-mingw32"
-PYTHON_SCRIPT=_virtualenvs/common/Scripts
 if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR=obju-linux64
   MAKE=make
+  PYTHON_SCRIPT=_virtualenvs/common/bin
+  LOCAL_WITH_VC15=1
 else
   if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR=obju32-release
@@ -22,6 +24,7 @@ else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR=obju64-release
   fi
   MAKE=mozmake
+  PYTHON_SCRIPT=_virtualenvs/common/Scripts
 fi
 
 rm -f ./configure

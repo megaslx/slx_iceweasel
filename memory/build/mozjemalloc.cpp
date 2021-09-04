@@ -146,6 +146,9 @@
 #include "Mutex.h"
 #include "Utils.h"
 #include "mozilla/SSE.h"
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+#include <xmmintrin.h>
+#endif
 
 using namespace mozilla;
 
