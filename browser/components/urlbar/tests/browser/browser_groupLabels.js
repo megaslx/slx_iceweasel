@@ -9,6 +9,7 @@ const SUGGESTIONS_FIRST_PREF = "browser.urlbar.showSearchSuggestionsFirst";
 const SUGGESTIONS_PREF = "browser.urlbar.suggest.searches";
 
 const TEST_ENGINE_BASENAME = "searchSuggestionEngine.xml";
+const TEST_ENGINE_2_BASENAME = "searchSuggestionEngine2.xml";
 const MAX_RESULTS = UrlbarPrefs.get("maxRichResults");
 
 const TOP_SITES = [
@@ -31,11 +32,6 @@ add_task(async function init() {
   Assert.ok(
     UrlbarPrefs.get("showSearchSuggestionsFirst"),
     "Precondition: Search suggestions shown first by default"
-  );
-  Assert.equal(
-    Services.locale.appLocaleAsBCP47,
-    "en-US",
-    "Precondition: App locale is en-US"
   );
 
   // Add some history.
@@ -187,6 +183,35 @@ add_task(async function generalBeforeSuggestions_suggestionsOnly() {
 
   // Add back history so subsequent tasks run with this test's initial state.
   await addHistory();
+});
+
+// The Suggestions label should be updated when the default engine changes.
+add_task(async function generalBeforeSuggestions_defaultChanged() {
+  // Install both test engines, one after the other. Engine 2 will be the final
+  // default engine.
+  await withSuggestions(async engine1 => {
+    await withSuggestions(async engine2 => {
+      Assert.ok(engine2.name, "Engine 2 name is non-empty");
+      Assert.notEqual(engine1.name, engine2.name, "Engine names are different");
+      Assert.equal(
+        Services.search.defaultEngine.name,
+        engine2.name,
+        "Engine 2 is default"
+      );
+      await SpecialPowers.pushPrefEnv({
+        set: [[SUGGESTIONS_FIRST_PREF, false]],
+      });
+      await UrlbarTestUtils.promiseAutocompleteResultPopup({
+        window,
+        value: "test",
+      });
+      await checkLabels(MAX_RESULTS, {
+        1: FIREFOX_SUGGEST_LABEL,
+        [MAX_RESULTS - 2]: engineSuggestionsLabel(engine2.name),
+      });
+      await UrlbarTestUtils.promisePopupClose(window);
+    }, TEST_ENGINE_2_BASENAME);
+  });
 });
 
 // The Firefox Suggest label should appear above a suggested-index result when
@@ -506,13 +531,18 @@ function engineSuggestionsLabel(engineName) {
  *
  * @param {function} callback
  *   Your callback function.
+ * @param {string} [engineBasename]
+ *   The basename of the engine file.
  */
-async function withSuggestions(callback) {
+async function withSuggestions(
+  callback,
+  engineBasename = TEST_ENGINE_BASENAME
+) {
   await SpecialPowers.pushPrefEnv({
     set: [[SUGGESTIONS_PREF, true]],
   });
   let engine = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME
+    getRootDirectory(gTestPath) + engineBasename
   );
   let oldDefaultEngine = await Services.search.getDefault();
   await Services.search.setDefault(engine);
@@ -523,6 +553,18 @@ async function withSuggestions(callback) {
     await Services.search.removeEngine(engine);
     await SpecialPowers.popPrefEnv();
   }
+}
+
+function click(element, { x = undefined, y = undefined } = {}) {
+  let { width, height } = element.getBoundingClientRect();
+  if (typeof x != "number") {
+    x = width / 2;
+  }
+  if (typeof y != "number") {
+    y = height / 2;
+  }
+  EventUtils.synthesizeMouse(element, x, y, { type: "mousedown" });
+  EventUtils.synthesizeMouse(element, x, y, { type: "mouseup" });
 }
 
 /**
@@ -560,16 +602,4 @@ async function withLocales(locales, callback) {
   Services.locale.availableLocales = available;
   Services.locale.requestedLocales = requested;
   await enginesPromise;
-}
-
-function click(element, { x = undefined, y = undefined } = {}) {
-  let { width, height } = element.getBoundingClientRect();
-  if (typeof x != "number") {
-    x = width / 2;
-  }
-  if (typeof y != "number") {
-    y = height / 2;
-  }
-  EventUtils.synthesizeMouse(element, x, y, { type: "mousedown" });
-  EventUtils.synthesizeMouse(element, x, y, { type: "mouseup" });
 }

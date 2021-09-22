@@ -14,6 +14,11 @@ const FeatureManifest = {
   urlbar: {
     description: "The Address Bar",
     variables: {
+      merinoEnabled: {
+        type: "boolean",
+        fallbackPref: "browser.urlbar.merino.enabled",
+        description: "Whether Merino is enabled as a quick suggest source",
+      },
       quickSuggestEnabled: {
         type: "boolean",
         fallbackPref: "browser.urlbar.quicksuggest.enabled",
@@ -24,6 +29,18 @@ const FeatureManifest = {
         fallbackPref: "browser.urlbar.quicksuggest.nonSponsoredIndex",
         description:
           "The index of non-sponsored QuickSuggest results within the general group. A negative index is relative to the end of the group",
+      },
+      quickSuggestRemoteSettingsEnabled: {
+        type: "boolean",
+        fallbackPref: "browser.urlbar.quicksuggest.remoteSettings.enabled",
+        description:
+          "Whether Remote Settings is enabled as a quick suggest source",
+      },
+      quickSuggestScenario: {
+        // IMPORTANT: This should not have a fallbackPref. See UrlbarPrefs.jsm.
+        type: "string",
+        description:
+          "The Firefox Suggest scenario in which the user is enrolled, one of: 'history', 'offline', 'online'",
       },
       quickSuggestShouldShowOnboardingDialog: {
         type: "boolean",
