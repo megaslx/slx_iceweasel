@@ -46,6 +46,11 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @echo ##########################
 
 @echo ##########################
+@echo msys environment variable
+%BUID_DIR%\mozillabuild\msysdo env
+@echo ##########################
+
+@echo ##########################
 @echo List toolchain
 cd /d "%BUID_DIR%\mozillabuild"
 dir /a
