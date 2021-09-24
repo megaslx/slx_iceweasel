@@ -27,8 +27,9 @@ else
   PYTHON_SCRIPT=_virtualenvs/common/Scripts
 fi
 
-rm -f ./configure
-rm -f ./configure.old
+rm -f ./configure >/dev/null 2>&1
+rm -f ./configure.old >/dev/null 2>&1
+rm -f ./js/src/configure.old >/dev/null 2>&1
 autoconf-2.13
 rm -rf ../$MYOBJ_DIR
 mkdir ../$MYOBJ_DIR && cd ../$MYOBJ_DIR
@@ -49,6 +50,7 @@ if [ -n "$LOCAL_WITH_VC15" ]; then
   echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
   JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 else
+  df -h
   MOZ_HEADLESS=1 DISPLAY=22 JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 fi
 

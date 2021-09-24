@@ -21,13 +21,12 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @if exist clang\clang-lib.7z 7z x clang\clang-lib.7z -aoa -o!BUID_DIR!
 @if exist nodejs.7z 7z x nodejs.7z -aoa -o!BUID_DIR!
 @if exist nsis301.7z 7z x nsis301.7z -aoa -o!BUID_DIR!
-@if exist kdiff3.7z 7z x kdiff3.7z -aoa -o!BUID_DIR!
 @if exist rust\rust-bin.7z 7z x rust\rust-bin.7z -aoa -o!BUID_DIR!
 @if exist rust\rust-lib.7z 7z x rust\rust-lib.7z -aoa -o!BUID_DIR!
 @if exist rust\rust-tools.7z 7z x rust\rust-tools.7z -aoa -o!BUID_DIR!
 @if exist msys-1.0.7z 7z x msys-1.0.7z -aoa -o!BUID_DIR!
 @if exist msysdo.7z 7z x msysdo.7z -aoa -o!BUID_DIR!
-@if exist python-3.7.9.7z 7z x python-3.7.9.7z -aoa -o!BUID_DIR!\mozillabuild
+@if exist python-3.7.9.7z 7z x python-3.7.9.7z -aoa -o!BUID_DIR!
 
 @if not exist "!BUID_DIR!\mozillabuild\bin" @echo mozbin not exist&EXIT /B 4
 @if not exist "!BUID_DIR!\mozillabuild\clang" @echo clang not exist&EXIT /B 4
@@ -78,5 +77,5 @@ nmake
 @echo GITHUB_WORKSPACE: [%GITHUB_WORKSPACE%]
 @dir %GITHUB_WORKSPACE% /a
 @echo ##########################
-%BUID_DIR%\mozillabuild\msysdo ls -la d:/works/mozillabuild/clang/bin
+%BUID_DIR%\mozillabuild\msysdo df -h
 @echo ##########################

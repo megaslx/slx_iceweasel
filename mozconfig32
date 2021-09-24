@@ -47,8 +47,7 @@ ac_add_options --disable-necko-wifi
 # ac_add_options --disable-gamepad
 
 # disable sandbox
-# ac_add_options --disable-accessibility
-# ac_add_options --disable-sandbox
+ac_add_options --disable-sandbox
 
 # disable debug
 ac_add_options --disable-debug
