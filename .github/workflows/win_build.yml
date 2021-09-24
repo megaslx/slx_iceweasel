@@ -4,7 +4,6 @@ on:
     branches: 
       - iceweasel_release
 env:
-  BUID_DIR: d:\works
   SOURCE_DIR: d:\works\3rdparty
   APP_NAME: Iceweasel
 
@@ -24,10 +23,11 @@ jobs:
         cd /d %GITHUB_WORKSPACE%
         if exist mozconfig32 echo MY_BITS=win32>>%GITHUB_ENV%&echo MY_OBJ=obju32-release>>%GITHUB_ENV%&call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars32"
         if exist mozconfig64 MY_BITS=win64>>%GITHUB_ENV%&echo MY_OBJ=obju64-release>>%GITHUB_ENV%&call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64"
-        if not exist "%BUID_DIR%\mozillabuild" mkdir "%BUID_DIR%\mozillabuild"
+        if not exist "%APPDATA%\mozillabuild" mkdir "%APPDATA%\mozillabuild"
         set /p m_ver=<browser\config\version_display.txt
         echo MY_VER=%m_ver%>>%GITHUB_ENV%
-        echo LIBPORTABLE_PATH=%BUID_DIR%\mozillabuild\clang>>%GITHUB_ENV%
+        echo BUID_DIR=%APPDATA%>>%GITHUB_ENV%
+        echo LIBPORTABLE_PATH=%APPDATA%\mozillabuild\clang>>%GITHUB_ENV%
         echo VC_REDISTDIR=%VCToolsRedistDir%>>%GITHUB_ENV%
         echo UCRT_REDISTDIR=%UniversalCRTSdkDir%>>%GITHUB_ENV%
       shell: cmd

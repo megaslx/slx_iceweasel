@@ -2,8 +2,8 @@
 
 if not defined SOURCE_DIR set SOURCE_DIR="%1"
 if not exist "!SOURCE_DIR!" mkdir "!SOURCE_DIR!"&echo SOURCE_DIR: !SOURCE_DIR!
-if not defined BUID_DIR set BUID_DIR=d:\works
-if not exist "!BUID_DIR!" mkdir "!BUID_DIR!"&echo BUID_DIR: !BUID_DIR!
+if not defined BUID_DIR set BUID_DIR="%APPDATA%"
+if not exist "!BUID_DIR!\mozillabuild" mkdir "!BUID_DIR!\mozillabuild"&echo BUID_DIR: !BUID_DIR!\mozillabuild
 
 if not defined MY_BITS @echo mozconfig32 or mozconfig64 not exist.&EXIT /B 4
 if not defined LIBPORTABLE_PATH @echo Build libportable need this path.&EXIT /B 4
@@ -76,6 +76,4 @@ nmake
 @rd /s/q "!SOURCE_DIR!"
 @echo GITHUB_WORKSPACE: [%GITHUB_WORKSPACE%]
 @dir %GITHUB_WORKSPACE% /a
-@echo ##########################
-%BUID_DIR%\mozillabuild\msysdo df -h
 @echo ##########################
