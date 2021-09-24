@@ -25,6 +25,17 @@ else
   fi
   MAKE=mozmake
   PYTHON_SCRIPT=_virtualenvs/common/Scripts
+  compiler=$(which clang)
+  if [ -z "$compiler" ]; then
+    echo clang not exit
+    exit 1;
+  fi
+  compiler_version=$(clang -dumpversion)
+  if [ -z "$compiler_version" ]; then
+    exit 1;
+  fi
+  compiler_path=$(dirname $(dirname $compiler))
+  export LIB="$compiler_path/lib:$compiler_path/lib/clang/$compiler_version/lib/windows"
 fi
 
 rm -f ./configure >/dev/null 2>&1
