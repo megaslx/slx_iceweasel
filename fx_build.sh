@@ -13,15 +13,15 @@ fi
 FIND_STR="ac_add_options --target=i686-pc-mingw32"
 if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
-  MYOBJ_DIR="../obju-linux64"
+  MYOBJ_DIR="obju-linux64"
   MAKE=make
   PYTHON_SCRIPT=_virtualenvs/common/bin
   LOCAL_WITH_VC15=1
 else
   if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
-    [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="../obju32-release"
+    [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju32-release"
   else
-    [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="../obju64-release"
+    [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju64-release"
   fi
   MAKE=mozmake
   PYTHON_SCRIPT=_virtualenvs/common/Scripts
@@ -42,8 +42,8 @@ rm -f ./configure >/dev/null 2>&1
 rm -f ./configure.old >/dev/null 2>&1
 rm -f ./js/src/configure.old >/dev/null 2>&1
 autoconf-2.13
-rm -rf "$MYOBJ_DIR"
-mkdir "$MYOBJ_DIR" && cd "$MYOBJ_DIR"
+rm -rf "../$MYOBJ_DIR"
+mkdir "../$MYOBJ_DIR" && cd "../$MYOBJ_DIR"
 $ICEWEASEL_TREE/configure --enable-profile-generate=cross
 $MAKE -j4
 if [ "$?" != "0" ]; then
