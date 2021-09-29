@@ -1314,6 +1314,10 @@ BrowserGlue.prototype = {
       this._matchCBCategory
     );
     Services.prefs.removeObserver(
+      "network.http.referer.disallowCrossSiteRelaxingDefault",
+      this._matchCBCategory
+    );
+    Services.prefs.removeObserver(
       ContentBlockingCategoriesPrefs.PREF_CB_CATEGORY,
       this._updateCBCategory
     );
@@ -1373,6 +1377,37 @@ BrowserGlue.prototype = {
       "1.4",
       "resource://builtin-themes/alpenglow/"
     );
+
+    if (
+      AppConstants.NIGHTLY_BUILD &&
+      Services.prefs.getBoolPref(
+        "browser.theme.temporary.monochromatic.enabled",
+        false
+      )
+    ) {
+      // Temporarily install a prototype monochromatic theme for UX iteration.
+      // We uninstall it during shutdown so it does not persist if the pref is
+      // disabled.
+      const kMonochromaticThemeID = "firefox-monochromatic-purple@mozilla.org";
+      AddonManager.maybeInstallBuiltinAddon(
+        kMonochromaticThemeID,
+        "1.0",
+        "resource://builtin-themes/monochromatic-purple/"
+      );
+      AsyncShutdown.profileChangeTeardown.addBlocker(
+        "Uninstall Prototype Monochromatic Theme",
+        async () => {
+          try {
+            let addon = await AddonManager.getAddonByID(kMonochromaticThemeID);
+            await addon.uninstall();
+          } catch (e) {
+            Cu.reportError(
+              "Failed to uninstall firefox-monochromatic-purple on shutdown"
+            );
+          }
+        }
+      );
+    }
 
     if (AppConstants.MOZ_NORMANDY) {
       Normandy.init();
@@ -1721,6 +1756,10 @@ BrowserGlue.prototype = {
     );
     Services.prefs.addObserver(
       "network.cookie.cookieBehavior.pbmode",
+      this._matchCBCategory
+    );
+    Services.prefs.addObserver(
+      "network.http.referer.disallowCrossSiteRelaxingDefault",
       this._matchCBCategory
     );
     Services.prefs.addObserver(
@@ -4296,6 +4335,7 @@ var ContentBlockingCategoriesPrefs = {
         "privacy.trackingprotection.fingerprinting.enabled": null,
         "privacy.trackingprotection.cryptomining.enabled": null,
         "privacy.annotate_channels.strict_list.enabled": null,
+        "network.http.referer.disallowCrossSiteRelaxingDefault": null,
       },
       standard: {
         "network.cookie.cookieBehavior": null,
@@ -4306,6 +4346,7 @@ var ContentBlockingCategoriesPrefs = {
         "privacy.trackingprotection.fingerprinting.enabled": null,
         "privacy.trackingprotection.cryptomining.enabled": null,
         "privacy.annotate_channels.strict_list.enabled": null,
+        "network.http.referer.disallowCrossSiteRelaxingDefault": null,
       },
     };
     let type = "strict";
@@ -4372,6 +4413,16 @@ var ContentBlockingCategoriesPrefs = {
         case "-lvl2":
           this.CATEGORY_PREFS[type][
             "privacy.annotate_channels.strict_list.enabled"
+          ] = false;
+          break;
+        case "rp":
+          this.CATEGORY_PREFS[type][
+            "network.http.referer.disallowCrossSiteRelaxingDefault"
+          ] = true;
+          break;
+        case "-rp":
+          this.CATEGORY_PREFS[type][
+            "network.http.referer.disallowCrossSiteRelaxingDefault"
           ] = false;
           break;
         case "cookieBehavior0":

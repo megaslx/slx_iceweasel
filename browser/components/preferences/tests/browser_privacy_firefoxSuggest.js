@@ -32,7 +32,7 @@ let originalExperimentPrefDefaultBranchValue;
 
 // Allow more time for Mac machines so they don't time out in verify mode.
 if (AppConstants.platform == "macosx") {
-  requestLongerTimeout(10);
+  requestLongerTimeout(3);
 }
 
 add_task(async function init() {

@@ -152,6 +152,7 @@
 #include "nsDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsEmbedCID.h"
+#include "nsIDUtils.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsXPCOM.h"
@@ -217,7 +218,6 @@
 
 #include "nsExceptionHandler.h"
 #include "nsICrashReporter.h"
-#define NS_CRASHREPORTER_CONTRACTID "@mozilla.org/toolkit/crash-reporter;1"
 #include "nsIPrefService.h"
 #include "nsIMemoryInfoDumper.h"
 #if defined(XP_LINUX) && !defined(ANDROID)
@@ -2803,9 +2803,6 @@ static void SubmitDowngradeTelemetry(const nsCString& aLastVersion,
   rv = uuidGen->GenerateUUIDInPlace(&uuid);
   NS_ENSURE_SUCCESS_VOID(rv);
 
-  char strid[NSID_LENGTH];
-  uuid.ToProvidedString(strid);
-
   nsCString arch("null");
   nsCOMPtr<nsIPropertyBag2> sysInfo =
       do_GetService("@mozilla.org/system-info;1");
@@ -2817,9 +2814,7 @@ static void SubmitDowngradeTelemetry(const nsCString& aLastVersion,
   char date[sizeof "YYYY-MM-DDThh:mm:ss.000Z"];
   strftime(date, sizeof date, "%FT%T.000Z", gmtime(&now));
 
-  // NSID_LENGTH includes the trailing \0 and we also want to strip off the
-  // surrounding braces so the length becomes NSID_LENGTH - 3.
-  nsDependentCSubstring pingId(strid + 1, NSID_LENGTH - 3);
+  NSID_TrimBracketsASCII pingId(uuid);
   constexpr auto pingType = "downgrade"_ns;
 
   int32_t pos = aLastVersion.Find("_");
@@ -4130,7 +4125,7 @@ bool IsWaylandEnabled() {
   const char* x11Display = PR_GetEnv("DISPLAY");
   // MOZ_ENABLE_WAYLAND is our primary Wayland on/off switch.
   const char* waylandPref = PR_GetEnv("MOZ_ENABLE_WAYLAND");
-  bool enableWayland = !x11Display || (waylandPref && *waylandPref);
+  bool enableWayland = !x11Display || (waylandPref && *waylandPref == '1');
   if (!enableWayland) {
     const char* backendPref = PR_GetEnv("GDK_BACKEND");
     enableWayland = (backendPref && strncmp(backendPref, "wayland", 7) == 0);
@@ -4880,13 +4875,6 @@ nsresult XREMain::XRE_mainRun() {
       }
     }
     // Needs to be set after xpcom initialization.
-    CrashReporter::AnnotateCrashReport(
-        CrashReporter::Annotation::FramePoisonBase,
-        nsPrintfCString("%.16" PRIu64, uint64_t(gMozillaPoisonBase)));
-    CrashReporter::AnnotateCrashReport(
-        CrashReporter::Annotation::FramePoisonSize,
-        uint32_t(gMozillaPoisonSize));
-
     bool includeContextHeap = Preferences::GetBool(
         "toolkit.crashreporter.include_context_heap", false);
     CrashReporter::SetIncludeContextHeap(includeContextHeap);
@@ -5182,6 +5170,14 @@ nsresult XREMain::XRE_mainRun() {
                          nsICommandLine::STATE_INITIAL_LAUNCH);
       free(tempArgv);
       NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
+
+      // Check if we're running from a DMG and allow the user to install to the
+      // Applications directory.
+      if (mProfileSvc->GetIsFirstRun() &&
+          MacRunFromDmgUtils::MaybeInstallFromDmgAndRelaunch()) {
+        bool userAllowedQuit = true;
+        appStartup->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
+      }
 #endif
 
       nsCOMPtr<nsIObserverService> obsService =
@@ -5479,13 +5475,6 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 
   rv = mScopedXPCOM->Initialize(/* aInitJSContext = */ false);
   NS_ENSURE_SUCCESS(rv, 1);
-
-#ifdef XP_MACOSX
-  if (mProfileSvc->GetIsFirstRun()) {
-    Telemetry::ScalarSet(Telemetry::ScalarID::STARTUP_FIRST_RUN_IS_FROM_DMG,
-                         MacRunFromDmgUtils::IsAppRunningFromDmg());
-  }
-#endif
 
   // run!
   rv = XRE_mainRun();

@@ -194,6 +194,15 @@ pref("app.update.langpack.enabled", true);
   pref("app.update.background.interval", 25200);
 #endif
 
+#ifdef XP_MACOSX
+  // If set to true, Firefox will automatically restart if it is left running
+  // with no browser windows open.
+  pref("app.update.noWindowAutoRestart.enabled", true);
+  // How long to wait after all browser windows are closed before restarting,
+  // in milliseconds. 5 min = 300000 ms
+  pref("app.update.noWindowAutoRestart.delayMs", 300000);
+#endif
+
 #if defined(MOZ_BACKGROUNDTASKS)
   // The amount of time, in seconds, before background tasks time out and exit.
   // Tasks can override this default (10 minutes).
@@ -678,7 +687,7 @@ pref("security.allow_eval_in_parent_process", false);
 pref("security.allow_parent_unrestricted_js_loads", false);
 
 // Unload tabs when available memory is running low
-pref("browser.tabs.unloadOnLowMemory", false);
+pref("browser.tabs.unloadOnLowMemory", true);
 
 pref("browser.ctrlTab.sortByRecentlyUsed", false);
 
@@ -1467,11 +1476,16 @@ pref("browser.newtabpage.activity-stream.asrouter.providers.message-groups", "{\
 // this page over http opens us up to a man-in-the-middle attack that we'd rather not face. If you are a downstream
 // repackager of this code using an alternate snippet url, please keep your users safe
 pref("browser.newtabpage.activity-stream.asrouter.providers.snippets", "{\"id\":\"snippets\",\"enabled\":false,\"type\":\"remote\",\"url\":\"https://snippets.cdn.mozilla.net/%STARTPAGE_VERSION%/%NAME%/%VERSION%/%APPBUILDID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/\",\"updateCycleInMs\":14400000}");
-pref("browser.newtabpage.activity-stream.asrouter.providers.messaging-experiments", "{\"id\":\"messaging-experiments\",\"enabled\":true,\"type\":\"remote-experiments\",\"messageGroups\":[\"cfr\",\"whats-new-panel\",\"moments-page\",\"cfr-fxa\",\"aboutwelcome\",\"infobar\"],\"updateCycleInMs\":3600000}");
+pref("browser.newtabpage.activity-stream.asrouter.providers.messaging-experiments", "{\"id\":\"messaging-experiments\",\"enabled\":true,\"type\":\"remote-experiments\",\"messageGroups\":[\"cfr\",\"whats-new-panel\",\"moments-page\",\"aboutwelcome\",\"infobar\",\"spotlight\"],\"updateCycleInMs\":3600000}");
 
 // ASRouter user prefs
 pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons", true);
 pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features", true);
+
+// Default to allowing the ASRouter captive portal VPN promo messages to be
+// shown when specified, but do so in a pref in case someone needs to override
+// it.
+pref("browser.newtabpage.activity-stream.asrouter.disable-captive-portal-vpn-promo", false);
 
 // The pref that controls if ASRouter uses the remote fluent files.
 // It's enabled by default, but could be disabled to force ASRouter to use the local files.
@@ -1777,6 +1791,9 @@ pref("browser.contentblocking.state-partitioning.mvp.ui.enabled", true);
 //   Level 2 Tracking list:
 //     "lvl2": Level 2 tracking list enabled
 //     "-lvl2": Level 2 tracking list disabled
+//   Restrict relaxing default referrer policy:
+//     "rp": Restrict relaxing default referrer policy enabled
+//     "-rp": Restrict relaxing default referrer policy disabled
 //   Cookie behavior:
 //     "cookieBehavior0": cookie behaviour BEHAVIOR_ACCEPT
 //     "cookieBehavior1": cookie behaviour BEHAVIOR_REJECT_FOREIGN
@@ -1792,7 +1809,7 @@ pref("browser.contentblocking.state-partitioning.mvp.ui.enabled", true);
 //     "cookieBehaviorPBM4": cookie behaviour BEHAVIOR_REJECT_TRACKER
 //     "cookieBehaviorPBM5": cookie behaviour BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN
 // One value from each section must be included in the browser.contentblocking.features.strict pref.
-pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,lvl2");
+pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,lvl2,rp");
 
 // Hide the "Change Block List" link for trackers/tracking content in the custom
 // Content Blocking/ETP panel. By default, it will not be visible. There is also
@@ -2170,7 +2187,7 @@ pref("devtools.browsertoolbox.fission", false);
 #endif
 
 // This preference will enable watching top-level targets from the server side.
-pref("devtools.target-switching.server.enabled", false);
+pref("devtools.target-switching.server.enabled", true);
 
 // Toolbox Button preferences
 pref("devtools.command-button-pick.enabled", true);

@@ -40,7 +40,8 @@ const FeatureManifest = {
         // IMPORTANT: This should not have a fallbackPref. See UrlbarPrefs.jsm.
         type: "string",
         description:
-          "The Firefox Suggest scenario in which the user is enrolled, one of: 'history', 'offline', 'online'",
+          "The Firefox Suggest scenario in which the user is enrolled",
+        enum: ["history", "offline", "online"],
       },
       quickSuggestShouldShowOnboardingDialog: {
         type: "boolean",
@@ -228,6 +229,7 @@ const FeatureManifest = {
         type: "string",
         description:
           "Sets the position of the promo section. Possible values are: top, below-search, bottom. Default bottom.",
+        enum: ["top", "below-search", "bottom"],
       },
       promoTitle: {
         type: "string",
@@ -257,6 +259,7 @@ const FeatureManifest = {
         type: "string",
         description:
           "Type of promo link type. Possible values: link, button. Default is link.",
+        enum: ["link", "button"],
       },
       promoImageLarge: {
         type: "string",
