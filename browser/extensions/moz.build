@@ -10,6 +10,7 @@ DIRS += [
     "screenshots",
     "webcompat",
     "pictureinpicture",
+    "proxy-failover",
 ]
 
 if CONFIG["NIGHTLY_BUILD"]:

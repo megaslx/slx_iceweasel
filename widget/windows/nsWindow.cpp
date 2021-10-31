@@ -658,7 +658,7 @@ nsWindow::nsWindow(bool aIsChildWindow)
   mHideChrome = false;
   mFullscreenMode = false;
   mMousePresent = false;
-  mMouseInDraggableArea = false;
+  mSimulatedClientArea = false;
   mDestroyCalled = false;
   mIsEarlyBlankWindow = false;
   mIsShowingPreXULSkeletonUI = false;
@@ -4480,7 +4480,8 @@ bool nsWindow::TouchEventShouldStartDrag(EventMessage aEventMessage,
 bool nsWindow::DispatchMouseEvent(EventMessage aEventMessage, WPARAM wParam,
                                   LPARAM lParam, bool aIsContextMenuKey,
                                   int16_t aButton, uint16_t aInputSource,
-                                  WinPointerInfo* aPointerInfo) {
+                                  WinPointerInfo* aPointerInfo,
+                                  bool aIgnoreAPZ) {
   bool result = false;
 
   UserActivity();
@@ -4504,7 +4505,7 @@ bool nsWindow::DispatchMouseEvent(EventMessage aEventMessage, WPARAM wParam,
     sLastMouseMovePoint.y = mpScreen.y;
   }
 
-  if (WinUtils::GetIsMouseFromTouch(aEventMessage)) {
+  if (!aIgnoreAPZ && WinUtils::GetIsMouseFromTouch(aEventMessage)) {
     if (mTouchWindow) {
       // If mTouchWindow is true, then we must have APZ enabled and be
       // feeding it raw touch events. In that case we only want to
@@ -5508,8 +5509,8 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
 
     case WM_MOUSEMOVE: {
       LPARAM lParamScreen = lParamToScreen(lParam);
-      mMouseInDraggableArea = WithinDraggableRegion(GET_X_LPARAM(lParamScreen),
-                                                    GET_Y_LPARAM(lParamScreen));
+      mSimulatedClientArea = IsSimulatedClientArea(GET_X_LPARAM(lParamScreen),
+                                                   GET_Y_LPARAM(lParamScreen));
 
       if (!mMousePresent && !sIsInMouseCapture) {
         // First MOUSEMOVE over the client area. Ask for MOUSELEAVE
@@ -5544,7 +5545,7 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
 
     case WM_NCMOUSEMOVE: {
       LPARAM lParamClient = lParamToClient(lParam);
-      if (WithinDraggableRegion(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) {
+      if (IsSimulatedClientArea(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) {
         if (!sIsInMouseCapture) {
           TRACKMOUSEEVENT mTrack;
           mTrack.cbSize = sizeof(TRACKMOUSEEVENT);
@@ -5560,10 +5561,10 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // We've transitioned from a draggable area to somewhere else within
         // the non-client area - perhaps one of the edges of the window for
         // resizing.
-        mMouseInDraggableArea = false;
+        mSimulatedClientArea = false;
       }
 
-      if (mMousePresent && !sIsInMouseCapture && !mMouseInDraggableArea) {
+      if (mMousePresent && !sIsInMouseCapture && !mSimulatedClientArea) {
         SendMessage(mWnd, WM_MOUSELEAVE, 0, 0);
       }
     } break;
@@ -5585,7 +5586,7 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     } break;
 
     case WM_NCMOUSELEAVE: {
-      mMouseInDraggableArea = false;
+      mSimulatedClientArea = false;
 
       if (EventIsInsideWindow(this)) {
         // If we're handling WM_NCMOUSELEAVE and the mouse is still over the
@@ -5610,7 +5611,7 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     }
     case WM_MOUSELEAVE: {
       if (!mMousePresent) break;
-      if (mMouseInDraggableArea) break;
+      if (mSimulatedClientArea) break;
       mMousePresent = false;
 
       // Check if the mouse is over the fullscreen transition window, if so
@@ -5933,8 +5934,17 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
       // that non-popup-based panels can react to it. This doesn't send an
       // actual mousedown event because that would break dragging or interfere
       // with other mousedown handling in the caption area.
-      if (WithinDraggableRegion(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) {
+      if (ClientMarginHitTestPoint(GET_X_LPARAM(lParam),
+                                   GET_Y_LPARAM(lParam)) == HTCAPTION) {
         DispatchCustomEvent(u"draggableregionleftmousedown"_ns);
+      }
+
+      if (IsWindowButton(wParam) && mCustomNonClient && !mWindowButtonsRect) {
+        DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
+                           lParamToClient(lParam), false, MouseButton::ePrimary,
+                           MOUSE_INPUT_SOURCE(), nullptr, true);
+        DispatchPendingEvents();
+        result = true;
       }
       break;
     }
@@ -6448,6 +6458,14 @@ int32_t nsWindow::ClientMarginHitTestPoint(int32_t mx, int32_t my) {
 
     if (mDraggableRegion.Contains(pt.x, pt.y)) {
       testResult = HTCAPTION;
+    } else if (mWindowBtnRect[WindowButtonType::Minimize].Contains(pt.x,
+                                                                   pt.y)) {
+      testResult = HTMINBUTTON;
+    } else if (mWindowBtnRect[WindowButtonType::Maximize].Contains(pt.x,
+                                                                   pt.y)) {
+      testResult = HTMAXBUTTON;
+    } else if (mWindowBtnRect[WindowButtonType::Close].Contains(pt.x, pt.y)) {
+      testResult = HTCLOSE;
     } else {
       testResult = HTCLIENT;
     }
@@ -6457,8 +6475,14 @@ int32_t nsWindow::ClientMarginHitTestPoint(int32_t mx, int32_t my) {
   return testResult;
 }
 
-bool nsWindow::WithinDraggableRegion(int32_t screenX, int32_t screenY) {
-  return ClientMarginHitTestPoint(screenX, screenY) == HTCAPTION;
+bool nsWindow::IsSimulatedClientArea(int32_t screenX, int32_t screenY) {
+  int32_t testResult = ClientMarginHitTestPoint(screenX, screenY);
+  return testResult == HTCAPTION || IsWindowButton(testResult);
+}
+
+bool nsWindow::IsWindowButton(int32_t hitTestResult) {
+  return hitTestResult == HTMINBUTTON || hitTestResult == HTMAXBUTTON ||
+         hitTestResult == HTCLOSE;
 }
 
 TimeStamp nsWindow::GetMessageTimeStamp(LONG aEventTime) const {
@@ -7516,7 +7540,7 @@ bool nsWindow::AutoErase(HDC dc) { return false; }
 bool nsWindow::IsPopup() { return mWindowType == eWindowType_popup; }
 
 bool nsWindow::ShouldUseOffMainThreadCompositing() {
-  if (IsSmallPopup()) {
+  if (mWindowType == eWindowType_popup && mPopupType == ePopupTypeTooltip) {
     return false;
   }
 
@@ -8486,6 +8510,40 @@ LPARAM nsWindow::lParamToClient(LPARAM lParam) {
   return MAKELPARAM(pt.x, pt.y);
 }
 
+WPARAM nsWindow::wParamFromGlobalMouseState() {
+  WPARAM result = 0;
+
+  if (!!::GetKeyState(VK_CONTROL)) {
+    result |= MK_CONTROL;
+  }
+
+  if (!!::GetKeyState(VK_SHIFT)) {
+    result |= MK_SHIFT;
+  }
+
+  if (!!::GetKeyState(VK_LBUTTON)) {
+    result |= MK_LBUTTON;
+  }
+
+  if (!!::GetKeyState(VK_MBUTTON)) {
+    result |= MK_MBUTTON;
+  }
+
+  if (!!::GetKeyState(VK_RBUTTON)) {
+    result |= MK_RBUTTON;
+  }
+
+  if (!!::GetKeyState(VK_XBUTTON1)) {
+    result |= MK_XBUTTON1;
+  }
+
+  if (!!::GetKeyState(VK_XBUTTON2)) {
+    result |= MK_XBUTTON2;
+  }
+
+  return result;
+}
+
 void nsWindow::PickerOpen() { mPickerDisplayCount++; }
 
 void nsWindow::PickerClosed() {
@@ -8690,7 +8748,9 @@ bool nsWindow::OnPointerEvents(UINT msg, WPARAM aWParam, LPARAM aLParam) {
                              buttons);
   pointerInfo.twist = penInfo.rotation;
 
-  if (StaticPrefs::dom_w3c_pointer_events_scroll_by_pen_enabled() &&
+  // Fire touch events but not when the barrel button is pressed.
+  if (button != MouseButton::eSecondary &&
+      StaticPrefs::dom_w3c_pointer_events_scroll_by_pen_enabled() &&
       DispatchTouchEventFromWMPointer(msg, aLParam, pointerInfo, button)) {
     return true;
   }
@@ -8700,6 +8760,13 @@ bool nsWindow::OnPointerEvents(UINT msg, WPARAM aWParam, LPARAM aLParam) {
   LPARAM newLParam = lParamToClient(aLParam);
   DispatchMouseEvent(message, aWParam, newLParam, false, button,
                      MouseEvent_Binding::MOZ_SOURCE_PEN, &pointerInfo);
+
+  if (button == MouseButton::eSecondary && message == eMouseUp) {
+    // Fire eContextMenu manually since consuming WM_POINTER* blocks
+    // WM_CONTEXTMENU
+    DispatchMouseEvent(eContextMenu, aWParam, newLParam, false, button,
+                       MouseEvent_Binding::MOZ_SOURCE_PEN, &pointerInfo);
+  }
   // Consume WM_POINTER* to stop Windows fires WM_*BUTTONDOWN / WM_*BUTTONUP
   // WM_MOUSEMOVE.
   return true;

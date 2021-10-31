@@ -15,7 +15,7 @@ if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR="obju-linux64"
   MAKE=make
-  PYTHON_SCRIPT=_virtualenvs/common/bin
+  PYTHON_SCRIPT=_virtualenvs/build/bin
   LOCAL_WITH_VC15=1
 else
   if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
@@ -24,7 +24,7 @@ else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju64-release"
   fi
   MAKE=mozmake
-  PYTHON_SCRIPT=_virtualenvs/common/Scripts
+  PYTHON_SCRIPT=_virtualenvs/build/Scripts
   compiler=$(which clang)
   if [ -z "$compiler" ]; then
     echo clang not exit
