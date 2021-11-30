@@ -11,6 +11,7 @@ DIRS += [
     "webcompat",
     "pictureinpicture",
     "proxy-failover",
+    "search-detection",
 ]
 
 if CONFIG["NIGHTLY_BUILD"]:
