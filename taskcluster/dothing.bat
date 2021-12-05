@@ -19,6 +19,7 @@ if not defined UCRT_REDISTDIR @echo Build Iceweasel need ucrt path.&EXIT /B 4
 @if exist bin.7z 7z x bin.7z -aoa -o!BUID_DIR!
 @if exist clang\clang-bin.7z 7z x clang\clang-bin.7z -aoa -o!BUID_DIR!
 @if exist clang\clang-lib.7z 7z x clang\clang-lib.7z -aoa -o!BUID_DIR!
+@if exist clang\clang-tools.7z 7z x clang\clang-tools.7z -aoa -o!BUID_DIR!
 @if exist nodejs.7z 7z x nodejs.7z -aoa -o!BUID_DIR!
 @if exist nsis301.7z 7z x nsis301.7z -aoa -o!BUID_DIR!
 @if exist rust\rust-bin.7z 7z x rust\rust-bin.7z -aoa -o!BUID_DIR!
