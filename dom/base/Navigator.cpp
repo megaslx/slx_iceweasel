@@ -2177,6 +2177,9 @@ dom::LockManager* Navigator::Locks() {
 /* static */
 bool Navigator::Webdriver() {
 #ifdef ENABLE_WEBDRIVER
+  if (!Preferences::GetBool("dom.webdriver.enabled", true)) {
+    return false;
+  }
   nsCOMPtr<nsIMarionette> marionette = do_GetService(NS_MARIONETTE_CONTRACTID);
   if (marionette) {
     bool marionetteRunning = false;
