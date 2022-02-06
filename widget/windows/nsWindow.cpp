@@ -66,6 +66,7 @@
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/SwipeTracker.h"
 #include "mozilla/TouchEvents.h"
 #include "mozilla/TimeStamp.h"
 
@@ -683,10 +684,8 @@ nsWindow::nsWindow(bool aIsChildWindow)
   mCachedHitTestPoint.y = 0;
   mCachedHitTestTime = TimeStamp::Now();
   mCachedHitTestResult = 0;
-#ifdef MOZ_XUL
   mTransparencyMode = eTransparencyOpaque;
   memset(&mGlassMargins, 0, sizeof mGlassMargins);
-#endif
   DWORD background = ::GetSysColor(COLOR_BTNFACE);
   mBrush = ::CreateSolidBrush(NSRGB_2_COLOREF(background));
   mSendingSetText = false;
@@ -796,6 +795,17 @@ void nsWindow::SendAnAPZEvent(InputData& aEvent) {
     return;
   }
 
+  if (mSwipeTracker && aEvent.mInputType == PANGESTURE_INPUT) {
+    // Give the swipe tracker a first pass at the event. If a new pan gesture
+    // has been started since the beginning of the swipe, the swipe tracker
+    // will know to ignore the event.
+    nsEventStatus status =
+        mSwipeTracker->ProcessEvent(aEvent.AsPanGestureInput());
+    if (status == nsEventStatus_eConsumeNoDefault) {
+      return;
+    }
+  }
+
   APZEventResult result;
   if (mAPZC) {
     result = mAPZC->InputBridge()->ReceiveInputEvent(aEvent);
@@ -810,6 +820,16 @@ void nsWindow::SendAnAPZEvent(InputData& aEvent) {
   if (aEvent.mInputType == PANGESTURE_INPUT) {
     PanGestureInput& panInput = aEvent.AsPanGestureInput();
     WidgetWheelEvent event = panInput.ToWidgetEvent(this);
+    bool canTriggerSwipe = SwipeTracker::CanTriggerSwipe(panInput);
+    if (!mAPZC) {
+      if (MayStartSwipeForNonAPZ(panInput, CanTriggerSwipe{canTriggerSwipe})) {
+        return;
+      }
+    } else {
+      event = MayStartSwipeForAPZ(panInput, result,
+                                  CanTriggerSwipe{canTriggerSwipe});
+    }
+
     ProcessUntransformedAPZEvent(&event, result);
 
     return;
@@ -1703,14 +1723,12 @@ void nsWindow::Show(bool bState) {
     }
   }
 
-#ifdef MOZ_XUL
   if (!wasVisible && bState) {
     Invalidate();
     if (syncInvalidate && !mInDtor && !mOnDestroyCalled) {
       ::UpdateWindow(mWnd);
     }
   }
-#endif
 
   if (mOpeningAnimationSuppressed) {
     SuppressAnimation(false);
@@ -3275,7 +3293,6 @@ void nsWindow::SetCursor(const Cursor& aCursor) {
  *
  **************************************************************/
 
-#ifdef MOZ_XUL
 nsTransparencyMode nsWindow::GetTransparencyMode() {
   return GetTopLevelWindow(true)->GetWindowTranslucencyInner();
 }
@@ -3381,7 +3398,6 @@ void nsWindow::UpdateGlass() {
                           sizeof policy);
   }
 }
-#endif
 
 /**************************************************************
  *
@@ -4309,7 +4325,7 @@ bool nsWindow::DispatchStandardEvent(EventMessage aMsg) {
   WidgetGUIEvent event(true, aMsg, this);
   InitEvent(event);
 
-  bool result = DispatchWindowEvent(&event);
+  bool result = DispatchWindowEvent(event);
   return result;
 }
 
@@ -4328,18 +4344,6 @@ bool nsWindow::DispatchWheelEvent(WidgetWheelEvent* aEvent) {
   nsEventStatus status =
       DispatchInputEvent(aEvent->AsInputEvent()).mContentStatus;
   return ConvertStatus(status);
-}
-
-bool nsWindow::DispatchWindowEvent(WidgetGUIEvent* event) {
-  nsEventStatus status;
-  DispatchEvent(event, status);
-  return ConvertStatus(status);
-}
-
-bool nsWindow::DispatchWindowEvent(WidgetGUIEvent* event,
-                                   nsEventStatus& aStatus) {
-  DispatchEvent(event, aStatus);
-  return ConvertStatus(aStatus);
 }
 
 // Recursively dispatch synchronous paints for nsIWidget
@@ -4728,10 +4732,6 @@ bool nsWindow::IsTopLevelMouseExit(HWND aWnd) {
   if (mouseWnd == mouseTopLevel) return true;
 
   return WinUtils::GetTopLevelHWND(aWnd) != mouseTopLevel;
-}
-
-bool nsWindow::ConvertStatus(nsEventStatus aStatus) {
-  return aStatus == nsEventStatus_eConsumeNoDefault;
 }
 
 /**************************************************************
@@ -6172,38 +6172,38 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
 
     case WM_CLEAR: {
       WidgetContentCommandEvent command(true, eContentCommandDelete, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       result = true;
     } break;
 
     case WM_CUT: {
       WidgetContentCommandEvent command(true, eContentCommandCut, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       result = true;
     } break;
 
     case WM_COPY: {
       WidgetContentCommandEvent command(true, eContentCommandCopy, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       result = true;
     } break;
 
     case WM_PASTE: {
       WidgetContentCommandEvent command(true, eContentCommandPaste, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       result = true;
     } break;
 
     case EM_UNDO: {
       WidgetContentCommandEvent command(true, eContentCommandUndo, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       *aRetValue = (LRESULT)(command.mSucceeded && command.mIsEnabled);
       result = true;
     } break;
 
     case EM_REDO: {
       WidgetContentCommandEvent command(true, eContentCommandRedo, this);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       *aRetValue = (LRESULT)(command.mSucceeded && command.mIsEnabled);
       result = true;
     } break;
@@ -6214,7 +6214,7 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
       if (wParam == 0 || wParam == CF_TEXT || wParam == CF_UNICODETEXT) {
         WidgetContentCommandEvent command(true, eContentCommandPaste, this,
                                           true);
-        DispatchWindowEvent(&command);
+        DispatchWindowEvent(command);
         *aRetValue = (LRESULT)(command.mSucceeded && command.mIsEnabled);
         result = true;
       }
@@ -6222,14 +6222,14 @@ bool nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
 
     case EM_CANUNDO: {
       WidgetContentCommandEvent command(true, eContentCommandUndo, this, true);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       *aRetValue = (LRESULT)(command.mSucceeded && command.mIsEnabled);
       result = true;
     } break;
 
     case EM_CANREDO: {
       WidgetContentCommandEvent command(true, eContentCommandRedo, this, true);
-      DispatchWindowEvent(&command);
+      DispatchWindowEvent(command);
       *aRetValue = (LRESULT)(command.mSucceeded && command.mIsEnabled);
       result = true;
     } break;
@@ -7588,8 +7588,6 @@ a11y::LocalAccessible* nsWindow::GetAccessible() {
  **************************************************************
  **************************************************************/
 
-#ifdef MOZ_XUL
-
 void nsWindow::SetWindowTranslucencyInner(nsTransparencyMode aMode) {
   if (aMode == mTransparencyMode) return;
 
@@ -7668,8 +7666,6 @@ void nsWindow::SetWindowTranslucencyInner(nsTransparencyMode aMode) {
     GPUProcessManager::Get()->ResetCompositors();
   }
 }
-
-#endif  // MOZ_XUL
 
 /**************************************************************
  **************************************************************

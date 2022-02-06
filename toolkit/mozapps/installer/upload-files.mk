@@ -41,11 +41,11 @@ ifndef _APPNAME
 _APPNAME = $(MOZ_MACBUNDLE_NAME)
 endif
 ifndef _BINPATH
-_BINPATH = /$(_APPNAME)/Contents/MacOS
+_BINPATH = $(_APPNAME)/Contents/MacOS
 endif # _BINPATH
 ifndef _RESPATH
 # Resource path for the precomplete file
-_RESPATH = /$(_APPNAME)/Contents/Resources
+_RESPATH = $(_APPNAME)/Contents/Resources
 endif
 endif
 
@@ -148,12 +148,6 @@ ifeq ($(MOZ_PKG_FORMAT),7Z)
   PKG_SUFFIX	= .7z
   INNER_MAKE_PACKAGE = $(call py_action,make_7z,'$(MOZ_PKG_DIR)' '$(DIR_SUFFIX)' '$(PACKAGE)')
   INNER_UNMAKE_PACKAGE = $(shell echo un7z.)
-endif
-
-ifeq ($(MOZ_PKG_FORMAT),SFX7Z)
-  PKG_SUFFIX	= .exe
-  INNER_MAKE_PACKAGE = $(call py_action,exe_7z_archive,'$(MOZ_PKG_DIR)' '$(MOZ_INSTALLER_PATH)/app.tag' '$(MOZ_SFX_PACKAGE)' '$(PACKAGE)')
-  INNER_UNMAKE_PACKAGE = $(call py_action,exe_7z_extract,$(UNPACKAGE) $(MOZ_PKG_DIR))
 endif
 
 #Create an RPM file
@@ -322,7 +316,6 @@ ifdef MOZ_FOLD_LIBS
 endif
 
 GARBAGE		+= $(DIST)/$(PACKAGE) $(PACKAGE)
-
 # The following target stages files into two directories: one directory for
 # core files, and one for optional extensions based on the information in
 # the MOZ_PKG_MANIFEST file.

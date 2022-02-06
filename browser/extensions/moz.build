@@ -10,7 +10,6 @@ DIRS += [
     "screenshots",
     "webcompat",
     "pictureinpicture",
-    "proxy-failover",
     "search-detection",
 ]
 
