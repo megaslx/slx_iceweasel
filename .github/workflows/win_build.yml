@@ -10,7 +10,7 @@ env:
 jobs:
   fx_build:
     name: Iceweasel build
-    runs-on: windows-latest
+    runs-on: windows-2019
     timeout-minutes: 480
     steps:        
     - uses: actions/checkout@v1
