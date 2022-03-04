@@ -1,4 +1,15 @@
 #! /usr/bin/bash
+
+reconfig_files(){
+  cd $ICEWEASEL_TREE
+  rm -f ./configure >/dev/null 2>&1
+  rm -f ./configure.old >/dev/null 2>&1
+  rm -f ./old-configure >/dev/null 2>&1
+  rm -f ./js/src/configure.old >/dev/null 2>&1
+  rm -f ./js/src/old-configure >/dev/null 2>&1
+  autoconf-2.13
+}
+
 MYOBJ_DIR=
 ICEWEASEL_TREE=`pwd -W 2>/dev/null || pwd`
 FIND_FILE=".mozconfig"
@@ -38,10 +49,7 @@ else
   export LIB="$compiler_path/lib:$compiler_path/lib/clang/$compiler_version/lib/windows"
 fi
 
-rm -f ./configure >/dev/null 2>&1
-rm -f ./configure.old >/dev/null 2>&1
-rm -f ./js/src/configure.old >/dev/null 2>&1
-autoconf-2.13
+reconfig_files
 rm -rf "../$MYOBJ_DIR"
 mkdir "../$MYOBJ_DIR" && cd "../$MYOBJ_DIR"
 $ICEWEASEL_TREE/configure --enable-profile-generate=cross
@@ -75,12 +83,25 @@ if [ "$?" != "0" ]; then
   echo make maybe_clobber_profiledbuild failed. > error.log
   exit 1;
 fi
-$ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
+
+reconfig_files
+cd "../$MYOBJ_DIR"
+if [ "$OS" != "Windows_NT" ]; then
+  $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross --enable-linker=lld
+else
+  $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
+fi
 $MAKE -j4
+
 if [ "$?" != "0" ]; then
   echo Second compilation failed. >> error.log
   exit 1;
 fi
 $MAKE package
 echo Compile completed!
-rm -f $FIND_FILE
+rm -f $ICEWEASEL_TREE/$FIND_FILE>/dev/null 2>&1
+rm -f $ICEWEASEL_TREE/configure >/dev/null 2>&1
+rm -f $ICEWEASEL_TREE/configure.old >/dev/null 2>&1
+rm -f $ICEWEASEL_TREE/js/src/configure.old >/dev/null 2>&1
+rm -f $ICEWEASEL_TREE/js/src/old-configure >/dev/null 2>&1
+  
