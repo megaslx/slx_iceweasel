@@ -1907,6 +1907,13 @@ void imgLoader::NotifyObserversForCachedImage(
   if (aEntry->HasNotified()) {
     return;
   }
+
+  nsCOMPtr<nsIObserverService> obsService = services::GetObserverService();
+
+  if (!obsService->HasObservers("http-on-image-cache-response")) {
+    return;
+  }
+
   aEntry->SetHasNotified();
 
   nsCOMPtr<nsIChannel> newChannel;
@@ -1928,7 +1935,6 @@ void imgLoader::NotifyObserversForCachedImage(
     if (image) {
       newChannel->SetContentLength(aEntry->GetDataSize());
     }
-    nsCOMPtr<nsIObserverService> obsService = services::GetObserverService();
     obsService->NotifyObservers(newChannel, "http-on-image-cache-response",
                                 nullptr);
   }
