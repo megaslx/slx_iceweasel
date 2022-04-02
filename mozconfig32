@@ -17,7 +17,6 @@ ac_add_options --enable-optimize="-O2 -DTT_MEMUTIL"
 
 #disable tests
 ac_add_options --disable-tests
-ac_add_options --disable-ipdl-tests
 
 # diasble updater
 ac_add_options --disable-updater
