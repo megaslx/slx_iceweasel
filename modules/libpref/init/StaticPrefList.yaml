@@ -10773,7 +10773,7 @@
 
 - name: network.http.http2.websockets
   type: RelaxedAtomicBool
-  value: true
+  value: false
   mirror: always
 
 - name: network.http.http2.enable-hpack-dump
@@ -11801,7 +11801,7 @@
   # true means win32k system calls are not permitted.
 -   name: security.sandbox.content.win32k-disable
     type: RelaxedAtomicBool
-    value: @IS_EARLY_BETA_OR_EARLIER@
+    value: true
     mirror: always
 
   # Note: win32k is currently _not_ disabled for GMP due to intermittent test
