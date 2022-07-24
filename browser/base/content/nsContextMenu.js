@@ -43,7 +43,6 @@ function openContextMenu(aMessage, aBrowser, aActor) {
     spellInfo,
     principal,
     storagePrincipal,
-    customMenuItems: data.customMenuItems,
     documentURIObject,
     docLocation: data.docLocation,
     charSet: data.charSet,
@@ -105,15 +104,8 @@ class nsContextMenu {
       return;
     }
 
-    this.hasPageMenu = false;
     this.isContentSelected = !this.selectionInfo.docSelectionIsCollapsed;
     if (!aIsShift) {
-      this.hasPageMenu = PageMenuParent.addToPopup(
-        this.contentData.customMenuItems,
-        this.browser,
-        aXulMenu
-      );
-
       let tab =
         gBrowser && gBrowser.getTabForBrowser
           ? gBrowser.getTabForBrowser(this.browser)
@@ -329,7 +321,6 @@ class nsContextMenu {
   }
 
   initItems(aXulMenu) {
-    this.initPageMenuSeparator();
     this.initOpenItems();
     this.initNavigationItems();
     this.initViewItems();
@@ -357,10 +348,6 @@ class nsContextMenu {
         this.showHideSeparators(aXulMenu);
       };
     }
-  }
-
-  initPageMenuSeparator() {
-    this.showItem("page-menu-separator", this.hasPageMenu);
   }
 
   initOpenItems() {
@@ -595,6 +582,12 @@ class nsContextMenu {
     // Copy image location depends on whether we're on an image.
     this.showItem("context-copyimage", this.onImage || showBGImage);
 
+    // Performing text recognition only works on images, and if the feature is enabled.
+    this.showItem(
+      "context-imagetext",
+      this.onImage && TEXT_RECOGNITION_ENABLED
+    );
+
     // Send media URL (but not for canvas, since it's a big data: URL)
     this.showItem("context-sendimage", this.onImage || showBGImage);
 
@@ -734,6 +727,18 @@ class nsContextMenu {
       let frameOsPid = this.actor.manager.browsingContext.currentWindowGlobal
         .osPid;
       this.setItemAttr("context-frameOsPid", "label", "PID: " + frameOsPid);
+
+      // We need to check if "Take Screenshot" should be displayed in the "This Frame"
+      // context menu
+      let shouldShowTakeScreenshotFrame = this.shouldShowTakeScreenshot();
+      this.showItem(
+        "context-take-frame-screenshot",
+        shouldShowTakeScreenshotFrame
+      );
+      this.showItem(
+        "context-sep-frame-screenshot",
+        shouldShowTakeScreenshotFrame
+      );
     }
 
     this.showAndFormatSearchContextItem();
@@ -1202,7 +1207,7 @@ class nsContextMenu {
     }
   }
 
-  initScreenshotItem() {
+  shouldShowTakeScreenshot() {
     // About pages other than about:reader are not currently supported by
     // screenshots (see Bug 1620992)
     let uri = this.contentData?.documentURIObject;
@@ -1217,8 +1222,13 @@ class nsContextMenu {
       !this.onVideo &&
       !this.onAudio &&
       !this.onEditable &&
-      !this.onPassword &&
-      !this.inFrame;
+      !this.onPassword;
+
+    return shouldShow;
+  }
+
+  initScreenshotItem() {
+    let shouldShow = this.shouldShowTakeScreenshot() && !this.inFrame;
 
     this.showItem("context-sep-screenshots", shouldShow);
     this.showItem("context-take-screenshot", shouldShow);
@@ -1291,6 +1301,7 @@ class nsContextMenu {
       triggeringPrincipal: this.principal,
       csp: this.csp,
       frameID: this.contentData.frameID,
+      hasValidUserGestureActivation: true,
     };
     for (let p in extra) {
       params[p] = extra[p];
@@ -1554,6 +1565,7 @@ class nsContextMenu {
       // FIXME can we switch this to a blob URL?
       internalSave(
         dataURL,
+        null, // originalURL
         null, // document
         name,
         null, // content disposition
@@ -1742,6 +1754,7 @@ class nsContextMenu {
           // it can without waiting.
           saveURL(
             linkURL,
+            null,
             linkText,
             dialogTitle,
             bypassCache,
@@ -1907,6 +1920,7 @@ class nsContextMenu {
       this._canvasToBlobURL(this.targetIdentifier).then(function(blobURL) {
         internalSave(
           blobURL,
+          null, // originalURL
           null, // document
           "canvas.png",
           null, // content disposition
@@ -1927,6 +1941,7 @@ class nsContextMenu {
       urlSecurityCheck(this.mediaURL, this.principal);
       internalSave(
         this.mediaURL,
+        null, // originalURL
         null, // document
         null, // file name; we'll take it from the URL
         this.contentData.contentDisposition,
@@ -2228,6 +2243,10 @@ class nsContextMenu {
     clipboard.copyString(this.originalMediaURL);
   }
 
+  getImageText() {
+    this.actor.getImageText(this.targetIdentifier);
+  }
+
   drmLearnMore(aEvent) {
     let drmInfoURL =
       Services.urlFormatter.formatURLPref("app.support.baseURL") +
@@ -2339,10 +2358,6 @@ class nsContextMenu {
     };
     return createUserContextMenu(aEvent, createMenuOptions);
   }
-
-  doCustomCommand(generatedItemId, handlingUserInput) {
-    this.actor.doCustomCommand(generatedItemId, handlingUserInput);
-  }
 }
 
 XPCOMUtils.defineLazyModuleGetters(nsContextMenu, {
@@ -2368,5 +2383,12 @@ XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "REVEAL_PASSWORD_ENABLED",
   "layout.forms.reveal-password-context-menu.enabled",
+  false
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "TEXT_RECOGNITION_ENABLED",
+  "dom.text-recognition.enabled",
   false
 );
