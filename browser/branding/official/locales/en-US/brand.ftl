@@ -16,11 +16,11 @@
 ## For further details, consult:
 ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
 
--brand-shorter-name = Firefox
--brand-short-name = Firefox
--brand-full-name = Mozilla Firefox
+-brand-shorter-name = Iceweasel
+-brand-short-name = Iceweasel
+-brand-full-name = Iceweasel
 # This brand name can be used in messages where the product name needs to
 # remain unchanged across different versions (Nightly, Beta, etc.).
--brand-product-name = Firefox
+-brand-product-name = Iceweasel
 -vendor-short-name = Mozilla
-trademarkInfo = Firefox and the Firefox logos are trademarks of the Mozilla Foundation.
+trademarkInfo = Iceweasel is a fork [from Mozilla Firefox Quantum] .
