@@ -17,8 +17,11 @@ def FirefoxBranding():
     if CONFIG['MOZ_BRANDING_DIRECTORY'] == 'browser/branding/iceweasel':
         FINAL_TARGET_FILES['..'] += [
             'Iceweasel.VisualElementsManifest.xml',
+            'private_browsing.VisualElementsManifest.xml',
         ]
         FINAL_TARGET_FILES.VisualElements += [
+        	'PrivateBrowsing_150.png',
+        	'PrivateBrowsing_70.png',
             'VisualElements_150.png',
             'VisualElements_70.png',
         ]
