@@ -20,8 +20,8 @@ def FirefoxBranding():
             'private_browsing.VisualElementsManifest.xml',
         ]
         FINAL_TARGET_FILES.VisualElements += [
-        	'PrivateBrowsing_150.png',
-        	'PrivateBrowsing_70.png',
+            'PrivateBrowsing_150.png',
+            'PrivateBrowsing_70.png',
             'VisualElements_150.png',
             'VisualElements_70.png',
         ]
