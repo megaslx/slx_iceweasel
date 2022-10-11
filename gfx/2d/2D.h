@@ -714,7 +714,7 @@ class SourceSurface : public SupportsThreadSafeWeakPtr<SourceSurface> {
  protected:
   friend class StoredPattern;
 
-  UserData mUserData;
+  ThreadSafeUserData mUserData;
 };
 
 class DataSourceSurface : public SourceSurface {
@@ -1244,7 +1244,7 @@ class ScaledFont : public SupportsThreadSafeWeakPtr<ScaledFont> {
   explicit ScaledFont(const RefPtr<UnscaledFont>& aUnscaledFont)
       : mUnscaledFont(aUnscaledFont), mSyntheticObliqueAngle(0.0f) {}
 
-  UserData mUserData;
+  ThreadSafeUserData mUserData;
   RefPtr<UnscaledFont> mUnscaledFont;
   Float mSyntheticObliqueAngle;
 

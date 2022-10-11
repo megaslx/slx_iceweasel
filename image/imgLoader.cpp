@@ -3167,7 +3167,8 @@ imgCacheValidator::OnStartRequest(nsIRequest* aRequest) {
   // because OnStartRequest got delivered more than once), just bail.
   if (!mRequest) {
     MOZ_ASSERT_UNREACHABLE("OnStartRequest delivered more than once?");
-    aRequest->Cancel(NS_BINDING_ABORTED);
+    aRequest->CancelWithReason(NS_BINDING_ABORTED,
+                               "OnStartRequest delivered more than once?"_ns);
     return NS_ERROR_FAILURE;
   }
 
@@ -3193,7 +3194,8 @@ imgCacheValidator::OnStartRequest(nsIRequest* aRequest) {
 
     if (isFromCache && sameURI) {
       // We don't need to load this any more.
-      aRequest->Cancel(NS_BINDING_ABORTED);
+      aRequest->CancelWithReason(NS_BINDING_ABORTED,
+                                 "imgCacheValidator::OnStartRequest"_ns);
       mNewRequest = nullptr;
 
       // Clear the validator before updating the proxies. The notifications may
