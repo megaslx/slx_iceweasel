@@ -229,6 +229,18 @@
 #endif
   mirror: once
 
+# Whether to avoid accessibility activation on Windows shortly after clipboard
+# copy.
+#
+# Possible values are:
+#  * 0: never
+#  * 1: always
+#  * 2 (or others): when needed
+- name: accessibility.windows.suppress-after-clipboard-copy
+  type: uint32_t
+  value: 2
+  mirror: always
+
 #---------------------------------------------------------------------------
 # Prefs starting with "alerts."
 #---------------------------------------------------------------------------
@@ -14234,6 +14246,16 @@
   value: 0
   mirror: always
 #endif
+
+# Whether to flush the Ole clipboard synchronously.
+# Possible values are:
+#  * 0: never
+#  * 1: always
+#  * 2 (or others): when needed
+- name: widget.windows.sync-clipboard-flush
+  type: uint32_t
+  value: 2
+  mirror: always
 
 # Whether to disable SwipeTracker (e.g. swipe-to-nav).
 - name: widget.disable-swipe-tracker

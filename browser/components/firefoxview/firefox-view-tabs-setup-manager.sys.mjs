@@ -515,7 +515,7 @@ export const TabsSetupFlowManager = new (class {
 
   async openFxASignup(window) {
     const url = await lazy.fxAccounts.constructor.config.promiseConnectAccountURI(
-      "firefoxview"
+      "fx-view"
     );
     openTabInWindow(window, url, true);
     Services.telemetry.recordEvent("firefoxview", "fxa_continue", "sync", null);
@@ -535,6 +535,13 @@ export const TabsSetupFlowManager = new (class {
     // Flip the pref on.
     // The observer should trigger re-evaluating state and advance to next step
     Services.prefs.setBoolPref(SYNC_TABS_PREF, true);
+  }
+
+  async syncOnPageReload() {
+    if (lazy.UIState.isReady() && this.fxaSignedIn) {
+      this.startWaitingForTabs();
+      await lazy.SyncedTabs.syncTabs(true);
+    }
   }
 
   tryToClearError() {
