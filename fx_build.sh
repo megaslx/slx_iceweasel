@@ -2,12 +2,10 @@
 
 reconfig_files(){
   cd $ICEWEASEL_TREE
-  rm -f ./configure >/dev/null 2>&1
   rm -f ./configure.old >/dev/null 2>&1
   rm -f ./old-configure >/dev/null 2>&1
   rm -f ./js/src/configure.old >/dev/null 2>&1
   rm -f ./js/src/old-configure >/dev/null 2>&1
-  autoconf-2.13
 }
 
 MYOBJ_DIR=
@@ -100,7 +98,6 @@ fi
 $MAKE package
 echo Compile completed!
 rm -f $ICEWEASEL_TREE/$FIND_FILE>/dev/null 2>&1
-rm -f $ICEWEASEL_TREE/configure >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/configure.old >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/old-configure >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/js/src/configure.old >/dev/null 2>&1
