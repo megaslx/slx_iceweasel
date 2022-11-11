@@ -1151,6 +1151,7 @@ static bool HasMatchingShortcutImpl(const nsAString& aAppUserModelId,
 }
 
 NS_IMETHODIMP nsWindowsShellService::HasMatchingShortcut(
+#ifndef TT_MEMUTIL
     const nsAString& aAppUserModelId, const bool aPrivateBrowsing,
     JSContext* aCx, dom::Promise** aPromise) {
   if (!NS_IsMainThread()) {
@@ -1195,6 +1196,7 @@ NS_IMETHODIMP nsWindowsShellService::HasMatchingShortcut(
       NS_DISPATCH_EVENT_MAY_BLOCK);
 
   promise.forget(aPromise);
+#endif
   return NS_OK;
 }
 
