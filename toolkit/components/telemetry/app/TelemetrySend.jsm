@@ -59,6 +59,11 @@ ChromeUtils.defineModuleGetter(
   "TelemetryHealthPing",
   "resource://gre/modules/HealthPing.jsm"
 );
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "NimbusFeatures",
+  "resource://nimbus/ExperimentAPI.jsm"
+);
 
 const Utils = TelemetryUtils;
 
