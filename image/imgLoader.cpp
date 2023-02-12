@@ -1993,10 +1993,7 @@ bool imgLoader::ValidateEntry(
   // just return true in that case.  Doing so would mean that shift-reload
   // doesn't reload data URI documents/images though (which is handy for
   // debugging during gecko development) so we make an exception in that case.
-  nsAutoCString scheme;
-  aURI->GetScheme(scheme);
-  if (scheme.EqualsLiteral("data") &&
-      !(aLoadFlags & nsIRequest::LOAD_BYPASS_CACHE)) {
+  if (aURI->SchemeIs("data") && !(aLoadFlags & nsIRequest::LOAD_BYPASS_CACHE)) {
     return true;
   }
 
@@ -2283,6 +2280,14 @@ bool imgLoader::IsImageAvailable(nsIURI* aURI,
   RefPtr<imgRequest> request = entry->GetRequest();
   if (!request) {
     return false;
+  }
+  if (nsCOMPtr<nsILoadGroup> docLoadGroup = aDocument->GetDocumentLoadGroup()) {
+    nsLoadFlags requestFlags = nsIRequest::LOAD_NORMAL;
+    docLoadGroup->GetLoadFlags(&requestFlags);
+    if (requestFlags & nsIRequest::LOAD_BYPASS_CACHE) {
+      // If we're bypassing the cache, treat the image as not available.
+      return false;
+    }
   }
   return ValidateCORSMode(request, false, aCORSMode, aTriggeringPrincipal);
 }

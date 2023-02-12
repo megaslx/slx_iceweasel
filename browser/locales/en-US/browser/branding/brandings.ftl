@@ -25,9 +25,9 @@
 -mozilla-vpn-brand-name = Mozilla VPN
 -profiler-brand-name = Iceweasel Profiler
 -translations-brand-name = Iceweasel Translations
--rally-brand-name = Mozilla Rally
--rally-short-name = Rally
 -focus-brand-name = Iceweasel Focus
+-relay-brand-name = Iceweasel Relay
+-relay-brand-short-name = Relay
 
 # “Suggest” can be localized, “Iceweasel” must be treated as a brand
 # and kept in English.

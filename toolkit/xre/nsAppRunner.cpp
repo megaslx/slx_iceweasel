@@ -38,6 +38,7 @@
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/JSONWriter.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "mozilla/glean/GleanPings.h"
 #include "mozilla/widget/TextRecognition.h"
 #include "BaseProfiler.h"
 
@@ -5253,6 +5254,9 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   if (flagFile) {
     flagFile->Remove(true);
   }
+
+  // Flush any pending page load events.
+  mozilla::glean_pings::Pageload.Submit("startup"_ns);
 
   return 0;
 }

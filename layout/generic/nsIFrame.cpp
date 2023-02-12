@@ -23,6 +23,7 @@
 #include "mozilla/DisplayPortUtils.h"
 #include "mozilla/dom/CSSAnimation.h"
 #include "mozilla/dom/CSSTransition.h"
+#include "mozilla/dom/ContentVisibilityAutoStateChangeEvent.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/ElementInlines.h"
@@ -731,10 +732,6 @@ void nsIFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
     AddStateBits(NS_FRAME_MAY_BE_TRANSFORMED);
   }
 
-  if (disp->mContainerType != StyleContainerType::Normal) {
-    PresContext()->RegisterContainerQueryFrame(this);
-  }
-
   if (disp->IsContainLayout() && GetContainSizeAxes().IsBoth()) {
     // In general, frames that have contain:layout+size can be reflow roots.
     // (One exception: table-wrapper frames don't work well as reflow roots,
@@ -790,9 +787,18 @@ void nsIFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   if (!IsPlaceholderFrame() && !aPrevInFlow) {
     UpdateVisibleDescendantsState();
   }
+}
 
-  if (disp->IsContentVisibilityAuto() &&
-      IsContentVisibilityPropertyApplicable()) {
+void nsIFrame::InitPrimaryFrame() {
+  MOZ_ASSERT(IsPrimaryFrame());
+  const nsStyleDisplay* disp = StyleDisplay();
+
+  if (disp->mContainerType != StyleContainerType::Normal) {
+    PresContext()->RegisterContainerQueryFrame(this);
+  }
+
+  if (StyleDisplay()->ContentVisibility(*this) ==
+      StyleContentVisibility::Auto) {
     PresShell()->RegisterContentVisibilityAutoFrame(this);
     auto* element = Element::FromNodeOrNull(GetContent());
     MOZ_ASSERT(element);
@@ -806,6 +812,8 @@ void nsIFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   // this should also be called when scrolling or focus causes content to be
   // skipped or unskipped.
   UpdateAnimationVisibility();
+
+  HandleLastRememberedSize();
 }
 
 void nsIFrame::DestroyFrom(nsIFrame* aDestructRoot,
@@ -876,8 +884,8 @@ void nsIFrame::DestroyFrom(nsIFrame* aDestructRoot,
     }
   }
 
-  if (disp->IsContentVisibilityAuto() &&
-      IsContentVisibilityPropertyApplicable()) {
+  if (StyleDisplay()->ContentVisibility(*this) ==
+      StyleContentVisibility::Auto) {
     if (auto* element = Element::FromNodeOrNull(GetContent())) {
       PresContext()->Document()->UnobserveForContentVisibility(*element);
     }
@@ -2841,18 +2849,37 @@ class AutoSaveRestoreContainsBlendMode {
   }
 };
 
+static bool IsFrameOrAncestorApzAware(nsIFrame* aFrame) {
+  nsIContent* node = aFrame->GetContent();
+  if (!node) {
+    return false;
+  }
+
+  do {
+    if (node->IsNodeApzAware()) {
+      return true;
+    }
+    nsIContent* shadowRoot = node->GetShadowRoot();
+    if (shadowRoot && shadowRoot->IsNodeApzAware()) {
+      return true;
+    }
+
+    // Even if the node owning aFrame doesn't have apz-aware event listeners
+    // itself, its shadow root or display: contents ancestors (which have no
+    // frames) might, so we need to account for them too.
+  } while ((node = node->GetFlattenedTreeParent()) && node->IsElement() &&
+           node->AsElement()->IsDisplayContents());
+
+  return false;
+}
+
 static void CheckForApzAwareEventHandlers(nsDisplayListBuilder* aBuilder,
                                           nsIFrame* aFrame) {
   if (aBuilder->GetAncestorHasApzAwareEventHandler()) {
     return;
   }
 
-  nsIContent* content = aFrame->GetContent();
-  if (!content) {
-    return;
-  }
-
-  if (content->IsNodeApzAware()) {
+  if (IsFrameOrAncestorApzAware(aFrame)) {
     aBuilder->SetAncestorHasApzAwareEventHandler(true);
   }
 }
@@ -4244,6 +4271,7 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
         savedOutOfFlowData->mContainingBlockClipChain);
     asrSetter.SetCurrentActiveScrolledRoot(
         savedOutOfFlowData->mContainingBlockActiveScrolledRoot);
+    asrSetter.SetCurrentScrollParentId(savedOutOfFlowData->mScrollParentId);
     MOZ_ASSERT(awayFromCommonPath,
                "It is impossible when savedOutOfFlowData is true");
   } else if (HasAnyStateBits(NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO) &&
@@ -6888,15 +6916,9 @@ bool nsIFrame::IsContentDisabled() const {
   return element && element->IsDisabled();
 }
 
-bool nsIFrame::IsContentVisibilityPropertyApplicable() const {
-  return GetContent() && GetContent()->IsElement() &&
-         (!StyleDisplay()->IsInlineFlow() ||
-          IsFrameOfType(nsIFrame::eReplaced));
-}
-
 bool nsIFrame::IsContentRelevant() const {
-  MOZ_ASSERT(IsContentVisibilityPropertyApplicable());
-  MOZ_ASSERT(StyleDisplay()->IsContentVisibilityAuto());
+  MOZ_ASSERT(StyleDisplay()->ContentVisibility(*this) ==
+             StyleContentVisibility::Auto);
 
   auto* element = Element::FromNodeOrNull(GetContent());
   MOZ_ASSERT(element);
@@ -6915,22 +6937,14 @@ bool nsIFrame::IsContentRelevant() const {
 
 bool nsIFrame::HidesContent(
     const EnumSet<IncludeContentVisibility>& aInclude) const {
-  const auto& disp = *StyleDisplay();
-  if (disp.IsContentVisibilityVisible()) {
-    return false;
-  };
-
-  if (!IsContentVisibilityPropertyApplicable()) {
-    return false;
-  }
-
+  auto effectiveContentVisibility = StyleDisplay()->ContentVisibility(*this);
   if (aInclude.contains(IncludeContentVisibility::Hidden) &&
-      disp.IsContentVisibilityHidden()) {
+      effectiveContentVisibility == StyleContentVisibility::Hidden) {
     return true;
   }
 
   if (aInclude.contains(IncludeContentVisibility::Auto) &&
-      disp.IsContentVisibilityAuto()) {
+      effectiveContentVisibility == StyleContentVisibility::Auto) {
     return !IsContentRelevant();
   }
 
@@ -6975,6 +6989,10 @@ bool nsIFrame::HasSelectionInSubtree() {
   }
 
   RefPtr<nsFrameSelection> frameSelection = GetFrameSelection();
+  if (!frameSelection) {
+    return false;
+  }
+
   const Selection* selection =
       frameSelection->GetSelection(SelectionType::eNormal);
   if (!selection) {
@@ -7012,8 +7030,8 @@ bool nsIFrame::IsDescendantOfTopLayerElement() const {
 
 void nsIFrame::UpdateIsRelevantContent(
     const ContentRelevancy& aRelevancyToUpdate) {
-  MOZ_ASSERT(IsContentVisibilityPropertyApplicable());
-  MOZ_ASSERT(StyleDisplay()->IsContentVisibilityAuto());
+  MOZ_ASSERT(StyleDisplay()->ContentVisibility(*this) ==
+             StyleContentVisibility::Auto);
 
   auto* element = Element::FromNodeOrNull(GetContent());
   MOZ_ASSERT(element);
@@ -7066,12 +7084,29 @@ void nsIFrame::UpdateIsRelevantContent(
     element->SetContentRelevancy(newRelevancy);
   }
 
-  if (overallRelevancyChanged) {
-    HandleLastRememberedSize();
-    PresShell()->FrameNeedsReflow(
-        this, IntrinsicDirty::FrameAncestorsAndDescendants, NS_FRAME_IS_DIRTY);
-    InvalidateFrame();
+  if (!overallRelevancyChanged) {
+    return;
   }
+
+  HandleLastRememberedSize();
+  PresShell()->FrameNeedsReflow(
+      this, IntrinsicDirty::FrameAncestorsAndDescendants, NS_FRAME_IS_DIRTY);
+  InvalidateFrame();
+
+  ContentVisibilityAutoStateChangeEventInit init;
+  init.mSkipped = newRelevancy.isEmpty();
+  RefPtr<ContentVisibilityAutoStateChangeEvent> event =
+      ContentVisibilityAutoStateChangeEvent::Constructor(
+          element, u"contentvisibilityautostatechange"_ns, init);
+
+  // Per
+  // https://drafts.csswg.org/css-contain/#content-visibility-auto-state-changed
+  // "This event is dispatched by posting a task at the time when the state
+  // change occurs."
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncEventDispatcher(element, event.get());
+  DebugOnly<nsresult> rv = asyncDispatcher->PostDOMEvent();
+  NS_ASSERTION(NS_SUCCEEDED(rv), "AsyncEventDispatcher failed to dispatch");
 }
 
 nsresult nsIFrame::CharacterDataChanged(const CharacterDataChangeInfo&) {
@@ -8189,14 +8224,30 @@ void nsIFrame::ListGeneric(nsACString& aTo, const char* aPrefix,
   }
   nsIFrame* f = const_cast<nsIFrame*>(this);
   if (f->HasOverflowAreas()) {
-    nsRect vo = f->InkOverflowRect();
-    if (!vo.IsEqualEdges(mRect)) {
+    nsRect io = f->InkOverflowRect();
+    if (!io.IsEqualEdges(mRect)) {
       aTo += nsPrintfCString(" ink-overflow=%s",
-                             ConvertToString(vo, aFlags).c_str());
+                             ConvertToString(io, aFlags).c_str());
     }
     nsRect so = f->ScrollableOverflowRect();
     if (!so.IsEqualEdges(mRect)) {
       aTo += nsPrintfCString(" scr-overflow=%s",
+                             ConvertToString(so, aFlags).c_str());
+    }
+  }
+  if (OverflowAreas* preTransformOverflows =
+          f->GetProperty(PreTransformOverflowAreasProperty())) {
+    nsRect io = preTransformOverflows->InkOverflow();
+    if (!io.IsEqualEdges(mRect) &&
+        (!f->HasOverflowAreas() || !io.IsEqualEdges(f->InkOverflowRect()))) {
+      aTo += nsPrintfCString(" pre-transform-ink-overflow=%s",
+                             ConvertToString(io, aFlags).c_str());
+    }
+    nsRect so = preTransformOverflows->ScrollableOverflow();
+    if (!so.IsEqualEdges(mRect) &&
+        (!f->HasOverflowAreas() ||
+         !so.IsEqualEdges(f->ScrollableOverflowRect()))) {
+      aTo += nsPrintfCString(" pre-transform-scr-overflow=%s",
                              ConvertToString(so, aFlags).c_str());
     }
   }
