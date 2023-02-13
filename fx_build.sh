@@ -65,9 +65,9 @@ fi
 
 if [ -n "$LOCAL_WITH_VC15" ]; then
   echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
-  JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
+  $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 else
-  MOZ_HEADLESS=1 DISPLAY=22 JARLOG_FILE=jarlog/en-US.log $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
+  MOZ_HEADLESS=1 DISPLAY=22 $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
 fi
 
 ls *.profraw >/dev/null 2>&1
