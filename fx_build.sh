@@ -86,6 +86,8 @@ reconfig_files
 cd "../$MYOBJ_DIR"
 if [ "$OS" != "Windows_NT" ]; then
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross --enable-linker=lld
+elif [ "$MYOBJ_DIR" == "obju32-release" ]; then
+  $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=thin
 else
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
 fi
