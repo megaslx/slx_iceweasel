@@ -52,6 +52,7 @@ ac_add_options --disable-debug-symbols
 
 # disable maintenance
 ac_add_options --disable-maintenance-service
+ac_add_options --disable-notification-server
 
 # Enable MOZ_ALLOW_LEGACY_EXTENSIONS
 ac_add_options "MOZ_ALLOW_LEGACY_EXTENSIONS=1"
