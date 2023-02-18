@@ -2014,9 +2014,9 @@ class nsContextMenu {
 	  let process = Cc["@mozilla.org/process/util;1"]
                     .createInstance(Ci.nsIProcess);
 	  process.init(exe);
-	  process.startHidden = false;
+	  process.startHidden = true;
 	  process.noShell = true;
-	  process.run(false, ["-i", this.linkURL, "-b", cfile.path, "-m", "1"], 6);
+	  process.run(false, ["-i", this.linkURL, "-b", encodeURIComponent(cfile.path), "-m", "1"], 6);
     }
   }
   // Backwards-compatibility wrapper
