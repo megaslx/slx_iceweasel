@@ -241,6 +241,7 @@ mochitest-browser-chrome:
             windows10-64-2004-ccov.*/.*: 14
             windows10.*-asan-qr/opt: 12
             windows10-32-qr/debug: 12
+            windows7-32.*: 20
             default: 7
     max-run-time:
         by-variant:
@@ -629,7 +630,6 @@ mochitest-media:
                     linux.*(asan|ccov)/opt: []
                     .*(ccov/|asan/|-32).*: built-projects
                     (android|linux|windows10-64-2004|macos)(?!.*-qr).*: []
-                    windows10-aarch64-qr/.*: ['mozilla-central', 'mozilla-beta', 'mozilla-release']
                     default: built-projects
     loopback-video: true
     chunks:
@@ -658,7 +658,6 @@ mochitest-media:
             .*ccov.*: 2
             android-em.*: 1
             android-em-7.0-x86_64-qr/debug-isolated-process: 3
-            windows10-aarch64-qr.*: 2
             android-hw.*: 1
             default: default
 
