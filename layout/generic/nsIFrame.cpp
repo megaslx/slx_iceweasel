@@ -379,7 +379,7 @@ bool nsIFrame::IsVisibleConsideringAncestors(uint32_t aFlags) const {
   const nsIFrame* frame = this;
   while (frame) {
     nsView* view = frame->GetView();
-    if (view && view->GetVisibility() == nsViewVisibility_kHide) {
+    if (view && view->GetVisibility() == ViewVisibility::Hide) {
       return false;
     }
 
@@ -1560,8 +1560,8 @@ void nsIFrame::SyncFrameViewProperties(nsView* aView) {
     // See if the view should be hidden or visible
     ComputedStyle* sc = Style();
     vm->SetViewVisibility(aView, sc->StyleVisibility()->IsVisible()
-                                     ? nsViewVisibility_kShow
-                                     : nsViewVisibility_kHide);
+                                     ? ViewVisibility::Show
+                                     : ViewVisibility::Hide);
   }
 
   const auto zIndex = ZIndex();
@@ -2413,6 +2413,16 @@ already_AddRefed<ComputedStyle> nsIFrame::ComputeSelectionStyle(
       *element, PseudoStyleType::selection, Style());
 }
 
+already_AddRefed<ComputedStyle> nsIFrame::ComputeHighlightSelectionStyle(
+    const nsAtom* aHighlightName) {
+  Element* element = FindElementAncestorForMozSelection(GetContent());
+  if (!element) {
+    return nullptr;
+  }
+  return PresContext()->StyleSet()->ProbeHighlightPseudoElementStyle(
+      *element, aHighlightName, Style());
+}
+
 template <typename SizeOrMaxSize>
 static inline bool IsIntrinsicKeyword(const SizeOrMaxSize& aSize) {
   // All keywords other than auto/none/-moz-available depend on intrinsic sizes.
@@ -2615,8 +2625,7 @@ auto nsIFrame::ComputeShouldPaintBackground() const -> ShouldPaintBackground {
     return settings;
   }
 
-  if (!HonorPrintBackgroundSettings() ||
-      StyleVisibility()->mPrintColorAdjust == StylePrintColorAdjust::Exact) {
+  if (StyleVisibility()->mPrintColorAdjust == StylePrintColorAdjust::Exact) {
     return {true, true};
   }
 
@@ -2625,8 +2634,7 @@ auto nsIFrame::ComputeShouldPaintBackground() const -> ShouldPaintBackground {
 
 bool nsIFrame::DisplayBackgroundUnconditional(nsDisplayListBuilder* aBuilder,
                                               const nsDisplayListSet& aLists) {
-  const bool hitTesting = aBuilder->IsForEventDelivery();
-  if (hitTesting && !aBuilder->HitTestIsForVisibility()) {
+  if (aBuilder->IsForEventDelivery() && !aBuilder->HitTestIsForVisibility()) {
     // For hit-testing, we generally just need a light-weight data structure
     // like nsDisplayEventReceiver. But if the hit-testing is for visibility,
     // then we need to know the opaque region in order to determine whether to
@@ -2636,21 +2644,11 @@ bool nsIFrame::DisplayBackgroundUnconditional(nsDisplayListBuilder* aBuilder,
     return false;
   }
 
-  AppendedBackgroundType result = AppendedBackgroundType::None;
-  // Here we don't try to detect background propagation, canvas frame does its
-  // own thing.
-  if (hitTesting || !StyleBackground()->IsTransparent(this) ||
-      StyleDisplay()->HasAppearance() ||
-      // We do forcibly create a display item for background color animations
-      // even if the current background-color is transparent so that we can
-      // run the animations on the compositor.
-      EffectCompositor::HasAnimationsForCompositor(
-          this, DisplayItemType::TYPE_BACKGROUND_COLOR)) {
-    result = nsDisplayBackgroundImage::AppendBackgroundItemsToTop(
-        aBuilder, this,
-        GetRectRelativeToSelf() + aBuilder->ToReferenceFrame(this),
-        aLists.BorderBackground());
-  }
+  const AppendedBackgroundType result =
+      nsDisplayBackgroundImage::AppendBackgroundItemsToTop(
+          aBuilder, this,
+          GetRectRelativeToSelf() + aBuilder->ToReferenceFrame(this),
+          aLists.BorderBackground());
 
   if (result == AppendedBackgroundType::None) {
     aBuilder->BuildCompositorHitTestInfoIfNeeded(this,
@@ -4857,6 +4855,7 @@ nsresult nsIFrame::MoveCaretToEventPoint(nsPresContext* aPresContext,
             curDetail->mSelectionType != SelectionType::eFind &&
             curDetail->mSelectionType != SelectionType::eURLSecondary &&
             curDetail->mSelectionType != SelectionType::eURLStrikeout &&
+            curDetail->mSelectionType != SelectionType::eHighlight &&
             curDetail->mStart <= offsets.StartOffset() &&
             offsets.EndOffset() <= curDetail->mEnd) {
           inSelection = true;
@@ -7005,7 +7004,8 @@ bool nsIFrame::HasSelectionInSubtree() {
 
     const auto* commonAncestorNode =
         range->GetRegisteredClosestCommonInclusiveAncestor();
-    if (commonAncestorNode->IsInclusiveDescendantOf(GetContent())) {
+    if (commonAncestorNode &&
+        commonAncestorNode->IsInclusiveDescendantOf(GetContent())) {
       return true;
     }
   }
@@ -7069,13 +7069,6 @@ void nsIFrame::UpdateIsRelevantContent(
       aRelevancyToUpdate.contains(ContentRelevancyReason::Selected)) {
     setRelevancyValue(ContentRelevancyReason::Selected,
                       HasSelectionInSubtree());
-  }
-
-  if (!oldRelevancy ||
-      aRelevancyToUpdate.contains(
-          ContentRelevancyReason::DescendantOfTopLayerElement)) {
-    setRelevancyValue(ContentRelevancyReason::DescendantOfTopLayerElement,
-                      IsDescendantOfTopLayerElement());
   }
 
   bool overallRelevancyChanged =
@@ -7772,6 +7765,19 @@ static nsRect ComputeEffectsRect(nsIFrame* aFrame, const nsRect& aOverflowRect,
   }
 
   return r;
+}
+
+void nsIFrame::SetPosition(const nsPoint& aPt) {
+  if (mRect.TopLeft() == aPt) {
+    return;
+  }
+  mRect.MoveTo(aPt);
+  MarkNeedsDisplayItemRebuild();
+#ifdef ACCESSIBILITY
+  if (nsAccessibilityService* accService = GetAccService()) {
+    accService->NotifyOfPossibleBoundsChange(PresShell(), mContent);
+  }
+#endif
 }
 
 void nsIFrame::MovePositionBy(const nsPoint& aTranslation) {
@@ -10563,7 +10569,8 @@ bool nsIFrame::IsFocusableDueToScrollFrame() {
   return true;
 }
 
-nsIFrame::Focusable nsIFrame::IsFocusable(bool aWithMouse) {
+nsIFrame::Focusable nsIFrame::IsFocusable(bool aWithMouse,
+                                          bool aCheckVisibility) {
   // cannot focus content in print preview mode. Only the root can be focused,
   // but that's handled elsewhere.
   if (PresContext()->Type() == nsPresContext::eContext_PrintPreview) {
@@ -10574,7 +10581,7 @@ nsIFrame::Focusable nsIFrame::IsFocusable(bool aWithMouse) {
     return {};
   }
 
-  if (!IsVisibleConsideringAncestors()) {
+  if (aCheckVisibility && !IsVisibleConsideringAncestors()) {
     return {};
   }
 
@@ -11705,7 +11712,7 @@ CompositorHitTestInfo nsIFrame::GetCompositorHitTestInfo(
     if (touchAction == StyleTouchAction::AUTO) {
       // nothing to do
     } else if (touchAction & StyleTouchAction::MANIPULATION) {
-      result += CompositorHitTestFlags::eTouchActionDoubleTapZoomDisabled;
+      result += CompositorHitTestFlags::eTouchActionAnimatingZoomDisabled;
     } else {
       // This path handles the cases none | [pan-x || pan-y || pinch-zoom] so
       // double-tap is disabled in here.
@@ -11713,7 +11720,7 @@ CompositorHitTestInfo nsIFrame::GetCompositorHitTestInfo(
         result += CompositorHitTestFlags::eTouchActionPinchZoomDisabled;
       }
 
-      result += CompositorHitTestFlags::eTouchActionDoubleTapZoomDisabled;
+      result += CompositorHitTestFlags::eTouchActionAnimatingZoomDisabled;
 
       if (!(touchAction & StyleTouchAction::PAN_X)) {
         result += CompositorHitTestFlags::eTouchActionPanXDisabled;

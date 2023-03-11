@@ -61,10 +61,14 @@ browsertime-tp6:
                         - --browsertime-no-ffwindowrecorder
                         - --conditioned-profile=settled
                         - --extra-profiler-run
+                        - --extra-summary-methods=mean
+                        - --extra-summary-methods=geomean
                     default:
                         - --chimera
                         - --conditioned-profile=settled
                         - --extra-profiler-run
+                        - --extra-summary-methods=mean
+                        - --extra-summary-methods=geomean
         run-on-projects:
             by-subtest:
                 netflix:  # Bug 1756212 - Disable temporarily due to perma on mac
@@ -589,3 +593,20 @@ browsertime-grandprix:
             default: []
     tier: 3
     treeherder-symbol: Btime(grandprix)
+
+browsertime-regression-tests:
+    raptor:
+        apps: [firefox]
+        subtests: [[constant-regression, regress-c]]
+    description: Raptor (browsertime) tests for our regression detection system
+    max-run-time: 700
+    run-on-projects: [autoland]
+    limit-platforms:
+        - .*linux(?!.*shippable)(?!.*clang).*
+    mozharness:
+        extra-options:
+            by-test-platform:
+                windows10-64.*shippable.*-qr.*: []
+                default: []
+    tier: 2
+    treeherder-symbol: Btime(regressor)

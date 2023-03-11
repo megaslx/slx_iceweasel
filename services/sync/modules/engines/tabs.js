@@ -4,29 +4,18 @@
 
 var EXPORTED_SYMBOLS = ["TabEngine", "TabProvider"];
 
-const TABS_TTL = 31622400; // 366 days (1 leap year).
-const TAB_ENTRIES_LIMIT = 5; // How many URLs to include in tab history.
 const STORAGE_VERSION = 1; // This needs to be kept in-sync with the rust storage version
 
 const { XPCOMUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Log } = ChromeUtils.importESModule(
-  "resource://gre/modules/Log.sys.mjs"
-);
-const { Store, SyncEngine, Tracker } = ChromeUtils.import(
+const { SyncEngine, Tracker } = ChromeUtils.import(
   "resource://services-sync/engines.js"
 );
-const { CryptoWrapper } = ChromeUtils.import(
-  "resource://services-sync/record.js"
-);
 const { Svc, Utils } = ChromeUtils.import("resource://services-sync/util.js");
-const {
-  LOGIN_SUCCEEDED,
-  SCORE_INCREMENT_SMALL,
-  STATUS_OK,
-  URI_LENGTH_MAX,
-} = ChromeUtils.import("resource://services-sync/constants.js");
+const { SCORE_INCREMENT_SMALL, STATUS_OK, URI_LENGTH_MAX } = ChromeUtils.import(
+  "resource://services-sync/constants.js"
+);
 const { CommonUtils } = ChromeUtils.import(
   "resource://services-common/utils.js"
 );
@@ -36,7 +25,7 @@ const { SyncRecord, SyncTelemetry } = ChromeUtils.import(
   "resource://services-sync/telemetry.js"
 );
 
-const { BridgedEngine, LogAdapter } = ChromeUtils.import(
+const { BridgedEngine } = ChromeUtils.import(
   "resource://services-sync/bridged_engine.js"
 );
 
@@ -123,7 +112,7 @@ TabEngine.prototype = {
       device_type: clientsEngine.localType,
     };
 
-    // Quick write adjusts the lasySync so we can post sucessfully to the server
+    // Quick write needs to adjust the lastSync so we can POST to the server
     // see quickWrite() for details
     if (isQuickWrite) {
       await this.setLastSync(FAR_FUTURE);
@@ -131,10 +120,11 @@ TabEngine.prototype = {
       return;
     }
 
-    // Quick write adjusts the lasySync so we can post sucessfully to the server
-    // see quickWrite() for details
-    // We set this to zero so we always grab the most recent tabs
-    await this._bridge.setLastSync(0);
+    // Just incase we crashed while the lastSync timestamp was FAR_FUTURE, we
+    // reset it to zero
+    if ((await this.getLastSync()) === FAR_FUTURE) {
+      await this._bridge.setLastSync(0);
+    }
     await this._bridge.prepareForSync(JSON.stringify(clientData));
   },
 
@@ -156,9 +146,6 @@ TabEngine.prototype = {
     this._bridge.allowSkippedRecord = true;
 
     this._log.info("Got a bridged engine!");
-
-    // Reset the client on every startup so that we fetch recent tabs.
-    await this._resetClient();
     this._tracker.modified = true;
   },
 
