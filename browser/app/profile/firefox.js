@@ -2306,7 +2306,7 @@ pref("datareporting.healthreport.uploadEnabled", false);
 //      the app and browser.
 #if defined(RELEASE_OR_BETA) && !defined(MOZ_DEV_EDITION)
   pref("intl.multilingual.enabled", true);
-  pref("intl.multilingual.downloadEnabled", true);
+  pref("intl.multilingual.downloadEnabled", false);
   pref("intl.multilingual.liveReload", true);
   pref("intl.multilingual.liveReloadBidirectional", false);
   pref("intl.multilingual.aboutWelcome.languageMismatchEnabled", true);
