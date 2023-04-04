@@ -760,8 +760,9 @@ void APZCTreeManager::SampleForWebRender(const Maybe<VsyncId>& aVsyncId,
       auto it = mTestData.find(guid.mLayersId);
       if (it != mTestData.end()) {
         it->second->RecordSampledResult(
-            apzc->GetCurrentAsyncScrollOffsetInCssPixels(
-                AsyncPanZoomController::eForCompositing),
+            apzc->GetCurrentAsyncVisualViewport(
+                    AsyncPanZoomController::eForCompositing)
+                .TopLeft(),
             (aSampleTime.Time() - TimeStamp::ProcessCreation())
                 .ToMicroseconds(),
             guid.mLayersId, guid.mScrollId);
@@ -2184,7 +2185,7 @@ void APZCTreeManager::SetupScrollbarDrag(
     // TransformToLocal() on the event, but we need its mLocalOrigin now
     // to compute a drag start offset for the AsyncDragMetrics.
     aMouseInput.TransformToLocal(aApzc->GetTransformToThis());
-    CSSCoord dragStart =
+    OuterCSSCoord dragStart =
         aApzc->ConvertScrollbarPoint(aMouseInput.mLocalOrigin, thumbData);
     // ConvertScrollbarPoint() got the drag start offset relative to
     // the scroll track. Now get it relative to the thumb.
@@ -2199,7 +2200,7 @@ void APZCTreeManager::SetupScrollbarDrag(
     }
     // Only consider the translation, since we do not support both
     // zooming and scrollbar dragging on any platform.
-    CSSCoord thumbStart =
+    OuterCSSCoord thumbStart =
         thumbData.mThumbStart +
         ((*thumbData.mDirection == ScrollDirection::eHorizontal)
              ? thumbTransform._41
