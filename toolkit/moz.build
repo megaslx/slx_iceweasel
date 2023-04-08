@@ -14,6 +14,7 @@ DIRS += [
     "actors",
     "components",
     "content",
+    "crashreporter",
     "locales",
     "modules",
     "mozapps/downloads",
@@ -22,11 +23,6 @@ DIRS += [
     "profile",
     "themes",
 ]
-
-if CONFIG["MOZ_CRASHREPORTER"]:
-    DIRS = [
-        "crashreporter",
-    ]
 
 if CONFIG["OS_ARCH"] == "WINNT":
     if CONFIG["MOZ_NOTIFICATION_SERVER"]:

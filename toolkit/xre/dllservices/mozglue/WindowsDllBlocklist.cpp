@@ -44,8 +44,10 @@ glue::detail::DllServicesBase* gDllServices;
 
 using namespace mozilla;
 
+#ifdef MOZ_CRASHREPORTER
 using CrashReporter::Annotation;
 using CrashReporter::AnnotationWriter;
+#endif
 
 #define DLL_BLOCKLIST_ENTRY(name, ...) {name, __VA_ARGS__},
 #define DLL_BLOCKLIST_STRING_TYPE const char*
@@ -658,7 +660,9 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
 #endif
 
   if (aInitFlags & eDllBlocklistInitFlagWasBootstrapped) {
+  #ifdef MOZ_CRASHREPORTER
     GetNativeNtBlockSetWriter();
+  #endif
     return;
   }
 
@@ -714,6 +718,7 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
 MFBT_API void DllBlocklist_Shutdown() {}
 #endif  // DEBUG
 
+#ifdef MOZ_CRASHREPORTER
 static void InternalWriteNotes(AnnotationWriter& aWriter) {
   WritableBuffer buffer;
   DllBlockSet::Write(buffer);
@@ -744,6 +749,7 @@ MFBT_API void DllBlocklist_WriteNotes(AnnotationWriter& aWriter) {
   MOZ_ASSERT(gWriterFn);
   gWriterFn(aWriter);
 }
+#endif
 
 MFBT_API bool DllBlocklist_CheckStatus() {
   if (sBlocklistInitFailed || sUser32BeforeBlocklist) return false;
