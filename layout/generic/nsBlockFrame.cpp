@@ -5763,7 +5763,7 @@ void nsBlockFrame::AppendFrames(ChildListID aListID, nsFrameList&& aFrameList) {
   ListTag(stdout);
   printf(": append ");
   for (nsIFrame* frame : aFrameList) {
-    frame->ListTag(out);
+    frame->ListTag(stdout);
   }
   if (lastKid) {
     printf(" after ");
@@ -5808,7 +5808,7 @@ void nsBlockFrame::InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
   ListTag(stdout);
   printf(": insert ");
   for (nsIFrame* frame : aFrameList) {
-    frame->ListTag(out);
+    frame->ListTag(stdout);
   }
   if (aPrevFrame) {
     printf(" after ");
