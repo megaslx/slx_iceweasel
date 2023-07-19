@@ -39,7 +39,7 @@ else
     echo clang not exit
     exit 1;
   fi
-  compiler_version=$(clang -dumpversion)
+  compiler_version=$(echo __clang_major__ | $compiler -E -xc - 2>/dev/null | tail -n 1)
   if [ -z "$compiler_version" ]; then
     exit 1;
   fi

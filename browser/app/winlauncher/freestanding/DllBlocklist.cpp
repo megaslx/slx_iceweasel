@@ -19,6 +19,8 @@
 #include "ModuleLoadFrame.h"
 #include "SharedSection.h"
 
+using mozilla::DllBlockInfoFlags;
+
 #define DLL_BLOCKLIST_ENTRY(name, ...) \
   {MOZ_LITERAL_UNICODE_STRING(L##name), __VA_ARGS__},
 #define DLL_BLOCKLIST_STRING_TYPE UNICODE_STRING
@@ -172,53 +174,53 @@ static BlockAction CheckBlockInfo(const DllBlockInfo* aInfo,
                                   uint64_t& aVersion) {
   aVersion = DllBlockInfo::ALL_VERSIONS;
 
-  if (aInfo->mFlags & (DllBlockInfo::BLOCK_WIN8_AND_OLDER |
-                       DllBlockInfo::BLOCK_WIN7_AND_OLDER)) {
+  if (aInfo->mFlags & (DllBlockInfoFlags::BLOCK_WIN8_AND_OLDER |
+                       DllBlockInfoFlags::BLOCK_WIN7_AND_OLDER)) {
     RTL_OSVERSIONINFOW osv = {sizeof(osv)};
     NTSTATUS ntStatus = ::RtlGetVersion(&osv);
     if (!NT_SUCCESS(ntStatus)) {
       return BlockAction::Error;
     }
 
-    if ((aInfo->mFlags & DllBlockInfo::BLOCK_WIN8_AND_OLDER) &&
+    if ((aInfo->mFlags & DllBlockInfoFlags::BLOCK_WIN8_AND_OLDER) &&
         (osv.dwMajorVersion > 6 ||
          (osv.dwMajorVersion == 6 && osv.dwMinorVersion > 2))) {
       return BlockAction::Allow;
     }
 
-    if ((aInfo->mFlags & DllBlockInfo::BLOCK_WIN7_AND_OLDER) &&
+    if ((aInfo->mFlags & DllBlockInfoFlags::BLOCK_WIN7_AND_OLDER) &&
         (osv.dwMajorVersion > 6 ||
          (osv.dwMajorVersion == 6 && osv.dwMinorVersion > 1))) {
       return BlockAction::Allow;
     }
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::CHILD_PROCESSES_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::CHILD_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsChildProcess)) {
     return BlockAction::Allow;
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::UTILITY_PROCESSES_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::UTILITY_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsUtilityProcess)) {
     return BlockAction::Allow;
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::SOCKET_PROCESSES_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::SOCKET_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsSocketProcess)) {
     return BlockAction::Allow;
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::GPU_PROCESSES_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::GPU_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsGPUProcess)) {
     return BlockAction::Allow;
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::BROWSER_PROCESS_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::BROWSER_PROCESS_ONLY) &&
       (gBlocklistInitFlags & eDllBlocklistInitFlagIsChildProcess)) {
     return BlockAction::Allow;
   }
 
-  if ((aInfo->mFlags & DllBlockInfo::GMPLUGIN_PROCESSES_ONLY) &&
+  if ((aInfo->mFlags & DllBlockInfoFlags::GMPLUGIN_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsGMPluginProcess)) {
     return BlockAction::Allow;
   }
@@ -231,7 +233,7 @@ static BlockAction CheckBlockInfo(const DllBlockInfo* aInfo,
     return BlockAction::Error;
   }
 
-  if (aInfo->mFlags & DllBlockInfo::USE_TIMESTAMP) {
+  if (aInfo->mFlags & DllBlockInfoFlags::USE_TIMESTAMP) {
     DWORD timestamp;
     if (!aHeaders.GetTimeStamp(timestamp)) {
       return BlockAction::Error;
@@ -314,6 +316,52 @@ static BlockAction DetermineBlockAction(
     return BlockAction::Deny;
   }
 
+  mozilla::nt::PEHeaders headers(aBaseAddress);
+  DWORD checksum = 0;
+  DWORD timestamp = 0;
+  DWORD imageSize = 0;
+  uint64_t version = 0;
+
+  // Block some malicious DLLs known for crashing our process (bug 1841751),
+  // based on matching the combination of version number + timestamp + image
+  // size. We further reduce the chances of collision with legit DLLs by
+  // checking for a checksum of 0 and the absence of debug information, both of
+  // which are unusual for production-ready DLLs.
+  if (headers.GetCheckSum(checksum) && checksum == 0 && !headers.GetPdbInfo() &&
+      headers.GetTimeStamp(timestamp)) {
+    struct KnownMaliciousCombination {
+      uint64_t mVersion;
+      uint32_t mTimestamp;
+      uint32_t mImageSize;
+    };
+    const KnownMaliciousCombination instances[]{
+        // 1.0.0.26638
+        {0x000100000000680e, 0x570B8A90, 0x62000},
+        // 1.0.0.26793
+        {0x00010000000068a9, 0x572B4CE4, 0x62000},
+        // 1.0.0.27567
+        {0x0001000000006baf, 0x57A725AC, 0x61000},
+        // 1.0.0.29915
+        {0x00010000000074db, 0x5A115D81, 0x5D000},
+        // 1.0.0.31122
+        {0x0001000000007992, 0x5CFF88B8, 0x5D000}};
+
+    // We iterate over timestamps, because they are unique and it is a quick
+    // field to fetch
+    for (const auto& instance : instances) {
+      if (instance.mTimestamp == timestamp) {
+        // Only fetch other fields in case we have a match. Then, we can exit
+        // the loop.
+        if (headers.GetImageSize(imageSize) &&
+            instance.mImageSize == imageSize &&
+            headers.GetVersionInfo(version) && instance.mVersion == version) {
+          return BlockAction::Deny;
+        }
+        break;
+      }
+    }
+  }
+
   DECLARE_POINTER_TO_FIRST_DLL_BLOCKLIST_ENTRY(info);
   DECLARE_DLL_BLOCKLIST_NUM_ENTRIES(infoNumEntries);
 
@@ -322,8 +370,6 @@ static BlockAction DetermineBlockAction(
   size_t match = LowerBound(info, 0, infoNumEntries, comp);
   bool builtinListHasLowerBound = match != infoNumEntries;
   const DllBlockInfo* entry = nullptr;
-  mozilla::nt::PEHeaders headers(aBaseAddress);
-  uint64_t version;
   BlockAction checkResult = BlockAction::Allow;
   if (builtinListHasLowerBound) {
     // There may be multiple entries on the list. Since LowerBound() returns
@@ -356,7 +402,7 @@ static BlockAction DetermineBlockAction(
 
   gBlockSet.Add(entry->mName, version);
 
-  if ((entry->mFlags & DllBlockInfo::REDIRECT_TO_NOOP_ENTRYPOINT) &&
+  if ((entry->mFlags & DllBlockInfoFlags::REDIRECT_TO_NOOP_ENTRYPOINT) &&
       aK32Exports && RedirectToNoOpEntryPoint(headers, *aK32Exports)) {
     MOZ_ASSERT(!blockedByDynamicBlocklist, "dynamic blocklist has redirect?");
     return BlockAction::NoOpEntryPoint;
@@ -386,29 +432,11 @@ constexpr DWORD kPageExecutable = PAGE_EXECUTE | PAGE_EXECUTE_READ |
                                   PAGE_EXECUTE_READWRITE |
                                   PAGE_EXECUTE_WRITECOPY;
 
-// All the code for patched_NtMapViewOfSection that relies on stack buffers
-// (e.g. mbi and sectionFileName) should be put in this helper function (see
+// All the code for patched_NtMapViewOfSection that relies on checked stack
+// buffers (e.g. sectionFileName) should be put in this helper function (see
 // bug 1733532).
-MOZ_NEVER_INLINE NTSTATUS AfterMapExecutableViewOfSection(
+MOZ_NEVER_INLINE NTSTATUS AfterMapViewOfExecutableImageSection(
     HANDLE aProcess, PVOID* aBaseAddress, NTSTATUS aStubStatus) {
-  // Do a query to see if the memory is MEM_IMAGE. If not, continue
-  MEMORY_BASIC_INFORMATION mbi;
-  NTSTATUS ntStatus =
-      ::NtQueryVirtualMemory(aProcess, *aBaseAddress, MemoryBasicInformation,
-                             &mbi, sizeof(mbi), nullptr);
-  if (!NT_SUCCESS(ntStatus)) {
-    ::NtUnmapViewOfSection(aProcess, *aBaseAddress);
-    return STATUS_ACCESS_DENIED;
-  }
-
-  // We don't care about mappings that aren't MEM_IMAGE or executable.
-  // We check for the AllocationProtect, not the Protect field because
-  // the first section of a mapped image is always PAGE_READONLY even
-  // when it's mapped as an executable.
-  if (!(mbi.Type & MEM_IMAGE) || !(mbi.AllocationProtect & kPageExecutable)) {
-    return aStubStatus;
-  }
-
   // Get the section name
   nt::MemorySectionNameBuf sectionFileName(
       gLoaderPrivateAPI.GetSectionNameBuffer(*aBaseAddress));
@@ -530,9 +558,13 @@ MOZ_NEVER_INLINE NTSTATUS AfterMapExecutableViewOfSection(
 }
 
 // To preserve compatibility with third-parties, calling into this function
-// must not use stack buffers when reached through Thread32Next (see bug
-// 1733532). Therefore, all code relying on stack buffers should be put in the
-// dedicated helper function AfterMapExecutableViewOfSection.
+// must not use checked stack buffers when reached through Thread32Next (see
+// bug 1733532). Hence this function is declared as MOZ_NO_STACK_PROTECTOR.
+// Ideally, all code relying on stack buffers should be put in the dedicated
+// helper function AfterMapViewOfExecutableImageSection, which does not have
+// the MOZ_NO_STACK_PROTECTOR attribute. The mbi variable below is an
+// exception to this rule, as it is required to collect the information that
+// lets us decide whether we really need to go through the helper function.
 NTSTATUS NTAPI patched_NtMapViewOfSection(
     HANDLE aSection, HANDLE aProcess, PVOID* aBaseAddress, ULONG_PTR aZeroBits,
     SIZE_T aCommitSize, PLARGE_INTEGER aSectionOffset, PSIZE_T aViewSize,
@@ -551,14 +583,28 @@ NTSTATUS NTAPI patched_NtMapViewOfSection(
     return stubStatus;
   }
 
-  if (!(aProtectionFlags & kPageExecutable)) {
-    // Bail out early if an executable mapping was not asked. In particular,
-    // we will not use stack buffers during calls to Thread32Next, which can
-    // result in crashes with third-party software (see bug 1733532).
+  // Do a query to see if we are mapping a MEM_IMAGE section that was created
+  // as executable. If not, we bail out. In particular, this avoids using stack
+  // buffers during calls to Thread32Next.
+  MEMORY_BASIC_INFORMATION mbi;
+  NTSTATUS ntStatus =
+      ::NtQueryVirtualMemory(aProcess, *aBaseAddress, MemoryBasicInformation,
+                             &mbi, sizeof(mbi), nullptr);
+  if (!NT_SUCCESS(ntStatus)) {
+    ::NtUnmapViewOfSection(aProcess, *aBaseAddress);
+    return STATUS_ACCESS_DENIED;
+  }
+
+  // We don't care about mappings that aren't MEM_IMAGE or executable.
+  // We check for the AllocationProtect, not the Protect field (nor the
+  // aProtectionFlags argument) because the first section of a mapped image is
+  // always PAGE_READONLY even when it's mapped as an executable.
+  if (!(mbi.Type & MEM_IMAGE) || !(mbi.AllocationProtect & kPageExecutable)) {
     return stubStatus;
   }
 
-  return AfterMapExecutableViewOfSection(aProcess, aBaseAddress, stubStatus);
+  return AfterMapViewOfExecutableImageSection(aProcess, aBaseAddress,
+                                              stubStatus);
 }
 
 }  // namespace freestanding

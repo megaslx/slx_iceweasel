@@ -43,6 +43,7 @@
 #include "nsDebug.h"
 #include "nsDependentSubstring.h"
 #include "nsError.h"
+#include "nsFocusManager.h"
 #include "nsGkAtoms.h"
 #include "nsIClipboard.h"
 #include "nsIContent.h"
@@ -540,18 +541,13 @@ bool TextEditor::IsCopyToClipboardAllowedInternal() const {
   return UnmaskedStart() <= selectionStart && UnmaskedEnd() >= selectionEnd;
 }
 
-nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
-                                              bool aDispatchPasteEvent,
-                                              nsIPrincipal* aPrincipal) {
+nsresult TextEditor::HandlePasteAsQuotation(
+    AutoEditActionDataSetter& aEditActionData, int32_t aClipboardType) {
   MOZ_ASSERT(aClipboardType == nsIClipboard::kGlobalClipboard ||
              aClipboardType == nsIClipboard::kSelectionClipboard);
-
-  AutoEditActionDataSetter editActionData(*this, EditAction::ePasteAsQuotation,
-                                          aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  if (NS_WARN_IF(!GetDocument())) {
+    return NS_OK;
   }
-  MOZ_ASSERT(GetDocument());
 
   // Get Clipboard Service
   nsresult rv;
@@ -569,7 +565,7 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
       EditorUtils::CreateTransferableForPlainText(*GetDocument());
   if (maybeTransferable.isErr()) {
     NS_WARNING("EditorUtils::CreateTransferableForPlainText() failed");
-    return EditorBase::ToGenericNSResult(maybeTransferable.unwrapErr());
+    return maybeTransferable.unwrapErr();
   }
   nsCOMPtr<nsITransferable> trans(maybeTransferable.unwrap());
   if (!trans) {
@@ -586,14 +582,15 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
   // it still owns the data, we just have a pointer to it.
   // If it can't support a "text" output of the data the call will fail
   nsCOMPtr<nsISupports> genericDataObj;
-  nsAutoCString flav;
-  rv = trans->GetAnyTransferData(flav, getter_AddRefs(genericDataObj));
+  nsAutoCString flavor;
+  rv = trans->GetAnyTransferData(flavor, getter_AddRefs(genericDataObj));
   if (NS_FAILED(rv)) {
     NS_WARNING("nsITransferable::GetAnyTransferData() failed");
-    return EditorBase::ToGenericNSResult(rv);
+    return rv;
   }
 
-  if (!flav.EqualsLiteral(kTextMime) && !flav.EqualsLiteral(kMozTextInternal)) {
+  if (!flavor.EqualsLiteral(kTextMime) &&
+      !flavor.EqualsLiteral(kMozTextInternal)) {
     return NS_OK;
   }
 
@@ -610,17 +607,15 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
     return NS_OK;
   }
 
-  editActionData.SetData(stuffToPaste);
+  aEditActionData.SetData(stuffToPaste);
   if (!stuffToPaste.IsEmpty()) {
     nsContentUtils::PlatformToDOMLineBreaks(stuffToPaste);
   }
-  // XXX Perhaps, we should dispatch "paste" event with the pasting text data.
-  editActionData.NotifyOfDispatchingClipboardEvent();
-  rv = editActionData.MaybeDispatchBeforeInputEvent();
+  rv = aEditActionData.MaybeDispatchBeforeInputEvent();
   if (NS_FAILED(rv)) {
     NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
                          "MaybeDispatchBeforeInputEvent() failed");
-    return EditorBase::ToGenericNSResult(rv);
+    return rv;
   }
 
   AutoPlaceholderBatch treatAsOneTransaction(
@@ -628,7 +623,7 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
   rv = InsertWithQuotationsAsSubAction(stuffToPaste);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "TextEditor::InsertWithQuotationsAsSubAction() failed");
-  return EditorBase::ToGenericNSResult(rv);
+  return rv;
 }
 
 nsresult TextEditor::InsertWithQuotationsAsSubAction(
@@ -748,6 +743,19 @@ nsresult TextEditor::OnFocus(const nsINode& aOriginalEventTargetNode) {
 }
 
 nsresult TextEditor::OnBlur(const EventTarget* aEventTarget) {
+  // check if something else is focused. If another element is focused, then
+  // we should not change the selection.
+  nsFocusManager* focusManager = nsFocusManager::GetFocusManager();
+  if (MOZ_UNLIKELY(!focusManager)) {
+    return NS_OK;
+  }
+
+  // If another element already has focus, we should not maintain the selection
+  // because we may not have the rights doing it.
+  if (focusManager->GetFocusedElement()) {
+    return NS_OK;
+  }
+
   nsresult rv = FinalizeSelection();
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "EditorBase::FinalizeSelection() failed");

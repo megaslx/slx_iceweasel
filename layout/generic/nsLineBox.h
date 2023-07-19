@@ -714,27 +714,13 @@ class nsLineList_iterator {
     return --copy;
   }
 
-  // Passing by value rather than by reference and reference to const
-  // to keep AIX happy.
-  bool operator==(const iterator_self_type aOther) const {
+  bool operator==(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     MOZ_ASSERT(mListLink == aOther.mListLink,
                "comparing iterators over different lists");
     return mCurrent == aOther.mCurrent;
   }
-  bool operator!=(const iterator_self_type aOther) const {
-    MOZ_ASSERT(mListLink);
-    MOZ_ASSERT(mListLink == aOther.mListLink,
-               "comparing iterators over different lists");
-    return mCurrent != aOther.mCurrent;
-  }
-  bool operator==(const iterator_self_type aOther) {
-    MOZ_ASSERT(mListLink);
-    MOZ_ASSERT(mListLink == aOther.mListLink,
-               "comparing iterators over different lists");
-    return mCurrent == aOther.mCurrent;
-  }
-  bool operator!=(const iterator_self_type aOther) {
+  bool operator!=(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     MOZ_ASSERT(mListLink == aOther.mListLink,
                "comparing iterators over different lists");
@@ -742,7 +728,7 @@ class nsLineList_iterator {
   }
 
 #ifdef DEBUG
-  bool IsInSameList(const iterator_self_type aOther) const {
+  bool IsInSameList(const iterator_self_type& aOther) const {
     return mListLink == aOther.mListLink;
   }
 #endif
@@ -853,27 +839,13 @@ class nsLineList_reverse_iterator {
   }
 #endif /* !__MWERKS__ */
 
-  // Passing by value rather than by reference and reference to const
-  // to keep AIX happy.
-  bool operator==(const iterator_self_type aOther) const {
+  bool operator==(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
     return mCurrent == aOther.mCurrent;
   }
-  bool operator!=(const iterator_self_type aOther) const {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent != aOther.mCurrent;
-  }
-  bool operator==(const iterator_self_type aOther) {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent == aOther.mCurrent;
-  }
-  bool operator!=(const iterator_self_type aOther) {
+  bool operator!=(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
@@ -881,7 +853,7 @@ class nsLineList_reverse_iterator {
   }
 
 #ifdef DEBUG
-  bool IsInSameList(const iterator_self_type aOther) const {
+  bool IsInSameList(const iterator_self_type& aOther) const {
     return mListLink == aOther.mListLink;
   }
 #endif
@@ -989,27 +961,13 @@ class nsLineList_const_iterator {
     return --copy;
   }
 
-  // Passing by value rather than by reference and reference to const
-  // to keep AIX happy.
-  bool operator==(const iterator_self_type aOther) const {
+  bool operator==(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
     return mCurrent == aOther.mCurrent;
   }
-  bool operator!=(const iterator_self_type aOther) const {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent != aOther.mCurrent;
-  }
-  bool operator==(const iterator_self_type aOther) {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent == aOther.mCurrent;
-  }
-  bool operator!=(const iterator_self_type aOther) {
+  bool operator!=(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
@@ -1017,7 +975,7 @@ class nsLineList_const_iterator {
   }
 
 #ifdef DEBUG
-  bool IsInSameList(const iterator_self_type aOther) const {
+  bool IsInSameList(const iterator_self_type& aOther) const {
     return mListLink == aOther.mListLink;
   }
 #endif
@@ -1115,27 +1073,13 @@ class nsLineList_const_reverse_iterator {
   }
 #endif /* !__MWERKS__ */
 
-  // Passing by value rather than by reference and reference to const
-  // to keep AIX happy.
-  bool operator==(const iterator_self_type aOther) const {
+  bool operator==(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
     return mCurrent == aOther.mCurrent;
   }
-  bool operator!=(const iterator_self_type aOther) const {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent != aOther.mCurrent;
-  }
-  bool operator==(const iterator_self_type aOther) {
-    MOZ_ASSERT(mListLink);
-    NS_ASSERTION(mListLink == aOther.mListLink,
-                 "comparing iterators over different lists");
-    return mCurrent == aOther.mCurrent;
-  }
-  bool operator!=(const iterator_self_type aOther) {
+  bool operator!=(const iterator_self_type& aOther) const {
     MOZ_ASSERT(mListLink);
     NS_ASSERTION(mListLink == aOther.mListLink,
                  "comparing iterators over different lists");
@@ -1143,7 +1087,7 @@ class nsLineList_const_reverse_iterator {
   }
 
 #ifdef DEBUG
-  bool IsInSameList(const iterator_self_type aOther) const {
+  bool IsInSameList(const iterator_self_type& aOther) const {
     return mListLink == aOther.mListLink;
   }
 #endif

@@ -40,7 +40,7 @@ pref("extensions.getAddons.cache.enabled", true);
 pref("extensions.getAddons.get.url", "https://services.addons.mozilla.org/api/v4/addons/search/?guid=%IDS%&lang=%LOCALE%");
 pref("extensions.getAddons.search.browseURL", "https://addons.mozilla.org/%LOCALE%/firefox/search?q=%TERMS%&platform=%OS%&appver=%VERSION%");
 pref("extensions.getAddons.link.url", "https://addons.mozilla.org/%LOCALE%/firefox/");
-pref("extensions.getAddons.langpacks.url", "https://services.addons.mozilla.org/api/v4/addons/language-tools/?app=firefox&type=language&appversion=%VERSION%");
+pref("extensions.getAddons.langpacks.url", "");
 pref("extensions.getAddons.discovery.api_url", "https://services.addons.mozilla.org/api/v4/discovery/?lang=%LOCALE%&edition=%DISTRIBUTION%");
 
 // Enable the HTML-based discovery panel at about:addons.
@@ -282,6 +282,9 @@ pref("browser.shell.setDefaultPDFHandler", true);
 // is a known browser, and not when existing handler is another PDF handler such
 // as Acrobat Reader or Nitro PDF.
 pref("browser.shell.setDefaultPDFHandler.onlyReplaceBrowsers", true);
+// URL to navigate to when launching Firefox after accepting the Windows Default
+// Browser Agent "Set Firefox as default" call to action.
+pref("browser.shell.defaultBrowserAgent.thanksURL", "https://www.mozilla.org/%LOCALE%/firefox/set-as-default/thanks/");
 #endif
 
 
@@ -289,11 +292,7 @@ pref("browser.shell.setDefaultPDFHandler.onlyReplaceBrowsers", true);
 // The behavior of option 3 is detailed at: http://wiki.mozilla.org/Session_Restore
 pref("browser.startup.page",                1);
 pref("browser.startup.homepage",            "about:home");
-#ifdef NIGHTLY_BUILD
 pref("browser.startup.homepage.abouthome_cache.enabled", true);
-#else
-pref("browser.startup.homepage.abouthome_cache.enabled", false);
-#endif
 pref("browser.startup.homepage.abouthome_cache.loglevel", "Warn");
 
 // Whether we should skip the homepage when opening the first-run page
@@ -410,6 +409,11 @@ pref("browser.urlbar.suggest.calculator",           false);
   pref("browser.urlbar.suggest.quickactions", true);
   pref("browser.urlbar.shortcuts.quickactions", true);
   pref("browser.urlbar.quickactions.showPrefs", true);
+#endif
+
+#if defined(EARLY_BETA_OR_EARLIER)
+  // Enable Trending suggestions.
+  pref("browser.urlbar.trending.featureGate", true);
 #endif
 
 // Feature gate pref for weather suggestions in the urlbar.
@@ -596,6 +600,17 @@ pref("browser.urlbar.bestMatch.blockingEnabled", true);
 
 // Enable site specific search result.
 pref("browser.urlbar.contextualSearch.enabled", false);
+
+// Feature gate pref for addon suggestions in the urlbar.
+pref("browser.urlbar.addons.featureGate", false);
+
+// If `browser.urlbar.addons.featureGate` is true, this controls whether
+// addons suggestions are turned on.
+pref("browser.urlbar.suggest.addons", true);
+
+// The minimum prefix length of addons keyword the user must type to trigger
+// the suggestion. 0 means the min length should be taken from Nimbus.
+pref("browser.urlbar.addons.minKeywordLength", 0);
 
 pref("browser.altClickSave", false);
 
@@ -836,6 +851,13 @@ pref("security.allow_parent_unrestricted_js_loads", false);
 // this value (in milliseconds).
 pref("browser.tabs.min_inactive_duration_before_unload", 600000);
 
+// Does middleclick paste of clipboard to new tab button
+#ifdef UNIX_BUT_NOT_MAC
+pref("browser.tabs.searchclipboardfor.middleclick", true);
+#else
+pref("browser.tabs.searchclipboardfor.middleclick", false);
+#endif
+
 #if defined(XP_MACOSX)
   // During low memory periods, poll with this frequency (milliseconds)
   // until memory is no longer low. Changes to the pref take effect immediately.
@@ -1069,14 +1091,6 @@ pref("plugins.show_infobar", false);
   pref("plugin.default.state", 1);
 #endif
 
-// Prefer HTML5 video over Flash content, and don't
-// load plugin instances with no src declared.
-// These prefs are documented in details on all.js.
-// With the "follow-ctp" setting, this will only
-// apply to users that have plugin.state.flash = 1.
-pref("plugins.favorfallback.mode", "follow-ctp");
-pref("plugins.favorfallback.rules", "nosrc,video");
-
 // Toggling Search bar on and off in about:preferences
 pref("browser.preferences.search", true);
 #if defined(NIGHTLY_BUILD)
@@ -1270,9 +1284,6 @@ pref("browser.bookmarks.editDialog.firstEditField", "namePicker");
 // The number of recently selected folders in the edit bookmarks dialog.
 pref("browser.bookmarks.editDialog.maxRecentFolders", 7);
 
-// Whether the Edit Bookmark dialog is delayed-apply.
-pref("browser.bookmarks.editDialog.delayedApply.enabled", true);
-
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
   // This controls the strength of the Windows content process sandbox for
   // testing purposes. This will require a restart.
@@ -1318,7 +1329,7 @@ pref("browser.bookmarks.editDialog.delayedApply.enabled", true);
   // This pref is introduced as part of bug 742434, the naming is inspired from
   // its Windows/Mac counterpart, but on Linux it's an integer which means:
   // 0 -> "no sandbox"
-  // 1 -> "content sandbox using seccomp-bpf when available" + ipc restrictions
+  // 1 -> no longer used; level will be clamped to 2
   // 2 -> "seccomp-bpf + write file broker"
   // 3 -> "seccomp-bpf + read/write file brokering"
   // 4 -> all of the above + network/socket restrictions + chroot
@@ -1422,7 +1433,6 @@ pref("services.sync.prefs.sync-seen.browser.newtabpage.activity-stream.section.h
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.section.highlights.rows", true);
 pref("services.sync.prefs.sync.browser.newtabpage.enabled", true);
 pref("services.sync.prefs.sync.browser.newtabpage.pinned", true);
-pref("services.sync.prefs.sync.browser.offline-apps.notify", true);
 pref("services.sync.prefs.sync.browser.pdfjs.feature-tour", true);
 pref("services.sync.prefs.sync.browser.safebrowsing.downloads.enabled", true);
 pref("services.sync.prefs.sync.browser.safebrowsing.downloads.remote.block_potentially_unwanted", true);
@@ -1530,6 +1540,13 @@ pref("browser.topsites.useRemoteSetting", true);
 // Fetch sponsored Top Sites from Mozilla Tiles Service (Contile)
 pref("browser.topsites.contile.enabled", true);
 pref("browser.topsites.contile.endpoint", "https://contile.services.mozilla.com/v1/tiles");
+
+// Whether to enable the Share-of-Voice feature for Sponsored Topsites via Contile.
+#if defined(EARLY_BETA_OR_EARLIER)
+  pref("browser.topsites.contile.sov.enabled", true);
+#else
+  pref("browser.topsites.contile.sov.enabled", false);
+#endif
 
 // The base URL for the Quick Suggest anonymizing proxy. To make a request to
 // the proxy, include a campaign ID in the path.
@@ -1650,7 +1667,7 @@ pref("browser.newtabpage.activity-stream.discoverystream.spocs.personalized", tr
 
 // Flip this once the user has dismissed the Pocket onboarding experience,
 pref("browser.newtabpage.activity-stream.discoverystream.onboardingExperience.dismissed", false);
-pref("browser.newtabpage.activity-stream.discoverystream.onboardingExperience.enabled", true);
+pref("browser.newtabpage.activity-stream.discoverystream.onboardingExperience.enabled", false);
 
 // User pref to show stories on newtab (feeds.system.topstories has to be set to true as well)
 pref("browser.newtabpage.activity-stream.feeds.section.topstories", true);
@@ -1844,6 +1861,12 @@ pref("browser.translation.ui.show", false);
 // Allows to define the translation engine. Google is default, Bing or Yandex are other options.
 pref("browser.translation.engine", "Google");
 
+// Enable Firefox translations powered by the Bergamot translations
+// engine https://browser.mt/. See Bug 971044.
+#if defined(EARLY_BETA_OR_EARLIER)
+pref("browser.translations.enable", true);
+#endif
+
 // Telemetry settings.
 // Determines if Telemetry pings can be archived locally.
 pref("toolkit.telemetry.archive.enabled", false);
@@ -1885,9 +1908,10 @@ pref("browser.contentblocking.database.enabled", true);
 
 pref("dom.storage_access.enabled", true);
 
-// Enable URL query stripping in Nightly.
+// Enable URL query stripping and strip on share in Nightly.
 #ifdef NIGHTLY_BUILD
 pref("privacy.query_stripping.enabled", true);
+pref("privacy.query_stripping.strip_on_share.enabled", true);
 #endif
 
 pref("browser.contentblocking.cryptomining.preferences.ui.enabled", true);
@@ -1920,9 +1944,6 @@ pref("browser.contentblocking.reject-and-isolate-cookies.preferences.ui.enabled"
 //   Level 2 Tracking list in normal windows:
 //     "lvl2": Level 2 tracking list enabled
 //     "-lvl2": Level 2 tracking list disabled
-//   Level 2 Tracking list in private windows:
-//     "lvl2PBM": Level 2 tracking list enabled
-//     "-lvl2PBM": Level 2 tracking list disabled
 //   Restrict relaxing default referrer policy:
 //     "rp": Restrict relaxing default referrer policy enabled
 //     "-rp": Restrict relaxing default referrer policy disabled
@@ -1953,7 +1974,7 @@ pref("browser.contentblocking.reject-and-isolate-cookies.preferences.ui.enabled"
 //     "cookieBehaviorPBM4": cookie behaviour BEHAVIOR_REJECT_TRACKER
 //     "cookieBehaviorPBM5": cookie behaviour BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN
 // One value from each section must be included in the browser.contentblocking.features.strict pref.
-pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,emailTP,emailTPPrivate,lvl2,lvl2PBM,rp,rpTop,ocsp,qps,qpsPBM");
+pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,emailTP,emailTPPrivate,lvl2,rp,rpTop,ocsp,qps,qpsPBM");
 
 // Hide the "Change Block List" link for trackers/tracking content in the custom
 // Content Blocking/ETP panel. By default, it will not be visible. There is also
@@ -2159,12 +2180,14 @@ pref("dom.ipc.processPrelaunch.enabled", false);
 pref("dom.ipc.processPrelaunch.enabled", true);
 #endif
 
+pref("browser.migrate.bookmarks-file.enabled", true);
 pref("browser.migrate.brave.enabled", true);
 pref("browser.migrate.canary.enabled", true);
 
 pref("browser.migrate.chrome.enabled", true);
 // See comments in bug 1340115 on how we got to this number.
 pref("browser.migrate.chrome.history.limit", 2000);
+pref("browser.migrate.chrome.payment_methods.enabled", true);
 
 pref("browser.migrate.chrome-beta.enabled", true);
 pref("browser.migrate.chrome-dev.enabled", true);
@@ -2180,15 +2203,11 @@ pref("browser.migrate.opera-gx.enabled", true);
 pref("browser.migrate.safari.enabled", true);
 pref("browser.migrate.vivaldi.enabled", true);
 
-#ifdef NIGHTLY_BUILD
 pref("browser.migrate.content-modal.enabled", true);
-#else
-pref("browser.migrate.content-modal.enabled", false);
-#endif
+pref("browser.migrate.content-modal.import-all.enabled", true);
 
-pref("browser.migrate.content-modal.import-all.enabled", false);
-// Values can be: "default", "autoclose", "standalone".
-pref("browser.migrate.content-modal.about-welcome-behavior", "default");
+// Values can be: "default", "autoclose", "standalone", "legacy".
+pref("browser.migrate.content-modal.about-welcome-behavior", "legacy");
 
 // The maximum age of history entries we'll import, in days.
 pref("browser.migrate.history.maxAgeInDays", 180);
@@ -2464,7 +2483,11 @@ pref("devtools.inspector.showUserAgentStyles", false);
 // Show native anonymous content and user agent shadow roots
 pref("devtools.inspector.showAllAnonymousContent", false);
 // Enable the inline CSS compatiblity warning in inspector rule view
-pref("devtools.inspector.ruleview.inline-compatibility-warning.enabled", false);
+#ifdef NIGHTLY_BUILD
+  pref("devtools.inspector.ruleview.inline-compatibility-warning.enabled", true);
+#else
+  pref("devtools.inspector.ruleview.inline-compatibility-warning.enabled", false);
+#endif
 // Enable the compatibility tool in the inspector.
 pref("devtools.inspector.compatibility.enabled", true);
 // Enable overflow debugging in the inspector.
@@ -2587,6 +2610,7 @@ pref("devtools.netmonitor.har.compress", false);
 pref("devtools.netmonitor.har.forceExport", false);
 pref("devtools.netmonitor.har.pageLoadedTimeout", 1500);
 pref("devtools.netmonitor.har.enableAutoExportToFile", false);
+pref("devtools.netmonitor.har.multiple-pages", false);
 
 // netmonitor audit
 pref("devtools.netmonitor.audits.slow", 500);
@@ -2762,6 +2786,7 @@ pref("devtools.debugger.features.map-await-expression", true);
 // This relies on javascript.options.asyncstack as well or it has no effect.
 pref("devtools.debugger.features.async-captured-stacks", true);
 pref("devtools.debugger.features.async-live-stacks", false);
+pref("devtools.debugger.hide-ignored-sources", false);
 
 // Disable autohide for DevTools popups and tooltips.
 // This is currently not exposed by any UI to avoid making
@@ -2790,6 +2815,11 @@ pref("first-startup.timeout", 30000);
   pref("browser.menu.showViewImageInfo", true);
 #else
   pref("browser.menu.showViewImageInfo", false);
+#endif
+
+// Handing URLs to external apps via the "Share URL" menu item could allow a proxy bypass
+#ifdef MOZ_PROXY_BYPASS_PROTECTION
+  pref("browser.menu.share_url.allow", false);
 #endif
 
 // Mozilla-controlled domains that are allowed to use non-standard
