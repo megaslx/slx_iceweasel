@@ -1090,8 +1090,10 @@ struct arena_t {
   // and it keeps the value it had after the destructor.
   arena_id_t mId;
 
-  // All operations on this arena require that lock be locked.
-  Mutex mLock MOZ_UNANNOTATED;
+  // All operations on this arena require that lock be locked.  The MaybeMutex
+  // class well elude locking if the arena is accessed from a single thread
+  // only.
+  MaybeMutex mLock MOZ_UNANNOTATED;
 
   arena_stats_t mStats;
 
@@ -1336,6 +1338,30 @@ class ArenaCollection {
 
   Mutex mLock MOZ_UNANNOTATED;
 
+  // We're running on the main thread which is set by a call to SetMainThread().
+  bool IsOnMainThread() const {
+    return mMainThreadId.isSome() && mMainThreadId.value() == GetThreadId();
+  }
+
+  // We're running on the main thread or SetMainThread() has never been called.
+  bool IsOnMainThreadWeak() const {
+    return mMainThreadId.isNothing() || IsOnMainThread();
+  }
+
+  // After a fork set the new thread ID in the child.
+  void PostForkFixMainThread() {
+    if (mMainThreadId.isSome()) {
+      // Only if the main thread has been defined.
+      mMainThreadId = Some(GetThreadId());
+    }
+  }
+
+  void SetMainThread() {
+    MutexAutoLock lock(mLock);
+    MOZ_ASSERT(mMainThreadId.isNothing());
+    mMainThreadId = Some(GetThreadId());
+  }
+
  private:
   inline arena_t* GetByIdInternal(arena_id_t aArenaId, bool aIsPrivate);
 
@@ -1344,6 +1370,7 @@ class ArenaCollection {
   Tree mArenas;
   Tree mPrivateArenas;
   Atomic<int32_t> mDefaultMaxDirtyPageModifier;
+  Maybe<ThreadId> mMainThreadId;
 };
 
 static ArenaCollection gArenas;
@@ -3222,7 +3249,7 @@ void* arena_t::MallocSmall(size_t aSize, bool aZero) {
     }
     MOZ_ASSERT(!mRandomizeSmallAllocations || mPRNG);
 
-    MutexAutoLock lock(mLock);
+    MaybeMutexAutoLock lock(mLock);
     run = bin->mCurrentRun;
     if (MOZ_UNLIKELY(!run || run->mNumFree == 0)) {
       run = bin->mCurrentRun = GetNonFullBinRun(bin);
@@ -3265,7 +3292,7 @@ void* arena_t::MallocLarge(size_t aSize, bool aZero) {
   aSize = PAGE_CEILING(aSize);
 
   {
-    MutexAutoLock lock(mLock);
+    MaybeMutexAutoLock lock(mLock);
     ret = AllocRun(aSize, true, aZero);
     if (!ret) {
       return nullptr;
@@ -3309,7 +3336,7 @@ void* arena_t::PallocLarge(size_t aAlignment, size_t aSize, size_t aAllocSize) {
   MOZ_ASSERT((aAlignment & gPageSizeMask) == 0);
 
   {
-    MutexAutoLock lock(mLock);
+    MaybeMutexAutoLock lock(mLock);
     ret = AllocRun(aAllocSize, true, false);
     if (!ret) {
       return nullptr;
@@ -3765,7 +3792,7 @@ static inline void arena_dalloc(void* aPtr, size_t aOffset, arena_t* aArena) {
   arena_chunk_t* chunk_dealloc_delay = nullptr;
 
   {
-    MutexAutoLock lock(arena->mLock);
+    MaybeMutexAutoLock lock(arena->mLock);
     arena_chunk_map_t* mapelm = &chunk->map[pageind];
     MOZ_RELEASE_ASSERT((mapelm->bits & CHUNK_MAP_DECOMMITTED) == 0,
                        "Freeing in decommitted page.");
@@ -3804,7 +3831,7 @@ void arena_t::RallocShrinkLarge(arena_chunk_t* aChunk, void* aPtr, size_t aSize,
 
   // Shrink the run, and make trailing pages available for other
   // allocations.
-  MutexAutoLock lock(mLock);
+  MaybeMutexAutoLock lock(mLock);
   TrimRunTail(aChunk, (arena_run_t*)aPtr, aOldSize, aSize, true);
   mStats.allocated_large -= aOldSize - aSize;
 }
@@ -3815,7 +3842,7 @@ bool arena_t::RallocGrowLarge(arena_chunk_t* aChunk, void* aPtr, size_t aSize,
   size_t pageind = (uintptr_t(aPtr) - uintptr_t(aChunk)) >> gPageSize2Pow;
   size_t npages = aOldSize >> gPageSize2Pow;
 
-  MutexAutoLock lock(mLock);
+  MaybeMutexAutoLock lock(mLock);
   MOZ_DIAGNOSTIC_ASSERT(aOldSize ==
                         (aChunk->map[pageind].bits & ~gPageSizeMask));
 
@@ -3914,8 +3941,6 @@ void arena_t::operator delete(void* aPtr) {
 arena_t::arena_t(arena_params_t* aParams, bool aIsPrivate) {
   unsigned i;
 
-  MOZ_RELEASE_ASSERT(mLock.Init());
-
   memset(&mLink, 0, sizeof(mLink));
   memset(&mStats, 0, sizeof(arena_stats_t));
   mId = 0;
@@ -3928,9 +3953,10 @@ arena_t::arena_t(arena_params_t* aParams, bool aIsPrivate) {
   mSpare = nullptr;
 
   mRandomizeSmallAllocations = opt_randomize_small;
+  MaybeMutex::DoLock doLock = MaybeMutex::MUST_LOCK;
   if (aParams) {
-    uint32_t flags = aParams->mFlags & ARENA_FLAG_RANDOMIZE_SMALL_MASK;
-    switch (flags) {
+    uint32_t randFlags = aParams->mFlags & ARENA_FLAG_RANDOMIZE_SMALL_MASK;
+    switch (randFlags) {
       case ARENA_FLAG_RANDOMIZE_SMALL_ENABLED:
         mRandomizeSmallAllocations = true;
         break;
@@ -3942,12 +3968,30 @@ arena_t::arena_t(arena_params_t* aParams, bool aIsPrivate) {
         break;
     }
 
+    uint32_t threadFlags = aParams->mFlags & ARENA_FLAG_THREAD_MASK;
+    if (threadFlags == ARENA_FLAG_THREAD_MAIN_THREAD_ONLY) {
+      // At the moment we require that any ARENA_FLAG_THREAD_MAIN_THREAD_ONLY
+      // arenas are created and therefore always accessed by the main thread.
+      // This is for two reasons:
+      //  * it allows jemalloc_stats to read their statistics (we also require
+      //    that jemalloc_stats is only used on the main thread).
+      //  * Only main-thread or threadsafe arenas can be guanteed to be in a
+      //    consistent state after a fork() from the main thread.  If fork()
+      //    occurs off-thread then the new child process cannot use these arenas
+      //    (new children should usually exec() or exit() since other data may
+      //    also be inconsistent).
+      MOZ_ASSERT(gArenas.IsOnMainThread());
+      doLock = MaybeMutex::AVOID_LOCK_UNSAFE;
+    }
+
     mMaxDirtyIncreaseOverride = aParams->mMaxDirtyIncreaseOverride;
     mMaxDirtyDecreaseOverride = aParams->mMaxDirtyDecreaseOverride;
   } else {
     mMaxDirtyIncreaseOverride = 0;
     mMaxDirtyDecreaseOverride = 0;
   }
+
+  MOZ_RELEASE_ASSERT(mLock.Init(doLock));
 
   mPRNG = nullptr;
 
@@ -3983,7 +4027,7 @@ arena_t::arena_t(arena_params_t* aParams, bool aIsPrivate) {
 
 arena_t::~arena_t() {
   size_t i;
-  MutexAutoLock lock(mLock);
+  MaybeMutexAutoLock lock(mLock);
   MOZ_RELEASE_ASSERT(!mLink.Left() && !mLink.Right(),
                      "Arena is still registered");
   MOZ_RELEASE_ASSERT(!mStats.allocated_small && !mStats.allocated_large,
@@ -4705,8 +4749,16 @@ inline void MozJemalloc::jemalloc_stats_internal(
   }
 
   gArenas.mLock.Lock();
+
+  // Stats can only read complete information if its run on the main thread.
+  MOZ_ASSERT(gArenas.IsOnMainThreadWeak());
+
   // Iterate over arenas.
   for (auto arena : gArenas.iter()) {
+    // Cannot safely read stats for this arena and therefore stats would be
+    // incomplete.
+    MOZ_ASSERT(arena->mLock.SafeOnThisThread());
+
     size_t arena_mapped, arena_allocated, arena_committed, arena_dirty, j,
         arena_unused, arena_headers;
 
@@ -4714,7 +4766,7 @@ inline void MozJemalloc::jemalloc_stats_internal(
     arena_unused = 0;
 
     {
-      MutexAutoLock lock(arena->mLock);
+      MaybeMutexAutoLock lock(arena->mLock);
 
       arena_mapped = arena->mStats.mapped;
 
@@ -4794,6 +4846,12 @@ inline size_t MozJemalloc::jemalloc_stats_num_bins() {
   return NUM_SMALL_CLASSES;
 }
 
+template <>
+inline void MozJemalloc::jemalloc_set_main_thread() {
+  MOZ_ASSERT(malloc_initialized);
+  gArenas.SetMainThread();
+}
+
 #ifdef MALLOC_DOUBLE_PURGE
 
 // Explicitly remove all of this chunk's MADV_FREE'd pages from memory.
@@ -4826,7 +4884,7 @@ static void hard_purge_chunk(arena_chunk_t* aChunk) {
 
 // Explicitly remove all of this arena's MADV_FREE'd pages from memory.
 void arena_t::HardPurge() {
-  MutexAutoLock lock(mLock);
+  MaybeMutexAutoLock lock(mLock);
 
   while (!mChunksMAdvised.isEmpty()) {
     arena_chunk_t* chunk = mChunksMAdvised.popFront();
@@ -4838,6 +4896,7 @@ template <>
 inline void MozJemalloc::jemalloc_purge_freed_pages() {
   if (malloc_initialized) {
     MutexAutoLock lock(gArenas.mLock);
+    MOZ_ASSERT(gArenas.IsOnMainThreadWeak());
     for (auto arena : gArenas.iter()) {
       arena->HardPurge();
     }
@@ -4857,8 +4916,9 @@ template <>
 inline void MozJemalloc::jemalloc_free_dirty_pages(void) {
   if (malloc_initialized) {
     MutexAutoLock lock(gArenas.mLock);
+    MOZ_ASSERT(gArenas.IsOnMainThreadWeak());
     for (auto arena : gArenas.iter()) {
-      MutexAutoLock arena_lock(arena->mLock);
+      MaybeMutexAutoLock arena_lock(arena->mLock);
       arena->Purge(1);
     }
   }
@@ -4924,13 +4984,23 @@ inline void MozJemalloc::moz_set_max_dirty_page_modifier(int32_t aModifier) {
 // of malloc during fork().  These functions are only called if the program is
 // running in threaded mode, so there is no need to check whether the program
 // is threaded here.
+//
+// Note that the only way to keep the main-thread-only arenas in a consistent
+// state for the child is if fork is called from the main thread only.  Or the
+// child must not use them, eg it should call exec().  We attempt to prevent the
+// child for accessing these arenas by refusing to re-initialise them.
+static pthread_t gForkingThread;
+
 FORK_HOOK
 void _malloc_prefork(void) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   // Acquire all mutexes in a safe order.
   gArenas.mLock.Lock();
+  gForkingThread = pthread_self();
 
   for (auto arena : gArenas.iter()) {
-    arena->mLock.Lock();
+    if (arena->mLock.LockIsEnabled()) {
+      arena->mLock.Lock();
+    }
   }
 
   base_mtx.Lock();
@@ -4946,7 +5016,9 @@ void _malloc_postfork_parent(void) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   base_mtx.Unlock();
 
   for (auto arena : gArenas.iter()) {
-    arena->mLock.Unlock();
+    if (arena->mLock.LockIsEnabled()) {
+      arena->mLock.Unlock();
+    }
   }
 
   gArenas.mLock.Unlock();
@@ -4960,9 +5032,10 @@ void _malloc_postfork_child(void) {
   base_mtx.Init();
 
   for (auto arena : gArenas.iter()) {
-    arena->mLock.Init();
+    arena->mLock.Reinit(gForkingThread);
   }
 
+  gArenas.PostForkFixMainThread();
   gArenas.mLock.Init();
 }
 #endif  // XP_WIN
