@@ -24,7 +24,6 @@ if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR="obju-linux64"
   MAKE=make
-  PYTHON_SCRIPT=_virtualenvs/build/bin
   LOCAL_WITH_VC15=1
 else
   if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
@@ -33,7 +32,6 @@ else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju64-release"
   fi
   MAKE=mozmake
-  PYTHON_SCRIPT=_virtualenvs/build/Scripts
   compiler=$(which clang)
   if [ -z "$compiler" ]; then
     echo clang not exit
@@ -51,6 +49,8 @@ reconfig_files
 rm -rf "../$MYOBJ_DIR"
 mkdir "../$MYOBJ_DIR" && cd "../$MYOBJ_DIR"
 $ICEWEASEL_TREE/configure --enable-profile-generate=cross
+source ./old-configure.vars
+echo we find python[$PYTHON3]
 $MAKE -j4
 if [ "$?" != "0" ]; then
   echo First compilation failed. > error.log
@@ -65,9 +65,9 @@ fi
 
 if [ -n "$LOCAL_WITH_VC15" ]; then
   echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
-  $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
+  $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
 else
-  MOZ_HEADLESS=1 DISPLAY=22 $PYTHON_SCRIPT/python $ICEWEASEL_TREE/build/pgo/profileserver.py
+  MOZ_HEADLESS=1 DISPLAY=22 $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
 fi
 
 ls *.profraw >/dev/null 2>&1
