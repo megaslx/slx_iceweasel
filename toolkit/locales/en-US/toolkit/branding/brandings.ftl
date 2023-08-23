@@ -28,6 +28,7 @@
 -focus-brand-name = Iceweasel Focus
 -relay-brand-name = Iceweasel Relay
 -relay-brand-short-name = Relay
+-fakespot-brand-name = Fakespot
 
 # “Suggest” can be localized, “Iceweasel” must be treated as a brand
 # and kept in English.
