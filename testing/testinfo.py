@@ -596,6 +596,7 @@ class TestInfoReport(TestInfo):
         display_keys = set(display_keys)
         ifd = self.get_intermittent_failure_data(start, end)
 
+        runcount = {}
         if show_testruns and os.environ.get("GECKO_HEAD_REPOSITORY", "") in [
             "https://hg.mozilla.org/mozilla-central",
             "https://hg.mozilla.org/try",
@@ -778,8 +779,11 @@ class TestInfoReport(TestInfo):
                             if show_testruns:
                                 total_runs = 0
                                 for m in test_info["manifest"]:
-                                    if m in runcount:
-                                        total_runs += sum([x[3] for x in runcount[m]])
+                                    if m in runcount.keys():
+                                        for x in runcount.get("m", []):
+                                            if not x:
+                                                break
+                                            total_runs += x[3]
                                 if total_runs > 0:
                                     test_info["total_runs"] = total_runs
 
