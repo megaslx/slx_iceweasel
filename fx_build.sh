@@ -32,16 +32,21 @@ else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju64-release"
   fi
   MAKE=mozmake
-  compiler=$(which clang)
-  if [ -z "$compiler" ]; then
-    echo clang not exit
-    exit 1;
-  fi
-  compiler_version=$(echo __clang_major__ | $compiler -E -xc - 2>/dev/null | tail -n 1)
-  if [ -z "$compiler_version" ]; then
-    exit 1;
-  fi
-  compiler_path=$(dirname $(dirname $compiler))
+fi
+
+compiler=$(which clang)
+if [ -z "$compiler" ]; then
+  echo clang not exit
+  exit 1;
+fi
+compiler_version=$(echo __clang_major__ | $compiler -E -xc - 2>/dev/null | tail -n 1)
+if [ -z "$compiler_version" ]; then
+  exit 1;
+fi
+compiler_path=$(dirname $(dirname $compiler))
+if [ "$OS" != "Windows_NT" ]; then
+  export LIB="$compiler_path/lib64:$compiler_path/lib64/clang/$compiler_version/lib/x86_64-unknown-linux-gnu"
+else
   export LIB="$compiler_path/lib:$compiler_path/lib/clang/$compiler_version/lib/windows"
 fi
 
