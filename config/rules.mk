@@ -24,7 +24,7 @@ USE_AUTOTARGETS_MK = 1
 include $(MOZILLA_DIR)/config/makefiles/makeutils.mk
 
 ifdef REBUILD_CHECK
-REPORT_BUILD = $(info $(shell $(PYTHON3) $(MOZILLA_DIR)/config/rebuild_check.py $@ $^))
+REPORT_BUILD = $(info $(shell $(PYTHON3) $(MOZILLA_DIR)/config/rebuild_check.py $@ $?))
 REPORT_BUILD_VERBOSE = $(REPORT_BUILD)
 else
 REPORT_BUILD = $(info $(relativesrcdir)/$(notdir $@))
@@ -251,7 +251,7 @@ endif
 ifdef MACH
 ifndef NO_BUILDSTATUS_MESSAGES
 define BUILDSTATUS
-@echo 'BUILDSTATUS $1'
+@echo 'BUILDSTATUS@$(relativesrcdir) $1'
 
 endef
 endif
@@ -686,7 +686,6 @@ $(ASOBJS):
 endif
 
 define syms_template
-syms:: $(2)
 $(2): $(1)
 ifdef MOZ_CRASHREPORTER
 	$$(call py_action,dumpsymbols $$@,$$(abspath $$<) $$(abspath $$@) $$(DUMP_SYMBOLS_FLAGS))
@@ -723,6 +722,7 @@ endif
 
 else ifdef MOZ_CRASHREPORTER
 $(foreach file,$(DUMP_SYMS_TARGETS),$(eval $(call syms_template,$(file),$(notdir $(file))_syms.track)))
+syms:: $(foreach file,$(DUMP_SYMS_TARGETS),$(notdir $(file))_syms.track)
 endif
 
 include $(MOZILLA_DIR)/config/makefiles/rust.mk
@@ -1047,7 +1047,7 @@ $(foreach category,$(INSTALL_TARGETS),\
 )
 
 $(foreach tier,$(INSTALL_TARGETS_TIERS), \
-  $(eval $(tier):: $(INSTALL_TARGETS_FILES_$(tier)) $(INSTALL_TARGETS_EXECUTABLES_$(tier))) \
+  $(eval $(if $(filter .,$(DEPTH)),recurse_$(tier):,$(tier)::) $(INSTALL_TARGETS_FILES_$(tier)) $(INSTALL_TARGETS_EXECUTABLES_$(tier))) \
 )
 
 install_targets_sanity = $(if $(filter-out $(notdir $@),$(notdir $(<))),$(error Looks like $@ has an unexpected dependency on $< which breaks INSTALL_TARGETS))
@@ -1117,7 +1117,7 @@ $(foreach category,$(PP_TARGETS), \
 )
 
 $(foreach tier,$(PP_TARGETS_TIERS), \
-  $(eval $(tier):: $(PP_TARGETS_RESULTS_$(tier))) \
+  $(eval $(if $(filter .,$(DEPTH)),recurse_$(tier):,$(tier)::) $(PP_TARGETS_RESULTS_$(tier))) \
 )
 
 PP_TARGETS_ALL_RESULTS := $(sort $(foreach tier,$(PP_TARGETS_TIERS),$(PP_TARGETS_RESULTS_$(tier))))

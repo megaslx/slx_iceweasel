@@ -7,6 +7,7 @@
 // Undefine windows version of LoadImage because our code uses that name.
 #include "mozilla/ScopeExit.h"
 #include "nsIChildChannel.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #undef LoadImage
 
 #include "imgLoader.h"
@@ -1794,7 +1795,7 @@ bool imgLoader::ValidateRequestWithNewChannel(
 
   // Casting needed here to get past multiple inheritance.
   nsCOMPtr<nsIStreamListener> listener =
-      do_QueryInterface(static_cast<nsIThreadRetargetableStreamListener*>(hvc));
+      static_cast<nsIThreadRetargetableStreamListener*>(hvc);
   NS_ENSURE_TRUE(listener, false);
 
   // We must set the notification callbacks before setting up the
@@ -2981,6 +2982,20 @@ ProxyListener::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* inStr,
   return mDestListener->OnDataAvailable(aRequest, inStr, sourceOffset, count);
 }
 
+NS_IMETHODIMP
+ProxyListener::OnDataFinished(nsresult aStatus) {
+  if (!mDestListener) {
+    return NS_ERROR_FAILURE;
+  }
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetableListener =
+      do_QueryInterface(mDestListener);
+  if (retargetableListener) {
+    return retargetableListener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
+}
+
 /** nsThreadRetargetableStreamListener methods **/
 NS_IMETHODIMP
 ProxyListener::CheckListenerChain() {
@@ -3213,6 +3228,20 @@ imgCacheValidator::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* inStr,
   }
 
   return mDestListener->OnDataAvailable(aRequest, inStr, sourceOffset, count);
+}
+
+NS_IMETHODIMP
+imgCacheValidator::OnDataFinished(nsresult aStatus) {
+  if (!mDestListener) {
+    return NS_ERROR_FAILURE;
+  }
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetableListener =
+      do_QueryInterface(mDestListener);
+  if (retargetableListener) {
+    return retargetableListener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
 }
 
 /** nsIThreadRetargetableStreamListener methods **/
