@@ -73,6 +73,7 @@
     "talos/tests/perf-reftest-singletons/tiny-traversal-singleton.html",
     "talos/tests/perf-reftest-singletons/window-named-property-get.html",
     "webkit/PerformanceTests/Speedometer/index.html",
+    "http://localhost:8000/index.html?startAutomatically=true",
     "webkit/PerformanceTests/webaudio/index.html?raptor&rendering-buffer-length=30",
     "add/index-webp.html",
     "add/index-webgl-demo3.html",
@@ -95,18 +96,18 @@
   function loadURL() {
     var interval = defaultInterval;
     var testURL = list[idx++];
-    if (testURL.includes("Speedometer")) {
+    if (testURL.includes("Speedometer") || testURL.includes("localhost")) {
       interval = 180000;
     }
- 	else if (testURL.includes("webaudio")) {
-		 interval = 60000;
-	}
- 	else if (testURL.includes("3d-thingy")) {
-		 interval = 16000;
-	}
-	else if (testURL.includes("add")) {
-		 interval = 30000;
-	}
+    else if (testURL.includes("webaudio")) {
+      interval = 60000;
+    }
+    else if (testURL.includes("3d-thingy")) {
+      interval = 16000;
+    }
+    else if (testURL.includes("add")) {
+      interval = 30000;
+    }
     w.close();
     w = window.open(testURL);
 

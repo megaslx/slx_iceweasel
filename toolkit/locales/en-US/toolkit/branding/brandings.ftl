@@ -15,18 +15,16 @@
 ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
 
 -facebook-container-brand-name = Facebook Container
--lockwise-brand-name = Iceweasel Lockwise
--lockwise-brand-short-name = Lockwise
 -monitor-brand-name = Iceweasel Monitor
 -monitor-brand-short-name = Monitor
 -pocket-brand-name = Pocket
--send-brand-name = Iceweasel Send
+-send-brand-name = Firefox Send
 -screenshots-brand-name = Iceweasel Screenshots
 -mozilla-vpn-brand-name = Mozilla VPN
 -profiler-brand-name = Iceweasel Profiler
 -translations-brand-name = Iceweasel Translations
--focus-brand-name = Iceweasel Focus
--relay-brand-name = Iceweasel Relay
+-focus-brand-name = Firefox Focus
+-relay-brand-name = Firefox Relay
 -relay-brand-short-name = Relay
 -fakespot-brand-name = Fakespot
 

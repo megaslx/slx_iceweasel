@@ -144,7 +144,7 @@ static bool FrameHasVisibleInlineContent(nsIFrame* aFrame) {
     return true;
   }
 
-  if (aFrame->IsFrameOfType(nsIFrame::eLineParticipant)) {
+  if (aFrame->IsLineParticipant()) {
     for (nsIFrame* kid : aFrame->PrincipalChildList()) {
       if (kid->StyleVisibility()->IsVisible() ||
           FrameHasVisibleInlineContent(kid)) {
@@ -192,7 +192,7 @@ static nsRect GetFrameTextArea(nsIFrame* aFrame,
     if (!textFrame->IsEntirelyWhitespace()) {
       textArea = aFrame->InkOverflowRect();
     }
-  } else if (aFrame->IsFrameOfType(nsIFrame::eLineParticipant)) {
+  } else if (aFrame->IsLineParticipant()) {
     for (nsIFrame* kid : aFrame->PrincipalChildList()) {
       nsRect kidTextArea = GetFrameTextArea(kid, aBuilder);
       textArea.OrWith(kidTextArea);
@@ -7810,7 +7810,7 @@ void nsBlockFrame::SetInitialChildList(ChildListID aListID,
          (pseudo == PseudoStyleType::scrolledContent &&
           !GetParent()->IsListControlFrame()) ||
          pseudo == PseudoStyleType::mozSVGText) &&
-        !IsComboboxControlFrame() && !IsFrameOfType(eMathML) &&
+        !IsComboboxControlFrame() && !IsMathMLFrame() &&
         !IsColumnSetWrapperFrame() &&
         RefPtr<ComputedStyle>(GetFirstLetterStyle(PresContext())) != nullptr;
     NS_ASSERTION(haveFirstLetterStyle ==
@@ -8072,8 +8072,7 @@ bool nsBlockFrame::BlockNeedsFloatManager(nsIFrame* aBlock) {
 
 /* static */
 bool nsBlockFrame::BlockCanIntersectFloats(nsIFrame* aFrame) {
-  return aFrame->IsBlockFrameOrSubclass() &&
-         !aFrame->IsFrameOfType(nsIFrame::eReplaced) &&
+  return aFrame->IsBlockFrameOrSubclass() && !aFrame->IsReplaced() &&
          !aFrame->HasAnyStateBits(NS_BLOCK_FLOAT_MGR);
 }
 
