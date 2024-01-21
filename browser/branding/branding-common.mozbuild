@@ -26,7 +26,7 @@ def FirefoxBranding():
             'VisualElements_150.png',
             'VisualElements_70.png',
         ]
-    elif if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+    elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
         FINAL_TARGET_FILES[".."] += [
             "firefox.VisualElementsManifest.xml",
             "private_browsing.VisualElementsManifest.xml",
