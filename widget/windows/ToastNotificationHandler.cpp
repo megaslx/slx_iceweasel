@@ -9,8 +9,10 @@
 #include <windows.foundation.h>
 
 #include "gfxUtils.h"
+#include "gfxPlatform.h"
 #include "imgIContainer.h"
 #include "imgIRequest.h"
+#include "json/json.h"
 #include "mozilla/gfx/2D.h"
 #ifdef MOZ_BACKGROUNDTASKS
 #  include "mozilla/BackgroundTasks.h"
@@ -300,6 +302,18 @@ nsresult ToastNotificationHandler::InitAlertAsync(
     nsIAlertNotification* aAlert) {
   MOZ_TRY(InitWindowsTag());
 
+#ifdef MOZ_BACKGROUNDTASKS
+  nsAutoString imageUrl;
+  if (BackgroundTasks::IsBackgroundTaskMode() &&
+      NS_SUCCEEDED(aAlert->GetImageURL(imageUrl)) && !imageUrl.IsEmpty()) {
+    // Bug 1870750: Image decoding relies on gfx and runs on a thread pool,
+    // which expects to have been initialized early and on the main thread.
+    // Since background tasks run headless this never occurs. In this case we
+    // force gfx initialization.
+    Unused << NS_WARN_IF(!gfxPlatform::GetPlatform());
+  }
+#endif
+
   return aAlert->LoadImage(/* aTimeout = */ 0, this, /* aUserData = */ nullptr,
                            getter_AddRefs(mImageRequest));
 }
@@ -434,6 +448,22 @@ ComPtr<IXmlDocument> ToastNotificationHandler::CreateToastXmlDocument() {
 
     success = SetAttribute(image, HStringReference(L"src"), mImageUri);
     NS_ENSURE_TRUE(success, nullptr);
+
+    switch (mImagePlacement) {
+      case ImagePlacement::eHero:
+        success =
+            SetAttribute(image, HStringReference(L"placement"), u"hero"_ns);
+        NS_ENSURE_TRUE(success, nullptr);
+        break;
+      case ImagePlacement::eIcon:
+        success = SetAttribute(image, HStringReference(L"placement"),
+                               u"appLogoOverride"_ns);
+        NS_ENSURE_TRUE(success, nullptr);
+        break;
+      case ImagePlacement::eInline:
+        // No attribute placement attribute for inline images.
+        break;
+    }
   }
 
   ComPtr<IXmlNodeList> toastTextElements;
@@ -496,8 +526,9 @@ ComPtr<IXmlDocument> ToastNotificationHandler::CreateToastXmlDocument() {
   MOZ_LOG(sWASLog, LogLevel::Debug,
           ("launchArg: '%s'", NS_ConvertUTF16toUTF8(launchArg).get()));
 
-  // Use newer toast layout, which makes images larger, for system
-  // (chrome-privileged) toasts.
+  // Use newer toast layout for system (chrome-privileged) toasts. This gains us
+  // UI elements such as new image placement options (default image placement is
+  // larger and inline) and buttons.
   if (mIsSystemPrincipal) {
     ComPtr<IXmlNodeList> bindingElements;
     hr = toastXml->GetElementsByTagName(HStringReference(L"binding").Get(),
@@ -868,8 +899,6 @@ ToastNotificationHandler::OnActivate(
       }
     }
 
-    // TODO: extract `action` from `actionString`, which is now JSON.
-
     if (argumentsString.EqualsLiteral("dismiss")) {
       // XXX: Somehow Windows still fires OnActivate instead of OnDismiss for
       // supposedly system managed dismiss button (with activationType=system
@@ -899,6 +928,22 @@ ToastNotificationHandler::OnActivate(
           }
         }
       }
+
+      if (mHandleActions) {
+        Json::Value jsonData;
+        Json::Reader jsonReader;
+
+        if (jsonReader.parse(NS_ConvertUTF16toUTF8(actionString).get(),
+                             jsonData, false)) {
+          char actionKey[] = "action";
+          if (jsonData.isMember(actionKey) && jsonData[actionKey].isString()) {
+            mAlertListener->Observe(
+                nullptr, "alertactioncallback",
+                NS_ConvertUTF8toUTF16(jsonData[actionKey].asCString()).get());
+          }
+        }
+      }
+
       mAlertListener->Observe(nullptr, "alertclickcallback", mCookie.get());
     }
   }
@@ -1001,6 +1046,10 @@ ToastNotificationHandler::OnFail(const ComPtr<IToastNotification>& notification,
   aArgs->get_ErrorCode(&err);
   MOZ_LOG(sWASLog, LogLevel::Error,
           ("Error creating notification, error: %ld", err));
+
+  if (mHandleActions) {
+    mAlertListener->Observe(nullptr, "alerterror", mCookie.get());
+  }
 
   SendFinished();
   mBackend->RemoveHandler(mName, this);
