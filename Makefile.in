@@ -246,7 +246,7 @@ ifneq (,$(findstring clang,$(CC_TYPE)))
 	-mkdir $(DEPTH)/instrumented
 	$(LLVM_PROFDATA) merge -o $(DEPTH)/instrumented/merged.profdata $(DEPTH)/*.profraw
 ifeq ($(OS_ARCH),WINNT)	
-	$(LLVM_PROFDATA) show --value-cutoff=1024 --all-functions $(DEPTH)/instrumented/merged.profdata --output $(DEPTH)/orderfile.txt
+	$(LLVM_PROFDATA) show --value-cutoff=1024 --all-functions $(DEPTH)/instrumented/merged.profdata --output $(DEPTH)/order.txt
 	$(PYTHON3) $(topsrcdir)/build/order.py $(DEPTH) $(MY_BITS)
 endif # !WINNT
 endif # !clang
