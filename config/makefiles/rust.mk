@@ -566,7 +566,6 @@ ifdef RUST_PROGRAMS
 
 program_features_flag := --features mozilla-central-workspace-hack
 
-GARBAGE_DIRS += $(RUST_TARGET)
 force-cargo-program-build: $(call resfile,module)
 	$(call BUILDSTATUS,START_Rust $(RUST_CARGO_PROGRAMS))
 	$(call CARGO_BUILD) $(addprefix --bin ,$(RUST_CARGO_PROGRAMS)) $(cargo_target_flag) $(program_features_flag) -- $(addprefix -C link-arg=$(CURDIR)/,$(call resfile,module)) $(CARGO_RUSTCFLAGS)
@@ -590,7 +589,6 @@ ifdef HOST_RUST_PROGRAMS
 
 host_program_features_flag := --features mozilla-central-workspace-hack
 
-GARBAGE_DIRS += $(RUST_HOST_TARGET)
 force-cargo-host-program-build:
 	$(call BUILDSTATUS,START_Rust $(HOST_RUST_CARGO_PROGRAMS))
 	$(call CARGO_BUILD) $(addprefix --bin ,$(HOST_RUST_CARGO_PROGRAMS)) $(cargo_host_flag) $(host_program_features_flag)
