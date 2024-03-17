@@ -11,7 +11,9 @@ reconfig_files(){
 MYOBJ_DIR=
 ICEWEASEL_TREE=`pwd -W 2>/dev/null || pwd`
 FIND_FILE=".mozconfig"
+export LLVM_PROFDATA=llvm-profdata
 export CARGO_TARGET_DIR=/tmp/cargo_target
+export MOZ_WINDOWS_RS_DIR=~/windows-0.52.0
 if [ ! -f "$FIND_FILE" ]; then
   [[ -f mozconfig32 ]] && cp mozconfig32 $FIND_FILE 2>/dev/null || cp mozconfig64 $FIND_FILE 2>/dev/null
 fi
@@ -51,44 +53,20 @@ else
 fi
 
 reconfig_files
-rm -rf "../$MYOBJ_DIR"
-mkdir "../$MYOBJ_DIR" && cd "../$MYOBJ_DIR"
-$ICEWEASEL_TREE/configure --enable-profile-generate=cross
-source ./old-configure.vars
-echo we find python[$PYTHON3]
-$MAKE -j4
-if [ "$?" != "0" ]; then
-  echo First compilation failed. > error.log
-  exit 1;
-fi
 
-$MAKE package
-if [ "$?" != "0" ]; then
-  echo First package failed. > error.log
-  exit 1;
-fi
-
-if [ -n "$LOCAL_WITH_VC15" ]; then
-  echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
-  $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
-else
-  MOZ_HEADLESS=1 DISPLAY=22 $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
-fi
-
-ls *.profraw >/dev/null 2>&1
-if [ "$?" != "0" ]; then
-  echo profileserver.py failed. >> error.log
-  exit 1;
-fi
-
-$MAKE maybe_clobber_profiledbuild
-if [ "$?" != "0" ]; then
-  echo make maybe_clobber_profiledbuild failed. > error.log
-  exit 1;
-fi
-
-reconfig_files
 cd "../$MYOBJ_DIR"
+
+if [ ! -d "instrumented" ]; then
+  mkdir "instrumented" && mv "merged.profdata" "instrumented/"
+fi
+
+if [ "$OS" != "Windows_NT" ]; then
+  rm -rf '!(instrumented|buildid.h|orderfile.txt)'
+else
+  sed -i -b 's/D:\/works/\/d\/works/g' "instrumented/merged.profdata"
+  winrm -rf '!(instrumented|buildid.h|orderfile.txt)'
+fi
+
 if [ "$OS" != "Windows_NT" ]; then
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross --enable-linker=lld
 elif [ "$MYOBJ_DIR" == "obju32-release" ]; then
@@ -96,6 +74,8 @@ elif [ "$MYOBJ_DIR" == "obju32-release" ]; then
 else
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
 fi
+
+source ./old-configure.vars
 $MAKE -j4
 
 if [ "$?" != "0" ]; then
@@ -103,6 +83,7 @@ if [ "$?" != "0" ]; then
   exit 1;
 fi
 $MAKE package
+
 echo Compile completed!
 rm -f $ICEWEASEL_TREE/$FIND_FILE>/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/configure.old >/dev/null 2>&1

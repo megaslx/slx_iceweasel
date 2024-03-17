@@ -234,26 +234,7 @@ endif
 .PHONY: package-generated-sources
 package-generated-sources:
 	$(call py_action,package_generated_sources,'$(DIST)/$(PKG_PATH)$(GENERATED_SOURCE_FILE_PACKAGE)')
-	
-# PGO support, but we can't do this test in client.mk
-# No point in clobbering if PGO has been explicitly disabled.
-ifdef NO_PROFILE_GUIDED_OPTIMIZE
-maybe_clobber_profiledbuild:
-else
-maybe_clobber_profiledbuild: clean
-ifneq (,$(findstring clang,$(CC_TYPE)))
-	-rm -rf $(DEPTH)/instrumented
-	-mkdir $(DEPTH)/instrumented
-	$(LLVM_PROFDATA) merge -o $(DEPTH)/instrumented/merged.profdata $(DEPTH)/*.profraw
-ifeq ($(OS_ARCH),WINNT)	
-	$(LLVM_PROFDATA) show --value-cutoff=1024 --all-functions $(DEPTH)/instrumented/merged.profdata --output $(DEPTH)/order.txt
-	$(PYTHON3) $(topsrcdir)/build/order.py $(DEPTH) $(MY_BITS)
-endif # !WINNT
-endif # !clang
-endif # NO_PROFILE_GUIDED_OPTIMIZE
 
-.PHONY: maybe_clobber_profiledbuild
-	
 ifdef JS_STANDALONE
 # Delegate js-specific rules to js
 check-%:
