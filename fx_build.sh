@@ -53,19 +53,55 @@ else
 fi
 
 reconfig_files
+rm -rf "../$MYOBJ_DIR"
+mkdir "../$MYOBJ_DIR" && cd "../$MYOBJ_DIR"
+$ICEWEASEL_TREE/configure --enable-profile-generate=cross
+source ./old-configure.vars
+echo we find python[$PYTHON3]
+$MAKE -j4
+if [ "$?" != "0" ]; then
+  echo First compilation failed. > error.log
+  exit 1;
+fi
+
+$MAKE package
+if [ "$?" != "0" ]; then
+  echo First package failed. > error.log
+  exit 1;
+fi
+
+if [ -n "$LOCAL_WITH_VC15" ]; then
+  echo LOCAL_WITH_VC15=$LOCAL_WITH_VC15
+  $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
+else
+  MOZ_HEADLESS=1 DISPLAY=22 $PYTHON3 $ICEWEASEL_TREE/build/pgo/profileserver.py
+fi
+
+ls *.profraw >/dev/null 2>&1
+if [ "$?" != "0" ]; then
+  echo profileserver.py failed. >> error.log
+  exit 1;
+fi
+
+reconfig_files
 
 cd "../$MYOBJ_DIR"
-
+if [ ! -f "merged.profdata" ]; then
+  echo merged.profdata not exist. >> error.log
+  exit 1;
+fi
 if [ ! -d "instrumented" ]; then
   mkdir "instrumented" && mv "merged.profdata" "instrumented/"
 fi
 
-if [ "$OS" != "Windows_NT" ]; then
-  rm -rf '!(instrumented|buildid.h|orderfile.txt)'
-else
+if [ "$OS" == "Windows_NT" ]; then
   sed -i -b 's/D:\/works/\/d\/works/g' "instrumented/merged.profdata"
-  winrm -rf '!(instrumented|buildid.h|orderfile.txt)'
 fi
+
+echo "Clean `pwd` ..."
+shopt -s extglob
+rm -rf !(instrumented|buildid.h)
+sleep 3s
 
 if [ "$OS" != "Windows_NT" ]; then
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross --enable-linker=lld
@@ -74,8 +110,6 @@ elif [ "$MYOBJ_DIR" == "obju32-release" ]; then
 else
   $ICEWEASEL_TREE/configure --enable-profile-use=cross --enable-lto=cross
 fi
-
-source ./old-configure.vars
 $MAKE -j4
 
 if [ "$?" != "0" ]; then
@@ -90,4 +124,3 @@ rm -f $ICEWEASEL_TREE/configure.old >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/old-configure >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/js/src/configure.old >/dev/null 2>&1
 rm -f $ICEWEASEL_TREE/js/src/old-configure >/dev/null 2>&1
-  
