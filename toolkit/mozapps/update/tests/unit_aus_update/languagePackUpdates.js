@@ -177,9 +177,12 @@ add_task(async function testLangpackStaged() {
   copyTestUpdaterToBinDir();
 
   let greDir = getGREDir();
-  let updateSettingsIni = greDir.clone();
-  updateSettingsIni.append(FILE_UPDATE_SETTINGS_INI);
-  writeFile(updateSettingsIni, UPDATE_SETTINGS_CONTENTS);
+
+  if (AppConstants.platform != "macosx") {
+    let updateSettingsIni = greDir.clone();
+    updateSettingsIni.append(FILE_UPDATE_SETTINGS_INI);
+    writeFile(updateSettingsIni, UPDATE_SETTINGS_CONTENTS);
+  }
 
   await downloadUpdate();
 
@@ -243,9 +246,9 @@ add_task(async function testRedownload() {
 
   let downloadCount = 0;
   let listener = {
-    onStartRequest: aRequest => {},
-    onProgress: (aRequest, aContext, aProgress, aMaxProgress) => {},
-    onStatus: (aRequest, aStatus, aStatusText) => {},
+    onStartRequest: _aRequest => {},
+    onProgress: (_aRequest, _aContext, _aProgress, _aMaxProgress) => {},
+    onStatus: (_aRequest, _aStatus, _aStatusText) => {},
     onStopRequest: (request, status) => {
       Assert.equal(
         status,

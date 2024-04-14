@@ -99,12 +99,10 @@ void PortLink::SendMessage(UniquePtr<Message> aMessage) {
 
   if (aMessage->size() > IPC::Channel::kMaximumMessageSize) {
   #ifdef MOZ_CRASHREPORTER
-    CrashReporter::AnnotateCrashReport(
-        CrashReporter::Annotation::IPCMessageName,
-        nsDependentCString(aMessage->name()));
-    CrashReporter::AnnotateCrashReport(
-        CrashReporter::Annotation::IPCMessageSize,
-        static_cast<unsigned int>(aMessage->size()));
+    CrashReporter::RecordAnnotationCString(
+        CrashReporter::Annotation::IPCMessageName, aMessage->name());
+    CrashReporter::RecordAnnotationU32(
+        CrashReporter::Annotation::IPCMessageSize, aMessage->size());
   #endif
     MOZ_CRASH("IPC message size is too large");
   }

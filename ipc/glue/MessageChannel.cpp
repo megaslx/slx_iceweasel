@@ -476,9 +476,8 @@ MessageChannel::~MessageChannel() {
   // destroyed on a thread other than `mWorkerThread`.
   if (!IsClosedLocked()) {
   #ifdef MOZ_CRASHREPORTER
-    CrashReporter::AnnotateCrashReport(
-        CrashReporter::Annotation::IPCFatalErrorProtocol,
-        nsDependentCString(mName));
+    CrashReporter::RecordAnnotationCString(
+        CrashReporter::Annotation::IPCFatalErrorProtocol, mName);
   #endif
     switch (mChannelState) {
       case ChannelConnected:
@@ -539,6 +538,12 @@ int32_t MessageChannel::CurrentNestedInsideSyncTransaction() const {
   MOZ_RELEASE_ASSERT(mTransactionStack->NestedLevel() ==
                      IPC::Message::NESTED_INSIDE_SYNC);
   return mTransactionStack->TransactionID();
+}
+
+bool MessageChannel::TestOnlyIsTransactionComplete() const {
+  AssertWorkerThread();
+  MonitorAutoLock lock(*mMonitor);
+  return !mTransactionStack || mTransactionStack->IsComplete();
 }
 
 bool MessageChannel::AwaitingSyncReply() const {

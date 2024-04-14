@@ -66,14 +66,14 @@ struct EnumSerializer {
     uintParamType value;
     if (!ReadParam(aReader, &value)) {
     #ifdef MOZ_CRASHREPORTER
-      CrashReporter::AnnotateCrashReport(
-          CrashReporter::Annotation::IPCReadErrorReason, "Bad iter"_ns);
+      CrashReporter::RecordAnnotationCString(
+          CrashReporter::Annotation::IPCReadErrorReason, "Bad iter");
     #endif
       return false;
     } else if (!EnumValidator::IsLegalValue(value)) {
     #ifdef MOZ_CRASHREPORTER
-      CrashReporter::AnnotateCrashReport(
-          CrashReporter::Annotation::IPCReadErrorReason, "Illegal value"_ns);
+      CrashReporter::RecordAnnotationCString(
+          CrashReporter::Annotation::IPCReadErrorReason, "Illegal value");
     #endif
       return false;
     }

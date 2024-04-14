@@ -214,8 +214,8 @@ RefPtr<GenericNonExclusivePromise> UtilityProcessManager::LaunchProcess(
         }
         p->mQueuedPrefs.Clear();
       #ifdef MOZ_CRASHREPORTER
-        CrashReporter::AnnotateCrashReport(
-            CrashReporter::Annotation::UtilityProcessStatus, "Running"_ns);
+        CrashReporter::RecordAnnotationCString(
+            CrashReporter::Annotation::UtilityProcessStatus, "Running");
       #endif
         return GenericNonExclusivePromise::CreateAndResolve(true, __func__);
       },
@@ -593,8 +593,8 @@ void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
   mProcesses[aSandbox] = nullptr;
 
 #ifdef MOZ_CRASHREPORTER
-  CrashReporter::AnnotateCrashReport(
-      CrashReporter::Annotation::UtilityProcessStatus, "Destroyed"_ns);
+  CrashReporter::RecordAnnotationCString(
+      CrashReporter::Annotation::UtilityProcessStatus, "Destroyed");
 #endif
 
   if (NoMoreProcesses()) {
