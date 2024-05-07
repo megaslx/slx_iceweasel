@@ -1624,7 +1624,7 @@ class nsContextMenu {
 
   // Open new "view source" window with the frame's URL.
   viewFrameSource() {
-    BrowserViewSourceOfDocument({
+    BrowserCommands.viewSourceOfDocument({
       browser: this.browser,
       URL: this.contentData.docLocation,
       outerWindowID: this.frameOuterWindowID,
@@ -1632,7 +1632,7 @@ class nsContextMenu {
   }
 
   viewInfo() {
-    BrowserPageInfo(
+    BrowserCommands.pageInfo(
       this.contentData.docLocation,
       null,
       null,
@@ -1642,7 +1642,7 @@ class nsContextMenu {
   }
 
   viewImageInfo() {
-    BrowserPageInfo(
+    BrowserCommands.pageInfo(
       this.contentData.docLocation,
       "mediaTab",
       this.imageInfo,
@@ -1666,7 +1666,7 @@ class nsContextMenu {
   }
 
   viewFrameInfo() {
-    BrowserPageInfo(
+    BrowserCommands.pageInfo(
       this.contentData.docLocation,
       null,
       null,
@@ -1987,7 +1987,7 @@ class nsContextMenu {
     // we give up waiting for the filename.
     function timerCallback() {}
     timerCallback.prototype = {
-      notify: function sLA_timer_notify(aTimer) {
+      notify: function sLA_timer_notify() {
         channel.cancel(NS_ERROR_SAVE_LINK_AS_TIMEOUT);
       },
     };
@@ -2514,23 +2514,6 @@ class nsContextMenu {
   }
 
   /**
-   * Retrieves an instance of the TranslationsParent actor.
-   * @returns {TranslationsParent} - The TranslationsParent actor.
-   * @throws Throws if an instance of the actor cannot be retrieved.
-   */
-  static #getTranslationsActor() {
-    const actor =
-      gBrowser.selectedBrowser.browsingContext.currentWindowGlobal.getActor(
-        "Translations"
-      );
-
-    if (!actor) {
-      throw new Error("Unable to get the TranslationsParent");
-    }
-    return actor;
-  }
-
-  /**
    * Determines if Full Page Translations is currently active on this page.
    *
    * @returns {boolean}
@@ -2538,7 +2521,9 @@ class nsContextMenu {
   static #isFullPageTranslationsActive() {
     try {
       const { requestedTranslationPair } =
-        this.#getTranslationsActor().languageState;
+        TranslationsParent.getTranslationsActor(
+          gBrowser.selectedBrowser
+        ).languageState;
       return requestedTranslationPair !== null;
     } catch {
       // Failed to retrieve the Full Page Translations actor, do nothing.
@@ -2552,7 +2537,16 @@ class nsContextMenu {
    * @param {Event} event - The triggering event for opening the panel.
    */
   openSelectTranslationsPanel(event) {
-    SelectTranslationsPanel.open(event, this.#translationsLangPairPromise);
+    const context = this.contentData.context;
+    let screenX = context.screenXDevPx / window.devicePixelRatio;
+    let screenY = context.screenYDevPx / window.devicePixelRatio;
+    SelectTranslationsPanel.open(
+      event,
+      screenX,
+      screenY,
+      this.#getTextToTranslate(),
+      this.#translationsLangPairPromise
+    );
   }
 
   /**
@@ -2603,6 +2597,17 @@ class nsContextMenu {
   }
 
   /**
+   * Fetches text for translation, prioritizing selected text over link text.
+   *
+   * @returns {string} The text to translate.
+   */
+  #getTextToTranslate() {
+    return this.isTextSelected
+      ? this.selectionInfo.fullText.trim()
+      : this.linkTextStr.trim();
+  }
+
+  /**
    * Displays or hides the translate-selection item in the context menu.
    */
   showTranslateSelectionItem() {
@@ -2616,10 +2621,7 @@ class nsContextMenu {
       "browser.translations.select.enable"
     );
 
-    // Selected text takes precedence over link text.
-    const textToTranslate = this.isTextSelected
-      ? this.selectedText.trim()
-      : this.linkTextStr.trim();
+    const textToTranslate = this.#getTextToTranslate();
 
     translateSelectionItem.hidden =
       // Only show the item if the feature is enabled.
