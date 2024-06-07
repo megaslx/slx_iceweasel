@@ -11,6 +11,7 @@ reconfig_files(){
 MYOBJ_DIR=
 ICEWEASEL_TREE=`pwd -W 2>/dev/null || pwd`
 FIND_FILE=".mozconfig"
+export CCACHE=sccache
 export LLVM_PROFDATA=llvm-profdata
 export CARGO_TARGET_DIR=/tmp/cargo_target
 export MOZ_WINDOWS_RS_DIR=~/windows-0.52.0
@@ -118,9 +119,11 @@ if [ "$?" != "0" ]; then
 fi
 $MAKE package
 
+echo Clean python cache!
+find "$ICEWEASEL_TREE" \( -path "$ICEWEASEL_TREE/.git" -prune \) -o -name "__pycache__" -type d -print | xargs -I {} rm -rf "{}"
 echo Compile completed!
-rm -f $ICEWEASEL_TREE/$FIND_FILE>/dev/null 2>&1
-rm -f $ICEWEASEL_TREE/configure.old >/dev/null 2>&1
-rm -f $ICEWEASEL_TREE/old-configure >/dev/null 2>&1
-rm -f $ICEWEASEL_TREE/js/src/configure.old >/dev/null 2>&1
-rm -f $ICEWEASEL_TREE/js/src/old-configure >/dev/null 2>&1
+rm -f "$ICEWEASEL_TREE/$FIND_FILE" >/dev/null 2>&1
+rm -f "$ICEWEASEL_TREE/configure.old" >/dev/null 2>&1
+rm -f "$ICEWEASEL_TREE/old-configure" >/dev/null 2>&1
+rm -f "$ICEWEASEL_TREE/js/src/configure.old" >/dev/null 2>&1
+rm -f "$ICEWEASEL_TREE/js/src/old-configure" >/dev/null 2>&1
