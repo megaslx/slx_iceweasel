@@ -408,8 +408,10 @@ bin/libfreebl_64int_3.so
 
 ; [ Native Messaging Host Proxy ]
 ;
-#if (defined(XP_WIN) || defined(XP_MACOSX)) && defined(MOZ_CRASHREPORTER)
+#if defined(XP_WIN) || defined(XP_MACOSX)
+#ifdef MOZ_CRASHREPORTER
 @BINPATH@/nmhproxy@BIN_SUFFIX@
+#endif
 #endif
 
 ; [ Notification COM Server ]
