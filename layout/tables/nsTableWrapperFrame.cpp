@@ -3,6 +3,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+#include <xmmintrin.h>
+#endif
+
 #include "nsTableWrapperFrame.h"
 
 #include "LayoutConstants.h"
@@ -218,6 +222,13 @@ void nsTableWrapperFrame::BuildDisplayListForInnerTable(
   nsIFrame* kid = mFrames.FirstChild();
   // The children should be in content order
   while (kid) {
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+    nsIFrame* kidNext = kid->GetNextSibling();
+    if (kidNext) {
+      _mm_prefetch((char *)kidNext, _MM_HINT_T0);
+      _mm_prefetch((char *)kidNext + 64, _MM_HINT_T0);
+    }
+#endif
     BuildDisplayListForChild(aBuilder, kid, aLists);
     kid = kid->GetNextSibling();
   }
