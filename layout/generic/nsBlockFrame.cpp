@@ -23,6 +23,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/ToString.h"
@@ -49,7 +50,6 @@
 #include "nsFloatManager.h"
 #include "prenv.h"
 #include "nsError.h"
-#include "nsIScrollableFrame.h"
 #include <algorithm>
 #include "nsLayoutUtils.h"
 #include "nsDisplayList.h"
@@ -1130,11 +1130,10 @@ static LogicalSize CalculateContainingBlockSizeForAbsolutes(
 
   // For scroll containers, we can just use cbSize (which is the padding-box
   // size of the scrolled-content frame).
-  if (nsIScrollableFrame* scrollFrame = do_QueryFrame(lastRI->mFrame)) {
+  if (lastRI->mFrame->IsScrollContainerOrSubclass()) {
     // Assert that we're not missing any frames between the abspos containing
     // block and the scroll container.
     // the parent.
-    Unused << scrollFrame;
     MOZ_ASSERT(lastButOneRI == &aReflowInput);
     return cbSize;
   }
@@ -1388,12 +1387,10 @@ void nsBlockFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
       GetEffectiveComputedBSize(aReflowInput, consumedBSize);
   // If we have non-auto block size, we're clipping our kids and we fit,
   // make sure our kids fit too.
-  const PhysicalAxes physicalBlockAxis =
-      wm.IsVertical() ? PhysicalAxes::Horizontal : PhysicalAxes::Vertical;
   if (aReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE &&
       aReflowInput.ComputedBSize() != NS_UNCONSTRAINEDSIZE &&
-      (ShouldApplyOverflowClipping(aReflowInput.mStyleDisplay) &
-       physicalBlockAxis)) {
+      ShouldApplyOverflowClipping(aReflowInput.mStyleDisplay)
+          .contains(wm.PhysicalAxis(LogicalAxis::Block))) {
     LogicalMargin blockDirExtras =
         aReflowInput.ComputedLogicalBorderPadding(wm);
     if (GetLogicalSkipSides().BStart()) {
@@ -1930,11 +1927,6 @@ nsReflowStatus nsBlockFrame::TrialReflow(nsPresContext* aPresContext,
     if (HasOverflowLines() || HasPushedFloats()) {
       state.mReflowStatus.SetNextInFlowNeedsReflow();
     }
-
-#ifdef DEBUG_kipp
-    ListTag(stdout);
-    printf(": block is not fully complete\n");
-#endif
   }
 
   // Place the ::marker's frame if it is placed next to a block child.
@@ -2345,14 +2337,6 @@ nscoord nsBlockFrame::ComputeFinalSize(const ReflowInput& aReflowInput,
 
   aMetrics.SetSize(wm, finalSize);
 
-#ifdef DEBUG_blocks
-  if ((ABSURD_SIZE(aMetrics.Width()) || ABSURD_SIZE(aMetrics.Height())) &&
-      !GetParent()->IsAbsurdSizeAssertSuppressed()) {
-    ListTag(stdout);
-    printf(": WARNING: desired:%d,%d\n", aMetrics.Width(), aMetrics.Height());
-  }
-#endif
-
   return blockEndEdgeOfChildren;
 }
 
@@ -2495,8 +2479,7 @@ void nsBlockFrame::ComputeOverflowAreas(OverflowAreas& aOverflowAreas,
   // the things that makes incremental reflow O(N^2).
   auto overflowClipAxes = ShouldApplyOverflowClipping(aDisplay);
   auto overflowClipMargin = OverflowClipMargin(overflowClipAxes);
-  if (overflowClipAxes == PhysicalAxes::Both &&
-      overflowClipMargin == nsSize()) {
+  if (overflowClipAxes == kPhysicalAxesBoth && overflowClipMargin == nsSize()) {
     return;
   }
 
@@ -2530,7 +2513,7 @@ void nsBlockFrame::ComputeOverflowAreas(OverflowAreas& aOverflowAreas,
 
   ConsiderBlockEndEdgeOfChildren(aOverflowAreas, aBEndEdgeOfChildren, aDisplay);
 
-  if (overflowClipAxes != PhysicalAxes::None) {
+  if (!overflowClipAxes.isEmpty()) {
     aOverflowAreas.ApplyClipping(frameBounds, overflowClipAxes,
                                  overflowClipMargin);
   }
@@ -2983,7 +2966,8 @@ bool nsBlockFrame::ReflowDirtyLines(BlockReflowState& aState) {
     // elements inside them.
     // XXX what can we do smarter here?
     if (!line->IsDirty() && line->IsBlock() &&
-        line->mFirstChild->HasAnyStateBits(NS_BLOCK_HAS_CLEAR_CHILDREN)) {
+        line->mFirstChild->HasAnyStateBits(NS_BLOCK_HAS_CLEAR_CHILDREN) &&
+        aState.FloatManager()->HasAnyFloats()) {
       line->MarkDirty();
     }
 
@@ -7998,7 +7982,7 @@ bool nsBlockFrame::MarkerIsEmpty() const {
   nsIFrame* marker = GetMarker();
   const nsStyleList* list = marker->StyleList();
   return marker->StyleContent()->mContent.IsNone() ||
-         (list->mCounterStyle.IsNone() && list->mListStyleImage.IsNone() &&
+         (list->mListStyleType.IsNone() && list->mListStyleImage.IsNone() &&
           marker->StyleContent()->NonAltContentItems().IsEmpty());
 }
 
@@ -8154,15 +8138,6 @@ void nsBlockFrame::CheckFloats(BlockReflowState& aState) {
     NS_ERROR(
         "nsBlockFrame::CheckFloats: Explicit float list is out of sync with "
         "float cache");
-#  if defined(DEBUG_roc)
-    nsIFrame::RootFrameList(PresContext(), stdout, 0);
-    for (i = 0; i < lineFloats.Length(); ++i) {
-      printf("Line float: %p\n", lineFloats.ElementAt(i));
-    }
-    for (i = 0; i < storedFloats.Length(); ++i) {
-      printf("Stored float: %p\n", storedFloats.ElementAt(i));
-    }
-#  endif
   }
 #endif
 
@@ -8675,13 +8650,11 @@ void nsBlockFrame::VerifyOverflowSituation() {
       }
       LineIterator line = flow->LinesBegin();
       LineIterator line_end = flow->LinesEnd();
-      for (; line != line_end && line != cursor; ++line)
-        ;
+      for (; line != line_end && line != cursor; ++line);
       if (line == line_end && overflowLines) {
         line = overflowLines->mLines.begin();
         line_end = overflowLines->mLines.end();
-        for (; line != line_end && line != cursor; ++line)
-          ;
+        for (; line != line_end && line != cursor; ++line);
       }
       return line != line_end;
     };

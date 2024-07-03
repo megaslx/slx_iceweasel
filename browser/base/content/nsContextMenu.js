@@ -111,7 +111,7 @@ class nsContextMenu {
    * A promise to retrieve the translations language pair
    * if the context menu was opened in a context relevant to
    * open the SelectTranslationsPanel.
-   * @type {Promise<{fromLang: string, toLang: string}>}
+   * @type {Promise<{fromLanguage: string, toLanguage: string}>}
    */
   #translationsLangPairPromise;
 
@@ -871,6 +871,10 @@ class nsContextMenu {
 
     this.showAndFormatSearchContextItem();
     this.showTranslateSelectionItem();
+    nsContextMenu.GenAI.buildAskChatMenu(
+      document.getElementById("context-ask-chat"),
+      this
+    );
 
     // srcdoc cannot be opened separately due to concerns about web
     // content with about:srcdoc in location bar masquerading as trusted
@@ -2558,6 +2562,7 @@ class nsContextMenu {
       screenX,
       screenY,
       this.#getTextToTranslate(),
+      this.isTextSelected,
       this.#translationsLangPairPromise
     ).catch(console.error);
   }
@@ -2572,9 +2577,9 @@ class nsContextMenu {
    * @returns {Promise<void>}
    */
   async localizeTranslateSelectionItem(translateSelectionItem) {
-    const { toLang } = await this.#translationsLangPairPromise;
+    const { toLanguage } = await this.#translationsLangPairPromise;
 
-    if (toLang) {
+    if (toLanguage) {
       // A valid to-language exists, so localize the menuitem for that language.
       let displayName;
 
@@ -2582,7 +2587,7 @@ class nsContextMenu {
         const displayNames = new Services.intl.DisplayNames(undefined, {
           type: "language",
         });
-        displayName = displayNames.of(toLang);
+        displayName = displayNames.of(toLanguage);
       } catch {
         // Services.intl.DisplayNames.of threw, do nothing.
       }
@@ -2615,9 +2620,27 @@ class nsContextMenu {
    * @returns {string} The text to translate.
    */
   #getTextToTranslate() {
-    return this.isTextSelected
-      ? this.selectionInfo.fullText.trim()
-      : this.linkTextStr.trim();
+    if (this.isTextSelected) {
+      // If there is an active selection, we will always offer to translate.
+      return this.selectionInfo.fullText.trim();
+    }
+
+    const linkText = this.linkTextStr.trim();
+    if (!linkText) {
+      // There was no underlying link text, so do not offer to translate.
+      return "";
+    }
+
+    try {
+      // If the underlying link text is a URL, we should not offer to translate.
+      new URL(linkText);
+      return "";
+    } catch {
+      // A URL could not be parsed from the unerlying link text.
+    }
+
+    // Since the underlying link text is not a URL, we should offer to translate it.
+    return linkText;
   }
 
   /**
@@ -2757,6 +2780,7 @@ class nsContextMenu {
 
 ChromeUtils.defineESModuleGetters(nsContextMenu, {
   DevToolsShim: "chrome://devtools-startup/content/DevToolsShim.sys.mjs",
+  GenAI: "resource:///modules/GenAI.sys.mjs",
   LoginManagerContextMenu:
     "resource://gre/modules/LoginManagerContextMenu.sys.mjs",
   TranslationsParent: "resource://gre/actors/TranslationsParent.sys.mjs",

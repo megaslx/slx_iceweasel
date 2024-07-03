@@ -62,6 +62,7 @@
 #include "frontend/TaggedParserAtomIndexHasher.h"  // TaggedParserAtomIndexHasher
 #include "frontend/TDZCheckCache.h"                // TDZCheckCache
 #include "frontend/TryEmitter.h"                   // TryEmitter
+#include "frontend/UsingEmitter.h"                 // UsingEmitter
 #include "frontend/WhileEmitter.h"                 // WhileEmitter
 #include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin, JS::ColumnNumberOffset
 #include "js/friend/ErrorMessages.h"  // JSMSG_*
@@ -1088,6 +1089,12 @@ restart:
 #ifdef ENABLE_DECORATORS
     case ParseNodeKind::DecoratorList:
       MOZ_CRASH("Decorators are not supported yet");
+#endif
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    case ParseNodeKind::UsingDecl:
+    case ParseNodeKind::AwaitUsingDecl:
+      MOZ_CRASH("Using declarations are not supported yet");
 #endif
 
     // Most other binary operations (parsed as lists in SpiderMonkey) may
@@ -2464,6 +2471,14 @@ bool BytecodeEmitter::emitScript(ParseNode* body) {
     }
   }
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  if (emitterScope.hasDisposables()) {
+    if (!emit1(JSOp::DisposeDisposables)) {
+      return false;
+    }
+  }
+#endif
+
   if (!markSimpleBreakpoint()) {
     return false;
   }
@@ -2511,7 +2526,7 @@ BytecodeEmitter::createImmutableScriptData() {
       bytecodeSection().tryNoteList().span());
 }
 
-#ifdef ENABLE_DECORATORS
+#if defined(ENABLE_DECORATORS) || defined(ENABLE_EXPLICIT_RESOURCE_MANAGEMENT)
 bool BytecodeEmitter::emitCheckIsCallable() {
   // This emits code to check if the value at the top of the stack is
   // callable. The value is left on the stack.
@@ -4241,10 +4256,23 @@ bool BytecodeEmitter::emitSingleDeclaration(ListNode* declList, NameNode* decl,
       return false;
     }
   }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  if (declList->isKind(ParseNodeKind::UsingDecl)) {
+    UsingEmitter uem(this);
+
+    if (!uem.prepareForAssignment(UsingEmitter::Kind::Sync)) {
+      //            [stack] ENV? V
+      return false;
+    }
+  }
+#endif
+
   if (!noe.emitAssignment()) {
     //              [stack] V
     return false;
   }
+
   if (!emit1(JSOp::Pop)) {
     //              [stack]
     return false;
@@ -5782,6 +5810,18 @@ bool BytecodeEmitter::emitInitializeForInOrOfTarget(TernaryNode* forHead) {
       // nothing needs be done.
       MOZ_ASSERT(bytecodeSection().stackDepth() >= 1);
     }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    if (declarationList->isKind(ParseNodeKind::UsingDecl)) {
+      UsingEmitter uem(this);
+
+      if (!uem.prepareForAssignment(UsingEmitter::Kind::Sync)) {
+        //            [stack] ENV? V
+        return false;
+      }
+    }
+#endif
+
     if (!noe.emitAssignment()) {
       return false;
     }
@@ -5819,7 +5859,14 @@ bool BytecodeEmitter::emitForOf(ForNode* forOfLoop,
   // Certain builtins (e.g. Array.from) are implemented in self-hosting
   // as for-of loops.
   auto selfHostedIter = getSelfHostedIterFor(forHeadExpr);
-  ForOfEmitter forOf(this, headLexicalEmitterScope, selfHostedIter, iterKind);
+  ForOfEmitter forOf(this, headLexicalEmitterScope, selfHostedIter, iterKind
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+                     ,
+                     forOfHead->kid1()->isKind(ParseNodeKind::UsingDecl)
+                         ? ForOfEmitter::HasUsingDeclarationInHead::Yes
+                         : ForOfEmitter::HasUsingDeclarationInHead::No
+#endif
+  );
 
   if (!forOf.emitIterated()) {
     //              [stack]
@@ -5840,7 +5887,11 @@ bool BytecodeEmitter::emitForOf(ForNode* forOfLoop,
   if (headLexicalEmitterScope) {
     DebugOnly<ParseNode*> forOfTarget = forOfHead->kid1();
     MOZ_ASSERT(forOfTarget->isKind(ParseNodeKind::LetDecl) ||
-               forOfTarget->isKind(ParseNodeKind::ConstDecl));
+               forOfTarget->isKind(ParseNodeKind::ConstDecl)
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+               || forOfTarget->isKind(ParseNodeKind::UsingDecl)
+#endif
+    );
   }
 
   if (!forOf.emitInitialize(forOfHead->pn_pos.begin)) {
@@ -12737,6 +12788,13 @@ bool BytecodeEmitter::emitTree(
         return false;
       }
       break;
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    case ParseNodeKind::UsingDecl:
+      if (!emitDeclarationList(&pn->as<ListNode>())) {
+        return false;
+      }
+      break;
+#endif
 
     case ParseNodeKind::ImportDecl:
       MOZ_ASSERT(sc->isModuleContext());
