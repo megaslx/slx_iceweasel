@@ -3222,7 +3222,11 @@
 # 0: normal, 1: always-enabled, 2: always-disabled
 - name: dom.origin-trials.private-attribution.state
   type: RelaxedAtomicInt32
+#ifdef ANDROID
+  value: 2
+#else
   value: 0
+#endif
   mirror: always
 
 # User pref to control whether Private Attribution
@@ -4594,7 +4598,7 @@
 # Is support for Navigator.webdriver enabled?
 - name: dom.webdriver.enabled
   type: bool
-  value: true
+  value: @IS_NOT_ANDROID@
   mirror: always
 
 - name: dom.w3c_pointer_events.getcoalescedevents_only_in_securecontext
@@ -13132,7 +13136,7 @@
 
 - name: network.http.http2.enabled.deps
   type: RelaxedAtomicBool
-  value: false
+  value: true
   mirror: always
 
 - name: network.http.http2.enforce-tls-profile
