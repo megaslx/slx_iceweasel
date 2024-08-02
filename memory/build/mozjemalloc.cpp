@@ -436,17 +436,6 @@ struct arena_chunk_t {
 // ***************************************************************************
 // Constants defining allocator size classes and behavior.
 
-// Maximum size of L1 cache line.  This is used to avoid cache line aliasing,
-// so over-estimates are okay (up to a point), but under-estimates will
-// negatively affect performance.
-static const size_t kCacheLineSize =
-#if defined(XP_DARWIN) && defined(__aarch64__)
-    128
-#else
-    64
-#endif
-    ;
-
 // Our size classes are inclusive ranges of memory sizes.  By describing the
 // minimums and how memory is allocated in each range the maximums can be
 // calculated.
@@ -1396,7 +1385,8 @@ class ArenaCollection {
 
   // We're running on the main thread which is set by a call to SetMainThread().
   bool IsOnMainThread() const {
-    return mMainThreadId.isSome() && mMainThreadId.value() == GetThreadId();
+    return mMainThreadId.isSome() &&
+           ThreadIdEqual(mMainThreadId.value(), GetThreadId());
   }
 
   // We're running on the main thread or SetMainThread() has never been called.
@@ -1405,11 +1395,10 @@ class ArenaCollection {
   }
 
   // After a fork set the new thread ID in the child.
-  void PostForkFixMainThread() {
-    if (mMainThreadId.isSome()) {
-      // Only if the main thread has been defined.
-      mMainThreadId = Some(GetThreadId());
-    }
+  void ResetMainThread() {
+    // The post fork handler in the child can run from a MacOS worker thread,
+    // so we can't set our main thread to it here.  Instead we have to clear it.
+    mMainThreadId = Nothing();
   }
 
   void SetMainThread() {
@@ -1554,6 +1543,9 @@ static bool malloc_init_hard();
 FORK_HOOK void _malloc_prefork(void);
 FORK_HOOK void _malloc_postfork_parent(void);
 FORK_HOOK void _malloc_postfork_child(void);
+#  ifdef XP_DARWIN
+FORK_HOOK void _malloc_postfork(void);
+#  endif
 #endif
 
 // End forward declarations.
@@ -5195,13 +5187,23 @@ inline void MozJemalloc::moz_set_max_dirty_page_modifier(int32_t aModifier) {
 // state for the child is if fork is called from the main thread only.  Or the
 // child must not use them, eg it should call exec().  We attempt to prevent the
 // child for accessing these arenas by refusing to re-initialise them.
+//
+// This is only accessed in the fork handlers while gArenas.mLock is held.
 static pthread_t gForkingThread;
+
+#  ifdef XP_DARWIN
+// This is only accessed in the fork handlers while gArenas.mLock is held.
+static pid_t gForkingProcess;
+#  endif
 
 FORK_HOOK
 void _malloc_prefork(void) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   // Acquire all mutexes in a safe order.
   gArenas.mLock.Lock();
   gForkingThread = pthread_self();
+#  ifdef XP_DARWIN
+  gForkingProcess = getpid();
+#  endif
 
   for (auto arena : gArenas.iter()) {
     if (arena->mLock.LockIsEnabled()) {
@@ -5232,6 +5234,9 @@ void _malloc_postfork_parent(void) MOZ_NO_THREAD_SAFETY_ANALYSIS {
 
 FORK_HOOK
 void _malloc_postfork_child(void) {
+  // Do this before iterating over the arenas.
+  gArenas.ResetMainThread();
+
   // Reinitialize all mutexes, now that fork() has completed.
   huge_mtx.Init();
 
@@ -5241,10 +5246,24 @@ void _malloc_postfork_child(void) {
     arena->mLock.Reinit(gForkingThread);
   }
 
-  gArenas.PostForkFixMainThread();
   gArenas.mLock.Init();
 }
-#endif  // XP_WIN
+
+#  ifdef XP_DARWIN
+FORK_HOOK
+void _malloc_postfork(void) {
+  // On MacOS we need to check if this is running in the parent or child
+  // process.
+  bool is_in_parent = getpid() == gForkingProcess;
+  gForkingProcess = 0;
+  if (is_in_parent) {
+    _malloc_postfork_parent();
+  } else {
+    _malloc_postfork_child();
+  }
+}
+#  endif  // XP_DARWIN
+#endif    // ! XP_WIN
 
 // End library-private functions.
 // ***************************************************************************
