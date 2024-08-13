@@ -22,14 +22,14 @@ if [ ! -f "$FIND_FILE" ]; then
   echo $FIND_FILE not exist!
   exit 1;
 fi
-FIND_STR="ac_add_options --target=i686-pc-mingw32"
+FIND_STR="target=i686-pc"
 if [ "$OS" != "Windows_NT" ]; then
   PATH=$PATH:~/.cargo/bin
   MYOBJ_DIR="obju-linux64"
   MAKE=make
   LOCAL_WITH_VC15=1
 else
-  if [ `grep -c "^$FIND_STR" $FIND_FILE` -ne '0' ];then
+  if [ `grep "^#" $FIND_FILE -v | grep -c "$FIND_STR"` -ne '0' ];then
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju32-release"
   else
     [[ -n $MY_OBJ ]] && MYOBJ_DIR=$MY_OBJ || MYOBJ_DIR="obju64-release"
@@ -101,7 +101,7 @@ fi
 
 echo "Clean `pwd` ..."
 shopt -s extglob
-rm -rf !(instrumented|buildid.h)
+rm -rf !(instrumented|buildid.h|source-repo.h)
 sleep 3s
 
 if [ "$OS" != "Windows_NT" ]; then
