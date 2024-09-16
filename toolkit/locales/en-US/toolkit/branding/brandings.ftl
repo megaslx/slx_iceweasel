@@ -15,17 +15,17 @@
 ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
 
 -facebook-container-brand-name = Facebook Container
--monitor-brand-name = Iceweasel Monitor
+-monitor-brand-name = Mozilla Monitor
 -monitor-brand-short-name = Monitor
 -mozmonitor-brand-name = Mozilla Monitor
 -pocket-brand-name = Pocket
--send-brand-name = Firefox Send
+-send-brand-name = Mozilla Send
 -screenshots-brand-name = Iceweasel Screenshots
 -mozilla-vpn-brand-name = Mozilla VPN
 -profiler-brand-name = Iceweasel Profiler
 -translations-brand-name = Iceweasel Translations
--focus-brand-name = Firefox Focus
--relay-brand-name = Firefox Relay
+-focus-brand-name = Mozilla Focus
+-relay-brand-name = Mozilla Relay
 -relay-brand-short-name = Relay
 -fakespot-brand-name = Fakespot
 
@@ -51,4 +51,4 @@
 # experimental and in-development features, and turn those features on and off.
 # The "Labs" portion can be localized, “Firefox” must be treated as a brand
 # and kept in English.
--firefoxlabs-brand-name = Firefox Labs
+-firefoxlabs-brand-name = Mozilla Labs
