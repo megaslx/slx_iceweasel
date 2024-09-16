@@ -311,7 +311,7 @@
  # and can relaunch the application after it has been closed.
 - name: alerts.useSystemBackend.windows.notificationserver.enabled
   type: bool
-  value: true
+  value: false
   mirror: never
 #endif
 
