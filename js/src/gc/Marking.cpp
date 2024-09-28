@@ -43,7 +43,6 @@ using JS::SliceBudget;
 
 using mozilla::DebugOnly;
 using mozilla::IntegerRange;
-using mozilla::PodCopy;
 
 // [SMDOC] GC Tracing
 //

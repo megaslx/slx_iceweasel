@@ -153,7 +153,7 @@ static void LazyLoadCallback(
     Element* target = entry->Target();
     if (entry->IsIntersecting()) {
       if (auto* image = HTMLImageElement::FromNode(target)) {
-        image->StopLazyLoading(HTMLImageElement::StartLoading::Yes);
+        image->StopLazyLoading();
       } else if (auto* iframe = HTMLIFrameElement::FromNode(target)) {
         iframe->StopLazyLoading();
       } else {

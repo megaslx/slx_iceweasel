@@ -128,14 +128,6 @@ static MessageChannel* gParentProcessBlocker = nullptr;
 namespace mozilla {
 namespace ipc {
 
-static const uint32_t kMinTelemetryMessageSize = 4096;
-
-// Note: we round the time we spend waiting for a response to the nearest
-// millisecond. So a min value of 1 ms actually captures from 500us and above.
-// This is used for both the sending and receiving side telemetry for sync IPC,
-// (IPC_SYNC_MAIN_LATENCY_MS and IPC_SYNC_RECEIVE_MS).
-static const uint32_t kMinTelemetrySyncIPCLatencyMs = 1;
-
 // static
 bool MessageChannel::sIsPumpingMessages = false;
 
@@ -754,10 +746,6 @@ bool MessageChannel::OpenOnSameThread(MessageChannel* aTargetChan,
 }
 
 bool MessageChannel::Send(UniquePtr<Message> aMsg) {
-  if (aMsg->size() >= kMinTelemetryMessageSize) {
-    Telemetry::Accumulate(Telemetry::IPC_MESSAGE_SIZE2, aMsg->size());
-  }
-
   MOZ_RELEASE_ASSERT(!aMsg->is_sync());
   MOZ_RELEASE_ASSERT(aMsg->nested_level() != IPC::Message::NESTED_INSIDE_SYNC);
 
@@ -1221,9 +1209,6 @@ void MessageChannel::ProcessPendingRequests(
 
 bool MessageChannel::Send(UniquePtr<Message> aMsg, UniquePtr<Message>* aReply) {
   mozilla::TimeStamp start = TimeStamp::Now();
-  if (aMsg->size() >= kMinTelemetryMessageSize) {
-    Telemetry::Accumulate(Telemetry::IPC_MESSAGE_SIZE2, aMsg->size());
-  }
 
   // Sanity checks.
   AssertWorkerThread();
@@ -1420,19 +1405,7 @@ bool MessageChannel::Send(UniquePtr<Message> aMsg, UniquePtr<Message>* aReply) {
 
   AddProfilerMarker(*reply, MessageDirection::eReceiving);
 
-  if (reply->size() >= kMinTelemetryMessageSize) {
-    Telemetry::Accumulate(Telemetry::IPC_REPLY_SIZE,
-                          nsDependentCString(msgName), reply->size());
-  }
-
   *aReply = std::move(reply);
-
-  // NOTE: Only collect IPC_SYNC_MAIN_LATENCY_MS on the main thread (bug
-  // 1343729)
-  if (NS_IsMainThread() && latencyMs >= kMinTelemetrySyncIPCLatencyMs) {
-    Telemetry::Accumulate(Telemetry::IPC_SYNC_MAIN_LATENCY_MS,
-                          nsDependentCString(msgName), latencyMs);
-  }
   return true;
 }
 
@@ -1774,8 +1747,6 @@ void MessageChannel::DispatchSyncMessage(ActorLifecycleProxy* aProxy,
                                          UniquePtr<Message>& aReply) {
   AssertWorkerThread();
 
-  mozilla::TimeStamp start = TimeStamp::Now();
-
   int nestedLevel = aMsg.nested_level();
 
   MOZ_RELEASE_ASSERT(nestedLevel == IPC::Message::NOT_NESTED ||
@@ -1789,12 +1760,6 @@ void MessageChannel::DispatchSyncMessage(ActorLifecycleProxy* aProxy,
   {
     AutoSetValue<MessageChannel*> blocked(blockingVar, this);
     rv = aProxy->Get()->OnMessageReceived(aMsg, aReply);
-  }
-
-  uint32_t latencyMs = round((TimeStamp::Now() - start).ToMilliseconds());
-  if (latencyMs >= kMinTelemetrySyncIPCLatencyMs) {
-    Telemetry::Accumulate(Telemetry::IPC_SYNC_RECEIVE_MS,
-                          nsDependentCString(aMsg.name()), latencyMs);
   }
 
   if (!MaybeHandleError(rv, aMsg, "DispatchSyncMessage")) {
