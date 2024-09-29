@@ -14,7 +14,7 @@ FIND_FILE=".mozconfig"
 export CCACHE=sccache
 export LLVM_PROFDATA=llvm-profdata
 export CARGO_TARGET_DIR=/tmp/cargo_target
-export MOZ_WINDOWS_RS_DIR=~/windows-0.52.0
+export MOZ_WINDOWS_RS_DIR=~/windows-rs
 if [ ! -f "$FIND_FILE" ]; then
   [[ -f mozconfig32 ]] && cp mozconfig32 $FIND_FILE 2>/dev/null || cp mozconfig64 $FIND_FILE 2>/dev/null
 fi
