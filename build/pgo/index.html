@@ -97,8 +97,11 @@
   function loadURL() {
     var interval = defaultInterval;
     var testURL = list[idx++];
-    if (testURL.includes("Speedometer") || testURL.includes("localhost")) {
+    if (testURL.includes("Speedometer")) {
       interval = 180000;
+    }
+    else if (testURL.includes("localhost")) {
+      interval = 300000;
     }
     else if (testURL.includes("webaudio")) {
       interval = 60000;
