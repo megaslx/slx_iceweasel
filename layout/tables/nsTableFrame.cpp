@@ -1358,17 +1358,17 @@ void nsTableFrame::MarkIntrinsicISizesDirty() {
   nsContainerFrame::MarkIntrinsicISizesDirty();
 }
 
-nscoord nsTableFrame::IntrinsicISize(gfxContext* aContext,
+nscoord nsTableFrame::IntrinsicISize(const IntrinsicSizeInput& aInput,
                                      IntrinsicISizeType aType) {
   if (NeedToCalcBCBorders()) {
     CalcBCBorders();
   }
 
-  ReflowColGroups(aContext);
+  ReflowColGroups(aInput.mContext);
 
   return aType == IntrinsicISizeType::MinISize
-             ? LayoutStrategy()->GetMinISize(aContext)
-             : LayoutStrategy()->GetPrefISize(aContext, false);
+             ? LayoutStrategy()->GetMinISize(aInput.mContext)
+             : LayoutStrategy()->GetPrefISize(aInput.mContext, false);
 }
 
 /* virtual */ nsIFrame::IntrinsicSizeOffsetData
@@ -1416,7 +1416,8 @@ nsIFrame::SizeComputationResult nsTableFrame::ComputeSize(
   AutoMaybeDisableFontInflation an(this);
 
   // Tables never shrink below their min inline-size.
-  nscoord minISize = GetMinISize(aRenderingContext);
+  const IntrinsicSizeInput input(aRenderingContext, Some(aCBSize), Nothing());
+  nscoord minISize = GetMinISize(input);
   if (minISize > result.mLogicalSize.ISize(aWM)) {
     result.mLogicalSize.ISize(aWM) = minISize;
   }
@@ -1431,7 +1432,8 @@ nscoord nsTableFrame::TableShrinkISizeToFit(gfxContext* aRenderingContext,
   AutoMaybeDisableFontInflation an(this);
 
   nscoord result;
-  nscoord minISize = GetMinISize(aRenderingContext);
+  const IntrinsicSizeInput input(aRenderingContext, Nothing(), Nothing());
+  nscoord minISize = GetMinISize(input);
   if (minISize > aISizeInCB) {
     result = minISize;
   } else {

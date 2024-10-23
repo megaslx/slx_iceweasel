@@ -3,26 +3,18 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 ifndef MOZ_PKG_FORMAT
-    ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
-        MOZ_PKG_FORMAT  = DMG
+    ifeq ($(MOZ_WIDGET_TOOLKIT),cocoa)
+        MOZ_PKG_FORMAT = DMG
+    else ifeq ($(OS_ARCH),WINNT)
+        MOZ_PKG_FORMAT = 7Z
+    else ifeq ($(OS_ARCH),SunOS)
+        MOZ_PKG_FORMAT = BZ2
+    else ifeq ($(MOZ_WIDGET_TOOLKIT),gtk)
+        MOZ_PKG_FORMAT = BZ2
+    else ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+        MOZ_PKG_FORMAT = APK
     else
-        ifeq (WINNT,$(OS_ARCH))
-            MOZ_PKG_FORMAT  = 7Z
-        else
-            ifeq (SunOS,$(OS_ARCH))
-                MOZ_PKG_FORMAT  = BZ2
-            else
-                ifeq (gtk,$(MOZ_WIDGET_TOOLKIT))
-                    MOZ_PKG_FORMAT  = BZ2
-                else
-                    ifeq (android,$(MOZ_WIDGET_TOOLKIT))
-                        MOZ_PKG_FORMAT = APK
-                    else
-                        MOZ_PKG_FORMAT = TGZ
-                    endif
-                endif
-            endif
-        endif
+        MOZ_PKG_FORMAT = TGZ
     endif
 endif # MOZ_PKG_FORMAT
 
@@ -143,7 +135,6 @@ ifeq ($(MOZ_PKG_FORMAT),7Z)
   INNER_MAKE_PACKAGE = $(call py_action,make_7z,'$(MOZ_PKG_DIR)' '$(DIR_SUFFIX)' '$(PACKAGE)')
   INNER_UNMAKE_PACKAGE = $(shell echo un7z.)
 endif
-
 #Create an RPM file
 ifeq ($(MOZ_PKG_FORMAT),RPM)
   PKG_SUFFIX  = .rpm
