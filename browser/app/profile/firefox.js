@@ -2410,7 +2410,7 @@ pref("browser.tabs.crashReporting.includeURL", false);
 pref("extensions.experiments.enabled", false);
 
 #if defined(XP_WIN)
-  pref("dom.ipc.processPriorityManager.backgroundUsesEcoQoS", true);
+  pref("dom.ipc.processPriorityManager.backgroundUsesEcoQoS", false);
 #endif
 
 // Don't limit how many nodes we care about on desktop:
