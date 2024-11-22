@@ -70,7 +70,8 @@ struct EnumSerializer {
           CrashReporter::Annotation::IPCReadErrorReason, "Bad iter");
     #endif
       return false;
-    } else if (!EnumValidator::IsLegalValue(value)) {
+    }
+    if (!EnumValidator::IsLegalValue(value)) {
     #ifdef MOZ_CRASHREPORTER
       CrashReporter::RecordAnnotationCString(
           CrashReporter::Annotation::IPCReadErrorReason, "Illegal value");
