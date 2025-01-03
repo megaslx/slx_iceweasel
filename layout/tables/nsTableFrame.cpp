@@ -443,10 +443,10 @@ int32_t nsTableFrame::GetEffectiveRowSpan(const nsTableCellFrame& aCell,
   uint32_t colIndex = aCell.ColIndex();
   uint32_t rowIndex = aCell.RowIndex();
 
-  if (aCellMap)
+  if (aCellMap) {
     return aCellMap->GetRowSpan(rowIndex, colIndex, true);
-  else
-    return tableCellMap->GetEffectiveRowSpan(rowIndex, colIndex);
+  }
+  return tableCellMap->GetEffectiveRowSpan(rowIndex, colIndex);
 }
 
 int32_t nsTableFrame::GetEffectiveColSpan(const nsTableCellFrame& aCell,
@@ -457,10 +457,10 @@ int32_t nsTableFrame::GetEffectiveColSpan(const nsTableCellFrame& aCell,
   uint32_t colIndex = aCell.ColIndex();
   uint32_t rowIndex = aCell.RowIndex();
 
-  if (aCellMap)
+  if (aCellMap) {
     return aCellMap->GetEffectiveColSpan(*tableCellMap, rowIndex, colIndex);
-  else
-    return tableCellMap->GetEffectiveColSpan(rowIndex, colIndex);
+  }
+  return tableCellMap->GetEffectiveColSpan(rowIndex, colIndex);
 }
 
 bool nsTableFrame::HasMoreThanOneCell(int32_t aRowIndex) const {
@@ -744,11 +744,14 @@ void nsTableFrame::MatchCellMapToColCache(nsTableCellMap* aCellMap) {
 void nsTableFrame::DidResizeColumns() {
   MOZ_ASSERT(!GetPrevInFlow(), "should only be called on first-in-flow");
 
-  if (mBits.mResizedColumns) return;  // already marked
+  if (mBits.mResizedColumns) {
+    return;  // already marked
+  }
 
   for (nsTableFrame* f = this; f;
-       f = static_cast<nsTableFrame*>(f->GetNextInFlow()))
+       f = static_cast<nsTableFrame*>(f->GetNextInFlow())) {
     f->mBits.mResizedColumns = true;
+  }
 }
 
 void nsTableFrame::AppendCell(nsTableCellFrame& aCellFrame, int32_t aRowIndex) {
@@ -958,7 +961,9 @@ void nsTableFrame::AddDeletedRowIndex(int32_t aDeletedRowStoredIndex) {
 }
 
 int32_t nsTableFrame::GetAdjustmentForStoredIndex(int32_t aStoredIndex) {
-  if (mDeletedRowIndexRanges.empty()) return 0;
+  if (mDeletedRowIndexRanges.empty()) {
+    return 0;
+  }
 
   int32_t adjustment = 0;
 
@@ -2006,22 +2011,26 @@ nscoord nsTableFrame::GetCollapsedISize(const WritingMode aWM,
 void nsTableFrame::DidSetComputedStyle(ComputedStyle* aOldComputedStyle) {
   nsContainerFrame::DidSetComputedStyle(aOldComputedStyle);
 
-  if (!aOldComputedStyle)  // avoid this on init
+  if (!aOldComputedStyle) {  // avoid this on init
     return;
+  }
 
   if (IsBorderCollapse() && BCRecalcNeeded(aOldComputedStyle, Style())) {
     SetFullBCDamageArea();
   }
 
   // avoid this on init or nextinflow
-  if (!mTableLayoutStrategy || GetPrevInFlow()) return;
+  if (!mTableLayoutStrategy || GetPrevInFlow()) {
+    return;
+  }
 
   bool isAuto = IsAutoLayout();
   if (isAuto != (LayoutStrategy()->GetType() == nsITableLayoutStrategy::Auto)) {
-    if (isAuto)
+    if (isAuto) {
       mTableLayoutStrategy = MakeUnique<BasicTableLayoutStrategy>(this);
-    else
+    } else {
       mTableLayoutStrategy = MakeUnique<FixedTableLayoutStrategy>(this);
+    }
   }
 }
 
@@ -2363,7 +2372,9 @@ void nsTableFrame::RemoveFrame(DestroyContext& aContext, ChildListID aListID,
 
 /* virtual */
 nsMargin nsTableFrame::GetUsedBorder() const {
-  if (!IsBorderCollapse()) return nsContainerFrame::GetUsedBorder();
+  if (!IsBorderCollapse()) {
+    return nsContainerFrame::GetUsedBorder();
+  }
 
   WritingMode wm = GetWritingMode();
   return GetOuterBCBorder(wm).GetPhysicalMargin(wm);
@@ -2371,7 +2382,9 @@ nsMargin nsTableFrame::GetUsedBorder() const {
 
 /* virtual */
 nsMargin nsTableFrame::GetUsedPadding() const {
-  if (!IsBorderCollapse()) return nsContainerFrame::GetUsedPadding();
+  if (!IsBorderCollapse()) {
+    return nsContainerFrame::GetUsedPadding();
+  }
 
   return nsMargin(0, 0, 0, 0);
 }
@@ -3486,7 +3499,9 @@ nscoord nsTableFrame::CalcBorderBoxBSize(const ReflowInput& aReflowInput,
 }
 
 bool nsTableFrame::IsAutoLayout() {
-  if (StyleTable()->mLayoutStrategy == StyleTableLayout::Auto) return true;
+  if (StyleTable()->mLayoutStrategy == StyleTableLayout::Auto) {
+    return true;
+  }
   // a fixed-layout inline-table must have a inline size
   // and tables with inline size set to 'max-content' must be
   // auto-layout (at least as long as
@@ -4244,7 +4259,9 @@ void BCMapCellIterator::PeekBEnd(const BCMapCellInfo& aRefInfo,
         nextRow = rg->GetFirstRow();
       }
     } while (rg && !nextRow);
-    if (!rg) return;
+    if (!rg) {
+      return;
+    }
   } else {
     // get the row within the same row group
     nextRow = mRow;
@@ -4389,9 +4406,12 @@ bool nsTableFrame::BCRecalcNeeded(ComputedStyle* aOldComputedStyle,
   const nsStyleBorder* oldStyleData = aOldComputedStyle->StyleBorder();
   const nsStyleBorder* newStyleData = aNewComputedStyle->StyleBorder();
   nsChangeHint change = newStyleData->CalcDifference(*oldStyleData);
-  if (!change) return false;
-  if (change & nsChangeHint_NeedReflow)
+  if (!change) {
+    return false;
+  }
+  if (change & nsChangeHint_NeedReflow) {
     return true;  // the caller only needs to mark the bc damage area
+  }
   if (change & nsChangeHint_RepaintFrame) {
     // we need to recompute the borders and the caller needs to mark
     // the bc damage area
@@ -4434,9 +4454,13 @@ static const BCCellBorder& CompareBorders(
     }
   }
 
-  if (aFirstDominates) *aFirstDominates = firstDominates;
+  if (aFirstDominates) {
+    *aFirstDominates = firstDominates;
+  }
 
-  if (firstDominates) return aBorder1;
+  if (firstDominates) {
+    return aBorder1;
+  }
   return aBorder2;
 }
 
@@ -4667,7 +4691,7 @@ struct BCCorners {
 
   BCCornerInfo& operator[](int32_t i) const {
     NS_ASSERTION((i >= startIndex) && (i <= endIndex), "program error");
-    return corners[clamped(i, startIndex, endIndex) - startIndex];
+    return corners[std::clamp(i, startIndex, endIndex) - startIndex];
   }
 
   int32_t startIndex;
@@ -4687,7 +4711,7 @@ struct BCCellBorders {
 
   BCCellBorder& operator[](int32_t i) const {
     NS_ASSERTION((i >= startIndex) && (i <= endIndex), "program error");
-    return borders[clamped(i, startIndex, endIndex) - startIndex];
+    return borders[std::clamp(i, startIndex, endIndex) - startIndex];
   }
 
   int32_t startIndex;
@@ -4778,7 +4802,9 @@ void nsTableFrame::ExpandBCDamageArea(TableArea& aArea) const {
       nsTableRowGroupFrame* rgFrame = rowGroups[rgIdx];
       int32_t rgStartY = rgFrame->GetStartRowIndex();
       int32_t rgEndY = rgStartY + rgFrame->GetRowCount() - 1;
-      if (endRowIdx < rgStartY) break;
+      if (endRowIdx < rgStartY) {
+        break;
+      }
       cellMap = tableCellMap->GetMapFor(rgFrame, cellMap);
       if (!cellMap) ABORT0();
       // check for spanners from above and below
@@ -5105,7 +5131,9 @@ void nsTableFrame::CalcBCBorders() {
   if (!tableCellMap) ABORT0();
   int32_t numRows = GetRowCount();
   int32_t numCols = GetColCount();
-  if (!numRows || !numCols) return;  // nothing to do
+  if (!numRows || !numCols) {
+    return;  // nothing to do
+  }
 
   // Get the property holding the table damage area and border widths
   TableBCData* propData = GetTableBCData();
@@ -5118,7 +5146,7 @@ void nsTableFrame::CalcBCBorders() {
   // We accumulate border widths as we process the cells, so we need
   // to reset it once in the beginning.
   bool tableBorderReset[4];
-  for (uint32_t sideX = 0; sideX < ArrayLength(tableBorderReset); sideX++) {
+  for (uint32_t sideX = 0; sideX < std::size(tableBorderReset); sideX++) {
     tableBorderReset[sideX] = false;
   }
 
@@ -6035,8 +6063,9 @@ bool BCPaintBorderIterator::SetDamageArea(const nsRect& aDirtyRect) {
           nsTableRowFrame* fifRow =
               static_cast<nsTableRowFrame*>(rowFrame->FirstInFlow());
           endRowIndex = fifRow->GetRowIndex();
-        } else
+        } else {
           done = true;
+        }
       } else {
         // conservatively estimate the half border widths outside the row
         nscoord borderHalf = mTable->GetNextInFlow()
@@ -6063,10 +6092,14 @@ bool BCPaintBorderIterator::SetDamageArea(const nsRect& aDirtyRect) {
   // table wrapper borders overflow the table, so the table might be
   // target to other areas as the NS_FRAME_OUTSIDE_CHILDREN is set
   // on the table
-  if (!haveIntersect) return false;
+  if (!haveIntersect) {
+    return false;
+  }
   // find startColIndex, endColIndex, startColX
   haveIntersect = false;
-  if (0 == mNumTableCols) return false;
+  if (0 == mNumTableCols) {
+    return false;
+  }
 
   LogicalMargin bp = mTable->GetOuterBCBorder(mTableWM);
 
@@ -6086,8 +6119,9 @@ bool BCPaintBorderIterator::SetDamageArea(const nsRect& aDirtyRect) {
       nscoord iStartBorderHalf = colFrame->GetIStartBorderWidth() + onePx;
       if (dirtyRect.IEnd(mTableWM) >= x - iStartBorderHalf) {
         endColIndex = colIdx;
-      } else
+      } else {
         break;
+      }
     } else {
       // conservatively estimate the iEnd half border width outside the col
       nscoord iEndBorderHalf = colFrame->GetIEndBorderWidth() + onePx;
@@ -6100,7 +6134,9 @@ bool BCPaintBorderIterator::SetDamageArea(const nsRect& aDirtyRect) {
     }
     x += colISize;
   }
-  if (!haveIntersect) return false;
+  if (!haveIntersect) {
+    return false;
+  }
   mDamageArea =
       TableArea(startColIndex, startRowIndex,
                 1 + DeprecatedAbs<int32_t>(endColIndex - startColIndex),
@@ -7179,7 +7215,9 @@ void nsTableFrame::IterateBCBorders(BCPaintBorderAction& aAction,
   // We first transfer the aDirtyRect into cellmap coordinates to compute which
   // cell borders need to be painted
   BCPaintBorderIterator iter(this);
-  if (!iter.SetDamageArea(aDirtyRect)) return;
+  if (!iter.SetDamageArea(aDirtyRect)) {
+    return;
+  }
 
   // XXX comment still has physical terminology
   // First, paint all of the vertical borders from top to bottom and left to

@@ -14,6 +14,7 @@
 #ifdef MOZ_CRASHREPORTER
 #include "CrashAnnotations.h"
 #endif
+#include "base/waitable_event.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/DebugOnly.h"
