@@ -3872,10 +3872,6 @@ void* arena_t::MallocSmall(size_t aSize, bool aZero) {
   }
   MOZ_DIAGNOSTIC_ASSERT(aSize == bin->mSizeClass);
 
-#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
-  _mm_prefetch((char *)bin->mCurrentRun, _MM_HINT_NTA);
-#endif
-
   {
     MaybeMutexAutoLock lock(mLock);
 
