@@ -10,7 +10,8 @@
 
 #include "sdk/media_constraints.h"
 
-#include "absl/types/optional.h"
+#include <optional>
+
 #include "api/peer_connection_interface.h"
 
 namespace webrtc {
@@ -74,11 +75,11 @@ bool FindConstraint(const MediaConstraints* constraints,
 }
 
 // Converts a constraint (mandatory takes precedence over optional) to an
-// absl::optional.
+// std::optional.
 template <typename T>
 void ConstraintToOptional(const MediaConstraints* constraints,
                           const std::string& key,
-                          absl::optional<T>* value_out) {
+                          std::optional<T>* value_out) {
   T value;
   bool present = FindConstraint<T>(constraints, key, &value, nullptr);
   if (present) {
@@ -117,8 +118,6 @@ const char MediaConstraints::kUseRtpMux[] = "googUseRtpMUX";
 const char MediaConstraints::kEnableDscp[] = "googDscp";
 const char MediaConstraints::kEnableVideoSuspendBelowMinBitrate[] =
     "googSuspendBelowMinBitrate";
-const char MediaConstraints::kCombinedAudioVideoBwe[] =
-    "googCombinedAudioVideoBwe";
 const char MediaConstraints::kScreencastMinBitrate[] =
     "googScreencastMinBitrate";
 // TODO(ronghuawu): Remove once cpu overuse detection is stable.
@@ -162,9 +161,6 @@ void CopyConstraintsIntoRtcConfiguration(
   ConstraintToOptional<int>(constraints,
                             MediaConstraints::kScreencastMinBitrate,
                             &configuration->screencast_min_bitrate);
-  ConstraintToOptional<bool>(constraints,
-                             MediaConstraints::kCombinedAudioVideoBwe,
-                             &configuration->combined_audio_video_bwe);
 }
 
 void CopyConstraintsIntoAudioOptions(const MediaConstraints* constraints,

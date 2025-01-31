@@ -1,115 +1,36 @@
-From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Wed, 26 Apr 2023 19:45:00 +0000
-Subject: Bug 1694304 - cherry-pick libwebrtc 28ac56a415.
- r=webrtc-reviewers,jib
+From: Michael Froman <mfroman@mozilla.com>
+Date: Mon, 4 Dec 2023 12:57:00 -0600
+Subject: Bug 1867099 - (fix-66b7275561) disable wgc capture yellow-line
+ removal. r?ng!
 
-Upstream commit: https://webrtc.googlesource.com/src/+/28ac56a415a7513f1ebfb985659bf2012d84df3f
-    In VideoCaptureDS::Stop() fully stop the device
-
-    This makes the device light turn off when stopped.
-
-    Bug: webrtc:15109
-    Change-Id: I1deecbc2463e2e316e01ff1f061ab6b0313c1aa1
-    Reviewed-on: https://webrtc-review.googlesource.com/c/src/+/302200
-    Commit-Queue: Ilya Nikolaevskiy <ilnik@webrtc.org>
-    Reviewed-by: Ilya Nikolaevskiy <ilnik@webrtc.org>
-    Reviewed-by: Per Kjellander <perkj@webrtc.org>
-    Cr-Commit-Position: refs/heads/main@{#39953}
-
-Differential Revision: https://phabricator.services.mozilla.com/D176507
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/dabb9e2ec9d3b77e4cc19de0fb98cae4ce88293d
+This code won't build until we support building with
+Win 10 SDK v10.0.20348.0 or newer.
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/0aac94794aad2ddb637f5076bc08706a11866737
 ---
- .../test/video_capture_unittest.cc            | 33 +++++++++++++++++++
- .../video_capture/windows/video_capture_ds.cc | 18 +++++-----
- 2 files changed, 41 insertions(+), 10 deletions(-)
+ modules/desktop_capture/win/wgc_capture_session.cc | 6 ++++++
+ 1 file changed, 6 insertions(+)
 
-diff --git a/modules/video_capture/test/video_capture_unittest.cc b/modules/video_capture/test/video_capture_unittest.cc
-index 4cf3d5931c..c8af222b57 100644
---- a/modules/video_capture/test/video_capture_unittest.cc
-+++ b/modules/video_capture/test/video_capture_unittest.cc
-@@ -341,3 +341,36 @@ TEST_F(VideoCaptureTest, DISABLED_TestTwoCameras) {
-   EXPECT_EQ(0, module2->StopCapture());
-   EXPECT_EQ(0, module1->StopCapture());
- }
-+
-+#ifdef WEBRTC_MAC
-+// No VideoCaptureImpl on Mac.
-+#define MAYBE_ConcurrentAccess DISABLED_ConcurrentAccess
-+#else
-+#define MAYBE_ConcurrentAccess ConcurrentAccess
-+#endif
-+TEST_F(VideoCaptureTest, MAYBE_ConcurrentAccess) {
-+  TestVideoCaptureCallback capture_observer1;
-+  rtc::scoped_refptr<VideoCaptureModule> module1(
-+      OpenVideoCaptureDevice(0, &capture_observer1));
-+  ASSERT_TRUE(module1.get() != NULL);
-+  VideoCaptureCapability capability;
-+  device_info_->GetCapability(module1->CurrentDeviceName(), 0, capability);
-+  capture_observer1.SetExpectedCapability(capability);
-+
-+  TestVideoCaptureCallback capture_observer2;
-+  rtc::scoped_refptr<VideoCaptureModule> module2(
-+      OpenVideoCaptureDevice(0, &capture_observer2));
-+  ASSERT_TRUE(module2.get() != NULL);
-+  capture_observer2.SetExpectedCapability(capability);
-+
-+  // Starting module1 should work.
-+  ASSERT_NO_FATAL_FAILURE(StartCapture(module1.get(), capability));
-+  EXPECT_TRUE_WAIT(capture_observer1.incoming_frames() >= 5, kTimeOut);
-+
-+  // When module1 is stopped, starting module2 for the same device should work.
-+  EXPECT_EQ(0, module1->StopCapture());
-+  ASSERT_NO_FATAL_FAILURE(StartCapture(module2.get(), capability));
-+  EXPECT_TRUE_WAIT(capture_observer2.incoming_frames() >= 5, kTimeOut);
-+
-+  EXPECT_EQ(0, module2->StopCapture());
-+}
-diff --git a/modules/video_capture/windows/video_capture_ds.cc b/modules/video_capture/windows/video_capture_ds.cc
-index 74b31d98be..8695f76245 100644
---- a/modules/video_capture/windows/video_capture_ds.cc
-+++ b/modules/video_capture/windows/video_capture_ds.cc
-@@ -113,17 +113,9 @@ int32_t VideoCaptureDS::Init(const char* deviceUniqueIdUTF8) {
-     return -1;
-   }
- 
--  // Temporary connect here.
--  // This is done so that no one else can use the capture device.
-   if (SetCameraOutput(_requestedCapability) != 0) {
-     return -1;
-   }
--  hr = _mediaControl->Pause();
--  if (FAILED(hr)) {
--    RTC_LOG(LS_INFO)
--        << "Failed to Pause the Capture device. Is it already occupied? " << hr;
--    return -1;
--  }
-   RTC_LOG(LS_INFO) << "Capture device '" << deviceUniqueIdUTF8
-                    << "' initialized.";
-   return 0;
-@@ -139,7 +131,13 @@ int32_t VideoCaptureDS::StartCapture(const VideoCaptureCapability& capability) {
-       return -1;
+diff --git a/modules/desktop_capture/win/wgc_capture_session.cc b/modules/desktop_capture/win/wgc_capture_session.cc
+index 1c86f8ed1b..f9429134dc 100644
+--- a/modules/desktop_capture/win/wgc_capture_session.cc
++++ b/modules/desktop_capture/win/wgc_capture_session.cc
+@@ -188,6 +188,11 @@ HRESULT WgcCaptureSession::StartCapture(const DesktopCaptureOptions& options) {
      }
    }
--  HRESULT hr = _mediaControl->Run();
-+  HRESULT hr = _mediaControl->Pause();
-+  if (FAILED(hr)) {
-+    RTC_LOG(LS_INFO)
-+        << "Failed to Pause the Capture device. Is it already occupied? " << hr;
-+    return -1;
-+  }
-+  hr = _mediaControl->Run();
-   if (FAILED(hr)) {
-     RTC_LOG(LS_INFO) << "Failed to start the Capture device.";
-     return -1;
-@@ -150,7 +148,7 @@ int32_t VideoCaptureDS::StartCapture(const VideoCaptureCapability& capability) {
- int32_t VideoCaptureDS::StopCapture() {
-   MutexLock lock(&api_lock_);
  
--  HRESULT hr = _mediaControl->Pause();
-+  HRESULT hr = _mediaControl->StopWhenReady();
-   if (FAILED(hr)) {
-     RTC_LOG(LS_INFO) << "Failed to stop the capture graph. " << hr;
-     return -1;
--- 
-2.34.1
-
++// Until Mozilla builds with Win 10 SDK v10.0.20348.0 or newer, this
++// code will not build.  Once we support the newer SDK, Bug 1868198
++// exists to decide if we ever want to use this code since it is
++// removing an indicator that capture is happening.
++#if !defined(WEBRTC_MOZILLA_BUILD)
+   // By default, the WGC capture API adds a yellow border around the captured
+   // window or display to indicate that a capture is in progress. The section
+   // below is an attempt to remove this yellow border to make the capture
+@@ -199,6 +204,7 @@ HRESULT WgcCaptureSession::StartCapture(const DesktopCaptureOptions& options) {
+           &session3))) {
+     session3->put_IsBorderRequired(false);
+   }
++#endif
+ 
+   allow_zero_hertz_ = options.allow_wgc_zero_hertz();
+ 

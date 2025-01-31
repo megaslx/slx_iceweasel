@@ -9,10 +9,10 @@ const TEST_DATA_ISSUES = {
   uri: `
     <style>
     body {
-      ruby-align: center;
+      overflow-anchor: auto;
     }
     div {
-      scrollbar-width: thin;
+      scrollbar-color: auto;
     }
     </style>
     <body>
@@ -21,18 +21,18 @@ const TEST_DATA_ISSUES = {
   `,
   expectedIssuesOnSelected: [
     {
-      property: "ruby-align",
-      url: "https://developer.mozilla.org/docs/Web/CSS/ruby-align",
+      property: "overflow-anchor",
+      url: "https://developer.mozilla.org/docs/Web/CSS/overflow-anchor",
     },
   ],
   expectedIssuesOnAll: [
     {
-      property: "ruby-align",
-      url: "https://developer.mozilla.org/docs/Web/CSS/ruby-align",
+      property: "overflow-anchor",
+      url: "https://developer.mozilla.org/docs/Web/CSS/overflow-anchor",
     },
     {
-      property: "scrollbar-width",
-      url: "https://developer.mozilla.org/docs/Web/CSS/scrollbar-width",
+      property: "scrollbar-color",
+      url: "https://developer.mozilla.org/docs/Web/CSS/scrollbar-color",
     },
   ],
 };
@@ -79,6 +79,6 @@ async function navigateTo(uri, tab, { store }) {
   const onSelectedNodeUpdated = waitForUpdateSelectedNodeAction(store);
   const onTopLevelTargetUpdated = waitForUpdateTopLevelTargetAction(store);
   const onLoaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  BrowserTestUtils.loadURIString(tab.linkedBrowser, uri);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, uri);
   await Promise.all([onLoaded, onSelectedNodeUpdated, onTopLevelTargetUpdated]);
 }

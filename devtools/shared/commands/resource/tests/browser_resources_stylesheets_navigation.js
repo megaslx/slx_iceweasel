@@ -38,9 +38,8 @@ add_task(async function () {
     `styleSheetChangeEventsEnabled is false at the beginning`
   );
 
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   let availableResources = [];
   await resourceCommand.watchResources([resourceCommand.TYPES.STYLESHEET], {
@@ -183,7 +182,7 @@ add_task(async function () {
   );
   const previousBrowsingContextId = tab.linkedBrowser.browsingContext.id;
   const onLoaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  await BrowserTestUtils.loadURIString(
+  BrowserTestUtils.startLoadingURIString(
     tab.linkedBrowser,
     TEST_URI_NEW_BROWSING_CONTEXT
   );
@@ -249,9 +248,6 @@ function sortResourcesByExpectedOrder(resources) {
  * @param {Object} expected[].styleText: Expected text content of the stylesheet
  */
 async function assertResource(resource, expected) {
-  const styleSheetsFront = await resource.targetFront.getFront("stylesheets");
-  const styleText = (
-    await styleSheetsFront.getText(resource.resourceId)
-  ).str.trim();
+  const styleText = (await getStyleSheetResourceText(resource)).trim();
   is(styleText, expected.styleText, "Style text is correct");
 }

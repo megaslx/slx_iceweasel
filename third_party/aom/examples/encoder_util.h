@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2017, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -13,6 +13,10 @@
 
 #ifndef AOM_EXAMPLES_ENCODER_UTIL_H_
 #define AOM_EXAMPLES_ENCODER_UTIL_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include "aom/aom_image.h"
 
@@ -30,4 +34,7 @@ void aom_find_mismatch(const aom_image_t *const img1,
 int aom_compare_img(const aom_image_t *const img1,
                     const aom_image_t *const img2);
 
+#ifdef __cplusplus
+}
+#endif
 #endif  // AOM_EXAMPLES_ENCODER_UTIL_H_

@@ -20,18 +20,21 @@
 ///
 /// This crate needs to implement `FFIConverter<UT>` on `UniFfiTag` instances for all UniFFI
 /// consumer crates.  To do this, it defines blanket impls like `impl<UT> FFIConverter<UT> for u8`.
-/// "UT" means an abitrary `UniFfiTag` type.
+/// "UT" means an arbitrary `UniFfiTag` type.
 use crate::{
-    check_remaining, ffi_converter_default_return, ffi_converter_rust_buffer_lift_and_lower,
-    lower_into_rust_buffer, metadata, try_lift_from_rust_buffer, FfiConverter, FutureCallback,
-    Interface, MetadataBuffer, Result, RustBuffer, RustCallStatus, UnexpectedUniFFICallbackError,
+    check_remaining, derive_ffi_traits, ffi_converter_rust_buffer_lift_and_lower, metadata,
+    ConvertError, FfiConverter, Lift, LiftArgsError, LiftRef, LiftReturn, Lower, LowerError,
+    LowerReturn, MetadataBuffer, Result, RustBuffer, RustCallError, TypeId,
+    UnexpectedUniFFICallbackError,
 };
 use anyhow::bail;
 use bytes::buf::{Buf, BufMut};
 use paste::paste;
 use std::{
     collections::HashMap,
-    convert::{Infallible, TryFrom},
+    convert::TryFrom,
+    fmt::{Debug, Display},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -43,8 +46,6 @@ macro_rules! impl_ffi_converter_for_num_primitive {
     ($T:ty, $type_code:expr) => {
         paste! {
             unsafe impl<UT> FfiConverter<UT> for $T {
-                ffi_converter_default_return!(UT);
-
                 type FfiType = $T;
 
                 fn lower(obj: $T) -> Self::FfiType {
@@ -86,8 +87,6 @@ impl_ffi_converter_for_num_primitive!(f64, metadata::codes::TYPE_F64);
 /// Booleans are passed as an `i8` in order to avoid problems with handling
 /// C-compatible boolean values on JVM-based languages.
 unsafe impl<UT> FfiConverter<UT> for bool {
-    ffi_converter_default_return!(UT);
-
     type FfiType = i8;
 
     fn lower(obj: bool) -> Self::FfiType {
@@ -114,68 +113,6 @@ unsafe impl<UT> FfiConverter<UT> for bool {
     const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_BOOL);
 }
 
-/// Support unit-type returns via the FFI.
-unsafe impl<UT> FfiConverter<UT> for () {
-    // This actually isn't used, but we need to specify something
-    type FfiType = ();
-    // Returning `()` is FFI-safe, since it gets translated into a void return
-    type ReturnType = ();
-    // However, we can't use `FutureCallback<()>` since passing `()` as an argument is not
-    // FFI-safe.  So we used an arbitrary non-ZST type instead.
-    type FutureCallback = FutureCallback<u8>;
-
-    fn try_lift(_: Self::FfiType) -> Result<()> {
-        Ok(())
-    }
-
-    fn lower(_: ()) -> Self::FfiType {}
-
-    fn write(_: (), _: &mut Vec<u8>) {}
-
-    fn try_read(_: &mut &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    fn lower_return(_: ()) -> Result<Self::ReturnType, RustBuffer> {
-        Ok(())
-    }
-
-    fn invoke_future_callback(
-        callback: Self::FutureCallback,
-        callback_data: *const (),
-        _return_value: (),
-        call_status: RustCallStatus,
-    ) {
-        callback(callback_data, 0, call_status)
-    }
-
-    const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_UNIT);
-}
-
-unsafe impl<UT> FfiConverter<UT> for Infallible {
-    ffi_converter_default_return!(UT);
-
-    type FfiType = RustBuffer;
-
-    fn try_lift(_: Self::FfiType) -> Result<Infallible> {
-        unreachable!()
-    }
-
-    fn lower(_: Infallible) -> Self::FfiType {
-        unreachable!()
-    }
-
-    fn write(_: Infallible, _: &mut Vec<u8>) {
-        unreachable!()
-    }
-
-    fn try_read(_: &mut &[u8]) -> Result<Infallible> {
-        unreachable!()
-    }
-
-    const TYPE_ID_META: MetadataBuffer = MetadataBuffer::new();
-}
-
 /// Support for passing Strings via the FFI.
 ///
 /// Unlike many other implementations of `FfiConverter`, this passes a struct containing
@@ -188,8 +125,6 @@ unsafe impl<UT> FfiConverter<UT> for Infallible {
 /// followed by utf8-encoded bytes. (It's a signed integer because unsigned types are
 /// currently experimental in Kotlin).
 unsafe impl<UT> FfiConverter<UT> for String {
-    ffi_converter_default_return!(UT);
-
     type FfiType = RustBuffer;
 
     // This returns a struct with a raw pointer to the underlying bytes, so it's very
@@ -251,7 +186,6 @@ unsafe impl<UT> FfiConverter<UT> for String {
 /// if the total offset should be added to or subtracted from the unix epoch.
 unsafe impl<UT> FfiConverter<UT> for SystemTime {
     ffi_converter_rust_buffer_lift_and_lower!(UT);
-    ffi_converter_default_return!(UT);
 
     fn write(obj: SystemTime, buf: &mut Vec<u8>) {
         let mut sign = 1;
@@ -297,7 +231,6 @@ unsafe impl<UT> FfiConverter<UT> for SystemTime {
 /// and 999,999,999.
 unsafe impl<UT> FfiConverter<UT> for Duration {
     ffi_converter_rust_buffer_lift_and_lower!(UT);
-    ffi_converter_default_return!(UT);
 
     fn write(obj: Duration, buf: &mut Vec<u8>) {
         buf.put_u64(obj.as_secs());
@@ -312,18 +245,18 @@ unsafe impl<UT> FfiConverter<UT> for Duration {
     const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_DURATION);
 }
 
-/// Support for passing optional values via the FFI.
-///
-/// Optional values are currently always passed by serializing to a buffer.
-/// We write either a zero byte for `None`, or a one byte followed by the containing
-/// item for `Some`.
-///
-/// In future we could do the same optimization as rust uses internally, where the
-/// `None` option is represented as a null pointer and the `Some` as a valid pointer,
-/// but that seems more fiddly and less safe in the short term, so it can wait.
-unsafe impl<UT, T: FfiConverter<UT>> FfiConverter<UT> for Option<T> {
-    ffi_converter_rust_buffer_lift_and_lower!(UT);
-    ffi_converter_default_return!(UT);
+// Support for passing optional values via the FFI.
+//
+// Optional values are currently always passed by serializing to a buffer.
+// We write either a zero byte for `None`, or a one byte followed by the containing
+// item for `Some`.
+//
+// In future we could do the same optimization as rust uses internally, where the
+// `None` option is represented as a null pointer and the `Some` as a valid pointer,
+// but that seems more fiddly and less safe in the short term, so it can wait.
+
+unsafe impl<UT, T: Lower<UT>> Lower<UT> for Option<T> {
+    type FfiType = RustBuffer;
 
     fn write(obj: Option<T>, buf: &mut Vec<u8>) {
         match obj {
@@ -335,6 +268,14 @@ unsafe impl<UT, T: FfiConverter<UT>> FfiConverter<UT> for Option<T> {
         }
     }
 
+    fn lower(obj: Option<T>) -> RustBuffer {
+        Self::lower_into_rust_buffer(obj)
+    }
+}
+
+unsafe impl<UT, T: Lift<UT>> Lift<UT> for Option<T> {
+    type FfiType = RustBuffer;
+
     fn try_read(buf: &mut &[u8]) -> Result<Option<T>> {
         check_remaining(buf, 1)?;
         Ok(match buf.get_i8() {
@@ -344,258 +285,264 @@ unsafe impl<UT, T: FfiConverter<UT>> FfiConverter<UT> for Option<T> {
         })
     }
 
+    fn try_lift(buf: RustBuffer) -> Result<Option<T>> {
+        Self::try_lift_from_rust_buffer(buf)
+    }
+}
+
+impl<UT, T: TypeId<UT>> TypeId<UT> for Option<T> {
     const TYPE_ID_META: MetadataBuffer =
         MetadataBuffer::from_code(metadata::codes::TYPE_OPTION).concat(T::TYPE_ID_META);
 }
 
-/// Support for passing vectors of values via the FFI.
-///
-/// Vectors are currently always passed by serializing to a buffer.
-/// We write a `i32` item count followed by each item in turn.
-/// (It's a signed type due to limits of the JVM).
-///
-/// Ideally we would pass `Vec<u8>` directly as a `RustBuffer` rather
-/// than serializing, and perhaps even pass other vector types using a
-/// similar struct. But that's for future work.
-unsafe impl<UT, T: FfiConverter<UT>> FfiConverter<UT> for Vec<T> {
-    ffi_converter_rust_buffer_lift_and_lower!(UT);
-    ffi_converter_default_return!(UT);
+// Support for passing vectors of values via the FFI.
+//
+// Vectors are currently always passed by serializing to a buffer.
+// We write a `i32` item count followed by each item in turn.
+// (It's a signed type due to limits of the JVM).
+//
+// Ideally we would pass `Vec<u8>` directly as a `RustBuffer` rather
+// than serializing, and perhaps even pass other vector types using a
+// similar struct. But that's for future work.
+
+unsafe impl<UT, T: Lower<UT>> Lower<UT> for Vec<T> {
+    type FfiType = RustBuffer;
 
     fn write(obj: Vec<T>, buf: &mut Vec<u8>) {
         // TODO: would be nice not to panic here :-/
         let len = i32::try_from(obj.len()).unwrap();
         buf.put_i32(len); // We limit arrays to i32::MAX items
         for item in obj {
-            <T as FfiConverter<UT>>::write(item, buf);
+            <T as Lower<UT>>::write(item, buf);
         }
     }
+
+    fn lower(obj: Vec<T>) -> RustBuffer {
+        Self::lower_into_rust_buffer(obj)
+    }
+}
+
+/// Support for associative arrays via the FFI - `record<u32, u64>` in UDL.
+/// HashMaps are currently always passed by serializing to a buffer.
+/// We write a `i32` entries count followed by each entry (string
+/// key followed by the value) in turn.
+/// (It's a signed type due to limits of the JVM).
+unsafe impl<UT, T: Lift<UT>> Lift<UT> for Vec<T> {
+    type FfiType = RustBuffer;
 
     fn try_read(buf: &mut &[u8]) -> Result<Vec<T>> {
         check_remaining(buf, 4)?;
         let len = usize::try_from(buf.get_i32())?;
         let mut vec = Vec::with_capacity(len);
         for _ in 0..len {
-            vec.push(<T as FfiConverter<UT>>::try_read(buf)?)
+            vec.push(<T as Lift<UT>>::try_read(buf)?)
         }
         Ok(vec)
     }
 
+    fn try_lift(buf: RustBuffer) -> Result<Vec<T>> {
+        Self::try_lift_from_rust_buffer(buf)
+    }
+}
+
+impl<UT, T: TypeId<UT>> TypeId<UT> for Vec<T> {
     const TYPE_ID_META: MetadataBuffer =
         MetadataBuffer::from_code(metadata::codes::TYPE_VEC).concat(T::TYPE_ID_META);
 }
 
-/// Support for associative arrays via the FFI.
-/// Note that because of webidl limitations,
-/// the key must always be of the String type.
-///
-/// HashMaps are currently always passed by serializing to a buffer.
-/// We write a `i32` entries count followed by each entry (string
-/// key followed by the value) in turn.
-/// (It's a signed type due to limits of the JVM).
-unsafe impl<K, V, UT> FfiConverter<UT> for HashMap<K, V>
+unsafe impl<K, V, UT> Lower<UT> for HashMap<K, V>
 where
-    K: FfiConverter<UT> + std::hash::Hash + Eq,
-    V: FfiConverter<UT>,
+    K: Lower<UT> + std::hash::Hash + Eq,
+    V: Lower<UT>,
 {
-    ffi_converter_rust_buffer_lift_and_lower!(UT);
-    ffi_converter_default_return!(UT);
+    type FfiType = RustBuffer;
 
     fn write(obj: HashMap<K, V>, buf: &mut Vec<u8>) {
         // TODO: would be nice not to panic here :-/
         let len = i32::try_from(obj.len()).unwrap();
         buf.put_i32(len); // We limit HashMaps to i32::MAX entries
         for (key, value) in obj {
-            <K as FfiConverter<UT>>::write(key, buf);
-            <V as FfiConverter<UT>>::write(value, buf);
+            <K as Lower<UT>>::write(key, buf);
+            <V as Lower<UT>>::write(value, buf);
         }
     }
+
+    fn lower(obj: HashMap<K, V>) -> RustBuffer {
+        Self::lower_into_rust_buffer(obj)
+    }
+}
+
+unsafe impl<K, V, UT> Lift<UT> for HashMap<K, V>
+where
+    K: Lift<UT> + std::hash::Hash + Eq,
+    V: Lift<UT>,
+{
+    type FfiType = RustBuffer;
 
     fn try_read(buf: &mut &[u8]) -> Result<HashMap<K, V>> {
         check_remaining(buf, 4)?;
         let len = usize::try_from(buf.get_i32())?;
         let mut map = HashMap::with_capacity(len);
         for _ in 0..len {
-            let key = <K as FfiConverter<UT>>::try_read(buf)?;
-            let value = <V as FfiConverter<UT>>::try_read(buf)?;
+            let key = <K as Lift<UT>>::try_read(buf)?;
+            let value = <V as Lift<UT>>::try_read(buf)?;
             map.insert(key, value);
         }
         Ok(map)
     }
 
+    fn try_lift(buf: RustBuffer) -> Result<HashMap<K, V>> {
+        Self::try_lift_from_rust_buffer(buf)
+    }
+}
+
+impl<K, V, UT> TypeId<UT> for HashMap<K, V>
+where
+    K: TypeId<UT> + std::hash::Hash + Eq,
+    V: TypeId<UT>,
+{
     const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_HASH_MAP)
         .concat(K::TYPE_ID_META)
         .concat(V::TYPE_ID_META);
 }
 
-/// Support for passing reference-counted shared objects via the FFI.
-///
-/// To avoid dealing with complex lifetime semantics over the FFI, any data passed
-/// by reference must be encapsulated in an `Arc`, and must be safe to share
-/// across threads.
-unsafe impl<UT, T: Interface<UT>> FfiConverter<UT> for std::sync::Arc<T> {
-    // Don't use a pointer to <T> as that requires a `pub <T>`
-    type FfiType = *const std::os::raw::c_void;
+derive_ffi_traits!(blanket u8);
+derive_ffi_traits!(blanket i8);
+derive_ffi_traits!(blanket u16);
+derive_ffi_traits!(blanket i16);
+derive_ffi_traits!(blanket u32);
+derive_ffi_traits!(blanket i32);
+derive_ffi_traits!(blanket u64);
+derive_ffi_traits!(blanket i64);
+derive_ffi_traits!(blanket f32);
+derive_ffi_traits!(blanket f64);
+derive_ffi_traits!(blanket bool);
+derive_ffi_traits!(blanket String);
+derive_ffi_traits!(blanket Duration);
+derive_ffi_traits!(blanket SystemTime);
 
-    /// When lowering, we have an owned `Arc<T>` and we transfer that ownership
-    /// to the foreign-language code, "leaking" it out of Rust's ownership system
-    /// as a raw pointer. This works safely because we have unique ownership of `self`.
-    /// The foreign-language code is responsible for freeing this by calling the
-    /// `ffi_object_free` FFI function provided by the corresponding UniFFI type.
-    ///
-    /// Safety: when freeing the resulting pointer, the foreign-language code must
-    /// call the destructor function specific to the type `T`. Calling the destructor
-    /// function for other types may lead to undefined behaviour.
-    fn lower(obj: std::sync::Arc<T>) -> Self::FfiType {
-        std::sync::Arc::into_raw(obj) as Self::FfiType
+// For composite types, derive LowerReturn, LiftReturn, etc, from Lift/Lower.
+//
+// Note that this means we don't get specialized return handling.  For example, if we could return
+// an `Option<Result<>>` we would always return that type directly and never throw.
+derive_ffi_traits!(impl<T, UT> LowerReturn<UT> for Option<T> where Option<T>: Lower<UT>);
+derive_ffi_traits!(impl<T, UT> LowerError<UT> for Option<T> where Option<T>: Lower<UT>);
+derive_ffi_traits!(impl<T, UT> LiftReturn<UT> for Option<T> where Option<T>: Lift<UT>);
+derive_ffi_traits!(impl<T, UT> LiftRef<UT> for Option<T> where Option<T>: Lift<UT>);
+
+derive_ffi_traits!(impl<T, UT> LowerReturn<UT> for Vec<T> where Vec<T>: Lower<UT>);
+derive_ffi_traits!(impl<T, UT> LowerError<UT> for Vec<T> where Vec<T>: Lower<UT>);
+derive_ffi_traits!(impl<T, UT> LiftReturn<UT> for Vec<T> where Vec<T>: Lift<UT>);
+derive_ffi_traits!(impl<T, UT> LiftRef<UT> for Vec<T> where Vec<T>: Lift<UT>);
+
+derive_ffi_traits!(impl<K, V, UT> LowerReturn<UT> for HashMap<K, V> where HashMap<K, V>: Lower<UT>);
+derive_ffi_traits!(impl<K, V, UT> LowerError<UT> for HashMap<K, V> where HashMap<K, V>: Lower<UT>);
+derive_ffi_traits!(impl<K, V, UT> LiftReturn<UT> for HashMap<K, V> where HashMap<K, V>: Lift<UT>);
+derive_ffi_traits!(impl<K, V, UT> LiftRef<UT> for HashMap<K, V> where HashMap<K, V>: Lift<UT>);
+
+// For Arc we derive all the traits, but have to write it all out because we need an unsized T bound
+derive_ffi_traits!(impl<T, UT> Lower<UT> for Arc<T> where Arc<T>: FfiConverter<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> Lift<UT> for Arc<T> where Arc<T>: FfiConverter<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> LowerReturn<UT> for Arc<T> where Arc<T>: Lower<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> LowerError<UT> for Arc<T> where Arc<T>: Lower<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> LiftReturn<UT> for Arc<T> where Arc<T>: Lift<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> LiftRef<UT> for Arc<T> where Arc<T>: Lift<UT>, T: ?Sized);
+derive_ffi_traits!(impl<T, UT> TypeId<UT> for Arc<T> where Arc<T>: FfiConverter<UT>, T: ?Sized);
+
+// Implement LowerReturn/LiftReturn for the unit type (void returns)
+
+unsafe impl<UT> LowerReturn<UT> for () {
+    type ReturnType = ();
+
+    fn lower_return(_: ()) -> Result<Self::ReturnType, RustCallError> {
+        Ok(())
     }
-
-    /// When lifting, we receive a "borrow" of the `Arc<T>` that is owned by
-    /// the foreign-language code, and make a clone of it for our own use.
-    ///
-    /// Safety: the provided value must be a pointer previously obtained by calling
-    /// the `lower()` or `write()` method of this impl.
-    fn try_lift(v: Self::FfiType) -> Result<std::sync::Arc<T>> {
-        let v = v as *const T;
-        // We musn't drop the `Arc<T>` that is owned by the foreign-language code.
-        let foreign_arc = std::mem::ManuallyDrop::new(unsafe { std::sync::Arc::<T>::from_raw(v) });
-        // Take a clone for our own use.
-        Ok(std::sync::Arc::clone(&*foreign_arc))
-    }
-
-    /// When writing as a field of a complex structure, make a clone and transfer ownership
-    /// of it to the foreign-language code by writing its pointer into the buffer.
-    /// The foreign-language code is responsible for freeing this by calling the
-    /// `ffi_object_free` FFI function provided by the corresponding UniFFI type.
-    ///
-    /// Safety: when freeing the resulting pointer, the foreign-language code must
-    /// call the destructor function specific to the type `T`. Calling the destructor
-    /// function for other types may lead to undefined behaviour.
-    fn write(obj: std::sync::Arc<T>, buf: &mut Vec<u8>) {
-        static_assertions::const_assert!(std::mem::size_of::<*const std::ffi::c_void>() <= 8);
-        buf.put_u64(<Self as FfiConverter<UT>>::lower(obj) as u64);
-    }
-
-    /// When reading as a field of a complex structure, we receive a "borrow" of the `Arc<T>`
-    /// that is owned by the foreign-language code, and make a clone for our own use.
-    ///
-    /// Safety: the buffer must contain a pointer previously obtained by calling
-    /// the `lower()` or `write()` method of this impl.
-    fn try_read(buf: &mut &[u8]) -> Result<std::sync::Arc<T>> {
-        static_assertions::const_assert!(std::mem::size_of::<*const std::ffi::c_void>() <= 8);
-        check_remaining(buf, 8)?;
-        <Self as FfiConverter<UT>>::try_lift(buf.get_u64() as Self::FfiType)
-    }
-
-    ffi_converter_default_return!(UT);
-
-    const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_INTERFACE)
-        .concat_str(T::NAME)
-        .concat_bool(false);
 }
 
-/// FFI support for ForeignSchedulers
-///
-/// These are passed over the FFI as opaque pointer-sized types representing the foreign executor.
-/// The foreign bindings may use an actual pointer to the executor object, or a usized integer
-/// handle.
-unsafe impl<UT> FfiConverter<UT> for crate::ForeignExecutor {
-    type FfiType = crate::ForeignExecutorHandle;
+unsafe impl<UT> LiftReturn<UT> for () {
+    type ReturnType = ();
 
-    // Passing these back to the foreign bindings is currently not supported
-    fn lower(executor: Self) -> Self::FfiType {
-        executor.handle
+    fn try_lift_successful_return(_: ()) -> Result<Self> {
+        Ok(())
     }
-
-    fn write(executor: Self, buf: &mut Vec<u8>) {
-        // Use native endian when writing these values, so they can be casted to pointer values
-        match std::mem::size_of::<usize>() {
-            // Use native endian when reading these values, so they can be casted to pointer values
-            4 => buf.put_u32_ne(executor.handle.0 as u32),
-            8 => buf.put_u64_ne(executor.handle.0 as u64),
-            n => panic!("Invalid usize width: {n}"),
-        };
-    }
-
-    fn try_lift(executor: Self::FfiType) -> Result<Self> {
-        Ok(crate::ForeignExecutor::new(executor))
-    }
-
-    fn try_read(buf: &mut &[u8]) -> Result<Self> {
-        let usize_val = match std::mem::size_of::<usize>() {
-            // Use native endian when reading these values, so they can be casted to pointer values
-            4 => buf.get_u32_ne() as usize,
-            8 => buf.get_u64_ne() as usize,
-            n => panic!("Invalid usize width: {n}"),
-        };
-        <Self as FfiConverter<UT>>::try_lift(crate::ForeignExecutorHandle(usize_val as *const ()))
-    }
-
-    ffi_converter_default_return!(UT);
-
-    const TYPE_ID_META: MetadataBuffer =
-        MetadataBuffer::from_code(metadata::codes::TYPE_FOREIGN_EXECUTOR);
 }
 
-/// Support `Result<>` via the FFI.
-///
-/// This is currently supported for function returns. Lifting/lowering Result<> arguments is not
-/// implemented.
-unsafe impl<UT, R, E> FfiConverter<UT> for Result<R, E>
+impl<UT> TypeId<UT> for () {
+    const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_UNIT);
+}
+
+// Implement LowerReturn/LiftReturn for `Result<R, E>`.  This is where we handle exceptions/Err
+// results.
+
+unsafe impl<UT, R, E> LowerReturn<UT> for Result<R, E>
 where
-    R: FfiConverter<UT>,
-    E: FfiConverter<UT>,
+    R: LowerReturn<UT>,
+    E: LowerError<UT> + Display + Debug + Send + Sync + 'static,
 {
-    type FfiType = (); // Placeholder while lower/lift/serializing is unimplemented
     type ReturnType = R::ReturnType;
-    type FutureCallback = R::FutureCallback;
 
-    fn try_lift(_: Self::FfiType) -> Result<Self> {
-        unimplemented!("try_lift");
-    }
-
-    fn lower(_: Self) -> Self::FfiType {
-        unimplemented!("lower");
-    }
-
-    fn write(_: Self, _: &mut Vec<u8>) {
-        unimplemented!("write");
-    }
-
-    fn try_read(_: &mut &[u8]) -> Result<Self> {
-        unimplemented!("try_read");
-    }
-
-    fn lower_return(v: Self) -> Result<Self::ReturnType, RustBuffer> {
+    fn lower_return(v: Self) -> Result<Self::ReturnType, RustCallError> {
         match v {
             Ok(r) => R::lower_return(r),
-            Err(e) => Err(lower_into_rust_buffer(e)),
+            Err(e) => Err(RustCallError::Error(E::lower_error(e))),
         }
     }
 
-    fn lift_callback_return(buf: RustBuffer) -> Self {
-        Ok(try_lift_from_rust_buffer::<R, UT>(buf)
-            .expect("Error reading callback interface result"))
+    fn handle_failed_lift(error: LiftArgsError) -> Result<Self::ReturnType, RustCallError> {
+        match error.error.downcast::<E>() {
+            Ok(downcast) => Err(RustCallError::Error(E::lower_error(downcast))),
+            Err(e) => {
+                let msg = format!("Failed to convert arg '{}': {e}", error.arg_name);
+                Err(RustCallError::InternalError(msg))
+            }
+        }
+    }
+}
+
+unsafe impl<UT, R, E> LiftReturn<UT> for Result<R, E>
+where
+    R: LiftReturn<UT>,
+    E: Lift<UT, FfiType = RustBuffer> + ConvertError<UT>,
+{
+    type ReturnType = R::ReturnType;
+
+    fn try_lift_successful_return(v: R::ReturnType) -> Result<Self> {
+        R::try_lift_successful_return(v).map(Ok)
     }
 
-    fn lift_callback_error(buf: RustBuffer) -> Self {
-        Err(try_lift_from_rust_buffer::<E, UT>(buf)
-            .expect("Error reading callback interface Err result"))
+    fn lift_error(buf: RustBuffer) -> Self {
+        match E::try_lift_from_rust_buffer(buf) {
+            Ok(lifted_error) => Err(lifted_error),
+            Err(anyhow_error) => {
+                Self::handle_callback_unexpected_error(UnexpectedUniFFICallbackError {
+                    reason: format!("Error lifting from rust buffer: {anyhow_error}"),
+                })
+            }
+        }
     }
 
     fn handle_callback_unexpected_error(e: UnexpectedUniFFICallbackError) -> Self {
-        Err(E::handle_callback_unexpected_error(e))
+        Err(E::try_convert_unexpected_callback_error(e).unwrap_or_else(|e| panic!("{e}")))
     }
+}
 
-    fn invoke_future_callback(
-        callback: Self::FutureCallback,
-        callback_data: *const (),
-        return_value: Self::ReturnType,
-        call_status: RustCallStatus,
-    ) {
-        R::invoke_future_callback(callback, callback_data, return_value, call_status)
-    }
-
+impl<UT, R, E> TypeId<UT> for Result<R, E>
+where
+    R: TypeId<UT>,
+    E: TypeId<UT>,
+{
     const TYPE_ID_META: MetadataBuffer = MetadataBuffer::from_code(metadata::codes::TYPE_RESULT)
         .concat(R::TYPE_ID_META)
         .concat(E::TYPE_ID_META);
+}
+
+unsafe impl<T, UT> LiftRef<UT> for [T]
+where
+    T: Lift<UT>,
+{
+    type LiftType = Vec<T>;
+}
+
+unsafe impl<UT> LiftRef<UT> for str {
+    type LiftType = String;
 }

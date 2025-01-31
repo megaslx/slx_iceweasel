@@ -24,8 +24,7 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_network.h"
-#include "mozilla/Telemetry.h"
-#include "mozilla/TelemetryComms.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "private/pprio.h"
 #include "nsInputStreamPump.h"
 #include "nsThreadUtils.h"
@@ -71,26 +70,13 @@ class nsJARInputThunk : public nsIInputStream {
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIINPUTSTREAM
 
-  nsJARInputThunk(nsIZipReader* zipReader, nsIURI* fullJarURI,
-                  const nsACString& jarEntry, bool usingJarCache)
+  nsJARInputThunk(nsIZipReader* zipReader, const nsACString& jarEntry,
+                  bool usingJarCache)
       : mUsingJarCache(usingJarCache),
         mJarReader(zipReader),
         mJarEntry(jarEntry),
         mContentLength(-1) {
     MOZ_DIAGNOSTIC_ASSERT(zipReader, "zipReader must not be null");
-    if (ENTRY_IS_DIRECTORY(mJarEntry) && fullJarURI) {
-      nsCOMPtr<nsIURI> urlWithoutQueryRef;
-      nsresult rv = NS_MutateURI(fullJarURI)
-                        .SetQuery(""_ns)
-                        .SetRef(""_ns)
-                        .Finalize(urlWithoutQueryRef);
-      if (NS_SUCCEEDED(rv) && urlWithoutQueryRef) {
-        rv = urlWithoutQueryRef->GetAsciiSpec(mJarDirSpec);
-        MOZ_ASSERT(NS_SUCCEEDED(rv), "Finding a jar dir spec shouldn't fail.");
-      } else {
-        MOZ_CRASH("Shouldn't fail to strip query and ref off jar URI.");
-      }
-    }
   }
 
   int64_t GetContentLength() { return mContentLength; }
@@ -102,7 +88,6 @@ class nsJARInputThunk : public nsIInputStream {
 
   bool mUsingJarCache;
   nsCOMPtr<nsIZipReader> mJarReader;
-  nsCString mJarDirSpec;
   nsCOMPtr<nsIInputStream> mJarStream;
   nsCString mJarEntry;
   int64_t mContentLength;
@@ -114,18 +99,8 @@ nsresult nsJARInputThunk::Init() {
   if (!mJarReader) {
     return NS_ERROR_INVALID_ARG;
   }
-  nsresult rv;
-  if (ENTRY_IS_DIRECTORY(mJarEntry)) {
-    // A directory stream also needs the Spec of the FullJarURI
-    // because is included in the stream data itself.
-
-    NS_ENSURE_STATE(!mJarDirSpec.IsEmpty());
-
-    rv = mJarReader->GetInputStreamWithSpec(mJarDirSpec, mJarEntry,
-                                            getter_AddRefs(mJarStream));
-  } else {
-    rv = mJarReader->GetInputStream(mJarEntry, getter_AddRefs(mJarStream));
-  }
+  nsresult rv =
+      mJarReader->GetInputStream(mJarEntry, getter_AddRefs(mJarStream));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -183,15 +158,7 @@ nsJARInputThunk::IsNonBlocking(bool* nonBlocking) {
 // nsJARChannel
 //-----------------------------------------------------------------------------
 
-nsJARChannel::nsJARChannel()
-    : mOpened(false),
-      mCanceled(false),
-      mContentLength(-1),
-      mLoadFlags(LOAD_NORMAL),
-      mStatus(NS_OK),
-      mIsPending(false),
-      mEnableOMT(true),
-      mPendingEvent() {
+nsJARChannel::nsJARChannel() {
   LOG(("nsJARChannel::nsJARChannel [this=%p]\n", this));
   // hold an owning reference to the jar handler
   mJarHandler = gJarHandler;
@@ -290,7 +257,7 @@ nsresult nsJARChannel::CreateJarInput(nsIZipReaderCache* jarCache,
   if (NS_FAILED(rv)) return rv;
 
   RefPtr<nsJARInputThunk> input =
-      new nsJARInputThunk(reader, mJarURI, mJarEntry, jarCache != nullptr);
+      new nsJARInputThunk(reader, mJarEntry, jarCache != nullptr);
   rv = input->Init();
   if (NS_FAILED(rv)) {
     return rv;
@@ -354,7 +321,7 @@ nsresult nsJARChannel::LookupFile() {
 
 nsresult CreateLocalJarInput(nsIZipReaderCache* aJarCache, nsIFile* aFile,
                              const nsACString& aInnerJarEntry,
-                             nsIJARURI* aJarURI, const nsACString& aJarEntry,
+                             const nsACString& aJarEntry,
                              nsJARInputThunk** aResultInput) {
   LOG(("nsJARChannel::CreateLocalJarInput [aJarCache=%p, %s, %s]\n", aJarCache,
        PromiseFlatCString(aInnerJarEntry).get(),
@@ -377,7 +344,7 @@ nsresult CreateLocalJarInput(nsIZipReaderCache* aJarCache, nsIFile* aFile,
   }
 
   RefPtr<nsJARInputThunk> input =
-      new nsJARInputThunk(reader, aJarURI, aJarEntry, aJarCache != nullptr);
+      new nsJARInputThunk(reader, aJarEntry, aJarCache != nullptr);
   rv = input->Init();
   if (NS_FAILED(rv)) {
     return rv;
@@ -425,19 +392,16 @@ nsresult nsJARChannel::OpenLocalFile() {
     return rv;
   }
 
-  nsCOMPtr<nsIJARURI> localJARURI = mJarURI;
-
   nsAutoCString jarEntry(mJarEntry);
   nsAutoCString innerJarEntry(mInnerJarEntry);
 
   RefPtr<nsJARChannel> self = this;
   return mWorker->Dispatch(NS_NewRunnableFunction(
-      "nsJARChannel::OpenLocalFile", [self, jarCache, clonedFile, localJARURI,
-                                      jarEntry, innerJarEntry]() mutable {
+      "nsJARChannel::OpenLocalFile",
+      [self, jarCache, clonedFile, jarEntry, innerJarEntry]() mutable {
         RefPtr<nsJARInputThunk> input;
-        nsresult rv =
-            CreateLocalJarInput(jarCache, clonedFile, innerJarEntry,
-                                localJARURI, jarEntry, getter_AddRefs(input));
+        nsresult rv = CreateLocalJarInput(jarCache, clonedFile, innerJarEntry,
+                                          jarEntry, getter_AddRefs(input));
 
         nsCOMPtr<nsIRunnable> target;
         if (NS_SUCCEEDED(rv)) {
@@ -804,6 +768,10 @@ nsJARChannel::GetContentCharset(nsACString& aContentCharset) {
   // If someone gives us a charset hint we should just use that charset.
   // So we don't care when this is being called.
   aContentCharset = mContentCharset;
+  if (mContentCharset.IsEmpty() && (mOriginalURI->SchemeIs("chrome") ||
+                                    mOriginalURI->SchemeIs("resource"))) {
+    aContentCharset.AssignLiteral("UTF-8");
+  }
   return NS_OK;
 }
 
@@ -870,7 +838,7 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
     }
   }
 
-  // The event can only hold 80 characters.
+  // The Legacy Telemetry event can only hold 80 characters.
   // We only save the file name and path inside the jar.
   auto findFilenameStart = [](const nsCString& aSpec) -> uint32_t {
     int32_t pos = aSpec.Find("!/");
@@ -892,14 +860,7 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
   // entire string, or 80 characters of it, to make sure we don't miss any
   // events.
   uint32_t from = findFilenameStart(aSpec);
-  nsAutoCString fileName(Substring(aSpec, from));
-
-  // Bug 1702937: Filter aboutNetError.xhtml.
-  // Note that aboutNetError.xhtml is causing ~90% of the XHTML error events. We
-  // should investigate this in the future.
-  if (StringEndsWith(fileName, "aboutNetError.xhtml"_ns)) {
-    return;
-  }
+  const auto fileName = Substring(aSpec, from);
 
   nsAutoCString errorCString;
   mozilla::GetErrorName(aStatus, errorCString);
@@ -909,10 +870,23 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
   bool isTest = fileName.Find("test_empty_file.zip!") != -1;
   bool isOmniJa = StringBeginsWith(fileName, "omni.ja!"_ns);
 
-  Telemetry::SetEventRecordingEnabled("zero_byte_load"_ns, true);
-  Telemetry::EventID eventType = Telemetry::EventID::Zero_byte_load_Load_Others;
   if (StringEndsWith(fileName, ".ftl"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Ftl;
+    // FTL uses I/O to test for file presence, so we get
+    // a high volume of events from it, but it is not erronous.
+    // Also, Fluent is resilient to empty loads, so even if any
+    // of the errors are real errors, they don't cause YSOD.
+    // We can investigate them separately.
+    if (!isTest && aStatus == NS_ERROR_FILE_NOT_FOUND) {
+      return;
+    }
+
+    glean::zero_byte_load::LoadFtlExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_ftl.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".dtd"_ns)) {
     // We're going to skip reporting telemetry on res DTDs.
     // See Bug 1693711 for investigation into those empty loads.
@@ -920,20 +894,46 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
       return;
     }
 
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Dtd;
+    glean::zero_byte_load::LoadDtdExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_dtd.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".properties"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Properties;
+    glean::zero_byte_load::LoadPropertiesExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_properties.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".js"_ns) ||
-             StringEndsWith(fileName, ".jsm"_ns)) {
+             StringEndsWith(fileName, ".jsm"_ns) ||
+             StringEndsWith(fileName, ".mjs"_ns)) {
     // We're going to skip reporting telemetry on JS loads
     // coming not from omni.ja.
     // See Bug 1693711 for investigation into those empty loads.
     if (!isTest && !isOmniJa) {
       return;
     }
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Js;
+
+    glean::zero_byte_load::LoadJsExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_js.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".xml"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Xml;
+    glean::zero_byte_load::LoadXmlExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_xml.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".xhtml"_ns)) {
     // This error seems to be very common and is not strongly
     // correlated to YSOD.
@@ -946,7 +946,13 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
       return;
     }
 
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Xhtml;
+    glean::zero_byte_load::LoadXhtmlExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_xhtml.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".css"_ns)) {
     // Bug 1702937: Filter out svg+'css'+'png'/NS_BINDING_ABORTED combo.
     if (aStatus == NS_BINDING_ABORTED) {
@@ -958,11 +964,32 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
     if (!isOmniJa && aStatus == NS_ERROR_CORRUPTED_CONTENT) {
       return;
     }
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Css;
+
+    glean::zero_byte_load::LoadCssExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_css.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".json"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Json;
+    // FTL uses I/O to test for file presence, so we get
+    // a high volume of events from it, but it is not erronous.
+    // Also, Fluent is resilient to empty loads, so even if any
+    // of the errors are real errors, they don't cause YSOD.
+    // We can investigate them separately.
+    if (!isTest && aStatus == NS_ERROR_FILE_NOT_FOUND) {
+      return;
+    }
+
+    glean::zero_byte_load::LoadJsonExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_json.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".html"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Html;
     // See bug 1695560. Filter out non-omni.ja HTML.
     if (!isOmniJa) {
       return;
@@ -975,67 +1002,73 @@ static void RecordZeroLengthEvent(bool aIsSync, const nsCString& aSpec,
         aStatus == NS_ERROR_FAILURE) {
       return;
     }
+
+    glean::zero_byte_load::LoadHtmlExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_html.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".png"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Png;
     // See bug 1695560.
     // Bug 1702937: Filter out svg+'css'+'png'/NS_BINDING_ABORTED combo.
     if (!isOmniJa || aStatus == NS_BINDING_ABORTED) {
       return;
     }
+
+    glean::zero_byte_load::LoadPngExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_png.Record(Some(extra));
   } else if (StringEndsWith(fileName, ".svg"_ns)) {
-    eventType = Telemetry::EventID::Zero_byte_load_Load_Svg;
     // See bug 1695560.
     // Bug 1702937: Filter out svg+'css'+'png'/NS_BINDING_ABORTED combo.
     if (!isOmniJa || aStatus == NS_BINDING_ABORTED) {
       return;
     }
-  }
+    glean::zero_byte_load::LoadSvgExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_svg.Record(Some(extra));
+  } else {  // All others
+    // We're going to, for now, filter out `other` category.
+    // See Bug 1693711 for investigation into those empty loads.
+    // Bug 1702937: Filter other/*.ico/NS_BINDING_ABORTED.
+    if (!isTest && (!isOmniJa || (aStatus == NS_BINDING_ABORTED &&
+                                  StringEndsWith(fileName, ".ico"_ns)))) {
+      return;
+    }
 
-  // We're going to, for now, filter out `other` category.
-  // See Bug 1693711 for investigation into those empty loads.
-  // Bug 1702937: Filter other/*.ico/NS_BINDING_ABORTED.
-  if (!isTest && eventType == Telemetry::EventID::Zero_byte_load_Load_Others &&
-      (!isOmniJa || (aStatus == NS_BINDING_ABORTED &&
-                     StringEndsWith(fileName, ".ico"_ns)))) {
-    return;
-  }
+    // See bug 1695560. "search-extensions/google/favicon.ico" with
+    // NS_BINDING_ABORTED is filtered out.
+    if (fileName.EqualsLiteral(
+            "omni.ja!/chrome/browser/search-extensions/google/favicon.ico") &&
+        aStatus == NS_BINDING_ABORTED) {
+      return;
+    }
 
-  // FTL uses I/O to test for file presence, so we get
-  // a high volume of events from it, but it is not erronous.
-  // Also, Fluent is resilient to empty loads, so even if any
-  // of the errors are real errors, they don't cause YSOD.
-  // We can investigate them separately.
-  if (!isTest &&
-      (eventType == Telemetry::EventID::Zero_byte_load_Load_Ftl ||
-       eventType == Telemetry::EventID::Zero_byte_load_Load_Json) &&
-      aStatus == NS_ERROR_FILE_NOT_FOUND) {
-    return;
-  }
+    // See bug 1695560. "update.locale" with
+    // NS_ERROR_FILE_NOT_FOUND is filtered out.
+    if (fileName.EqualsLiteral("omni.ja!/update.locale") &&
+        aStatus == NS_ERROR_FILE_NOT_FOUND) {
+      return;
+    }
 
-  // See bug 1695560. "search-extensions/google/favicon.ico" with
-  // NS_BINDING_ABORTED is filtered out.
-  if (fileName.EqualsLiteral(
-          "omni.ja!/chrome/browser/search-extensions/google/favicon.ico") &&
-      aStatus == NS_BINDING_ABORTED) {
-    return;
+    glean::zero_byte_load::LoadOthersExtra extra = {
+        .cancelled = Some(aCanceled),
+        .fileName = Some(fileName),
+        .status = Some(errorCString),
+        .sync = Some(aIsSync),
+    };
+    glean::zero_byte_load::load_others.Record(Some(extra));
   }
-
-  // See bug 1695560. "update.locale" with
-  // NS_ERROR_FILE_NOT_FOUND is filtered out.
-  if (fileName.EqualsLiteral("omni.ja!/update.locale") &&
-      aStatus == NS_ERROR_FILE_NOT_FOUND) {
-    return;
-  }
-
-  auto res = CopyableTArray<Telemetry::EventExtraEntry>{};
-  res.SetCapacity(4);
-  res.AppendElement(
-      Telemetry::EventExtraEntry{"sync"_ns, aIsSync ? "true"_ns : "false"_ns});
-  res.AppendElement(Telemetry::EventExtraEntry{"file_name"_ns, fileName});
-  res.AppendElement(Telemetry::EventExtraEntry{"status"_ns, errorCString});
-  res.AppendElement(Telemetry::EventExtraEntry{
-      "cancelled"_ns, aCanceled ? "true"_ns : "false"_ns});
-  Telemetry::RecordEvent(eventType, Nothing{}, Some(res));
 }
 
 NS_IMETHODIMP
@@ -1362,4 +1395,15 @@ nsJARChannel::CheckListenerChain() {
   }
 
   return listener->CheckListenerChain();
+}
+
+NS_IMETHODIMP
+nsJARChannel::OnDataFinished(nsresult aStatus) {
+  nsCOMPtr<nsIThreadRetargetableStreamListener> listener =
+      do_QueryInterface(mListener);
+  if (listener) {
+    return listener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
 }

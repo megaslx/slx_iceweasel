@@ -4,17 +4,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use super::super::{Connection, Error, Output};
-use super::{connect, default_client, default_server, fill_cwnd, maybe_authenticate};
-use crate::addr_valid::{AddressValidation, ValidateAddress};
-use crate::send_stream::{RetransmissionPriority, TransmissionPriority};
-use crate::{ConnectionEvent, StreamId, StreamType};
+use std::{cell::RefCell, mem, rc::Rc};
 
 use neqo_common::event::Provider;
-use std::cell::RefCell;
-use std::mem;
-use std::rc::Rc;
-use test_fixture::{self, now};
+use test_fixture::now;
+
+use super::{
+    super::{Connection, Error, Output},
+    connect, default_client, default_server, fill_cwnd, maybe_authenticate,
+};
+use crate::{
+    addr_valid::{AddressValidation, ValidateAddress},
+    send_stream::{RetransmissionPriority, TransmissionPriority},
+    ConnectionEvent, StreamId, StreamType,
+};
 
 const BLOCK_SIZE: usize = 4_096;
 
@@ -169,7 +172,7 @@ fn repairing_loss() {
 
     // Generate an ACK.  The first packet is now considered lost.
     let ack = server.process_output(now).dgram();
-    let _ = server.events().count(); // Drain events.
+    _ = server.events().count(); // Drain events.
 
     let id_normal = client.stream_create(StreamType::UniDi).unwrap();
     fill_stream(&mut client, id_normal);
@@ -181,7 +184,7 @@ fn repairing_loss() {
     // Only the low priority stream has data as the retransmission of the data from
     // the lost packet is now more important than new data from the high priority stream.
     for e in server.events() {
-        println!("Event: {:?}", e);
+        println!("Event: {e:?}");
         if let ConnectionEvent::RecvStreamReadable { stream_id } = e {
             assert_eq!(stream_id, id_low);
         }
@@ -367,7 +370,7 @@ fn low() {
     let validation = Rc::new(RefCell::new(
         AddressValidation::new(now, ValidateAddress::Never).unwrap(),
     ));
-    server.set_validation(Rc::clone(&validation));
+    server.set_validation(&validation);
     connect(&mut client, &mut server);
 
     let id = server.stream_create(StreamType::UniDi).unwrap();
@@ -383,7 +386,7 @@ fn low() {
     // Send a session ticket and make it big enough to require a whole packet.
     // The resulting CRYPTO frame beats out the stream data.
     let stats_before = server.stats().frame_tx;
-    server.send_ticket(now, &[0; 2048]).unwrap();
+    server.send_ticket(now, &vec![0; server.plpmtu()]).unwrap();
     mem::drop(server.process_output(now));
     let stats_after = server.stats().frame_tx;
     assert_eq!(stats_after.crypto, stats_before.crypto + 1);

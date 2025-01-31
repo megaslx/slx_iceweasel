@@ -19,8 +19,7 @@
 #include "nsFocusManager.h"
 #include "nsTHashMap.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Maximum number of successive dialogs before we prompt users to disable
 // dialogs for this window.
@@ -220,25 +219,6 @@ void BrowsingContextGroup::Subscribe(ContentParent* aProcess) {
 
   // Send all of our contexts to the target content process.
   Unused << aProcess->SendRegisterBrowsingContextGroup(Id(), inits);
-
-  // If the focused or active BrowsingContexts belong in this group, tell the
-  // newly subscribed process.
-  if (nsFocusManager* fm = nsFocusManager::GetFocusManager()) {
-    BrowsingContext* focused = fm->GetFocusedBrowsingContextInChrome();
-    if (focused && focused->Group() != this) {
-      focused = nullptr;
-    }
-    BrowsingContext* active = fm->GetActiveBrowsingContextInChrome();
-    if (active && active->Group() != this) {
-      active = nullptr;
-    }
-
-    if (focused || active) {
-      Unused << aProcess->SendSetupFocusedAndActive(
-          focused, fm->GetActionIdForFocusedBrowsingContextInChrome(), active,
-          fm->GetActionIdForActiveBrowsingContextInChrome());
-    }
-  }
 }
 
 void BrowsingContextGroup::Unsubscribe(ContentParent* aProcess) {
@@ -373,43 +353,36 @@ JSObject* BrowsingContextGroup::WrapObject(JSContext* aCx,
   return BrowsingContextGroup_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-nsresult BrowsingContextGroup::QueuePostMessageEvent(
-    already_AddRefed<nsIRunnable>&& aRunnable) {
-  if (StaticPrefs::dom_separate_event_queue_for_post_message_enabled()) {
-    if (!mPostMessageEventQueue) {
-      nsCOMPtr<nsISerialEventTarget> target = GetMainThreadSerialEventTarget();
-      mPostMessageEventQueue = ThrottledEventQueue::Create(
-          target, "PostMessage Queue",
-          nsIRunnablePriority::PRIORITY_DEFERRED_TIMERS);
-      nsresult rv = mPostMessageEventQueue->SetIsPaused(false);
-      MOZ_ALWAYS_SUCCEEDS(rv);
-    }
+nsresult BrowsingContextGroup::QueuePostMessageEvent(nsIRunnable* aRunnable) {
+  MOZ_ASSERT(StaticPrefs::dom_separate_event_queue_for_post_message_enabled());
 
-    // Ensure the queue is enabled
-    if (mPostMessageEventQueue->IsPaused()) {
-      nsresult rv = mPostMessageEventQueue->SetIsPaused(false);
-      MOZ_ALWAYS_SUCCEEDS(rv);
-    }
-
-    if (mPostMessageEventQueue) {
-      mPostMessageEventQueue->Dispatch(std::move(aRunnable),
-                                       NS_DISPATCH_NORMAL);
-      return NS_OK;
-    }
+  if (!mPostMessageEventQueue) {
+    nsCOMPtr<nsISerialEventTarget> target = GetMainThreadSerialEventTarget();
+    mPostMessageEventQueue = ThrottledEventQueue::Create(
+        target, "PostMessage Queue",
+        nsIRunnablePriority::PRIORITY_DEFERRED_TIMERS);
+    nsresult rv = mPostMessageEventQueue->SetIsPaused(false);
+    MOZ_ALWAYS_SUCCEEDS(rv);
   }
-  return NS_ERROR_FAILURE;
+
+  // Ensure the queue is enabled
+  if (mPostMessageEventQueue->IsPaused()) {
+    nsresult rv = mPostMessageEventQueue->SetIsPaused(false);
+    MOZ_ALWAYS_SUCCEEDS(rv);
+  }
+
+  return mPostMessageEventQueue->Dispatch(aRunnable, NS_DISPATCH_NORMAL);
 }
 
 void BrowsingContextGroup::FlushPostMessageEvents() {
-  if (StaticPrefs::dom_separate_event_queue_for_post_message_enabled()) {
-    if (mPostMessageEventQueue) {
-      nsresult rv = mPostMessageEventQueue->SetIsPaused(true);
-      MOZ_ALWAYS_SUCCEEDS(rv);
-      nsCOMPtr<nsIRunnable> event;
-      while ((event = mPostMessageEventQueue->GetEvent())) {
-        NS_DispatchToMainThread(event.forget());
-      }
-    }
+  if (!mPostMessageEventQueue) {
+    return;
+  }
+  nsresult rv = mPostMessageEventQueue->SetIsPaused(true);
+  MOZ_ALWAYS_SUCCEEDS(rv);
+  nsCOMPtr<nsIRunnable> event;
+  while ((event = mPostMessageEventQueue->GetEvent())) {
+    NS_DispatchToMainThread(event.forget());
   }
 }
 
@@ -570,10 +543,32 @@ bool BrowsingContextGroup::IsPotentiallyCrossOriginIsolated() {
          kPotentiallyCrossOriginIsolatedFlag;
 }
 
+void BrowsingContextGroup::NotifyFocusedOrActiveBrowsingContextToProcess(
+    ContentParent* aProcess) {
+  MOZ_DIAGNOSTIC_ASSERT(aProcess);
+  // If the focused or active BrowsingContexts belong in this group,
+  // tell the newly subscribed process.
+  if (nsFocusManager* fm = nsFocusManager::GetFocusManager()) {
+    BrowsingContext* focused = fm->GetFocusedBrowsingContextInChrome();
+    if (focused && focused->Group() != this) {
+      focused = nullptr;
+    }
+    BrowsingContext* active = fm->GetActiveBrowsingContextInChrome();
+    if (active && active->Group() != this) {
+      active = nullptr;
+    }
+
+    if (focused || active) {
+      Unused << aProcess->SendSetupFocusedAndActive(
+          focused, fm->GetActionIdForFocusedBrowsingContextInChrome(), active,
+          fm->GetActionIdForActiveBrowsingContextInChrome());
+    }
+  }
+}
+
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(BrowsingContextGroup, mContexts,
                                       mToplevels, mHosts, mSubscribers,
                                       mTimerEventQueue, mWorkerEventQueue,
                                       mDocGroups)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

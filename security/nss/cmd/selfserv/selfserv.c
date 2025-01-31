@@ -225,7 +225,8 @@ PrintParameterUsage()
         "-Q enables ALPN for HTTP/1.1 [RFC7301]\n"
         "-I comma separated list of enabled groups for TLS key exchange.\n"
         "   The following values are valid:\n"
-        "   P256, P384, P521, x25519, FF2048, FF3072, FF4096, FF6144, FF8192\n"
+        "   P256, P384, P521, x25519, FF2048, FF3072, FF4096, FF6144, FF8192,\n"
+        "   xyber768d00, mlkem768x25519\n"
         "-J comma separated list of enabled signature schemes in preference order.\n"
         "   The following values are valid:\n"
         "     rsa_pkcs1_sha1, rsa_pkcs1_sha256, rsa_pkcs1_sha384, rsa_pkcs1_sha512,\n"
@@ -1720,7 +1721,7 @@ getBoundListenSocket(unsigned short port)
     prStatus = PR_GetPrefLoopbackAddrInfo(&addr, port);
     if (prStatus == PR_FAILURE) {
         addr.inet.family = PR_AF_INET;
-        addr.inet.ip = PR_INADDR_ANY;
+        addr.inet.ip = PR_htonl(PR_INADDR_ANY);
         addr.inet.port = PR_htons(port);
     }
 
@@ -1749,12 +1750,9 @@ getBoundListenSocket(unsigned short port)
         errExit("PR_SetSocketOption(PR_SockOpt_Reuseaddr)");
     }
 
-#ifndef WIN95
     /* Set PR_SockOpt_Linger because it helps prevent a server bind issue
      * after clean shutdown . See bug 331413 .
-     * Don't do it in the WIN95 build configuration because clean shutdown is
-     * not implemented, and PR_SockOpt_Linger causes a hang in ssl.sh .
-     * See bug 332348 */
+     */
     opt.option = PR_SockOpt_Linger;
     opt.value.linger.polarity = PR_TRUE;
     opt.value.linger.linger = PR_SecondsToInterval(1);
@@ -1763,7 +1761,6 @@ getBoundListenSocket(unsigned short port)
         PR_Close(listen_sock);
         errExit("PR_SetSocketOption(PR_SockOpt_Linger)");
     }
-#endif
 
     prStatus = PR_Bind(listen_sock, &addr);
     if (prStatus < 0) {
@@ -1936,7 +1933,7 @@ configureEchWithPublicName(PRFileDesc *model_sock, const char *public_name)
         goto loser;
     }
 
-    rv = SSL_EncodeEchConfigId(configId, echParamsStr, 100,
+    rv = SSL_EncodeEchConfigId(configId, public_name, 100,
                                HpkeDhKemX25519Sha256, pubKey,
                                &echCipherSuite, 1,
                                configBuf, &len, sizeof(configBuf));
@@ -2994,12 +2991,12 @@ main(int argc, char **argv)
                 cipher |= ctmp;
                 cipherString++;
             } else {
-                if (!isalpha(ndx)) {
+                if (!isalpha((unsigned char)ndx)) {
                     fprintf(stderr,
                             "Non-alphabetic char in cipher string (-c arg).\n");
                     exit(9);
                 }
-                ndx = tolower(ndx) - 'a';
+                ndx = tolower((unsigned char)ndx) - 'a';
                 if (ndx < PR_ARRAY_SIZE(ssl3CipherSuites)) {
                     cipher = ssl3CipherSuites[ndx];
                 }

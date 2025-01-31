@@ -23,9 +23,8 @@ add_task(async function () {
 
   const tab = await addTab(TEST_URL);
 
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   info("Check whether ResourceCommand gets existing stylesheet");
   const availableResources = [];
@@ -44,13 +43,13 @@ add_task(async function () {
   );
 
   is(
-    await getStyleSheetText(styleNodeStyleSheet),
-    styleSheetText.trim(),
+    await getStyleSheetResourceText(styleNodeStyleSheet),
+    styleSheetText,
     "Got expected text for the <style> stylesheet"
   );
 
   is(
-    await getStyleSheetText(importedStyleSheet),
+    (await getStyleSheetResourceText(importedStyleSheet)).trim(),
     `body { margin: 1px; }`,
     "Got expected text for the imported stylesheet"
   );
@@ -58,9 +57,3 @@ add_task(async function () {
   targetCommand.destroy();
   await client.close();
 });
-
-async function getStyleSheetText(resource) {
-  const styleSheetsFront = await resource.targetFront.getFront("stylesheets");
-  const styleText = await styleSheetsFront.getText(resource.resourceId);
-  return styleText.str.trim();
-}

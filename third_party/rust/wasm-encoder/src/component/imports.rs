@@ -82,7 +82,7 @@ impl Encode for ComponentTypeRef {
 /// # Example
 ///
 /// ```rust
-/// use wasm_encoder::{Component, ComponentTypeSection, PrimitiveValType, ComponentImportSection, ComponentTypeRef, ComponentExternName};
+/// use wasm_encoder::{Component, ComponentTypeSection, PrimitiveValType, ComponentImportSection, ComponentTypeRef};
 ///
 /// let mut types = ComponentTypeSection::new();
 ///
@@ -99,8 +99,7 @@ impl Encode for ComponentTypeRef {
 ///
 /// // This imports a function named `f` with the type defined above
 /// let mut imports = ComponentImportSection::new();
-/// let name = ComponentExternName::Kebab("f");
-/// imports.import(name, ComponentTypeRef::Func(0));
+/// imports.import("f", ComponentTypeRef::Func(0));
 ///
 /// let mut component = Component::new();
 /// component.section(&types);
@@ -131,8 +130,8 @@ impl ComponentImportSection {
     }
 
     /// Define an import in the component import section.
-    pub fn import(&mut self, name: impl AsComponentExternName, ty: ComponentTypeRef) -> &mut Self {
-        name.as_component_extern_name().encode(&mut self.bytes);
+    pub fn import(&mut self, name: &str, ty: ComponentTypeRef) -> &mut Self {
+        encode_component_import_name(&mut self.bytes, name);
         ty.encode(&mut self.bytes);
         self.num_added += 1;
         self
@@ -151,50 +150,20 @@ impl ComponentSection for ComponentImportSection {
     }
 }
 
-/// The different names that can be assigned to component imports
-#[derive(Debug, Copy, Clone)]
-pub enum ComponentExternName<'a> {
-    /// This is a "kebab name" along the lines of "a-foo-bar"
-    Kebab(&'a str),
-    /// This is an ID along the lines of "wasi:http/types@2.0"
-    Interface(&'a str),
-}
-
-impl Encode for ComponentExternName<'_> {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        match self {
-            ComponentExternName::Kebab(name) => {
-                sink.push(0x00);
-                name.encode(sink);
-            }
-            ComponentExternName::Interface(name) => {
-                sink.push(0x01);
-                name.encode(sink);
-            }
-        }
-    }
-}
-
-/// Helper trait to convert into a `ComponentExternName` either from that type
-/// or from a string.
-pub trait AsComponentExternName {
-    /// Converts this receiver into a `ComponentExternName`.
-    fn as_component_extern_name(&self) -> ComponentExternName<'_>;
-}
-
-impl AsComponentExternName for ComponentExternName<'_> {
-    fn as_component_extern_name(&self) -> ComponentExternName<'_> {
-        *self
-    }
-}
-
-impl<S: AsRef<str>> AsComponentExternName for S {
-    fn as_component_extern_name(&self) -> ComponentExternName<'_> {
-        let s = self.as_ref();
-        if s.contains("/") {
-            ComponentExternName::Interface(s)
-        } else {
-            ComponentExternName::Kebab(s)
-        }
-    }
+/// Prior to WebAssembly/component-model#263 import and export names were
+/// discriminated with a leading byte indicating what kind of import they are.
+/// After that PR though names are always prefixed with a 0x00 byte.
+///
+/// On 2023-10-28 in bytecodealliance/wasm-tools#1262 was landed to start
+/// transitioning to "always lead with 0x00". That updated the validator/parser
+/// to accept either 0x00 or 0x01 but the encoder wasn't updated at the time.
+///
+/// On 2024-09-03 in bytecodealliance/wasm-tools#TODO this encoder was updated
+/// to always emit 0x00 as a leading byte.
+///
+/// This function corresponds with the `importname'` production in the
+/// specification.
+pub(crate) fn encode_component_import_name(bytes: &mut Vec<u8>, name: &str) {
+    bytes.push(0x00);
+    name.encode(bytes);
 }

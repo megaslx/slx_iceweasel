@@ -1,9 +1,7 @@
 # Analyzing crash data of Firefox
 
-It's not uncommon that under some special platform configurations and while
-running automated tests via Selenium and geckodriver Firefox could crash. In
-those cases it is very helpful to retrieve the generated crash data aka
-minidump files, and report these to us.
+If Firefox crashes whilst under automation, it's helpful to retrieve the
+generated crash data aka minidump files, and report these to us.
 
 ## Retrieve the crash data
 
@@ -65,3 +63,16 @@ crash report to the geckodriver issue.
 
 [crash reporter]: https://support.mozilla.org/kb/mozillacrashreporter#w_viewing-reports-outside-of-firefox
 [view the crash reports]: https://support.mozilla.orgkb/mozillacrashreporter#w_viewing-crash-reports
+
+## Enabling the crash reporter
+
+By default geckodriver disables the crash reporter so it doesn't submit crash
+reports to Mozilla's crash reporting system, and also doesn't interfere with
+testing.
+
+This behaviour can be overridden by using the command line argument
+`--enable-crash-reporter`. You can [view the crash reports] and share it with
+us after submission.
+
+**Important**: Please only enable the crash reporter if the above mentioned
+solution does not work.

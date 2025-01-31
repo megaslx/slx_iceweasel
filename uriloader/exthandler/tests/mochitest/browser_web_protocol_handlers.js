@@ -1,15 +1,22 @@
+ChromeUtils.defineESModuleGetters(this, {
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+  PermissionTestUtils: "resource://testing-common/PermissionTestUtils.sys.mjs",
+});
+
 let testURL =
   "https://example.com/browser/" +
   "uriloader/exthandler/tests/mochitest/protocolHandler.html";
 
 add_task(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["security.external_protocol_requires_permission", false]],
-  });
+  PermissionTestUtils.add(
+    "https://example.com",
+    "open-protocol-handler^web+testprotocol",
+    Services.perms.ALLOW_ACTION
+  );
 
   // Load a page registering a protocol handler.
   let browser = gBrowser.selectedBrowser;
-  BrowserTestUtils.loadURIString(browser, testURL);
+  BrowserTestUtils.startLoadingURIString(browser, testURL);
   await BrowserTestUtils.browserLoaded(browser, false, testURL);
 
   // Register the protocol handler by clicking the notificationbar button.
@@ -52,6 +59,10 @@ add_task(async function () {
   const expectedURL =
     "https://example.com/foobar?uri=web%2Btestprotocol%3Atest";
 
+  // This request uses a null principal so we can't preload a permission. We
+  // need to handle the dialog manually.
+  let permDialogHandledPromise = acceptNextProtocolPermissionDialog(browser);
+
   // Create a framed link:
   await SpecialPowers.spawn(browser, [], async function () {
     let iframe = content.document.createElement("iframe");
@@ -61,6 +72,9 @@ add_task(async function () {
     await ContentTaskUtils.waitForEvent(iframe, "load");
     iframe.contentDocument.querySelector("a").click();
   });
+
+  await permDialogHandledPromise;
+
   let kidContext = browser.browsingContext.children[0];
   await TestUtils.waitForCondition(() => {
     let spec = kidContext.currentWindowGlobal?.documentURI?.spec || "";
@@ -81,7 +95,7 @@ add_task(async function () {
   gBrowser.selectedTab = tab;
   is(
     gURLBar.value,
-    expectedURL,
+    UrlbarTestUtils.trimURL(expectedURL),
     "the expected URL is displayed in the location bar"
   );
   BrowserTestUtils.removeTab(tab);
@@ -101,7 +115,7 @@ add_task(async function () {
   );
   is(
     win.gURLBar.value,
-    expectedURL,
+    UrlbarTestUtils.trimURL(expectedURL),
     "the expected URL is displayed in the location bar"
   );
   await BrowserTestUtils.closeWindow(win);
@@ -110,10 +124,12 @@ add_task(async function () {
   let loadPromise = BrowserTestUtils.browserLoaded(browser);
   await BrowserTestUtils.synthesizeMouseAtCenter(link, {}, browser);
   await loadPromise;
-  await BrowserTestUtils.waitForCondition(() => gURLBar.value != testURL);
+  await BrowserTestUtils.waitForCondition(
+    () => gURLBar.value != UrlbarTestUtils.trimURL(testURL)
+  );
   is(
     gURLBar.value,
-    expectedURL,
+    UrlbarTestUtils.trimURL(expectedURL),
     "the expected URL is displayed in the location bar"
   );
 
@@ -121,4 +137,5 @@ add_task(async function () {
   protoInfo.preferredApplicationHandler = null;
   handlers.removeElementAt(0);
   handlerSvc.store(protoInfo);
+  Services.perms.removeAll();
 });

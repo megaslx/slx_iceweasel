@@ -14,25 +14,24 @@
 using namespace mozilla;
 
 nsContainerFrame* NS_NewSelectsAreaFrame(PresShell* aShell,
-                                         ComputedStyle* aStyle,
-                                         nsFrameState aFlags) {
+                                         ComputedStyle* aStyle) {
   nsSelectsAreaFrame* it =
       new (aShell) nsSelectsAreaFrame(aStyle, aShell->GetPresContext());
-
-  // We need NS_BLOCK_FLOAT_MGR to ensure that the options inside the select
-  // aren't expanded by right floats outside the select.
-  it->AddStateBits(aFlags | NS_BLOCK_FLOAT_MGR);
-
   return it;
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsSelectsAreaFrame)
 
+NS_QUERYFRAME_HEAD(nsSelectsAreaFrame)
+  NS_QUERYFRAME_ENTRY(nsSelectsAreaFrame)
+NS_QUERYFRAME_TAIL_INHERITING(nsBlockFrame)
+
 static nsListControlFrame* GetEnclosingListFrame(nsIFrame* aSelectsAreaFrame) {
   nsIFrame* frame = aSelectsAreaFrame->GetParent();
   while (frame) {
-    if (frame->IsListControlFrame())
+    if (frame->IsListControlFrame()) {
       return static_cast<nsListControlFrame*>(frame);
+    }
     frame = frame->GetParent();
   }
   return nullptr;
@@ -73,7 +72,7 @@ namespace mozilla {
  * an option element to the element's own frame.
  * REVIEW: This is what nsSelectsAreaFrame::GetFrameForPoint used to do
  */
-class nsDisplayOptionEventGrabber : public nsDisplayWrapList {
+class nsDisplayOptionEventGrabber final : public nsDisplayWrapList {
  public:
   nsDisplayOptionEventGrabber(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                               nsDisplayItem* aItem)
@@ -133,13 +132,14 @@ class nsOptionEventGrabberWrapper : public nsDisplayItemWrapper {
   }
 };
 
-class nsDisplayListFocus : public nsPaintedDisplayItem {
+class nsDisplayListFocus final : public nsPaintedDisplayItem {
  public:
   nsDisplayListFocus(nsDisplayListBuilder* aBuilder, nsSelectsAreaFrame* aFrame)
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayListFocus);
   }
-  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayListFocus)
+
+  MOZ_COUNTED_DTOR_FINAL(nsDisplayListFocus)
 
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {

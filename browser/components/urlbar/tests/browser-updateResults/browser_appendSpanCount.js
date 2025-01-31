@@ -9,6 +9,12 @@
 
 "use strict";
 
+add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
+});
+
 add_task(async function viewUpdateAppendHidden() {
   // We'll use this test provider to test specific results.  We assume that
   // history and bookmarks have been cleared (by init() above).
@@ -33,7 +39,7 @@ add_task(async function viewUpdateAppendHidden() {
 
   // First search: Trigger the intervention tip and a view full of search
   // suggestions.
-  provider._results = queryStrings.map(
+  provider.results = queryStrings.map(
     suggestion =>
       new UrlbarResult(
         UrlbarUtils.RESULT_TYPE.SEARCH,
@@ -73,7 +79,7 @@ add_task(async function viewUpdateAppendHidden() {
   // Second search: Change the provider's results so that it has enough history
   // to fill up the view.  Search suggestion rows cannot be updated to history
   // results, so the view will append the history results as new rows.
-  provider._results = queryStrings.map(title => {
+  provider.results = queryStrings.map(title => {
     let url = "http://example.com/" + title;
     return new UrlbarResult(
       UrlbarUtils.RESULT_TYPE.URL,
@@ -99,7 +105,7 @@ add_task(async function viewUpdateAppendHidden() {
   // The `- 2` subtracts the heuristic and tip result.
   let newExpectedRowCount = 2 * expectedRowCount - 2;
   let mutationPromise = new Promise(resolve => {
-    let observer = new MutationObserver(mutations => {
+    let observer = new MutationObserver(() => {
       let childCount = UrlbarTestUtils.getResultCount(window);
       info(`Rows mutation observer called, childCount now ${childCount}`);
       if (newExpectedRowCount <= childCount) {
@@ -142,7 +148,7 @@ add_task(async function viewUpdateAppendHidden() {
       `Result at index ${i} is a search result`
     );
     Assert.ok(
-      BrowserTestUtils.is_visible(row),
+      BrowserTestUtils.isVisible(row),
       `Search result at index ${i} is visible`
     );
     Assert.equal(
@@ -160,7 +166,7 @@ add_task(async function viewUpdateAppendHidden() {
       `Result at index ${i} is a URL result`
     );
     Assert.ok(
-      !BrowserTestUtils.is_visible(row),
+      !BrowserTestUtils.isVisible(row),
       `URL result at index ${i} is hidden`
     );
     Assert.ok(

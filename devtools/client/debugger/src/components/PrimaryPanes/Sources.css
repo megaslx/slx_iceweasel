@@ -9,11 +9,35 @@
   flex-direction: column;
   overflow: hidden;
   position: relative;
+
+  & * {
+    user-select: none;
+  }
+
+  /* Tabs header */
+  & .tabs-navigation {
+    height: var(--editor-header-height) !important;
+
+    & .tabs-menu {
+      /* override margin set by the Tabs component */
+      margin: 0 !important;
+    }
+
+    & .tab {
+      flex: 1;
+      overflow: hidden;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    & [role="tab"] {
+      padding: 4px 8px;
+      flex: 1;
+    }
+  }
 }
 
-.sources-panel * {
-  user-select: none;
-}
+
 
 /***********************/
 /* Souces Panel layout */
@@ -24,6 +48,14 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  position: relative;
+}
+
+.sources-list .debugger-settings-menu-button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 5;
 }
 
 .sources-list .sources-clear-root-container {
@@ -92,23 +124,11 @@
   padding-inline: 6px 8px;
 }
 
-.sources-list .tree .tree-node:not(.focused):hover {
-  background: var(--theme-toolbar-background-hover);
-}
-
-.sources-list .tree button {
-  display: block;
-}
-
 .sources-list .tree .node {
   padding: 2px 3px;
   position: relative;
 }
 
-.sources-list .tree .node.focused {
-  color: var(--theme-selection-color);
-  background-color: var(--theme-selection-background);
-}
 
 html:not([dir="rtl"]) .sources-list .tree .node > div {
   margin-left: 10px;
@@ -118,24 +138,8 @@ html[dir="rtl"] .sources-list .tree .node > div {
   margin-right: 10px;
 }
 
-.sources-list .tree-node button {
-  position: fixed;
-}
-
 .sources-list .img {
   margin-inline-end: 4px;
-}
-
-.sources-list .tree .focused .img {
-  --icon-color: #ffffff;
-  background-color: var(--icon-color);
-  fill: var(--icon-color);
-}
-
-/* Use the same width as .img.arrow */
-.sources-list .tree .img.no-arrow {
-  width: 10px;
-  visibility: hidden;
 }
 
 .sources-list .tree .label .suffix {
@@ -148,11 +152,7 @@ html[dir="rtl"] .sources-list .tree .node > div {
   color: inherit;
 }
 
-.theme-dark .source-list .node.focused {
-  background-color: var(--theme-tab-toolbar-background);
-}
-
-.sources-list .tree .blackboxed {
+.sources-list .tree .tree-node:not(.focused) .blackboxed {
   color: #806414;
 }
 
@@ -174,6 +174,7 @@ html[dir="rtl"] .sources-list .tree .node > div {
   justify-content: center;
   text-align: center;
   min-height: var(--editor-footer-height);
+  flex-shrink: 0;
   border-block-start: 1px solid var(--theme-warning-border);
   user-select: none;
   padding: 3px 10px;

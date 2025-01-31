@@ -11,9 +11,14 @@
 module.exports = {
   meta: {
     docs: {
-      url: "https://firefox-source-docs.mozilla.org/code-quality/lint/linters/eslint-plugin-mozilla/reject-addtask-only.html",
+      url: "https://firefox-source-docs.mozilla.org/code-quality/lint/linters/eslint-plugin-mozilla/rules/reject-addtask-only.html",
     },
     hasSuggestions: true,
+    messages: {
+      addTaskNotAllowed:
+        "add_task(...).only() not allowed - add an exception if this is intentional",
+      addTaskNotAllowedSuggestion: "Remove only() call from task",
+    },
     schema: [],
     type: "suggestion",
   },
@@ -27,12 +32,16 @@ module.exports = {
           ) &&
           node.callee.property?.name == "only"
         ) {
+          let sourceCode = context.getSourceCode();
           context.report({
-            node,
-            message: `add_task(...).only() not allowed - add an exception if this is intentional`,
+            loc: {
+              start: sourceCode.getLocFromIndex(node.callee.object.range[1]),
+              end: sourceCode.getLocFromIndex(node.range[1]),
+            },
+            messageId: "addTaskNotAllowed",
             suggest: [
               {
-                desc: "Remove only() call from task",
+                messageId: "addTaskNotAllowedSuggestion",
                 fix: fixer =>
                   fixer.replaceTextRange(
                     [node.callee.object.range[1], node.range[1]],

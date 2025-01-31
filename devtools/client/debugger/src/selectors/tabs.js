@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import { createSelector } from "reselect";
+import { createSelector } from "devtools/client/shared/vendor/reselect";
 import { getPrettySourceURL } from "../utils/source";
 
 import { getSpecificSourceByURL } from "./sources";
@@ -23,9 +23,9 @@ export function tabExists(state, sourceId) {
   return !!getSourceTabs(state).find(tab => tab.source.id == sourceId);
 }
 
-export function hasPrettyTab(state, sourceUrl) {
-  const prettyUrl = getPrettySourceURL(sourceUrl);
-  return !!getSourceTabs(state).find(tab => tab.url === prettyUrl);
+export function hasPrettyTab(state, source) {
+  const prettyUrl = getPrettySourceURL(source.url);
+  return getTabs(state).some(tab => tab.url === prettyUrl);
 }
 
 /**

@@ -166,6 +166,11 @@ const Types = (exports.__TypesForTests = [
     front: null,
   },
   {
+    types: ["objects-manager"],
+    spec: "devtools/shared/specs/objects-manager",
+    front: "devtools/client/fronts/objects-manager",
+  },
+  {
     types: ["pagestyle"],
     spec: "devtools/shared/specs/page-style",
     front: "devtools/client/fronts/page-style",
@@ -274,13 +279,13 @@ const Types = (exports.__TypesForTests = [
     front: null,
   },
   {
-    types: ["parentProcessTarget"],
-    spec: "devtools/shared/specs/targets/parent-process",
+    types: ["contentScriptTarget"],
+    spec: "devtools/shared/specs/targets/content-script",
     front: null,
   },
   {
-    types: ["webExtensionTarget"],
-    spec: "devtools/shared/specs/targets/webextension",
+    types: ["parentProcessTarget"],
+    spec: "devtools/shared/specs/targets/parent-process",
     front: null,
   },
   {

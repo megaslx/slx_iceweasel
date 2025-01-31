@@ -8,6 +8,7 @@
 
 #include "js/CompileOptions.h"  // JS::InstantiateOptions
 #include "js/experimental/JSStencil.h"  // JS::CompileModuleScriptToStencil, JS::InstantiateModuleStencil
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/loader/ModuleLoadRequest.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Unused.h"
@@ -48,14 +49,13 @@ NS_INTERFACE_MAP_END_INHERITING(ModuleLoaderBase)
 
 WorkletModuleLoader::WorkletModuleLoader(WorkletScriptLoader* aScriptLoader,
                                          nsIGlobalObject* aGlobalObject)
-    : ModuleLoaderBase(aScriptLoader, aGlobalObject,
-                       GetCurrentSerialEventTarget()) {
+    : ModuleLoaderBase(aScriptLoader, aGlobalObject) {
   // This should be constructed on a worklet thread.
   MOZ_ASSERT(!NS_IsMainThread());
 }
 
 already_AddRefed<ModuleLoadRequest> WorkletModuleLoader::CreateStaticImport(
-    nsIURI* aURI, ModuleLoadRequest* aParent) {
+    nsIURI* aURI, JS::ModuleType aModuleType, ModuleLoadRequest* aParent) {
   const nsMainThreadPtrHandle<WorkletFetchHandler>& handlerRef =
       aParent->GetWorkletLoadContext()->GetHandlerRef();
   RefPtr<WorkletLoadContext> loadContext = new WorkletLoadContext(handlerRef);
@@ -68,18 +68,19 @@ already_AddRefed<ModuleLoadRequest> WorkletModuleLoader::CreateStaticImport(
   // base URL,
   nsIURI* referrer = aParent->mURI;
   RefPtr<ModuleLoadRequest> request = new ModuleLoadRequest(
-      aURI, aParent->mFetchOptions, SRIMetadata(), referrer, loadContext,
-      false, /* is top level */
-      false, /* is dynamic import */
+      aURI, aModuleType, aParent->ReferrerPolicy(), aParent->mFetchOptions,
+      SRIMetadata(), referrer, loadContext, false, /* is top level */
+      false,                                       /* is dynamic import */
       this, aParent->mVisitedSet, aParent->GetRootModule());
 
   request->mURL = request->mURI->GetSpecOrDefault();
+  request->NoCacheEntryFound();
   return request.forget();
 }
 
 already_AddRefed<ModuleLoadRequest> WorkletModuleLoader::CreateDynamicImport(
-    JSContext* aCx, nsIURI* aURI, LoadedScript* aMaybeActiveScript,
-    JS::Handle<JS::Value> aReferencingPrivate, JS::Handle<JSString*> aSpecifier,
+    JSContext* aCx, nsIURI* aURI, JS::ModuleType aModuleType,
+    LoadedScript* aMaybeActiveScript, JS::Handle<JSString*> aSpecifier,
     JS::Handle<JSObject*> aPromise) {
   return nullptr;
 }
@@ -102,12 +103,29 @@ nsresult WorkletModuleLoader::StartFetch(ModuleLoadRequest* aRequest) {
 nsresult WorkletModuleLoader::CompileFetchedModule(
     JSContext* aCx, JS::Handle<JSObject*> aGlobal, JS::CompileOptions& aOptions,
     ModuleLoadRequest* aRequest, JS::MutableHandle<JSObject*> aModuleScript) {
-  RefPtr<JS::Stencil> stencil;
+  switch (aRequest->mModuleType) {
+    case JS::ModuleType::Unknown:
+      MOZ_CRASH("Unexpected module type");
+    case JS::ModuleType::JavaScript:
+      return CompileJavaScriptModule(aCx, aOptions, aRequest, aModuleScript);
+    case JS::ModuleType::JSON:
+      return CompileJsonModule(aCx, aOptions, aRequest, aModuleScript);
+  }
+
+  MOZ_CRASH("Unhandled module type");
+}
+
+nsresult WorkletModuleLoader::CompileJavaScriptModule(
+    JSContext* aCx, JS::CompileOptions& aOptions, ModuleLoadRequest* aRequest,
+    JS::MutableHandle<JSObject*> aModuleScript) {
   MOZ_ASSERT(aRequest->IsTextSource());
 
   MaybeSourceText maybeSource;
-  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource);
+  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource,
+                                          aRequest->mLoadContext.get());
   NS_ENSURE_SUCCESS(rv, rv);
+
+  RefPtr<JS::Stencil> stencil;
 
   auto compile = [&](auto& source) {
     return JS::CompileModuleScriptToStencil(aCx, aOptions, source);
@@ -122,6 +140,29 @@ nsresult WorkletModuleLoader::CompileFetchedModule(
   aModuleScript.set(
       JS::InstantiateModuleStencil(aCx, instantiateOptions, stencil));
   return aModuleScript ? NS_OK : NS_ERROR_FAILURE;
+}
+
+nsresult WorkletModuleLoader::CompileJsonModule(
+    JSContext* aCx, JS::CompileOptions& aOptions, ModuleLoadRequest* aRequest,
+    JS::MutableHandle<JSObject*> aModuleScript) {
+  MOZ_ASSERT(aRequest->IsTextSource());
+
+  MaybeSourceText maybeSource;
+  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource,
+                                          aRequest->mLoadContext.get());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  auto compile = [&](auto& source) {
+    return JS::CompileJsonModule(aCx, aOptions, source);
+  };
+
+  auto* jsonModule = maybeSource.mapNonEmpty(compile);
+  if (!jsonModule) {
+    return NS_ERROR_FAILURE;
+  }
+
+  aModuleScript.set(jsonModule);
+  return NS_OK;
 }
 
 // AddModuleResultRunnable is a Runnable which will notify the result of

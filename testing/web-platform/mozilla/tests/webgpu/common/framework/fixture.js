@@ -1,6 +1,6 @@
 /**
- * AUTO-GENERATED - DO NOT EDIT. Source: https://github.com/gpuweb/cts
- **/ import { assert, unreachable } from '../util/util.js';
+* AUTO-GENERATED - DO NOT EDIT. Source: https://github.com/gpuweb/cts
+**/import { assert, unreachable } from '../util/util.js';
 
 export class SkipTestCase extends Error {}
 export class UnexpectedPassError extends Error {}
@@ -9,18 +9,22 @@ export { TestCaseRecorder } from '../internal/logging/test_case_recorder.js';
 
 /** The fully-general type for params passed to a test function invocation. */
 
-export class SubcaseBatchState {
-  constructor(params) {
-    this._params = params;
-  }
 
-  /**
-   * Returns the case parameters for this test fixture shared state. Subcase params
-   * are not included.
-   */
-  get params() {
-    return this._params;
-  }
+
+
+
+
+
+
+
+
+
+export class SubcaseBatchState {
+  constructor(
+  recorder,
+  /** The case parameters for this test fixture shared state. Subcase params are not included. */
+  params)
+  {this.recorder = recorder;this.params = params;}
 
   /**
    * Runs before the `.before()` function.
@@ -45,6 +49,8 @@ export class SubcaseBatchState {
  * (i.e. every time the test function is run).
  */
 export class Fixture {
+
+
   /**
    * Interface for recording logs and test status.
    *
@@ -55,8 +61,8 @@ export class Fixture {
   numOutstandingAsyncExpectations = 0;
   objectsToCleanUp = [];
 
-  static MakeSharedState(params) {
-    return new SubcaseBatchState(params);
+  static MakeSharedState(recorder, params) {
+    return new SubcaseBatchState(recorder, params);
   }
 
   /** @internal */
@@ -120,8 +126,14 @@ export class Fixture {
         if (WEBGL_lose_context) WEBGL_lose_context.loseContext();
       } else if ('destroy' in o) {
         o.destroy();
-      } else {
+      } else if ('destroyAsync' in o) {
+        await o.destroyAsync();
+      } else if ('close' in o) {
         o.close();
+      } else {
+        // HTMLVideoElement
+        o.src = '';
+        o.srcObject = null;
       }
     }
   }
@@ -129,11 +141,29 @@ export class Fixture {
   /**
    * Tracks an object to be cleaned up after the test finishes.
    *
-   * MAINTENANCE_TODO: Use this in more places. (Will be easier once .destroy() is allowed on
-   * invalid objects.)
+   * Usually when creating buffers/textures/query sets, you can use the helpers in GPUTest instead.
    */
   trackForCleanup(o) {
-    this.objectsToCleanUp.push(o);
+    if (o instanceof Promise) {
+      this.eventualAsyncExpectation(() =>
+      o.then(
+        (o) => this.trackForCleanup(o),
+        () => {}
+      )
+      );
+      return o;
+    }
+
+    if (o instanceof GPUDevice) {
+      this.objectsToCleanUp.push({
+        async destroyAsync() {
+          o.destroy();
+          await o.lost;
+        }
+      });
+    } else {
+      this.objectsToCleanUp.push(o);
+    }
     return o;
   }
 
@@ -141,15 +171,21 @@ export class Fixture {
   tryTrackForCleanup(o) {
     if (typeof o === 'object' && o !== null) {
       if (
-        'destroy' in o ||
-        'close' in o ||
-        o instanceof WebGLRenderingContext ||
-        o instanceof WebGL2RenderingContext
-      ) {
+      'destroy' in o ||
+      'close' in o ||
+      o instanceof WebGLRenderingContext ||
+      o instanceof WebGL2RenderingContext)
+      {
         this.objectsToCleanUp.push(o);
       }
     }
     return o;
+  }
+
+  /** Call requestDevice() and track the device for cleanup. */
+  requestDeviceTracked(adapter, desc = undefined) {
+
+    return this.trackForCleanup(adapter.requestDevice(desc));
   }
 
   /** Log a debug message. */
@@ -157,9 +193,24 @@ export class Fixture {
     this.rec.debug(new Error(msg));
   }
 
+  /**
+   * Log an info message.
+   * **Use sparingly. Use `debug()` instead if logs are only needed with debug logging enabled.**
+   */
+  info(msg) {
+    this.rec.info(new Error(msg));
+  }
+
   /** Throws an exception marking the subcase as skipped. */
   skip(msg) {
     throw new SkipTestCase(msg);
+  }
+
+  /** Throws an exception marking the subcase as skipped if condition is true */
+  skipIf(cond, msg = '') {
+    if (cond) {
+      this.skip(typeof msg === 'function' ? msg() : msg);
+    }
   }
 
   /** Log a warning and increase the result status to "Warn". */
@@ -210,7 +261,7 @@ export class Fixture {
 
   /** Expect that the provided promise resolves (fulfills). */
   shouldResolve(p, msg) {
-    this.eventualAsyncExpectation(async niceStack => {
+    this.eventualAsyncExpectation(async (niceStack) => {
       const m = msg ? ': ' + msg : '';
       try {
         await p;
@@ -226,26 +277,42 @@ export class Fixture {
   }
 
   /** Expect that the provided promise rejects, with the provided exception name. */
-  shouldReject(expectedName, p, msg) {
-    this.eventualAsyncExpectation(async niceStack => {
-      const m = msg ? ': ' + msg : '';
+  shouldReject(
+  expectedName,
+  p,
+  { allowMissingStack = false, message } = {})
+  {
+    this.eventualAsyncExpectation(async (niceStack) => {
+      const m = message ? ': ' + message : '';
       try {
         await p;
         niceStack.message = 'DID NOT REJECT' + m;
         this.rec.expectationFailed(niceStack);
       } catch (ex) {
-        niceStack.message = 'rejected as expected' + m;
         this.expectErrorValue(expectedName, ex, niceStack);
+        if (!allowMissingStack) {
+          if (!(ex instanceof Error && typeof ex.stack === 'string')) {
+            const exMessage = ex instanceof Error ? ex.message : '?';
+            niceStack.message = `rejected as expected, but missing stack (${exMessage})${m}`;
+            this.rec.expectationFailed(niceStack);
+          }
+        }
       }
     });
   }
 
   /**
-   * Expect that the provided function throws.
-   * If an `expectedName` is provided, expect that the throw exception has that name.
+   * Expect that the provided function throws (if `true` or `string`) or not (if `false`).
+   * If a string is provided, expect that the throw exception has that name.
+   *
+   * MAINTENANCE_TODO: Change to `string | false` so the exception name is always checked.
    */
-  shouldThrow(expectedError, fn, msg) {
-    const m = msg ? ': ' + msg : '';
+  shouldThrow(
+  expectedError,
+  fn,
+  { allowMissingStack = false, message } = {})
+  {
+    const m = message ? ': ' + message : '';
     try {
       fn();
       if (expectedError === false) {
@@ -258,6 +325,11 @@ export class Fixture {
         this.rec.expectationFailed(new Error('threw unexpectedly' + m));
       } else {
         this.expectErrorValue(expectedError, ex, new Error(m));
+        if (!allowMissingStack) {
+          if (!(ex instanceof Error && typeof ex.stack === 'string')) {
+            this.rec.expectationFailed(new Error('threw as expected, but missing stack' + m));
+          }
+        }
       }
     }
   }
@@ -277,8 +349,11 @@ export class Fixture {
    * If the argument is an `Error`, fail (or warn). If it's `undefined`, no-op.
    * If the argument is an array, apply the above behavior on each of elements.
    */
-  expectOK(error, { mode = 'fail', niceStack } = {}) {
-    const handleError = error => {
+  expectOK(
+  error,
+  { mode = 'fail', niceStack } = {})
+  {
+    const handleError = (error) => {
       if (error instanceof Error) {
         if (niceStack) {
           error.stack = niceStack.stack;
@@ -302,9 +377,22 @@ export class Fixture {
     }
   }
 
-  eventualExpectOK(error, { mode = 'fail' } = {}) {
-    this.eventualAsyncExpectation(async niceStack => {
+  eventualExpectOK(
+  error,
+  { mode = 'fail' } = {})
+  {
+    this.eventualAsyncExpectation(async (niceStack) => {
       this.expectOK(await error, { mode, niceStack });
     });
   }
 }
+
+
+
+/**
+ * FixtureClass encapsulates a constructor for fixture and a corresponding
+ * shared state factory function. An interface version of the type is also
+ * defined for mixin declaration use ONLY. The interface version is necessary
+ * because mixin classes need a constructor with a single any[] rest
+ * parameter.
+ */

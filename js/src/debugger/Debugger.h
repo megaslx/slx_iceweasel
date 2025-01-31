@@ -285,9 +285,9 @@ class Completion {
   Variant variant;
 };
 
-typedef HashSet<WeakHeapPtr<GlobalObject*>,
-                StableCellHasher<WeakHeapPtr<GlobalObject*>>, ZoneAllocPolicy>
-    WeakGlobalObjectSet;
+using WeakGlobalObjectSet =
+    HashSet<WeakHeapPtr<GlobalObject*>,
+            StableCellHasher<WeakHeapPtr<GlobalObject*>>, ZoneAllocPolicy>;
 
 #ifdef DEBUG
 extern void CheckDebuggeeThing(BaseScript* script, bool invisibleOk);
@@ -344,7 +344,7 @@ class DebuggerWeakMap : private WeakMap<HeapPtr<Referent*>, HeapPtr<Wrapper*>> {
   JS::Compartment* compartment;
 
  public:
-  typedef WeakMap<Key, Value> Base;
+  using Base = WeakMap<Key, Value>;
   using ReferentType = Referent;
   using WrapperType = Wrapper;
 
@@ -412,16 +412,32 @@ class DebuggerWeakMap : private WeakMap<HeapPtr<Referent*>, HeapPtr<Wrapper*>> {
 class LeaveDebuggeeNoExecute;
 
 class MOZ_RAII EvalOptions {
+ public:
+  enum class EnvKind {
+    Frame,
+    FrameWithExtraBindings,
+    Global,
+    GlobalWithExtraOuterBindings,
+    GlobalWithExtraInnerBindings,
+  };
+
+ private:
   JS::UniqueChars filename_;
   unsigned lineno_ = 1;
   bool hideFromDebugger_ = false;
+  EnvKind kind_;
 
  public:
-  EvalOptions() = default;
+  explicit EvalOptions(EnvKind kind) : kind_(kind) {};
   ~EvalOptions() = default;
   const char* filename() const { return filename_.get(); }
   unsigned lineno() const { return lineno_; }
   bool hideFromDebugger() const { return hideFromDebugger_; }
+  EnvKind kind() const { return kind_; }
+  void setUseInnerBindings() {
+    MOZ_ASSERT(kind_ == EvalOptions::EnvKind::GlobalWithExtraOuterBindings);
+    kind_ = EvalOptions::EnvKind::GlobalWithExtraInnerBindings;
+  }
   [[nodiscard]] bool setFilename(JSContext* cx, const char* filename);
   void setLineno(unsigned lineno) { lineno_ = lineno; }
   void setHideFromDebugger(bool hide) { hideFromDebugger_ = hide; }
@@ -450,8 +466,8 @@ using Env = JSObject;
 // does point to something okay. Instead, we immediately build an instance of
 // this type from the Cell* and use that instead, so we can benefit from
 // Variant's static checks.
-typedef mozilla::Variant<BaseScript*, WasmInstanceObject*>
-    DebuggerScriptReferent;
+using DebuggerScriptReferent =
+    mozilla::Variant<BaseScript*, WasmInstanceObject*>;
 
 // The referent of a Debugger.Source.
 //
@@ -463,8 +479,8 @@ typedef mozilla::Variant<BaseScript*, WasmInstanceObject*>
 // The DebuggerSource object actually simply stores a Cell* in its private
 // pointer. See the comments for DebuggerScriptReferent for the rationale for
 // this type.
-typedef mozilla::Variant<ScriptSourceObject*, WasmInstanceObject*>
-    DebuggerSourceReferent;
+using DebuggerSourceReferent =
+    mozilla::Variant<ScriptSourceObject*, WasmInstanceObject*>;
 
 template <typename HookIsEnabledFun /* bool (Debugger*) */>
 class MOZ_RAII DebuggerList {
@@ -623,8 +639,22 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
   bool allowUnobservedAsmJS;
   bool allowUnobservedWasm;
 
+  // When this flag is true, this debugger should be the only one to have its
+  // hooks called when it evaluates via Frame.evalWithBindings,
+  // Object.executeInGlobalWithBindings or Object.call.
+  bool exclusiveDebuggerOnEval;
+
+  // When this flag is true, the onNativeCall hook is called with additional
+  // arguments which are the native function call arguments and well as a
+  // reference to the object on which the function call (if any).
+  bool inspectNativeCallArguments;
+
   // Whether to enable code coverage on the Debuggee.
   bool collectCoverageInfo;
+
+  // Whether to ask avoid side-effects in the native code.
+  // See JS::dbg::ShouldAvoidSideEffects.
+  bool shouldAvoidSideEffects;
 
   template <typename T>
   struct DebuggerLinkAccess {
@@ -714,14 +744,17 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
    * soon as they leave the stack (see slowPathOnLeaveFrame) and in
    * removeDebuggee.
    *
+   * Wasm JS PI allows suspending/resuming a portion of the stack, only
+   * frame pointers and activations are changed. The stack frames are still
+   * live, and shall be present in the frames map if DebuggerFrame is created.
+   *
    * We don't trace the keys of this map (the frames are on the stack and
    * thus necessarily live), but we do trace the values. It's like a WeakMap
    * that way, but since stack frames are not gc-things, the implementation
    * has to be different.
    */
-  typedef HashMap<AbstractFramePtr, HeapPtr<DebuggerFrame*>,
-                  DefaultHasher<AbstractFramePtr>, ZoneAllocPolicy>
-      FrameMap;
+  using FrameMap = HashMap<AbstractFramePtr, HeapPtr<DebuggerFrame*>,
+                           DefaultHasher<AbstractFramePtr>, ZoneAllocPolicy>;
   FrameMap frames;
 
   /*
@@ -748,8 +781,8 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
    * An entry in this table exists if and only if the Debugger.Frame's
    * GENERATOR_INFO_SLOT is set.
    */
-  typedef DebuggerWeakMap<AbstractGeneratorObject, DebuggerFrame>
-      GeneratorWeakMap;
+  using GeneratorWeakMap =
+      DebuggerWeakMap<AbstractGeneratorObject, DebuggerFrame>;
   GeneratorWeakMap generatorFrames;
 
   // An ephemeral map from BaseScript* to Debugger.Script instances.
@@ -760,28 +793,28 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
 
   // The map from debuggee source script objects to their Debugger.Source
   // instances.
-  typedef DebuggerWeakMap<ScriptSourceObject, DebuggerSource, true>
-      SourceWeakMap;
+  using SourceWeakMap =
+      DebuggerWeakMap<ScriptSourceObject, DebuggerSource, true>;
   SourceWeakMap sources;
 
   // The map from debuggee objects to their Debugger.Object instances.
-  typedef DebuggerWeakMap<JSObject, DebuggerObject> ObjectWeakMap;
+  using ObjectWeakMap = DebuggerWeakMap<JSObject, DebuggerObject>;
   ObjectWeakMap objects;
 
   // The map from debuggee Envs to Debugger.Environment instances.
-  typedef DebuggerWeakMap<JSObject, DebuggerEnvironment> EnvironmentWeakMap;
+  using EnvironmentWeakMap = DebuggerWeakMap<JSObject, DebuggerEnvironment>;
   EnvironmentWeakMap environments;
 
   // The map from WasmInstanceObjects to synthesized Debugger.Script
   // instances.
-  typedef DebuggerWeakMap<WasmInstanceObject, DebuggerScript>
-      WasmInstanceScriptWeakMap;
+  using WasmInstanceScriptWeakMap =
+      DebuggerWeakMap<WasmInstanceObject, DebuggerScript>;
   WasmInstanceScriptWeakMap wasmInstanceScripts;
 
   // The map from WasmInstanceObjects to synthesized Debugger.Source
   // instances.
-  typedef DebuggerWeakMap<WasmInstanceObject, DebuggerSource>
-      WasmInstanceSourceWeakMap;
+  using WasmInstanceSourceWeakMap =
+      DebuggerWeakMap<WasmInstanceObject, DebuggerSource>;
   WasmInstanceSourceWeakMap wasmInstanceSources;
 
   class QueryBase;
@@ -892,6 +925,7 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
 
   static const JSPropertySpec properties[];
   static const JSFunctionSpec methods[];
+  static const JSPropertySpec static_properties[];
   static const JSFunctionSpec static_methods[];
 
   /**
@@ -975,6 +1009,8 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
   // Whether the Debugger instance needs to observe native call invocations.
   IsObserving observesNativeCalls() const;
 
+  bool isExclusiveDebuggerOnEval() const;
+
  private:
   [[nodiscard]] static bool ensureExecutionObservabilityOfFrame(
       JSContext* cx, AbstractFramePtr frame);
@@ -989,6 +1025,7 @@ class Debugger : private mozilla::LinkedListElement<Debugger> {
                                                        IsObserving observing);
   void updateObservesAsmJSOnDebuggees(IsObserving observing);
   void updateObservesWasmOnDebuggees(IsObserving observing);
+  void updateObservesNativeCallOnDebuggees(IsObserving observing);
 
   JSObject* getHook(Hook hook) const;
   bool hasAnyLiveHooks() const;

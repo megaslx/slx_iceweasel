@@ -9,11 +9,15 @@
 
 #include "Performance.h"
 #include "PerformanceStorage.h"
+#include "LargestContentfulPaint.h"
+#include "nsTextFrame.h"
 
 namespace mozilla::dom {
 
 class PerformanceNavigationTiming;
 class PerformanceEventTiming;
+
+using TextFrameUnions = nsTHashMap<nsRefPtrHashKey<Element>, nsRect>;
 
 class PerformanceMainThread final : public Performance,
                                     public PerformanceStorage {
@@ -45,10 +49,13 @@ class PerformanceMainThread final : public Performance,
                    const nsAString& aInitiatorType,
                    const nsAString& aEntryName);
   virtual void SetFCPTimingEntry(PerformancePaintTiming* aEntry) override;
+  bool HadFCPTimingEntry() const { return mFCPTiming; }
 
   void InsertEventTimingEntry(PerformanceEventTiming*) override;
   void BufferEventTimingEntryIfNeeded(PerformanceEventTiming*) override;
   void DispatchPendingEventTimingEntries() override;
+
+  void BufferLargestContentfulPaintEntryIfNeeded(LargestContentfulPaint*);
 
   TimeStamp CreationTimeStamp() const override;
 
@@ -87,6 +94,7 @@ class PerformanceMainThread final : public Performance,
 
   void UpdateNavigationTimingEntry() override;
   void QueueNavigationTimingEntry() override;
+  void QueueLargestContentfulPaintEntry(LargestContentfulPaint* aEntry);
 
   size_t SizeOfEventEntries(mozilla::MallocSizeOf aMallocSizeOf) const override;
 
@@ -94,9 +102,38 @@ class PerformanceMainThread final : public Performance,
   static constexpr uint32_t kDefaultEventTimingDurationThreshold = 104;
   static constexpr double kDefaultEventTimingMinDuration = 16.0;
 
+  static constexpr uint32_t kMaxLargestContentfulPaintBufferSize = 150;
+
   class EventCounts* EventCounts() override;
 
   bool IsGlobalObjectWindow() const override { return true; };
+
+  bool HasDispatchedInputEvent() const { return mHasDispatchedInputEvent; }
+
+  void SetHasDispatchedScrollEvent();
+  bool HasDispatchedScrollEvent() const { return mHasDispatchedScrollEvent; }
+
+  void ProcessElementTiming();
+
+  void AddImagesPendingRendering(ImagePendingRendering aImagePendingRendering) {
+    mImagesPendingRendering.AppendElement(aImagePendingRendering);
+  }
+
+  bool IsPendingLCPCandidate(Element* aElement,
+                             imgRequestProxy* aImgRequestProxy);
+
+  bool UpdateLargestContentfulPaintSize(double aSize);
+  double GetLargestContentfulPaintSize() const {
+    return mLargestContentfulPaintSize;
+  }
+
+  nsTHashMap<nsRefPtrHashKey<Element>, nsRect>& GetTextFrameUnions() {
+    return mTextFrameUnions;
+  }
+
+  void FinalizeLCPEntriesForText();
+
+  void ClearGeneratedTempDataForLCP();
 
  protected:
   ~PerformanceMainThread();
@@ -119,22 +156,49 @@ class PerformanceMainThread final : public Performance,
   JS::Heap<JSObject*> mMozMemory;
 
   nsTArray<RefPtr<PerformanceEventTiming>> mEventTimingEntries;
+  nsTArray<RefPtr<LargestContentfulPaint>> mLargestContentfulPaintEntries;
 
   AutoCleanLinkedList<RefPtr<PerformanceEventTiming>>
       mPendingEventTimingEntries;
   bool mHasDispatchedInputEvent = false;
+  bool mHasDispatchedScrollEvent = false;
 
   RefPtr<PerformanceEventTiming> mFirstInputEvent;
   RefPtr<PerformanceEventTiming> mPendingPointerDown;
 
  private:
+  void SetHasDispatchedInputEvent();
+
   bool mHasQueuedRefreshdriverObserver = false;
 
   RefPtr<class EventCounts> mEventCounts;
   void IncEventCount(const nsAtom* aType);
 
   PresShell* GetPresShell();
+
+  nsTArray<ImagePendingRendering> mImagesPendingRendering;
+
+  // Keeps track of the rendered size of the largest contentful paint that
+  // we have processed so far.
+  double mLargestContentfulPaintSize = 0.0;
+
+  // When a text frame is painted, its area (relative to the
+  // containing block) is unioned with other text frames that
+  // belong to the same containing block.
+  // mTextFrameUnions's key is the containing block, and
+  // the value is the unioned area.
+  TextFrameUnions mTextFrameUnions;
 };
+
+inline void ImplCycleCollectionTraverse(
+    nsCycleCollectionTraversalCallback& aCallback,
+    const TextFrameUnions& aField, const char* aName, uint32_t aFlags = 0) {
+  for (const auto& entry : aField) {
+    CycleCollectionNoteChild(aCallback, entry.GetKey(),
+                             "TextFrameUnions's key (nsRefPtrHashKey<Element>)",
+                             aFlags);
+  }
+}
 
 }  // namespace mozilla::dom
 

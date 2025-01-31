@@ -68,10 +68,10 @@ class TipTestProvider extends UrlbarProvider {
   get type() {
     return UrlbarUtils.PROVIDER_TYPE.PROFILE;
   }
-  isActive(context) {
+  isActive() {
     return true;
   }
-  isRestricting(context) {
+  isRestricting() {
     return true;
   }
   async startQuery(context, addCallback) {
@@ -84,6 +84,10 @@ class TipTestProvider extends UrlbarProvider {
 
 // Check that the URL bar manages accessibility focus appropriately.
 async function runTests() {
+  // TODO: Remove in https://bugzilla.mozilla.org/show_bug.cgi?id=1923383
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
   registerCleanupFunction(async function () {
     await UrlbarTestUtils.promisePopupClose(window);
     await PlacesUtils.history.clear();

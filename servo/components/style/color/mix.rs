@@ -4,7 +4,7 @@
 
 //! Color mixing/interpolation.
 
-use super::{AbsoluteColor, ColorComponents, ColorFlags, ColorSpace};
+use super::{AbsoluteColor, ColorFlags, ColorSpace};
 use crate::parser::{Parse, ParserContext};
 use crate::values::generics::color::ColorMixFlags;
 use cssparser::Parser;
@@ -169,8 +169,19 @@ pub fn mix(
         alpha_multiplier,
     );
 
-    if flags.contains(ColorMixFlags::RESULT_IN_MODERN_SYNTAX) && result.is_legacy_syntax() {
-        result.to_color_space(ColorSpace::Srgb).into_modern_syntax()
+    if flags.contains(ColorMixFlags::RESULT_IN_MODERN_SYNTAX) {
+        // If the result *MUST* be in modern syntax, then make sure it is in a
+        // color space that allows the modern syntax. So hsl and hwb will be
+        // converted to srgb.
+        if result.is_legacy_syntax() {
+            result.to_color_space(ColorSpace::Srgb)
+        } else {
+            result
+        }
+    } else if left_color.is_legacy_syntax() && right_color.is_legacy_syntax() {
+        // If both sides of the mix is legacy then convert the result back into
+        // legacy.
+        result.into_srgb_legacy()
     } else {
         result
     }
@@ -208,6 +219,81 @@ impl ComponentMixOutcome {
     }
 }
 
+impl AbsoluteColor {
+    /// Calculate the flags that should be carried forward a color before converting
+    /// it to the interpolation color space according to:
+    /// <https://drafts.csswg.org/css-color-4/#interpolation-missing>
+    fn carry_forward_analogous_missing_components(&mut self, source: &AbsoluteColor) {
+        use ColorFlags as F;
+        use ColorSpace as S;
+
+        if source.color_space == self.color_space {
+            return;
+        }
+
+        // Reds             r, x
+        // Greens           g, y
+        // Blues            b, z
+        if source.color_space.is_rgb_or_xyz_like() && self.color_space.is_rgb_or_xyz_like() {
+            return;
+        }
+
+        // Lightness        L
+        if matches!(source.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch) {
+            if matches!(self.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch) {
+                self.flags
+                    .set(F::C0_IS_NONE, source.flags.contains(F::C0_IS_NONE));
+            } else if matches!(self.color_space, S::Hsl) {
+                self.flags
+                    .set(F::C2_IS_NONE, source.flags.contains(F::C0_IS_NONE));
+            }
+        } else if matches!(source.color_space, S::Hsl) &&
+            matches!(self.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch)
+        {
+            self.flags
+                .set(F::C0_IS_NONE, source.flags.contains(F::C2_IS_NONE));
+        }
+
+        // Colorfulness     C, S
+        if matches!(source.color_space, S::Hsl | S::Lch | S::Oklch) &&
+            matches!(self.color_space, S::Hsl | S::Lch | S::Oklch)
+        {
+            self.flags
+                .set(F::C1_IS_NONE, source.flags.contains(F::C1_IS_NONE));
+        }
+
+        // Hue              H
+        if matches!(source.color_space, S::Hsl | S::Hwb) {
+            if matches!(self.color_space, S::Hsl | S::Hwb) {
+                self.flags
+                    .set(F::C0_IS_NONE, source.flags.contains(F::C0_IS_NONE));
+            } else if matches!(self.color_space, S::Lch | S::Oklch) {
+                self.flags
+                    .set(F::C2_IS_NONE, source.flags.contains(F::C0_IS_NONE));
+            }
+        } else if matches!(source.color_space, S::Lch | S::Oklch) {
+            if matches!(self.color_space, S::Hsl | S::Hwb) {
+                self.flags
+                    .set(F::C0_IS_NONE, source.flags.contains(F::C2_IS_NONE));
+            } else if matches!(self.color_space, S::Lch | S::Oklch) {
+                self.flags
+                    .set(F::C2_IS_NONE, source.flags.contains(F::C2_IS_NONE));
+            }
+        }
+
+        // Opponent         a, a
+        // Opponent         b, b
+        if matches!(source.color_space, S::Lab | S::Oklab) &&
+            matches!(self.color_space, S::Lab | S::Oklab)
+        {
+            self.flags
+                .set(F::C1_IS_NONE, source.flags.contains(F::C1_IS_NONE));
+            self.flags
+                .set(F::C2_IS_NONE, source.flags.contains(F::C2_IS_NONE));
+        }
+    }
+}
+
 fn mix_in(
     color_space: ColorSpace,
     left_color: &AbsoluteColor,
@@ -217,18 +303,21 @@ fn mix_in(
     hue_interpolation: HueInterpolationMethod,
     alpha_multiplier: f32,
 ) -> AbsoluteColor {
+    // Convert both colors into the interpolation color space.
+    let mut left = left_color.to_color_space(color_space);
+    left.carry_forward_analogous_missing_components(&left_color);
+    let mut right = right_color.to_color_space(color_space);
+    right.carry_forward_analogous_missing_components(&right_color);
+
     let outcomes = [
-        ComponentMixOutcome::from_colors(left_color, right_color, ColorFlags::C1_IS_NONE),
-        ComponentMixOutcome::from_colors(left_color, right_color, ColorFlags::C2_IS_NONE),
-        ComponentMixOutcome::from_colors(left_color, right_color, ColorFlags::C3_IS_NONE),
-        ComponentMixOutcome::from_colors(left_color, right_color, ColorFlags::ALPHA_IS_NONE),
+        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C0_IS_NONE),
+        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C1_IS_NONE),
+        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C2_IS_NONE),
+        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::ALPHA_IS_NONE),
     ];
 
-    // Convert both colors into the interpolation color space.
-    let left = left_color.to_color_space(color_space);
+    // Convert both sides into just components.
     let left = left.raw_components();
-
-    let right = right_color.to_color_space(color_space);
     let right = right.raw_components();
 
     let (result, result_flags) = interpolate_premultiplied(
@@ -254,11 +343,7 @@ fn mix_in(
     //        then divide after calculations?
     let alpha = (alpha * 1000.0).round() / 1000.0;
 
-    let mut result = AbsoluteColor::new(
-        color_space,
-        ColorComponents(result[0], result[1], result[2]),
-        alpha,
-    );
+    let mut result = AbsoluteColor::new(color_space, result[0], result[1], result[2], alpha);
 
     result.flags = result_flags;
 
@@ -324,7 +409,7 @@ fn adjust_hue(left: &mut f32, right: &mut f32, hue_interpolation: HueInterpolati
             let delta = *right - *left;
             if 0. < delta && delta < 180. {
                 *left += 360.;
-            } else if -180. < delta && delta < 0. {
+            } else if -180. < delta && delta <= 0. {
                 *right += 360.;
             }
         },
@@ -464,9 +549,9 @@ fn interpolate_premultiplied(
             ComponentMixOutcome::None => {
                 result[i] = 0.0;
                 match i {
-                    0 => flags.insert(ColorFlags::C1_IS_NONE),
-                    1 => flags.insert(ColorFlags::C2_IS_NONE),
-                    2 => flags.insert(ColorFlags::C3_IS_NONE),
+                    0 => flags.insert(ColorFlags::C0_IS_NONE),
+                    1 => flags.insert(ColorFlags::C1_IS_NONE),
+                    2 => flags.insert(ColorFlags::C2_IS_NONE),
                     _ => unreachable!(),
                 }
             },

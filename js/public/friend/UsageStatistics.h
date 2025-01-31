@@ -17,12 +17,12 @@ struct JS_PUBLIC_API JSContext;
 class JS_PUBLIC_API JSObject;
 
 /*
- * Telemetry reasons passed to the accumulate telemetry callback.
+ * Legacy telemetry metrics passed to the accumulate telemetry callback.
  *
  * It's OK for these enum values to change as they will be mapped to a fixed
  * member of the mozilla::Telemetry::HistogramID enum by the callback.
  */
-#define FOR_EACH_JS_METRIC(_)                   \
+#define FOR_EACH_JS_LEGACY_METRIC(_)            \
   _(GC_REASON_2, Enumeration)                   \
   _(GC_IS_COMPARTMENTAL, Boolean)               \
   _(GC_ZONE_COUNT, QuantityDistribution)        \
@@ -64,10 +64,22 @@ class JS_PUBLIC_API JSObject;
   _(DESERIALIZE_ITEMS, QuantityDistribution)    \
   _(DESERIALIZE_US, TimeDuration_US)            \
   _(GC_EFFECTIVENESS, MemoryDistribution)       \
+  _(GC_PARALLEL_MARK, Boolean)                  \
   _(GC_PARALLEL_MARK_SPEEDUP, Integer)          \
   _(GC_PARALLEL_MARK_UTILIZATION, Percentage)   \
   _(GC_PARALLEL_MARK_INTERRUPTIONS, Integer)    \
   _(GC_TASK_START_DELAY_US, TimeDuration_US)
+
+/*
+ * Append any glean only telemetry metrics to the following list.
+ * However, unlike the legacy list, each glean metric must be manually added
+ * to the switch statement in AccumulateTelemetryCallback().
+ */
+#define FOR_EACH_JS_GLEAN_METRIC(_) _(ION_COMPILE_TIME, TimeDuration_US)
+
+#define FOR_EACH_JS_METRIC(_)  \
+  FOR_EACH_JS_LEGACY_METRIC(_) \
+  FOR_EACH_JS_GLEAN_METRIC(_)
 
 // clang-format off
 #define ENUM_DEF(NAME, _) NAME,
@@ -83,6 +95,13 @@ using JSAccumulateTelemetryDataCallback = void (*)(JSMetric, uint32_t);
 extern JS_PUBLIC_API void JS_SetAccumulateTelemetryCallback(
     JSContext* cx, JSAccumulateTelemetryDataCallback callback);
 
+#define FOR_EACH_JS_USE_COUNTER(_)                \
+  _(ASMJS, AsmJS)                                 \
+  _(WASM, Wasm)                                   \
+  _(WASM_LEGACY_EXCEPTIONS, WasmLegacyExceptions) \
+  _(ISHTMLDDA_FUSE, IsHTMLDDAFuse)                \
+  _(OPTIMIZE_GET_ITERATOR_FUSE, OptimizeGetIteratorFuse)
+
 /*
  * Use counter names passed to the accumulate use counter callback.
  *
@@ -90,7 +109,9 @@ extern JS_PUBLIC_API void JS_SetAccumulateTelemetryCallback(
  * fixed member of the mozilla::UseCounter enum by the callback.
  */
 
-enum class JSUseCounter { ASMJS, WASM };
+#define ENUM_DEF(NAME, _) NAME,
+enum class JSUseCounter { FOR_EACH_JS_USE_COUNTER(ENUM_DEF) COUNT };
+#undef ENUM_DEF
 
 using JSSetUseCounterCallback = void (*)(JSObject*, JSUseCounter);
 

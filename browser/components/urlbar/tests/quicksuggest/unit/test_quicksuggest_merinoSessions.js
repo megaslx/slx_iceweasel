@@ -6,23 +6,14 @@
 
 "use strict";
 
-// `UrlbarProviderQuickSuggest.#merino` is lazily created on the first Merino
-// fetch, so it's easiest to create `gClient` lazily too.
-XPCOMUtils.defineLazyGetter(
-  this,
-  "gClient",
-  () => UrlbarProviderQuickSuggest._test_merino
-);
-
-add_task(async function init() {
-  UrlbarPrefs.set("quicksuggest.enabled", true);
-  UrlbarPrefs.set("suggest.quicksuggest.sponsored", true);
-  UrlbarPrefs.set("merino.enabled", true);
-  UrlbarPrefs.set("quicksuggest.remoteSettings.enabled", false);
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", true);
-
+add_setup(async () => {
   await MerinoTestUtils.server.start();
-  await QuickSuggestTestUtils.ensureQuickSuggestInit();
+  await QuickSuggestTestUtils.ensureQuickSuggestInit({
+    prefs: [
+      ["suggest.quicksuggest.sponsored", true],
+      ["quicksuggest.dataCollection.enabled", true],
+    ],
+  });
 });
 
 // In a single engagement, all requests should use the same session ID and the
@@ -150,25 +141,44 @@ add_task(async function canceledQueries() {
 });
 
 function endEngagement({ controller, context = null, state = "engagement" }) {
-  UrlbarProviderQuickSuggest.onEngagement(
-    state,
-    context ||
-      createContext("endEngagement", {
-        providers: [UrlbarProviderQuickSuggest.name],
-        isPrivate: false,
-      }),
-    { selIndex: -1 },
-    controller
-  );
+  context ||= createContext("endEngagement", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+  let details = { selIndex: -1, result: { payload: {} } };
+
+  switch (state) {
+    case "engagement":
+      UrlbarProviderQuickSuggest.onEngagement(context, controller, details);
+      UrlbarProviderQuickSuggest.onSearchSessionEnd(
+        context,
+        controller,
+        details
+      );
+      break;
+    case "abandonment":
+      UrlbarProviderQuickSuggest.onSearchSessionEnd(
+        context,
+        controller,
+        details
+      );
+      break;
+    default:
+      throw new Error("Unrecognized engagement state: " + state);
+  }
 
   Assert.strictEqual(
-    gClient.sessionID,
+    merinoClient().sessionID,
     null,
     "sessionID is null after engagement"
   );
   Assert.strictEqual(
-    gClient._test_sessionTimer,
+    merinoClient()._test_sessionTimer,
     null,
     "sessionTimer is null after engagement"
   );
+}
+
+function merinoClient() {
+  return QuickSuggest.getFeature("SuggestBackendMerino")?.client;
 }

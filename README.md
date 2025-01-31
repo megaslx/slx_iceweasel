@@ -8,6 +8,10 @@ mostly laid out like Mozilla-based products.
 
 All builds support portable mode
 
+## Latest Release
+
+[![Download Iceweasel](https://a.fsdn.com/con/app/sf-download-button)](https://sourceforge.net/projects/libportable/files/latest/download)
+
 ## Resources
 
  * [Mozilla Source Code Directory Structure and links to project pages](https://developer.mozilla.org/en/Mozilla_Source_Code_Directory_Structure)

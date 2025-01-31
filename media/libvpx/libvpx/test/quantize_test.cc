@@ -11,7 +11,7 @@
 #include <string.h>
 #include <tuple>
 
-#include "third_party/googletest/src/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 #include "./vp8_rtcd.h"
 #include "./vpx_config.h"
@@ -121,13 +121,13 @@ class QuantizeTest : public QuantizeTestBase,
                      public ::testing::TestWithParam<VP8QuantizeParam>,
                      public AbstractBench {
  protected:
-  virtual void SetUp() {
+  void SetUp() override {
     SetupCompressor();
     asm_quant_ = GET_PARAM(0);
     c_quant_ = GET_PARAM(1);
   }
 
-  virtual void Run() {
+  void Run() override {
     asm_quant_(&vp8_comp_->mb.block[0], &macroblockd_dst_->block[0]);
   }
 

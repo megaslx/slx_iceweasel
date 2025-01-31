@@ -4,21 +4,25 @@
 
 "use strict";
 
-define(function (require, exports, module) {
-  const { Component } = require("devtools/client/shared/vendor/react");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const { createFactories } = require("devtools/client/shared/react-utils");
+define(function (require, exports) {
+  const {
+    Component,
+  } = require("resource://devtools/client/shared/vendor/react.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const {
+    createFactories,
+  } = require("resource://devtools/client/shared/react-utils.js");
   const { JsonPanel } = createFactories(
-    require("devtools/client/jsonview/components/JsonPanel")
+    require("resource://devtools/client/jsonview/components/JsonPanel.js")
   );
   const { TextPanel } = createFactories(
-    require("devtools/client/jsonview/components/TextPanel")
+    require("resource://devtools/client/jsonview/components/TextPanel.js")
   );
   const { HeadersPanel } = createFactories(
-    require("devtools/client/jsonview/components/HeadersPanel")
+    require("resource://devtools/client/jsonview/components/HeadersPanel.js")
   );
   const { Tabs, TabPanel } = createFactories(
-    require("devtools/client/shared/components/tabs/Tabs")
+    require("resource://devtools/client/shared/components/tabs/Tabs.js")
   );
 
   /**
@@ -61,7 +65,9 @@ define(function (require, exports, module) {
       this.setState({ activeTab: index });
 
       // Send notification event to the window. This is useful for tests.
-      window.dispatchEvent(new CustomEvent("TabChanged"));
+      window.dispatchEvent(
+        new CustomEvent("TabChanged", { detail: { index } })
+      );
     }
 
     render() {
@@ -96,6 +102,8 @@ define(function (require, exports, module) {
               !(this.state.json instanceof Error) &&
               document.readyState != "loading",
             data: this.state.jsonText,
+            errorMessage:
+              this.state.json instanceof Error ? this.state.json + "" : null,
             actions: this.props.actions,
           })
         ),

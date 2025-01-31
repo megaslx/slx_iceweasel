@@ -30,7 +30,7 @@ cfg_io_util! {
         ) => {
             $(
                 $(#[$outer])*
-                fn $name<'a>(&'a mut self, n: $ty) -> $($fut)*<&'a mut Self> where Self: Unpin {
+                fn $name(&mut self, n: $ty) -> $($fut)*<&mut Self> where Self: Unpin {
                     $($fut)*::new(self, n)
                 }
             )*
@@ -117,6 +117,7 @@ cfg_io_util! {
         ///
         ///     // Writes some prefix of the byte string, not necessarily all of it.
         ///     file.write(b"some bytes").await?;
+        ///     file.flush().await?;
         ///     Ok(())
         /// }
         /// ```
@@ -162,6 +163,7 @@ cfg_io_util! {
         ///     ];
         ///
         ///     file.write_vectored(&bufs).await?;
+        ///     file.flush().await?;
         ///
         ///     Ok(())
         /// }
@@ -244,6 +246,7 @@ cfg_io_util! {
         ///         // all of it.
         ///         file.write_buf(&mut buffer).await?;
         ///     }
+        ///     file.flush().await?;
         ///
         ///     Ok(())
         /// }
@@ -307,6 +310,7 @@ cfg_io_util! {
         ///     let mut buffer = Cursor::new(b"data to write");
         ///
         ///     file.write_all_buf(&mut buffer).await?;
+        ///     file.flush().await?;
         ///     Ok(())
         /// }
         /// ```
@@ -356,6 +360,7 @@ cfg_io_util! {
         ///     let mut file = File::create("foo.txt").await?;
         ///
         ///     file.write_all(b"some bytes").await?;
+        ///     file.flush().await?;
         ///     Ok(())
         /// }
         /// ```
@@ -406,7 +411,7 @@ cfg_io_util! {
             /// ```
             fn write_u8(&mut self, n: u8) -> WriteU8;
 
-            /// Writes an unsigned 8-bit integer to the underlying writer.
+            /// Writes a signed 8-bit integer to the underlying writer.
             ///
             /// Equivalent to:
             ///
@@ -425,7 +430,7 @@ cfg_io_util! {
             ///
             /// # Examples
             ///
-            /// Write unsigned 8 bit integers to a `AsyncWrite`:
+            /// Write signed 8 bit integers to a `AsyncWrite`:
             ///
             /// ```rust
             /// use tokio::io::{self, AsyncWriteExt};
@@ -434,10 +439,10 @@ cfg_io_util! {
             /// async fn main() -> io::Result<()> {
             ///     let mut writer = Vec::new();
             ///
-            ///     writer.write_u8(2).await?;
-            ///     writer.write_u8(5).await?;
+            ///     writer.write_i8(-2).await?;
+            ///     writer.write_i8(126).await?;
             ///
-            ///     assert_eq!(writer, b"\x02\x05");
+            ///     assert_eq!(writer, b"\xFE\x7E");
             ///     Ok(())
             /// }
             /// ```

@@ -14,11 +14,18 @@
 #include <memory>
 #include <utility>
 
-#include "api/task_queue/default_task_queue_factory.h"
+#include "api/environment/environment_factory.h"
 #include "api/test/create_frame_generator.h"
-#include "api/video_codecs/builtin_video_decoder_factory.h"
-#include "api/video_codecs/builtin_video_encoder_factory.h"
+#include "api/video_codecs/video_decoder_factory_template.h"
+#include "api/video_codecs/video_decoder_factory_template_dav1d_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_encoder.h"
+#include "api/video_codecs/video_encoder_factory.h"
+#include "api/video_codecs/video_encoder_factory_template.h"
+#include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
 #include "media/base/media_constants.h"
 #include "rtc_base/strings/json.h"
 #include "rtc_base/system/file_wrapper.h"
@@ -62,7 +69,7 @@ int GetDefaultTypeForPayloadName(const std::string& codec_name) {
 }
 
 // Creates a single VideoSendStream configuration.
-absl::optional<RtpGeneratorOptions::VideoSendStreamConfig>
+std::optional<RtpGeneratorOptions::VideoSendStreamConfig>
 ParseVideoSendStreamConfig(const Json::Value& json) {
   RtpGeneratorOptions::VideoSendStreamConfig config;
 
@@ -93,16 +100,16 @@ ParseVideoSendStreamConfig(const Json::Value& json) {
   Json::Value rtp_json;
   if (!rtc::GetValueFromJsonObject(json, "rtp", &rtp_json)) {
     RTC_LOG(LS_ERROR) << "video_streams must have an rtp section";
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (!rtc::GetStringFromJsonObject(rtp_json, "payload_name",
                                     &config.rtp.payload_name)) {
     RTC_LOG(LS_ERROR) << "rtp.payload_name must be specified";
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (!IsValidCodecType(config.rtp.payload_name)) {
     RTC_LOG(LS_ERROR) << "rtp.payload_name must be VP8,VP9 or H264";
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   config.rtp.payload_type =
@@ -119,11 +126,11 @@ ParseVideoSendStreamConfig(const Json::Value& json) {
 
 }  // namespace
 
-absl::optional<RtpGeneratorOptions> ParseRtpGeneratorOptionsFromFile(
+std::optional<RtpGeneratorOptions> ParseRtpGeneratorOptionsFromFile(
     const std::string& options_file) {
   if (!test::FileExists(options_file)) {
     RTC_LOG(LS_ERROR) << " configuration file does not exist";
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   // Read the configuration file from disk.
@@ -133,7 +140,7 @@ absl::optional<RtpGeneratorOptions> ParseRtpGeneratorOptionsFromFile(
       config_file.Read(raw_json_buffer.data(), raw_json_buffer.size() - 1);
   if (bytes_read == 0) {
     RTC_LOG(LS_ERROR) << "Unable to read the configuration file.";
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   // Parse the file as JSON
@@ -146,16 +153,16 @@ absl::optional<RtpGeneratorOptions> ParseRtpGeneratorOptionsFromFile(
                           &json, &error_message)) {
     RTC_LOG(LS_ERROR) << "Unable to parse the corpus config json file. Error:"
                       << error_message;
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   RtpGeneratorOptions gen_options;
   for (const auto& video_stream_json : json["video_streams"]) {
-    absl::optional<RtpGeneratorOptions::VideoSendStreamConfig>
+    std::optional<RtpGeneratorOptions::VideoSendStreamConfig>
         video_stream_config = ParseVideoSendStreamConfig(video_stream_json);
     if (!video_stream_config.has_value()) {
       RTC_LOG(LS_ERROR) << "Unable to parse the corpus config json file";
-      return absl::nullopt;
+      return std::nullopt;
     }
     gen_options.video_streams.push_back(*video_stream_config);
   }
@@ -164,13 +171,20 @@ absl::optional<RtpGeneratorOptions> ParseRtpGeneratorOptionsFromFile(
 
 RtpGenerator::RtpGenerator(const RtpGeneratorOptions& options)
     : options_(options),
-      video_encoder_factory_(CreateBuiltinVideoEncoderFactory()),
-      video_decoder_factory_(CreateBuiltinVideoDecoderFactory()),
+      env_(CreateEnvironment()),
+      video_encoder_factory_(
+          std::make_unique<webrtc::VideoEncoderFactoryTemplate<
+              webrtc::LibvpxVp8EncoderTemplateAdapter,
+              webrtc::LibvpxVp9EncoderTemplateAdapter,
+              webrtc::LibaomAv1EncoderTemplateAdapter>>()),
+      video_decoder_factory_(
+          std::make_unique<webrtc::VideoDecoderFactoryTemplate<
+              webrtc::LibvpxVp8DecoderTemplateAdapter,
+              webrtc::LibvpxVp9DecoderTemplateAdapter,
+              webrtc::Dav1dDecoderTemplateAdapter>>()),
       video_bitrate_allocator_factory_(
           CreateBuiltinVideoBitrateAllocatorFactory()),
-      event_log_(std::make_unique<RtcEventLogNull>()),
-      call_(Call::Create(CallConfig(event_log_.get()))),
-      task_queue_(CreateDefaultTaskQueueFactory()) {
+      call_(Call::Create(CallConfig(env_))) {
   constexpr int kMinBitrateBps = 30000;    // 30 Kbps
   constexpr int kMaxBitrateBps = 2500000;  // 2.5 Mbps
 
@@ -223,19 +237,14 @@ RtpGenerator::RtpGenerator(const RtpGeneratorOptions& options)
       encoder_config.simulcast_layers[i].max_framerate = send_config.video_fps;
     }
 
-    encoder_config.video_stream_factory =
-        rtc::make_ref_counted<cricket::EncoderStreamFactory>(
-            video_config.rtp.payload_name, /*max qp*/ 56, /*screencast*/ false,
-            /*screenshare enabled*/ false, encoder_info);
-
     // Setup the fake video stream for this.
     std::unique_ptr<test::FrameGeneratorCapturer> frame_generator =
         std::make_unique<test::FrameGeneratorCapturer>(
-            Clock::GetRealTimeClock(),
+            &env_.clock(),
             test::CreateSquareFrameGenerator(send_config.video_width,
                                              send_config.video_height,
-                                             absl::nullopt, absl::nullopt),
-            send_config.video_fps, *task_queue_);
+                                             std::nullopt, std::nullopt),
+            send_config.video_fps, env_.task_queue_factory());
     frame_generator->Init();
 
     VideoSendStream* video_send_stream = call_->CreateVideoSendStream(
@@ -272,16 +281,15 @@ void RtpGenerator::GenerateRtpDump(const std::string& rtp_dump_path) {
                                    webrtc::kNetworkDown);
 }
 
-bool RtpGenerator::SendRtp(const uint8_t* packet,
-                           size_t length,
+bool RtpGenerator::SendRtp(rtc::ArrayView<const uint8_t> packet,
                            const webrtc::PacketOptions& options) {
-  test::RtpPacket rtp_packet = DataToRtpPacket(packet, length);
+  test::RtpPacket rtp_packet = DataToRtpPacket(packet.data(), packet.size());
   rtp_dump_writer_->WritePacket(&rtp_packet);
   return true;
 }
 
-bool RtpGenerator::SendRtcp(const uint8_t* packet, size_t length) {
-  test::RtpPacket rtcp_packet = DataToRtpPacket(packet, length);
+bool RtpGenerator::SendRtcp(rtc::ArrayView<const uint8_t> packet) {
+  test::RtpPacket rtcp_packet = DataToRtpPacket(packet.data(), packet.size());
   rtp_dump_writer_->WritePacket(&rtcp_packet);
   return true;
 }

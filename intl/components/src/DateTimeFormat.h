@@ -13,8 +13,8 @@
 #include "mozilla/intl/DateTimePart.h"
 #include "mozilla/intl/DateTimePatternGenerator.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/Result.h"
 #include "mozilla/Span.h"
+#include "mozilla/Try.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/Variant.h"
@@ -537,6 +537,24 @@ class DateTimeFormat final {
                                        udat_getAvailable>();
   }
 
+  /**
+   * Return the time separator for the given locale and numbering system.
+   */
+  template <typename B>
+  static ICUResult GetTimeSeparator(Span<const char> aLocale,
+                                    Span<const char> aNumberingSystem,
+                                    B& aBuffer) {
+    static_assert(std::is_same_v<typename B::CharType, char16_t>);
+    auto separator = GetTimeSeparator(aLocale, aNumberingSystem);
+    if (separator.isErr()) {
+      return separator.propagateErr();
+    }
+    if (!FillBuffer(separator.unwrap(), aBuffer)) {
+      return Err(ICUError::OutOfMemory);
+    }
+    return Ok();
+  }
+
  private:
   explicit DateTimeFormat(UDateFormat* aDateFormat);
 
@@ -582,6 +600,9 @@ class DateTimeFormat final {
       DateTimePatternGenerator& aDateTimePatternGenerator,
       DateTimeFormat::PatternVector& aPattern, bool aHour12,
       DateTimeFormat::SkeletonVector& aSkeleton);
+
+  static Result<Span<const char16_t>, ICUError> GetTimeSeparator(
+      Span<const char> aLocale, Span<const char> aNumberingSystem);
 
   UDateFormat* mDateFormat = nullptr;
 

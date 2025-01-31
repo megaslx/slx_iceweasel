@@ -30,7 +30,8 @@ namespace mozilla::dom {
 
 RTCTransformEventRunnable::RTCTransformEventRunnable(
     Worker& aWorker, FrameTransformerProxy* aProxy)
-    : EventWithOptionsRunnable(aWorker), mProxy(aProxy) {}
+    : EventWithOptionsRunnable(aWorker, "RTCTransformEventRunnable"),
+      mProxy(aProxy) {}
 
 RTCTransformEventRunnable::~RTCTransformEventRunnable() = default;
 
@@ -56,8 +57,8 @@ already_AddRefed<Event> RTCTransformEventRunnable::BuildEvent(
   // Set transformer.[[writable]] to writable.
   RefPtr<RTCRtpScriptTransformer> transformer =
       new RTCRtpScriptTransformer(aGlobal);
-  nsresult nrv =
-      transformer->Init(aCx, aTransformerOptions, mWorkerPrivate, mProxy);
+  nsresult nrv = transformer->Init(aCx, aTransformerOptions,
+                                   GetCurrentThreadWorkerPrivate(), mProxy);
   if (NS_WARN_IF(NS_FAILED(nrv))) {
     // TODO: Error handling. Currently unspecified.
     return nullptr;

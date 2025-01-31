@@ -3,7 +3,7 @@
  */
 
 const frameSource =
-  "<a href='about:mozilla'>some text</a><a id='other' href='about:about'>other text</a>";
+  "<head><title>Frame title</title></head><a href='about:mozilla'>some text</a><a id='other' href='about:about'>other text</a>";
 const sources = [
   `<html><iframe id="f" srcdoc="${frameSource}"></iframe></html>`,
   `<html><iframe id="f" src="https://example.com/document-builder.sjs?html=${frameSource}"></iframe></html>`,
@@ -43,6 +43,8 @@ add_task(async function print_selection() {
 
         await waitForPreviewVisible();
 
+        helper.assertSettingsMatch({ title: "Frame title" });
+
         let previewBrowser = document.querySelector(
           ".printPreviewBrowser[previewtype='selection']"
         );
@@ -55,7 +57,7 @@ add_task(async function print_selection() {
           .querySelector(".printSettingsBrowser")
           .contentDocument.querySelector("#source-version-selection-radio");
         ok(
-          BrowserTestUtils.is_visible(printSelect),
+          BrowserTestUtils.isVisible(printSelect),
           "Print selection checkbox is shown"
         );
         ok(printSelect.checked, "Print selection checkbox is checked");
@@ -112,7 +114,7 @@ add_task(async function print_selection_parent_process() {
       .querySelector(".printSettingsBrowser")
       .contentDocument.querySelector("#source-version-selection-radio");
     ok(
-      BrowserTestUtils.is_visible(printSelect),
+      BrowserTestUtils.isVisible(printSelect),
       "Print selection checkbox is shown"
     );
     ok(printSelect.checked, "Print selection checkbox is checked");
@@ -133,7 +135,7 @@ add_task(async function no_print_selection() {
 
     let printSelect = helper.get("source-version-selection");
     ok(
-      BrowserTestUtils.is_hidden(printSelect),
+      BrowserTestUtils.isHidden(printSelect),
       "Print selection checkbox is hidden"
     );
     await helper.closeDialog();
@@ -171,11 +173,12 @@ add_task(async function print_selection_switch() {
 
     helper.assertSettingsMatch({
       printSelectionOnly: false,
+      title: "",
     });
 
     await helper.assertSettingsChanged(
-      { printSelectionOnly: false },
-      { printSelectionOnly: true },
+      { printSelectionOnly: false, title: "" },
+      { printSelectionOnly: true, title: "Article title" },
       async () => {
         await helper.waitForPreview(() => helper.click(printSelect));
         let text = await getPreviewText(getCurrentBrowser("selection"));
@@ -184,8 +187,8 @@ add_task(async function print_selection_switch() {
     );
 
     await helper.assertSettingsChanged(
-      { printSelectionOnly: true },
-      { printSelectionOnly: false },
+      { printSelectionOnly: true, title: "Article title" },
+      { printSelectionOnly: false, title: "" },
       async () => {
         await helper.waitForPreview(() => helper.click(printSource));
         let text = await getPreviewText(getCurrentBrowser("source"));

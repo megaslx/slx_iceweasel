@@ -32,11 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#if defined(__FreeBSD__) && !defined(__Userspace__)
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-#endif
-
 #include <netinet/sctp_os.h>
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 #include <sys/proc.h>
@@ -5028,7 +5023,9 @@ sctp_lowlevel_chunk_output(struct sctp_inpcb *inp,
 		sctphdr->dest_port = dest_port;
 		sctphdr->v_tag = v_tag;
 		sctphdr->checksum = 0;
-		if (SCTP_BASE_VAR(crc32c_offloaded) == 0) {
+		if (use_zero_crc) {
+			SCTP_STAT_INCR(sctps_sendzerocrc);
+		} else if (SCTP_BASE_VAR(crc32c_offloaded) == 0) {
 			sctphdr->checksum = sctp_calculate_cksum(m, 0);
 			SCTP_STAT_INCR(sctps_sendswcrc);
 		} else {
@@ -5070,6 +5067,7 @@ sctp_send_initiate(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int so_locked)
 	struct sctp_init_chunk *init;
 	struct sctp_supported_addr_param *sup_addr;
 	struct sctp_adaptation_layer_indication *ali;
+	struct sctp_zero_checksum_acceptable *zero_chksum;
 	struct sctp_supported_chunk_types_param *pr_supported;
 	struct sctp_paramhdr *ph;
 	int cnt_inits_to = 0;
@@ -5170,11 +5168,12 @@ sctp_send_initiate(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int so_locked)
 	}
 
 	/* Zero checksum acceptable parameter */
-	if (stcb->asoc.zero_checksum > 0) {
-		parameter_len = (uint16_t)sizeof(struct sctp_paramhdr);
-		ph = (struct sctp_paramhdr *)(mtod(m, caddr_t) + chunk_len);
-		ph->param_type = htons(SCTP_ZERO_CHECKSUM_ACCEPTABLE);
-		ph->param_length = htons(parameter_len);
+	if (stcb->asoc.rcv_edmid != SCTP_EDMID_NONE) {
+		parameter_len = (uint16_t)sizeof(struct sctp_zero_checksum_acceptable);
+		zero_chksum = (struct sctp_zero_checksum_acceptable *)(mtod(m, caddr_t) + chunk_len);
+		zero_chksum->ph.param_type = htons(SCTP_ZERO_CHECKSUM_ACCEPTABLE);
+		zero_chksum->ph.param_length = htons(parameter_len);
+		zero_chksum->edmid = htonl(stcb->asoc.rcv_edmid);
 		chunk_len += parameter_len;
 	}
 
@@ -5371,7 +5370,8 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
                                       int param_offset, int *abort_processing,
                                       struct sctp_chunkhdr *cp,
                                       int *nat_friendly,
-                                      int *cookie_found)
+                                      int *cookie_found,
+                                      uint32_t *edmid)
 {
 	/*
 	 * Given a mbuf containing an INIT or INIT-ACK with the param_offset
@@ -5387,8 +5387,8 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
 	 * hoped that this routine may be reused in the future by new
 	 * features.
 	 */
+	struct sctp_zero_checksum_acceptable zero_chksum, *zero_chksum_p;
 	struct sctp_paramhdr *phdr, params;
-
 	struct mbuf *mat, *m_tmp, *op_err, *op_err_last;
 	int at, limit, pad_needed;
 	uint16_t ptype, plen, padded_size;
@@ -5396,6 +5396,9 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
 	*abort_processing = 0;
 	if (cookie_found != NULL) {
 		*cookie_found = 0;
+	}
+	if (edmid != NULL) {
+		*edmid = SCTP_EDMID_NONE;
 	}
 	mat = in_initpkt;
 	limit = ntohs(cp->chunk_length) - sizeof(struct sctp_init_chunk);
@@ -5452,6 +5455,22 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
 			}
 			at += padded_size;
 			break;
+		case SCTP_ZERO_CHECKSUM_ACCEPTABLE:
+			if (padded_size != sizeof(struct sctp_zero_checksum_acceptable)) {
+				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error checksum acceptable %d\n", plen);
+				goto invalid_size;
+			}
+			if (edmid != NULL) {
+				phdr = sctp_get_next_param(mat, at,
+				                           (struct sctp_paramhdr *)&zero_chksum,
+				                           sizeof(struct sctp_zero_checksum_acceptable));
+				if (phdr != NULL) {
+					zero_chksum_p = (struct sctp_zero_checksum_acceptable *)phdr;
+					*edmid = ntohl(zero_chksum_p->edmid);
+				}
+			}
+			at += padded_size;
+			break;
 		case SCTP_RANDOM:
 			if (padded_size > (sizeof(struct sctp_auth_random) + SCTP_RANDOM_MAX_SIZE)) {
 				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error random %d\n", plen);
@@ -5492,11 +5511,16 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
 			at += padded_size;
 			break;
 		case SCTP_HAS_NAT_SUPPORT:
+			if (padded_size != sizeof(struct sctp_paramhdr)) {
+				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error nat support %d\n", plen);
+				goto invalid_size;
+			}
 			*nat_friendly = 1;
-			/* fall through */
+			at += padded_size;
+			break;
 		case SCTP_PRSCTP_SUPPORTED:
 			if (padded_size != sizeof(struct sctp_paramhdr)) {
-				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error prsctp/nat support %d\n", plen);
+				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error prsctp %d\n", plen);
 				goto invalid_size;
 			}
 			at += padded_size;
@@ -5962,6 +5986,7 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	struct mbuf *m, *m_tmp, *m_last, *m_cookie, *op_err;
 	struct sctp_init_ack_chunk *initack;
 	struct sctp_adaptation_layer_indication *ali;
+	struct sctp_zero_checksum_acceptable *zero_chksum;
 	struct sctp_supported_chunk_types_param *pr_supported;
 	struct sctp_paramhdr *ph;
 	union sctp_sockstore *over_addr;
@@ -5992,7 +6017,9 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	int nat_friendly = 0;
 	int error;
 	struct socket *so;
+	uint32_t edmid;
 	uint16_t num_ext, chunk_len, padding_len, parameter_len;
+	bool use_zero_crc;
 
 	if (stcb) {
 		asoc = &stcb->asoc;
@@ -6036,7 +6063,7 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	                                               (offset + sizeof(struct sctp_init_chunk)),
 	                                               &abort_flag,
 	                                               (struct sctp_chunkhdr *)init_chk,
-	                                               &nat_friendly, NULL);
+	                                               &nat_friendly, NULL, &edmid);
 	if (abort_flag) {
 	do_a_abort:
 		if (op_err == NULL) {
@@ -6350,9 +6377,9 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		}
 	}
 	if (asoc != NULL) {
-		stc.zero_checksum = asoc->zero_checksum > 0 ? 1 : 0;
+		stc.rcv_edmid = asoc->rcv_edmid;
 	} else {
-		stc.zero_checksum = inp->zero_checksum;
+		stc.rcv_edmid = inp->rcv_edmid;
 	}
 	/* Now lets put the SCTP header in place */
 	initack = mtod(m, struct sctp_init_ack_chunk *);
@@ -6477,12 +6504,17 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	}
 
 	/* Zero checksum acceptable parameter */
-	if (((asoc != NULL) && (asoc->zero_checksum > 0)) ||
-	    ((asoc == NULL) && (inp->zero_checksum == 1))) {
-		parameter_len = (uint16_t)sizeof(struct sctp_paramhdr);
-		ph = (struct sctp_paramhdr *)(mtod(m, caddr_t) + chunk_len);
-		ph->param_type = htons(SCTP_ZERO_CHECKSUM_ACCEPTABLE);
-		ph->param_length = htons(parameter_len);
+	if (((asoc != NULL) && (asoc->rcv_edmid != SCTP_EDMID_NONE)) ||
+	    ((asoc == NULL) && (inp->rcv_edmid != SCTP_EDMID_NONE))) {
+		parameter_len = (uint16_t)sizeof(struct sctp_zero_checksum_acceptable);
+		zero_chksum = (struct sctp_zero_checksum_acceptable *)(mtod(m, caddr_t) + chunk_len);
+		zero_chksum->ph.param_type = htons(SCTP_ZERO_CHECKSUM_ACCEPTABLE);
+		zero_chksum->ph.param_length = htons(parameter_len);
+		if (asoc != NULL) {
+			zero_chksum->edmid = htonl(asoc->rcv_edmid);
+		} else {
+			zero_chksum->edmid = htonl(inp->rcv_edmid);
+		}
 		chunk_len += parameter_len;
 	}
 
@@ -6711,6 +6743,12 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		over_addr = NULL;
 	}
 
+	if (asoc != NULL) {
+		use_zero_crc = (asoc->rcv_edmid != SCTP_EDMID_NONE) && (asoc->rcv_edmid == edmid);
+	} else {
+		use_zero_crc = (inp->rcv_edmid != SCTP_EDMID_NONE) && (inp->rcv_edmid == edmid);
+	}
+
 	if ((error = sctp_lowlevel_chunk_output(inp, NULL, NULL, to, m, 0, NULL, 0, 0,
 	                                        0, 0,
 	                                        inp->sctp_lport, sh->src_port, init_chk->init.initiate_tag,
@@ -6718,7 +6756,7 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 	                                        mflowtype, mflowid,
 #endif
-	                                        false, /* XXXMT: Improve this! */
+	                                        use_zero_crc,
 	                                        SCTP_SO_NOT_LOCKED))) {
 		SCTPDBG(SCTP_DEBUG_OUTPUT4, "Gak send error %d\n", error);
 		if (error == ENOBUFS) {
@@ -7240,7 +7278,9 @@ sctp_sendall_iterator(struct sctp_inpcb *inp, struct sctp_tcb *stcb, void *ptr,
 		} else {
 			m = sctp_get_mbuf_for_msg(sizeof(struct sctp_paramhdr),
 			                          0, M_NOWAIT, 1, MT_DATA);
-			SCTP_BUF_LEN(m) = sizeof(struct sctp_paramhdr);
+			if (m != NULL) {
+				SCTP_BUF_LEN(m) = sizeof(struct sctp_paramhdr);
+			}
 		}
 		if (m != NULL) {
 			struct sctp_paramhdr *ph;
@@ -7293,7 +7333,7 @@ sctp_sendall_iterator(struct sctp_inpcb *inp, struct sctp_tcb *stcb, void *ptr,
 					sctp_stop_timers_for_shutdown(stcb);
 					sctp_send_shutdown(stcb, net);
 					sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWN, stcb->sctp_ep, stcb,
-							 net);
+					                 net);
 					sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWNGUARD, stcb->sctp_ep, stcb,
 					                 NULL);
 					added_control = 1;
@@ -7334,8 +7374,6 @@ sctp_sendall_iterator(struct sctp_inpcb *inp, struct sctp_tcb *stcb, void *ptr,
 						atomic_subtract_int(&stcb->asoc.refcnt, 1);
 						goto no_chunk_output;
 					}
-					sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWNGUARD, stcb->sctp_ep, stcb,
-					                 NULL);
 				}
 			}
 		}
@@ -7439,18 +7477,28 @@ static int
 sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
     struct sctp_nonpad_sndrcvinfo *srcv)
 {
-	int ret;
 	struct sctp_copy_all *ca;
+	struct mbuf *mat;
+	ssize_t sndlen;
+	int ret;
 
+	if (uio != NULL) {
 #if defined(__APPLE__) && !defined(__Userspace__)
 #if defined(APPLE_LEOPARD)
-	if (uio->uio_resid > SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
+		sndlen = uio->uio_resid;
 #else
-	if (uio_resid(uio) > SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
+		sndlen = uio_resid(uio);
 #endif
 #else
-	if (uio->uio_resid > (ssize_t)SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
+		sndlen = uio->uio_resid;
 #endif
+	} else {
+		sndlen = 0;
+		for (mat = m; mat; mat = SCTP_BUF_NEXT(mat)) {
+			sndlen += SCTP_BUF_LEN(mat);
+		}
+	}
+	if (sndlen > (ssize_t)SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
 		/* You must not be larger than the limit! */
 		return (EMSGSIZE);
 	}
@@ -7462,12 +7510,10 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 		return (ENOMEM);
 	}
 	memset(ca, 0, sizeof(struct sctp_copy_all));
-
 	ca->inp = inp;
 	if (srcv != NULL) {
 		memcpy(&ca->sndrcv, srcv, sizeof(struct sctp_nonpad_sndrcvinfo));
 	}
-
 	/* Serialize. */
 	SCTP_INP_WLOCK(inp);
 	if ((inp->sctp_flags & SCTP_PCB_FLAGS_SND_ITERATOR_UP) != 0) {
@@ -7478,23 +7524,14 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 	}
 	inp->sctp_flags |= SCTP_PCB_FLAGS_SND_ITERATOR_UP;
 	SCTP_INP_WUNLOCK(inp);
-
 	/*
 	 * take off the sendall flag, it would be bad if we failed to do
 	 * this :-0
 	 */
 	ca->sndrcv.sinfo_flags &= ~SCTP_SENDALL;
 	/* get length and mbuf chain */
-	if (uio) {
-#if defined(__APPLE__) && !defined(__Userspace__)
-#if defined(APPLE_LEOPARD)
-		ca->sndlen = uio->uio_resid;
-#else
-		ca->sndlen = uio_resid(uio);
-#endif
-#else
-		ca->sndlen = uio->uio_resid;
-#endif
+	ca->sndlen = sndlen;
+	if (uio != NULL) {
 #if defined(__APPLE__) && !defined(__Userspace__)
 		SCTP_SOCKET_UNLOCK(SCTP_INP_SO(inp), 0);
 #endif
@@ -7512,20 +7549,14 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 			return (ENOMEM);
 		}
 	} else {
-		/* Gather the length of the send */
-		struct mbuf *mat;
-
-		ca->sndlen = 0;
-		for (mat = m; mat; mat = SCTP_BUF_NEXT(mat)) {
-			ca->sndlen += SCTP_BUF_LEN(mat);
-		}
+		ca->m = m;
 	}
 	ret = sctp_initiate_iterator(NULL, sctp_sendall_iterator, NULL,
-				     SCTP_PCB_ANY_FLAGS, SCTP_PCB_ANY_FEATURES,
-				     SCTP_ASOC_ANY_STATE,
-				     (void *)ca, 0,
-				     sctp_sendall_completes, inp, 1);
-	if (ret) {
+	                             SCTP_PCB_ANY_FLAGS, SCTP_PCB_ANY_FEATURES,
+	                             SCTP_ASOC_ANY_STATE,
+	                             (void *)ca, 0,
+	                             sctp_sendall_completes, inp, 1);
+	if (ret != 0) {
 		SCTP_INP_WLOCK(inp);
 		inp->sctp_flags &= ~SCTP_PCB_FLAGS_SND_ITERATOR_UP;
 		SCTP_INP_WUNLOCK(inp);
@@ -7868,7 +7899,7 @@ one_more_time:
 			if ((stcb->sctp_socket != NULL) &&
 			    ((stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_TCPTYPE) ||
 			     (stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_IN_TCPPOOL))) {
-				atomic_subtract_int(&stcb->sctp_socket->so_snd.sb_cc, sp->length);
+				SCTP_SB_DECR(&stcb->sctp_socket->so_snd, sp->length);
 			}
 			if (sp->data) {
 				sctp_m_freem(sp->data);
@@ -9020,7 +9051,14 @@ again_one_more_time:
 					 * flight size since this little guy
 					 * is a control only packet.
 					 */
-					use_zero_crc = asoc->zero_checksum == 2;
+					switch (asoc->snd_edmid) {
+					case SCTP_EDMID_LOWER_LAYER_DTLS:
+						use_zero_crc = true;
+						break;
+					default:
+						use_zero_crc = false;
+						break;
+					}
 					if (asconf) {
 						sctp_timer_start(SCTP_TIMER_TYPE_ASCONF, inp, stcb, net);
 						use_zero_crc = false;
@@ -9354,8 +9392,15 @@ again_one_more_time:
 	no_data_fill:
 		/* Is there something to send for this destination? */
 		if (outchain) {
+			switch (asoc->snd_edmid) {
+			case SCTP_EDMID_LOWER_LAYER_DTLS:
+				use_zero_crc = true;
+				break;
+			default:
+				use_zero_crc = false;
+				break;
+			}
 			/* We may need to start a control timer or two */
-			use_zero_crc = asoc->zero_checksum == 2;
 			if (asconf) {
 				sctp_timer_start(SCTP_TIMER_TYPE_ASCONF, inp,
 						 stcb, net);
@@ -10098,7 +10143,14 @@ sctp_chunk_retransmission(struct sctp_inpcb *inp,
 	/* do we have control chunks to retransmit? */
 	if (m != NULL) {
 		/* Start a timer no matter if we succeed or fail */
-		use_zero_crc = asoc->zero_checksum == 2;
+		switch (asoc->snd_edmid) {
+		case SCTP_EDMID_LOWER_LAYER_DTLS:
+			use_zero_crc = true;
+			break;
+		default:
+			use_zero_crc = false;
+			break;
+		}
 		if (chk->rec.chunk_id.id == SCTP_COOKIE_ECHO) {
 			sctp_timer_start(SCTP_TIMER_TYPE_COOKIE, inp, stcb, chk->whoTo);
 			use_zero_crc = false;
@@ -10389,6 +10441,14 @@ sctp_chunk_retransmission(struct sctp_inpcb *inp,
 				sctp_timer_start(SCTP_TIMER_TYPE_SEND, inp, stcb, net);
 				tmr_started = 1;
 			}
+			switch (asoc->snd_edmid) {
+			case SCTP_EDMID_LOWER_LAYER_DTLS:
+				use_zero_crc = true;
+				break;
+			default:
+				use_zero_crc = false;
+				break;
+			}
 			/* Now lets send it, if there is anything to send :> */
 			if ((error = sctp_lowlevel_chunk_output(inp, stcb, net,
 			                                        (struct sockaddr *)&net->ro._l_addr, m,
@@ -10399,7 +10459,7 @@ sctp_chunk_retransmission(struct sctp_inpcb *inp,
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 			                                        0, 0,
 #endif
-			                                        asoc->zero_checksum == 2,
+			                                        use_zero_crc,
 			                                        so_locked))) {
 				/* error, we could not output */
 				SCTPDBG(SCTP_DEBUG_OUTPUT3, "Gak send error %d\n", error);
@@ -11495,6 +11555,7 @@ sctp_send_abort_tcb(struct sctp_tcb *stcb, struct mbuf *operr, int so_locked)
 	uint32_t auth_offset = 0;
 	int error;
 	uint16_t cause_len, chunk_len, padding_len;
+	bool use_zero_crc;
 
 #if defined(__APPLE__) && !defined(__Userspace__)
 	if (so_locked) {
@@ -11515,6 +11576,14 @@ sctp_send_abort_tcb(struct sctp_tcb *stcb, struct mbuf *operr, int so_locked)
 		SCTP_STAT_INCR_COUNTER64(sctps_outcontrolchunks);
 	} else {
 		m_out = NULL;
+	}
+	switch (stcb->asoc.snd_edmid) {
+	case SCTP_EDMID_LOWER_LAYER_DTLS:
+		use_zero_crc = true;
+		break;
+	default:
+		use_zero_crc = false;
+		break;
 	}
 	m_abort = sctp_get_mbuf_for_msg(sizeof(struct sctp_abort_chunk), 0, M_NOWAIT, 1, MT_HEADER);
 	if (m_abort == NULL) {
@@ -11580,7 +11649,7 @@ sctp_send_abort_tcb(struct sctp_tcb *stcb, struct mbuf *operr, int so_locked)
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 	                                        0, 0,
 #endif
-	                                        stcb->asoc.zero_checksum == 2,
+	                                        use_zero_crc,
 	                                        so_locked))) {
 		SCTPDBG(SCTP_DEBUG_OUTPUT3, "Gak send error %d\n", error);
 		if (error == ENOBUFS) {
@@ -11604,6 +11673,7 @@ sctp_send_shutdown_complete(struct sctp_tcb *stcb,
 	uint32_t vtag;
 	int error;
 	uint8_t flags;
+	bool use_zero_crc;
 
 	m_shutdown_comp = sctp_get_mbuf_for_msg(sizeof(struct sctp_chunkhdr), 0, M_NOWAIT, 1, MT_HEADER);
 	if (m_shutdown_comp == NULL) {
@@ -11616,6 +11686,14 @@ sctp_send_shutdown_complete(struct sctp_tcb *stcb,
 	} else {
 		flags = 0;
 		vtag = stcb->asoc.peer_vtag;
+	}
+	switch (stcb->asoc.snd_edmid) {
+	case SCTP_EDMID_LOWER_LAYER_DTLS:
+		use_zero_crc = true;
+		break;
+	default:
+		use_zero_crc = false;
+		break;
 	}
 	shutdown_complete = mtod(m_shutdown_comp, struct sctp_shutdown_complete_chunk *);
 	shutdown_complete->ch.chunk_type = SCTP_SHUTDOWN_COMPLETE;
@@ -11631,7 +11709,7 @@ sctp_send_shutdown_complete(struct sctp_tcb *stcb,
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 	                                        0, 0,
 #endif
-	                                        stcb->asoc.zero_checksum == 2,
+	                                        use_zero_crc,
 	                                        SCTP_SO_NOT_LOCKED))) {
 		SCTPDBG(SCTP_DEBUG_OUTPUT3, "Gak send error %d\n", error);
 		if (error == ENOBUFS) {
@@ -12116,7 +12194,7 @@ sctp_send_hb(struct sctp_tcb *stcb, struct sctp_nets *net,int so_locked)
 	/* Fill out hb parameter */
 	hb->heartbeat.hb_info.ph.param_type = htons(SCTP_HEARTBEAT_INFO);
 	hb->heartbeat.hb_info.ph.param_length = htons(sizeof(struct sctp_heartbeat_info_param));
-	hb->heartbeat.hb_info.time_value_1 = (uint32_t)now.tv_sec;
+	hb->heartbeat.hb_info.time_value_1 = now.tv_sec;
 	hb->heartbeat.hb_info.time_value_2 = now.tv_usec;
 	/* Did our user request this one, put it in */
 	hb->heartbeat.hb_info.addr_family = (uint8_t)net->ro._l_addr.sa.sa_family;
@@ -14695,8 +14773,6 @@ dataless_eof:
 					error = ECONNABORTED;
 					goto out;
 				}
-				sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWNGUARD, stcb->sctp_ep, stcb,
-				                 NULL);
 				sctp_feature_off(inp, SCTP_PCB_FLAGS_NODELAY);
 			}
 		}

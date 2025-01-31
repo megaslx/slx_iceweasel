@@ -16,9 +16,7 @@ const test = new SearchConfigTest({
     excluded: [
       {
         regions: ["cn"],
-        locales: {
-          matches: ["zh-CN"],
-        },
+        locales: ["zh-CN"],
       },
     ],
   },
@@ -35,7 +33,7 @@ const test = new SearchConfigTest({
         SearchUtils.MODIFIED_APP_CHANNEL == "esr"
           ? "google-b-1-e"
           : "google-b-1-d",
-      codes:
+      searchUrlCode:
         SearchUtils.MODIFIED_APP_CHANNEL == "esr"
           ? "client=firefox-b-1-e"
           : "client=firefox-b-1-d",
@@ -46,7 +44,7 @@ const test = new SearchConfigTest({
       domain: "google.com",
       telemetryId:
         SearchUtils.MODIFIED_APP_CHANNEL == "esr" ? "google-b-e" : "google-b-d",
-      codes:
+      searchUrlCode:
         SearchUtils.MODIFIED_APP_CHANNEL == "esr"
           ? "client=firefox-b-e"
           : "client=firefox-b-d",
@@ -59,18 +57,22 @@ const test = new SearchConfigTest({
   ],
 });
 
-add_task(async function setup() {
+add_setup(async function () {
   sinon.spy(NimbusFeatures.search, "onUpdate");
   sinon.stub(NimbusFeatures.search, "ready").resolves();
   await test.setup();
+
+  registerCleanupFunction(async () => {
+    sinon.restore();
+  });
 });
 
 add_task(async function test_searchConfig_google() {
   await test.run();
 });
 
-add_task(async function test_searchConfig_google_with_mozparam() {
-  // Test a couple of configurations with a MozParam set up.
+add_task(async function test_searchConfig_google_with_pref_param() {
+  // Test a couple of configurations with a preference parameter set up.
   const TEST_DATA = [
     {
       locale: "en-US",
@@ -106,7 +108,7 @@ add_task(async function test_searchConfig_google_with_mozparam() {
     const submission = engines[0].getSubmission("test", URLTYPE_SEARCH_HTML);
     Assert.ok(
       submission.uri.query.split("&").includes("channel=" + testData.expected),
-      "Should be including the correct MozParam parameter for the engine"
+      "Should be including the correct preference parameter for the engine"
     );
   }
 
@@ -118,7 +120,7 @@ add_task(async function test_searchConfig_google_with_mozparam() {
 
 add_task(async function test_searchConfig_google_with_nimbus() {
   let sandbox = sinon.createSandbox();
-  // Test a couple of configurations with a MozParam set up.
+  // Test a couple of configurations with a preference parameter set up.
   const TEST_DATA = [
     {
       locale: "en-US",
@@ -165,7 +167,7 @@ add_task(async function test_searchConfig_google_with_nimbus() {
     );
     Assert.ok(
       submission.uri.query.split("&").includes("channel=" + testData.expected),
-      "Should be including the correct MozParam parameter for the engine"
+      "Should be including the correct preference parameter for the engine"
     );
   }
 

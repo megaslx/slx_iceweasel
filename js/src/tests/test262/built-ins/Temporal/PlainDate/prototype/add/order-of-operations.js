@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2020 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -10,7 +10,7 @@ features: [Temporal]
 ---*/
 
 const expected = [
-  // ToTemporalDuration
+  // ToTemporalDurationRecord
   "get fields.days",
   "get fields.days.valueOf",
   "call fields.days.valueOf",
@@ -41,20 +41,13 @@ const expected = [
   "get fields.years",
   "get fields.years.valueOf",
   "call fields.years.valueOf",
-  // CalendarDateAdd
-  "get this.calendar.dateAdd",
-  "call this.calendar.dateAdd",
-  // inside Calendar.p.dateAdd
   "get options.overflow",
   "get options.overflow.toString",
   "call options.overflow.toString",
 ];
 const actual = [];
 
-const calendar = TemporalHelpers.calendarObserver(actual, "this.calendar");
-const instance = new Temporal.PlainDate(2000, 5, 2, calendar);
-// clear observable operations that occurred during the constructor call
-actual.splice(0);
+const instance = new Temporal.PlainDate(2000, 5, 2, "iso8601");
 
 const fields = TemporalHelpers.propertyBagObserver(actual, {
   years: 1,
@@ -75,5 +68,7 @@ const options = TemporalHelpers.propertyBagObserver(actual, {
 
 instance.add(fields, options);
 assert.compareArray(actual, expected, "order of operations");
+
+actual.splice(0); // clear
 
 reportCompare(0, 0);

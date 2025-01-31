@@ -6,11 +6,26 @@ import string
 import textwrap
 
 import buildconfig
+from variables import get_buildid
 
 
 def generate_bool(name):
     value = buildconfig.substs.get(name)
     return f"pub const {name}: bool = {'true' if value else 'false'};\n"
+
+
+def generate_string_array(name):
+    value = buildconfig.substs.get(name) or []
+    return (
+        f"pub const {name}: [&str; {len(value)}] = ["
+        + ",".join(map(escape_rust_string, value))
+        + "];\n"
+    )
+
+
+def generate_string(name):
+    value = buildconfig.substs.get(name) or ""
+    return f"pub const {name}: &str = {escape_rust_string(value)};\n"
 
 
 def escape_rust_string(value):
@@ -65,7 +80,51 @@ def generate(output):
         )
     )
 
-    # Finally, write out some useful booleans from the buildconfig.
+    # buildid.h is only available in these conditions (see the top-level moz.build)
+    if not buildconfig.substs.get("JS_STANDALONE") or not buildconfig.substs.get(
+        "MOZ_BUILD_APP"
+    ):
+        output.write(
+            textwrap.dedent(
+                f"""
+                /// The build id of the current build.
+                pub const MOZ_BUILDID: &str = {escape_rust_string(get_buildid())};
+
+                """
+            )
+        )
+
+    windows_rs_dir = buildconfig.substs.get("MOZ_WINDOWS_RS_DIR")
+    if windows_rs_dir:
+        output.write(
+            textwrap.dedent(
+                f"""
+                /// Macro used to name a path in the srcdir for use with macros like `include!`
+                #[macro_export]
+                macro_rules! windows_rs_path {{
+                    ($path:literal) => {{
+                        concat!({escape_rust_string(windows_rs_dir + "/")}, $path)
+                    }}
+                }}
+
+                /// Macro used to re-export windows-rs's public items
+                #[macro_export]
+                macro_rules! windows_rs_lib {{
+                    () => {{
+                        #[path = {escape_rust_string(windows_rs_dir + "/src/lib.rs")}]
+                        mod lib;
+                        pub use lib::*;
+                    }}
+                }}
+                """
+            )
+        )
+
+    # Write out some useful strings from the buildconfig.
+    output.write(generate_string("MOZ_MACBUNDLE_ID"))
+    output.write(generate_string("MOZ_APP_NAME"))
+
+    # Write out some useful booleans from the buildconfig.
     output.write(generate_bool("MOZ_FOLD_LIBS"))
     output.write(generate_bool("NIGHTLY_BUILD"))
     output.write(generate_bool("RELEASE_OR_BETA"))
@@ -73,3 +132,9 @@ def generate(output):
     output.write(generate_bool("MOZ_DEV_EDITION"))
     output.write(generate_bool("MOZ_ESR"))
     output.write(generate_bool("MOZ_DIAGNOSTIC_ASSERT_ENABLED"))
+
+    # Used by toolkit/crashreporter/client
+    output.write(generate_bool("MOZ_CRASHREPORTER_MOCK"))
+    output.write(generate_string_array("CC_BASE_FLAGS"))
+    output.write(generate_string_array("MOZ_GTK3_CFLAGS"))
+    output.write(generate_string_array("MOZ_GTK3_LIBS"))

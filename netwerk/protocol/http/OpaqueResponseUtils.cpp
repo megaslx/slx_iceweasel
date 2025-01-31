@@ -9,6 +9,7 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/dom/JSValidatorParent.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "ErrorList.h"
 #include "nsContentUtils.h"
 #include "nsHttpResponseHead.h"
@@ -74,13 +75,15 @@ static bool IsOpaqueSafeListedSpecBreakingMIMEType(
     case OpaqueResponseMediaException::AllowSome:
       if (aContentType.EqualsLiteral(AUDIO_MP3) ||
           aContentType.EqualsLiteral(AUDIO_AAC) ||
-          aContentType.EqualsLiteral(AUDIO_AACP)) {
+          aContentType.EqualsLiteral(AUDIO_AACP) ||
+          aContentType.EqualsLiteral(MULTIPART_MIXED_REPLACE)) {
         return true;
       }
       break;
     case OpaqueResponseMediaException::AllowAll:
       if (StringBeginsWith(aContentType, "audio/"_ns) ||
-          StringBeginsWith(aContentType, "video/"_ns)) {
+          StringBeginsWith(aContentType, "video/"_ns) ||
+          aContentType.EqualsLiteral(MULTIPART_MIXED_REPLACE)) {
         return true;
       }
       break;
@@ -382,7 +385,7 @@ OpaqueResponseBlocker::OnDataAvailable(nsIRequest* aRequest,
   }
 
   if (mState == State::Blocked) {
-    return NS_ERROR_FAILURE;
+    return NS_BINDING_ABORTED;
   }
 
   MOZ_ASSERT(mState == State::Sniffing);
@@ -439,8 +442,8 @@ nsresult OpaqueResponseBlocker::EnsureOpaqueResponseIsAllowedAfterSniff(
   switch (httpBaseChannel->PerformOpaqueResponseSafelistCheckAfterSniff(
       mContentType, mNoSniff)) {
     case OpaqueResponse::Block:
-      BlockResponse(httpBaseChannel, NS_ERROR_FAILURE);
-      return NS_ERROR_FAILURE;
+      BlockResponse(httpBaseChannel, NS_BINDING_ABORTED);
+      return NS_BINDING_ABORTED;
     case OpaqueResponse::Allow:
       AllowResponse();
       return NS_OK;
@@ -533,9 +536,7 @@ nsresult OpaqueResponseBlocker::ValidateJavaScript(HttpBaseChannel* aChannel,
     return rv;
   }
 
-  Telemetry::ScalarAdd(
-      Telemetry::ScalarID::OPAQUE_RESPONSE_BLOCKING_JAVASCRIPT_VALIDATION_COUNT,
-      1);
+  glean::opaque_response_blocking::javascript_validation_count.Add(1);
 
   LOGORB("Send %s to the validator", aURI->GetSpecOrDefault().get());
   // https://whatpr.org/fetch/1442.html#orb-algorithm, step 15
@@ -560,13 +561,14 @@ nsresult OpaqueResponseBlocker::ValidateJavaScript(HttpBaseChannel* aChannel,
             self->AllowResponse();
             break;
           case OpaqueResponse::Block:
-            self->BlockResponse(channel, NS_ERROR_FAILURE);
+            // We'll filter the data out later
+            self->AllowResponse();
             break;
           default:
             MOZ_ASSERT_UNREACHABLE(
                 "We should only ever have Allow or Block here.");
             allowed = false;
-            self->BlockResponse(channel, NS_ERROR_FAILURE);
+            self->BlockResponse(channel, NS_BINDING_ABORTED);
             break;
         }
 
@@ -620,10 +622,19 @@ void OpaqueResponseBlocker::FilterResponse() {
 
 void OpaqueResponseBlocker::ResolveAndProcessData(
     HttpBaseChannel* aChannel, bool aAllowed, Maybe<ipc::Shmem>& aSharedData) {
+  if (!aAllowed) {
+    // OpaqueResponseFilter allows us to filter the headers
+    mNext = new OpaqueResponseFilter(mNext);
+  }
+
   nsresult rv = OnStartRequest(aChannel);
 
   if (!aAllowed || NS_FAILED(rv)) {
-    MOZ_ASSERT_IF(!aAllowed, mState == State::Blocked);
+    MOZ_ASSERT_IF(!aAllowed, mState == State::Allowed);
+    // No need to call OnDataAvailable because
+    //   1. The input stream is consumed by
+    //     OpaqueResponseBlocker::OnDataAvailable already
+    //   2. We don't want to pass any data over
     MaybeRunOnStopRequest(aChannel);
     return;
   }

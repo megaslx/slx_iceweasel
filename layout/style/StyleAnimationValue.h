@@ -9,23 +9,16 @@
 #ifndef mozilla_StyleAnimationValue_h_
 #define mozilla_StyleAnimationValue_h_
 
-#include "mozilla/gfx/MatrixFwd.h"
-#include "mozilla/gfx/Point.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoStyleConsts.h"  // Servo_AnimationValue_Dump
-#include "mozilla/DbgMacro.h"
+#include "mozilla/AnimatedPropertyID.h"
 #include "nsStringFwd.h"
-#include "nsStringBuffer.h"
-#include "nsCoord.h"
 #include "nsColor.h"
 #include "nsCSSPropertyID.h"
-#include "nsCSSValue.h"
-#include "nsStyleConsts.h"
 #include "nsStyleTransformMatrix.h"
 
 class nsIFrame;
-class gfx3DMatrix;
 
 namespace mozilla {
 
@@ -85,27 +78,27 @@ struct AnimationValue {
   const mozilla::StyleOffsetRotate& GetOffsetRotateProperty() const;
   const mozilla::StylePositionOrAuto& GetOffsetAnchorProperty() const;
   const mozilla::StyleOffsetPosition& GetOffsetPositionProperty() const;
+  bool IsOffsetPathUrl() const;
 
   // Return the scale for mServo, which is calculated with reference to aFrame.
   mozilla::gfx::MatrixScales GetScaleValue(const nsIFrame* aFrame) const;
 
   // Uncompute this AnimationValue and then serialize it.
-  void SerializeSpecifiedValue(nsCSSPropertyID aProperty,
+  void SerializeSpecifiedValue(const AnimatedPropertyID& aProperty,
                                const StylePerDocumentStyleData* aRawData,
                                nsACString& aString) const;
 
   // Check if |*this| and |aToValue| can be interpolated.
-  bool IsInterpolableWith(nsCSSPropertyID aProperty,
+  bool IsInterpolableWith(const AnimatedPropertyID& aProperty,
                           const AnimationValue& aToValue) const;
 
   // Compute the distance between *this and aOther.
-  double ComputeDistance(nsCSSPropertyID aProperty,
-                         const AnimationValue& aOther) const;
+  double ComputeDistance(const AnimationValue& aOther) const;
 
   // Create an AnimaitonValue from a string. This method flushes style, so we
   // should use this carefully. Now, it is only used by
   // nsDOMWindowUtils::ComputeAnimationDistance.
-  static AnimationValue FromString(nsCSSPropertyID aProperty,
+  static AnimationValue FromString(AnimatedPropertyID& aProperty,
                                    const nsACString& aValue,
                                    dom::Element* aElement);
 
@@ -129,7 +122,7 @@ inline std::ostream& operator<<(std::ostream& aOut,
 }
 
 struct PropertyStyleAnimationValuePair {
-  nsCSSPropertyID mProperty;
+  AnimatedPropertyID mProperty;
   AnimationValue mValue;
 };
 }  // namespace mozilla

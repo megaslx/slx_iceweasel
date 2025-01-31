@@ -5,6 +5,7 @@
 extern crate url;
 use std::convert::TryFrom;
 use std::fmt;
+use std::fmt::Write;
 use std::iter;
 use std::str::FromStr;
 
@@ -218,11 +219,13 @@ impl fmt::Display for SdpAttributeCandidate {
             generation = option_to_string!(" generation {}", self.generation),
             ufrag = option_to_string!(" ufrag {}", self.ufrag),
             cost = option_to_string!(" network-cost {}", self.networkcost),
-            unknown = self
-                .unknown_extensions
-                .iter()
-                .map(|&(ref name, ref value)| format!(" {} {}", name, value))
-                .collect::<String>()
+            unknown =
+                self.unknown_extensions
+                    .iter()
+                    .fold(String::new(), |mut output, (name, value)| {
+                        let _ = write!(output, " {name} {value}");
+                        output
+                    })
         )
     }
 }
@@ -308,9 +311,9 @@ pub enum SdpAttributeDtlsMessage {
 
 impl fmt::Display for SdpAttributeDtlsMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            SdpAttributeDtlsMessage::Client(ref msg) => format!("client {}", msg),
-            SdpAttributeDtlsMessage::Server(ref msg) => format!("server {}", msg),
+        match self {
+            SdpAttributeDtlsMessage::Client(msg) => format!("client {msg}"),
+            SdpAttributeDtlsMessage::Server(msg) => format!("server {msg}"),
         }
         .fmt(f)
     }
@@ -594,6 +597,23 @@ pub struct SdpAttributeFmtpParameters {
     // max_fs, already defined in H264
     pub max_fr: u32,
 
+    // AV1
+    // Defined in https://aomediacodec.github.io/av1-rtp-spec/#72-sdp-parameters
+    // f(3) a 3 bit value that specifies the profile of the AV1 codec which is
+    // equivalent to the seq_profile field in the AV1 General Sequence Header
+    // OBU
+    // Defaults to 0 when not present
+    // Value must not be greater than 2 as values 3 to 7 are reserved
+    pub profile: Option<u8>,
+    // f(5) a 5 bit value that specifies the level maps to a table in A.3. of
+    // https://aomediacodec.github.io/av1-spec/av1-spec.pdf
+    // Defaults to 5 when not present
+    pub level_idx: Option<u8>,
+    // f(1) a 1 that specifies the tier 5.5.1 of
+    // https://aomediacodec.github.io/av1-spec/av1-spec.pdf
+    // Defaults to 0 when not present
+    pub tier: Option<u8>,
+
     // Opus https://tools.ietf.org/html/rfc7587
     pub maxplaybackrate: u32,
     pub maxaveragebitrate: u32,
@@ -622,7 +642,7 @@ impl fmt::Display for SdpAttributeFmtpParameters {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(ref rtx) = self.rtx {
             // rtx
-            return write!(f, "{}", rtx);
+            return write!(f, "{rtx}");
         }
         if !self.dtmf_tones.is_empty() {
             // telephone-event
@@ -658,6 +678,18 @@ impl fmt::Display for SdpAttributeFmtpParameters {
                 maybe_print_param("max-br=", self.max_br, 0),
                 maybe_print_param("max-mbps=", self.max_mbps, 0),
                 maybe_print_param("max-fr=", self.max_fr, 0),
+                match self.profile {
+                    Some(profile) => format!("profile={}", profile),
+                    None => "".to_string(),
+                },
+                match self.level_idx {
+                    Some(level_idx) => format!("level-idx={}", level_idx),
+                    None => "".to_string(),
+                },
+                match self.tier {
+                    Some(tier) => format!("tier={}", tier),
+                    None => "".to_string(),
+                },
                 maybe_print_param("maxplaybackrate=", self.maxplaybackrate, 48000),
                 maybe_print_param("maxaveragebitrate=", self.maxaveragebitrate, 0),
                 maybe_print_param("ptime=", self.ptime, 0),
@@ -713,8 +745,7 @@ impl SdpAttributeFingerprintHashType {
             "sha-384" => Ok(Self::Sha384),
             "sha-512" => Ok(Self::Sha512),
             unknown => Err(SdpParserInternalError::Unsupported(format!(
-                "fingerprint contains an unsupported hash algorithm '{}'",
-                unknown
+                "fingerprint contains an unsupported hash algorithm '{unknown}'"
             ))),
         }
     }
@@ -786,8 +817,7 @@ impl TryFrom<(SdpAttributeFingerprintHashType, Vec<u8>)> for SdpAttributeFingerp
                 fingerprint,
             }),
             (a, b) => Err(SdpParserInternalError::Generic(format!(
-                "Hash algoritm expects {} fingerprint bytes not {}",
-                a, b
+                "Hash algoritm expects {a} fingerprint bytes not {b}",
             ))),
         }
     }
@@ -802,7 +832,7 @@ impl fmt::Display for SdpAttributeFingerprint {
             fp = self
                 .fingerprint
                 .iter()
-                .map(|byte| format!("{:02X}", byte))
+                .map(|byte| format!("{byte:02X}"))
                 .collect::<Vec<String>>()
                 .join(":")
         )
@@ -846,11 +876,11 @@ impl fmt::Display for SdpAttributeImageAttrXyRange {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             SdpAttributeImageAttrXyRange::Range(ref min, ref max, ref step_opt) => {
-                write!(f, "[{}:", min)?;
+                write!(f, "[{min}:")?;
                 if step_opt.is_some() {
                     write!(f, "{}:", step_opt.unwrap())?;
                 }
-                write!(f, "{}]", max)
+                write!(f, "{max}]")
             }
             SdpAttributeImageAttrXyRange::DiscreteValues(ref values) => {
                 write!(f, "{}", imageattr_discrete_value_list_to_string(values))
@@ -868,9 +898,9 @@ pub enum SdpAttributeImageAttrSRange {
 
 impl fmt::Display for SdpAttributeImageAttrSRange {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            SdpAttributeImageAttrSRange::Range(ref min, ref max) => write!(f, "[{}-{}]", min, max),
-            SdpAttributeImageAttrSRange::DiscreteValues(ref values) => {
+        match self {
+            SdpAttributeImageAttrSRange::Range(min, max) => write!(f, "[{min}-{max}]"),
+            SdpAttributeImageAttrSRange::DiscreteValues(values) => {
                 write!(f, "{}", imageattr_discrete_value_list_to_string(values))
             }
         }
@@ -1110,7 +1140,7 @@ impl fmt::Display for SdpAttributeRid {
             .as_str()
             {
                 "" => "".to_string(),
-                x => format!(" {}", x),
+                x => format!(" {x}"),
             }
         )
     }
@@ -1195,7 +1225,7 @@ impl SdpAttributeSsrc {
     }
 
     fn set_attribute(&mut self, a: &str) {
-        if a.find(':') == None {
+        if a.find(':').is_none() {
             self.attribute = Some(a.to_string());
         } else {
             let v: Vec<&str> = a.splitn(2, ':').collect();
@@ -1265,6 +1295,7 @@ pub enum SdpAttribute {
     ExtmapAllowMixed,
     Fingerprint(SdpAttributeFingerprint),
     Fmtp(SdpAttributeFmtp),
+    FrameRate(f64),
     Group(SdpAttributeGroup),
     IceLite,
     IceMismatch,
@@ -1307,6 +1338,7 @@ impl SdpAttribute {
             SdpAttribute::BundleOnly
             | SdpAttribute::Candidate(..)
             | SdpAttribute::Fmtp(..)
+            | SdpAttribute::FrameRate(..)
             | SdpAttribute::IceMismatch
             | SdpAttribute::ImageAttr(..)
             | SdpAttribute::Label(..)
@@ -1366,6 +1398,7 @@ impl SdpAttribute {
             | SdpAttribute::ExtmapAllowMixed
             | SdpAttribute::Fingerprint(..)
             | SdpAttribute::Fmtp(..)
+            | SdpAttribute::FrameRate(..)
             | SdpAttribute::IceMismatch
             | SdpAttribute::IceOptions(..)
             | SdpAttribute::IcePwd(..)
@@ -1415,8 +1448,7 @@ impl FromStr for SdpAttribute {
                 | "ice-mismatch" | "inactive" | "recvonly" | "rtcp-mux" | "rtcp-mux-only"
                 | "rtcp-rsize" | "sendonly" | "sendrecv" => {
                     return Err(SdpParserInternalError::Generic(format!(
-                        "{} attribute is not allowed to have a value",
-                        name
+                        "{name} attribute is not allowed to have a value",
                     )));
                 }
                 _ => (),
@@ -1454,6 +1486,7 @@ impl FromStr for SdpAttribute {
             "extmap" => parse_extmap(val),
             "fingerprint" => parse_fingerprint(val),
             "fmtp" => parse_fmtp(val),
+            "framerate" => parse_framerate(val),
             "group" => parse_group(val),
             "ice-options" => parse_ice_options(val),
             "msid" => parse_msid(val),
@@ -1466,8 +1499,7 @@ impl FromStr for SdpAttribute {
             "simulcast" => parse_simulcast(val),
             "ssrc" => parse_ssrc(val),
             _ => Err(SdpParserInternalError::Unsupported(format!(
-                "Unknown attribute type {}",
-                name
+                "Unknown attribute type {name}",
             ))),
         }
     }
@@ -1486,6 +1518,7 @@ impl fmt::Display for SdpAttribute {
             SdpAttribute::ExtmapAllowMixed => SdpAttributeType::ExtmapAllowMixed.to_string(),
             SdpAttribute::Fingerprint(ref a) => attr_to_string(a.to_string()),
             SdpAttribute::Fmtp(ref a) => attr_to_string(a.to_string()),
+            SdpAttribute::FrameRate(ref a) => attr_to_string(a.to_string()),
             SdpAttribute::Group(ref a) => attr_to_string(a.to_string()),
             SdpAttribute::IceLite => SdpAttributeType::IceLite.to_string(),
             SdpAttribute::IceMismatch => SdpAttributeType::IceMismatch.to_string(),
@@ -1553,6 +1586,7 @@ pub enum SdpAttributeType {
     ExtmapAllowMixed,
     Fingerprint,
     Fmtp,
+    FrameRate,
     Group,
     IceLite,
     IceMismatch,
@@ -1600,6 +1634,7 @@ impl<'a> From<&'a SdpAttribute> for SdpAttributeType {
             SdpAttribute::ExtmapAllowMixed { .. } => SdpAttributeType::ExtmapAllowMixed,
             SdpAttribute::Fingerprint { .. } => SdpAttributeType::Fingerprint,
             SdpAttribute::Fmtp { .. } => SdpAttributeType::Fmtp,
+            SdpAttribute::FrameRate { .. } => SdpAttributeType::FrameRate,
             SdpAttribute::Group { .. } => SdpAttributeType::Group,
             SdpAttribute::IceLite { .. } => SdpAttributeType::IceLite,
             SdpAttribute::IceMismatch { .. } => SdpAttributeType::IceMismatch,
@@ -1649,6 +1684,7 @@ impl fmt::Display for SdpAttributeType {
             SdpAttributeType::ExtmapAllowMixed => "extmap-allow-mixed",
             SdpAttributeType::Fingerprint => "fingerprint",
             SdpAttributeType::Fmtp => "fmtp",
+            SdpAttributeType::FrameRate => "framerate",
             SdpAttributeType::Group => "group",
             SdpAttributeType::IceLite => "ice-lite",
             SdpAttributeType::IceMismatch => "ice-mismatch",
@@ -1710,8 +1746,7 @@ fn parse_single_direction(to_parse: &str) -> Result<SdpSingleDirection, SdpParse
         "send" => Ok(SdpSingleDirection::Send),
         "recv" => Ok(SdpSingleDirection::Recv),
         x => Err(SdpParserInternalError::Generic(format!(
-            "Unknown direction description found: '{:}'",
-            x
+            "Unknown direction description found: '{x:}'"
         ))),
     }
 }
@@ -1736,8 +1771,7 @@ fn parse_ssrc_group(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalErr
             "SIM" => SdpSsrcGroupSemantic::Sim,
             unknown => {
                 return Err(SdpParserInternalError::Unsupported(format!(
-                    "Unknown ssrc semantic '{:?}' found",
-                    unknown
+                    "Unknown ssrc semantic '{unknown:?}' found"
                 )));
             }
         },
@@ -1773,8 +1807,7 @@ fn parse_sctp_port(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalErro
     let port = to_parse.parse()?;
     if port > 65535 {
         return Err(SdpParserInternalError::Generic(format!(
-            "Sctpport port {} can only be a bit 16bit number",
-            port
+            "Sctpport port {port} can only be a bit 16bit number"
         )));
     }
     Ok(SdpAttribute::SctpPort(port))
@@ -1948,8 +1981,7 @@ fn parse_dtls_message(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalE
         "server" => SdpAttributeDtlsMessage::Server(tokens[1].to_string()),
         e => {
             return Err(SdpParserInternalError::Generic(format!(
-                "dtls-message has unknown role token '{}'",
-                e
+                "dtls-message has unknown role token '{e}'"
             )));
         }
     }))
@@ -1991,7 +2023,7 @@ fn parse_extmap(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> 
     }
     let id: u16;
     let mut direction: Option<SdpAttributeDirection> = None;
-    if tokens[0].find('/') == None {
+    if tokens[0].find('/').is_none() {
         id = tokens[0].parse::<u16>()?;
     } else {
         let id_dir: Vec<&str> = tokens[0].splitn(2, '/').collect();
@@ -2065,7 +2097,7 @@ fn parse_fmtp(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
     let tokens: Vec<&str> = to_parse.splitn(2, ' ').collect();
 
     // Support space seperated parameter blocks
-    if tokens.len() < 2 {
+    if tokens.len() != 2 {
         return Err(SdpParserInternalError::Unsupported(
             "Fmtp attributes require a payload type and a parameter block.".to_string(),
         ));
@@ -2088,6 +2120,9 @@ fn parse_fmtp(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
         useinbandfec: false,
         cbr: false,
         max_fr: 0,
+        profile: None,
+        level_idx: None,
+        tier: None,
         maxplaybackrate: 48000,
         maxaveragebitrate: 0,
         ptime: 0,
@@ -2121,8 +2156,7 @@ fn parse_fmtp(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
                             0 => Ok(false),
                             1 => Ok(true),
                             _ => Err(SdpParserInternalError::Generic(format!(
-                                "The fmtp parameter '{:}' must be 0 or 1",
-                                param_name
+                                "The fmtp parameter '{param_name:}' must be 0 or 1"
                             ))),
                         }
                     };
@@ -2166,6 +2200,40 @@ fn parse_fmtp(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
                     // VP8 and VP9
                     "MAX-FR" => parameters.max_fr = parameter_val.parse::<u32>()?,
 
+                    // AV1
+                    "PROFILE" => {
+                        parameters.profile = match parameter_val.parse::<u8>()? {
+                            x @ 0..=2 => Some(x),
+                            _ => {
+                                return Err(SdpParserInternalError::Generic(
+                                    "The fmtp parameter 'profile' must be in the range [0,2]"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    "LEVEL-IDX" => {
+                        parameters.level_idx = match parameter_val.parse::<u8>()? {
+                            x @ 0..=31 => Some(x),
+                            _ => {
+                                return Err(SdpParserInternalError::Generic(
+                                    "The fmtp parameter 'level-idx' must be in the range [0,31]"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    "TIER" => {
+                        parameters.tier = match parameter_val.parse::<u8>()? {
+                            x @ 0..=1 => Some(x),
+                            _ => {
+                                return Err(SdpParserInternalError::Generic(
+                                    "The fmtp parameter 'tier' must be in the range [0,1]"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
                     //Opus https://tools.ietf.org/html/rfc7587
                     "MAXPLAYBACKRATE" => {
                         parameters.maxplaybackrate = parameter_val.parse::<u32>()?
@@ -2275,6 +2343,34 @@ fn parse_fmtp(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+// a=framerate, RFC4566, RFC8866
+//-------------------------------------------------------------------------
+//       a=framerate:<framerate-value>
+fn parse_framerate(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
+    let framerate: f64 = to_parse.parse()?;
+
+    if framerate.is_nan() {
+        return Err(SdpParserInternalError::Generic(
+            "FrameRate attribute must be a number".to_string(),
+        ));
+    }
+
+    if framerate.is_infinite() {
+        return Err(SdpParserInternalError::Generic(
+            "FrameRate attribute cannot be finite".to_string(),
+        ));
+    }
+
+    if framerate == 0.0 {
+        return Err(SdpParserInternalError::Generic(
+            "FrameRate attribute cannot be zero".to_string(),
+        ));
+    }
+
+    Ok(SdpAttribute::FrameRate(framerate))
+}
+
+///////////////////////////////////////////////////////////////////////////
 // a=group, RFC5888
 //-------------------------------------------------------------------------
 //         group-attribute     = "a=group:" semantics
@@ -2300,8 +2396,7 @@ fn parse_group(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
             "BUNDLE" => SdpAttributeGroupSemantic::Bundle,
             unknown => {
                 return Err(SdpParserInternalError::Unsupported(format!(
-                    "Unknown group semantic '{:?}' found",
-                    unknown
+                    "Unknown group semantic '{unknown:?}' found",
                 )));
             }
         },
@@ -3052,8 +3147,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
             "transport-cc" => SdpAttributeRtcpFbType::TransCc,
             _ => {
                 return Err(SdpParserInternalError::Unsupported(format!(
-                    "Unknown rtcpfb feedback type: {:?}",
-                    x
+                    "Unknown rtcpfb feedback type: {x:?}"
                 )));
             }
         },
@@ -3071,8 +3165,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
                 "rpsi" | "app" => (*x).to_string(),
                 _ => {
                     return Err(SdpParserInternalError::Unsupported(format!(
-                        "Unknown rtcpfb ack parameter: {:?}",
-                        x
+                        "Unknown rtcpfb ack parameter: {x:?}"
                     )));
                 }
             },
@@ -3087,8 +3180,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
                 "fir" | "tmmbr" | "tstr" | "vbcm" => (*x).to_string(),
                 _ => {
                     return Err(SdpParserInternalError::Unsupported(format!(
-                        "Unknown rtcpfb ccm parameter: {:?}",
-                        x
+                        "Unknown rtcpfb ccm parameter: {x:?}"
                     )));
                 }
             },
@@ -3099,8 +3191,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
                 "sli" | "pli" | "rpsi" | "app" => (*x).to_string(),
                 _ => {
                     return Err(SdpParserInternalError::Unsupported(format!(
-                        "Unknown rtcpfb nack parameter: {:?}",
-                        x
+                        "Unknown rtcpfb nack parameter: {x:?}"
                     )));
                 }
             },
@@ -3111,8 +3202,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
                 _ if x.parse::<u32>().is_ok() => (*x).to_string(),
                 _ => {
                     return Err(SdpParserInternalError::Generic(format!(
-                        "Unknown rtcpfb trr-int parameter: {:?}",
-                        x
+                        "Unknown rtcpfb trr-int parameter: {x:?}"
                     )));
                 }
             },
@@ -3125,8 +3215,7 @@ fn parse_rtcp_fb(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError>
         SdpAttributeRtcpFbType::Remb | SdpAttributeRtcpFbType::TransCc => match tokens.get(2) {
             Some(x) => {
                 return Err(SdpParserInternalError::Unsupported(format!(
-                    "Unknown rtcpfb {} parameter: {:?}",
-                    feedback_type, x
+                    "Unknown rtcpfb {feedback_type} parameter: {x:?}"
                 )));
             }
             None => "".to_string(),
@@ -3213,8 +3302,7 @@ fn parse_simulcast_version_list(
                 descriptor_versionlist_pair.next().unwrap(),
             )),
             descriptor => Err(SdpParserInternalError::Generic(format!(
-                "Simulcast attribute has unknown list descriptor '{:?}'",
-                descriptor
+                "Simulcast attribute has unknown list descriptor '{descriptor:?}'"
             ))),
         }
     } else {
@@ -3249,7 +3337,7 @@ fn parse_simulcast_version_list(
 // ; rid-id defined in [I-D.ietf-mmusic-rid]
 fn parse_simulcast(to_parse: &str) -> Result<SdpAttribute, SdpParserInternalError> {
     // TODO: Bug 1225877: Stop accepting all kinds of whitespace here, and only accept SP
-    let mut tokens = to_parse.trim().split_whitespace();
+    let mut tokens = to_parse.split_whitespace();
     let first_direction = match tokens.next() {
         Some(x) => parse_single_direction(x)?,
         None => {

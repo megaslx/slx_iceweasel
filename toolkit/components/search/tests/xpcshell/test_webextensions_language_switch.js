@@ -3,9 +3,7 @@
 
 "use strict";
 
-const { promiseShutdownManager, promiseStartupManager } = AddonTestUtils;
-
-add_task(async function setup() {
+add_setup(async function () {
   Services.locale.availableLocales = [
     ...Services.locale.availableLocales,
     "en",
@@ -14,12 +12,9 @@ add_task(async function setup() {
   ];
   Services.locale.requestedLocales = ["en"];
 
-  await SearchTestUtils.useTestEngines("data1");
-  await promiseStartupManager();
+  SearchTestUtils.setRemoteSettingsConfig([{ identifier: "unused" }]);
   await Services.search.init();
   await promiseAfterSettings();
-
-  registerCleanupFunction(promiseShutdownManager);
 });
 
 add_task(async function test_language_switch_changes_name() {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -47,6 +47,7 @@ typedef void (*aom_fft_1d_func_t)(const float *input, float *output,
 
 // Declare some of the forward non-vectorized transforms which are used in some
 // of the vectorized implementations
+void aom_fft1d_2_float(const float *input, float *output, int stride);
 void aom_fft1d_4_float(const float *input, float *output, int stride);
 void aom_fft1d_8_float(const float *input, float *output, int stride);
 void aom_fft1d_16_float(const float *input, float *output, int stride);

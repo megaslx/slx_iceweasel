@@ -23,26 +23,10 @@ ChromeUtils.defineESModuleGetters(this, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(this, "extensionStylesheets", () => {
-  const { ExtensionParent } = ChromeUtils.importESModule(
-    "resource://gre/modules/ExtensionParent.sys.mjs"
-  );
-  return ExtensionParent.extensionStylesheets;
-});
-
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "manifestV3enabled",
   "extensions.manifestV3.enabled"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "SUPPORT_URL",
-  "app.support.baseURL",
-  "",
-  null,
-  val => Services.urlFormatter.formatURL(val)
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -255,21 +239,25 @@ function isInState(install, state) {
   return install.state == AddonManager["STATE_" + state.toUpperCase()];
 }
 
-async function getAddonMessageInfo(addon) {
+async function getAddonMessageInfo(
+  addon,
+  { isCardExpanded, isInDisabledSection }
+) {
   const { name } = addon;
   const { STATE_BLOCKED, STATE_SOFTBLOCKED } = Ci.nsIBlocklistService;
 
   if (addon.blocklistState === STATE_BLOCKED) {
+    let typeSuffix = addon.type === "extension" ? "extension" : "other";
     return {
       linkUrl: await addon.getBlocklistURL(),
-      messageId: "details-notification-blocked",
-      messageArgs: { name },
+      linkId: "details-notification-blocked-link2",
+      messageId: `details-notification-hard-blocked-${typeSuffix}`,
       type: "error",
     };
   } else if (isDisabledUnsigned(addon)) {
     return {
-      linkUrl: SUPPORT_URL + "unsigned-addons",
-      messageId: "details-notification-unsigned-and-disabled",
+      linkSumoPage: "unsigned-addons",
+      messageId: "details-notification-unsigned-and-disabled2",
       messageArgs: { name },
       type: "error",
     };
@@ -279,27 +267,43 @@ async function getAddonMessageInfo(addon) {
       addon.blocklistState !== STATE_SOFTBLOCKED)
   ) {
     return {
-      messageId: "details-notification-incompatible",
+      // TODO: (Bug 1921870) consider adding a SUMO page.
+      // NOTE: this messagebar is customized by Thunderbird to include
+      // a non-SUMO link (see Bug 1921870 comment 0).
+      messageId: "details-notification-incompatible2",
       messageArgs: { name, version: Services.appinfo.version },
-      type: "warning",
+      type: "error",
     };
   } else if (!isCorrectlySigned(addon)) {
     return {
-      linkUrl: SUPPORT_URL + "unsigned-addons",
-      messageId: "details-notification-unsigned",
+      linkSumoPage: "unsigned-addons",
+      messageId: "details-notification-unsigned2",
       messageArgs: { name },
       type: "warning",
     };
   } else if (addon.blocklistState === STATE_SOFTBLOCKED) {
+    const fluentBaseId = "details-notification-soft-blocked";
+    let typeSuffix = addon.type === "extension" ? "extension" : "other";
+    let stateSuffix;
+    // If the Addon Card is not expanded, delay changing the messagebar
+    // string to when the Addon card is refreshed as part of moving
+    // it between the enabled and disabled sections.
+    if (isCardExpanded) {
+      stateSuffix = addon.isActive ? "enabled" : "disabled";
+    } else {
+      stateSuffix = !isInDisabledSection ? "enabled" : "disabled";
+    }
+    let messageId = `${fluentBaseId}-${typeSuffix}-${stateSuffix}`;
+
     return {
       linkUrl: await addon.getBlocklistURL(),
-      messageId: "details-notification-softblocked",
-      messageArgs: { name },
+      linkId: "details-notification-softblocked-link2",
+      messageId,
       type: "warning",
     };
   } else if (addon.isGMPlugin && !addon.isInstalled && addon.isActive) {
     return {
-      messageId: "details-notification-gmp-pending",
+      messageId: "details-notification-gmp-pending2",
       messageArgs: { name },
       type: "warning",
     };
@@ -325,12 +329,12 @@ function checkForUpdate(addon) {
             onDownloadFailed: failed,
             onInstallCancelled: failed,
             onInstallFailed: failed,
-            onInstallEnded: (...args) => {
+            onInstallEnded: () => {
               detachUpdateHandler(install);
               install.removeListener(updateListener);
               resolve({ installed: true, pending: false, found: true });
             },
-            onInstallPostponed: (...args) => {
+            onInstallPostponed: () => {
               detachUpdateHandler(install);
               install.removeListener(updateListener);
               resolve({ installed: false, pending: true, found: true });
@@ -378,7 +382,7 @@ const OPTIONS_TYPE_MAP = {
 
 // Check if an add-on has the provided options type, accounting for the pref
 // to disable inline options.
-function getOptionsType(addon, type) {
+function getOptionsType(addon) {
   return OPTIONS_TYPE_MAP[addon.optionsType];
 }
 
@@ -767,22 +771,42 @@ class GlobalWarnings extends MessageBarStackElement {
       this.removeWarning();
     }
     if (!this.globalWarning) {
-      this.globalWarning = document.createElement("message-bar");
+      this.globalWarning = document.createElement("moz-message-bar");
       this.globalWarning.setAttribute("warning-type", type);
-      let textContainer = document.createElement("span");
-      document.l10n.setAttributes(textContainer, `extensions-warning-${type}`);
-      this.globalWarning.appendChild(textContainer);
+      let { messageId, buttonId } = this.getGlobalWarningL10nIds(type);
+      document.l10n.setAttributes(this.globalWarning, messageId);
+      this.globalWarning.setAttribute("data-l10n-attrs", "message");
       if (opts && opts.action) {
         let button = document.createElement("button");
-        document.l10n.setAttributes(
-          button,
-          `extensions-warning-${type}-button`
-        );
+        document.l10n.setAttributes(button, buttonId);
         button.setAttribute("action", type);
+        button.setAttribute("slot", "actions");
         this.globalWarning.appendChild(button);
       }
       this.appendChild(this.globalWarning);
     }
+  }
+
+  getGlobalWarningL10nIds(type) {
+    const WARNING_TYPE_TO_L10NID_MAPPING = {
+      "safe-mode": {
+        messageId: "extensions-warning-safe-mode2",
+      },
+      "update-security": {
+        messageId: "extensions-warning-update-security2",
+        buttonId: "extensions-warning-update-security-button",
+      },
+      "check-compatibility": {
+        messageId: "extensions-warning-check-compatibility2",
+        buttonId: "extensions-warning-check-compatibility-button",
+      },
+      "imported-addons": {
+        messageId: "extensions-warning-imported-addons2",
+        buttonId: "extensions-warning-imported-addons-button",
+      },
+    };
+
+    return WARNING_TYPE_TO_L10NID_MAPPING[type];
   }
 
   removeWarning() {
@@ -1047,7 +1071,7 @@ class AddonPageOptions extends HTMLElement {
     }
   }
 
-  async checkForUpdates(e) {
+  async checkForUpdates() {
     let message = document.getElementById("updates-message");
     message.state = "updating";
     message.hidden = false;
@@ -1406,10 +1430,23 @@ class SidebarFooter extends HTMLElement {
       labelL10nId: "addons-settings-button",
       onClick: e => {
         e.preventDefault();
-        windowRoot.ownerGlobal.switchToTabHavingURI("about:preferences", true, {
-          ignoreFragment: "whenComparing",
-          triggeringPrincipal: systemPrincipal,
-        });
+        let hasAboutSettings = windowRoot.ownerGlobal.switchToTabHavingURI(
+          "about:settings",
+          false,
+          {
+            ignoreFragment: "whenComparing",
+          }
+        );
+        if (!hasAboutSettings) {
+          windowRoot.ownerGlobal.switchToTabHavingURI(
+            "about:preferences",
+            true,
+            {
+              ignoreFragment: "whenComparing",
+              triggeringPrincipal: systemPrincipal,
+            }
+          );
+        }
       },
     });
 
@@ -1678,6 +1715,7 @@ class InlineOptionsBrowser extends HTMLElement {
     browser.setAttribute("disableglobalhistory", "true");
     browser.setAttribute("messagemanagergroup", "webext-browsers");
     browser.setAttribute("id", "addon-inline-options");
+    browser.setAttribute("class", "addon-inline-options");
     browser.setAttribute("transparent", "true");
     browser.setAttribute("forcemessagemanager", "true");
     browser.setAttribute("autocompletepopup", "PopupAutoComplete");
@@ -1714,10 +1752,7 @@ class InlineOptionsBrowser extends HTMLElement {
       readyPromise = promiseEvent("load", browser, true);
     }
 
-    let stack = document.createXULElement("stack");
-    stack.classList.add("inline-options-stack");
-    stack.appendChild(browser);
-    this.appendChild(stack);
+    this.appendChild(browser);
     this.browser = browser;
 
     // Force bindings to apply synchronously.
@@ -1771,7 +1806,10 @@ class InlineOptionsBrowser extends HTMLElement {
       };
 
       if (optionsBrowserStyle) {
-        browserOptions.stylesheets = extensionStylesheets;
+        // aboutaddons.js is not used on Android. extension.css is included in
+        // Firefox desktop and Thunderbird.
+        // eslint-disable-next-line mozilla/no-browser-refs-in-toolkit
+        browserOptions.stylesheets = ["chrome://browser/content/extension.css"];
       }
 
       mm.sendAsyncMessage("Extension:InitBrowser", browserOptions);
@@ -1890,10 +1928,11 @@ class AddonPermissionsList extends HTMLElement {
       // If optional permissions include <all_urls>, extension can request and
       // be granted permission for individual sites not listed in the manifest.
       // Include them as well in the optional origins list.
-      optionalPerms.origins = [
-        ...optionalPerms.origins,
+      let origins = [
+        ...(this.addon.optionalOriginsNormalized ?? []),
         ...grantedPerms.origins.filter(o => !requiredPerms.origins.includes(o)),
       ];
+      optionalPerms.origins = [...new Set(origins)];
     }
 
     let permissions = Extension.formatPermissionStrings(
@@ -1960,6 +1999,14 @@ class AddonPermissionsList extends HTMLElement {
 
         toggle.setAttribute("permission-key", perm);
         toggle.setAttribute("action", "toggle-permission");
+
+        if (perm === "userScripts") {
+          let mb = document.createElement("moz-message-bar");
+          mb.setAttribute("type", "warning");
+          mb.messageL10nId = "webext-perms-extra-warning-userScripts-long";
+          mb.slot = "nested";
+          toggle.append(mb);
+        }
         item.appendChild(toggle);
         list.appendChild(item);
       }
@@ -2065,11 +2112,11 @@ class AddonDetails extends HTMLElement {
     }
   }
 
-  onDisabled(addon) {
+  onDisabled() {
     this.extensionShutdown();
   }
 
-  onEnabled(addon) {
+  onEnabled() {
     this.extensionStartup();
   }
 
@@ -2420,45 +2467,27 @@ class AddonCard extends HTMLElement {
 
   async setAddonPermission(permission, type, action) {
     let { addon } = this;
-    let origins = [],
-      permissions = [];
+    let perms = { origins: [], permissions: [] };
+
     if (!["add", "remove"].includes(action)) {
       throw new Error("invalid action for permission change");
     }
-    if (type == "permission") {
-      if (
-        action == "add" &&
-        !addon.optionalPermissions.permissions.includes(permission)
-      ) {
-        throw new Error("permission missing from manifest");
-      }
-      permissions = [permission];
-    } else if (type == "origin") {
-      if (action === "add") {
-        let { origins } = addon.optionalPermissions;
-        let patternSet = new MatchPatternSet(origins, { ignorePath: true });
-        if (!patternSet.subsumes(new MatchPattern(permission))) {
-          throw new Error("origin missing from manifest");
-        }
-      }
-      origins = [permission];
 
-      // If this is one of the "all sites" permissions
-      if (Extension.isAllSitesPermission(permission)) {
-        // Grant/revoke ALL "all sites" optional permissions from the manifest.
-        origins = addon.optionalPermissions.origins.filter(perm =>
-          Extension.isAllSitesPermission(perm)
-        );
-      }
+    if (type === "permission") {
+      perms.permissions = [permission];
+    } else if (type === "origin") {
+      perms.origins = [permission];
     } else {
       throw new Error("unknown permission type changed");
     }
-    let policy = WebExtensionPolicy.getByID(addon.id);
-    ExtensionPermissions[action](
-      addon.id,
-      { origins, permissions },
-      policy?.extension
+
+    let normalized = ExtensionPermissions.normalizeOptional(
+      perms,
+      addon.optionalPermissions
     );
+
+    let policy = WebExtensionPolicy.getByID(addon.id);
+    ExtensionPermissions[action](addon.id, normalized, policy?.extension);
   }
 
   async handleEvent(e) {
@@ -2544,9 +2573,8 @@ class AddonCard extends HTMLElement {
               return;
             }
             let { BrowserAddonUI } = windowRoot.ownerGlobal;
-            let { remove, report } = await BrowserAddonUI.promptRemoveExtension(
-              addon
-            );
+            let { remove, report } =
+              await BrowserAddonUI.promptRemoveExtension(addon);
             if (remove) {
               await addon.uninstall(true);
               this.sendEvent("remove");
@@ -2802,26 +2830,46 @@ class AddonCard extends HTMLElement {
 
     const {
       linkUrl,
+      linkId,
+      linkSumoPage,
       messageId,
       messageArgs,
       type = "",
-    } = await getAddonMessageInfo(this.addon);
+    } = await getAddonMessageInfo(this.addon, {
+      isCardExpanded: this.expanded,
+      isInDisabledSection:
+        !this.expanded &&
+        !!this.closest(`section.${this.addon.type}-disabled-section`),
+    });
 
     if (messageId) {
       document.l10n.pauseObserving();
-      document.l10n.setAttributes(
-        messageBar.querySelector("span"),
-        messageId,
-        messageArgs
-      );
+      document.l10n.setAttributes(messageBar, messageId, messageArgs);
+      messageBar.setAttribute("data-l10n-attrs", "message");
 
-      const link = messageBar.querySelector("button");
+      messageBar.innerHTML = "";
       if (linkUrl) {
-        document.l10n.setAttributes(link, `${messageId}-link`);
-        link.setAttribute("url", linkUrl);
-        link.hidden = false;
-      } else {
-        link.hidden = true;
+        const linkButton = document.createElement("button");
+        document.l10n.setAttributes(linkButton, linkId);
+        linkButton.setAttribute("action", "link");
+        linkButton.setAttribute("url", linkUrl);
+        linkButton.setAttribute("slot", "actions");
+        messageBar.append(linkButton);
+      }
+
+      if (linkSumoPage) {
+        const sumoLinkEl = document.createElement("a", {
+          is: "moz-support-link",
+        });
+        sumoLinkEl.setAttribute("support-page", linkSumoPage);
+        sumoLinkEl.setAttribute("slot", "support-link");
+        // Set a custom fluent id for the learn more if there
+        // is one (otherwise moz-support-link custom element
+        // will use the default "Learn more" localized string).
+        if (linkId) {
+          document.l10n.setAttributes(sumoLinkEl, linkId);
+        }
+        messageBar.append(sumoLinkEl);
       }
 
       document.l10n.resumeObserving();
@@ -2937,18 +2985,18 @@ class AddonCard extends HTMLElement {
     this.sendEvent("update-postponed");
   }
 
-  onDisabled(addon) {
+  onDisabled() {
     if (!this.reloading) {
       this.update();
     }
   }
 
-  onEnabled(addon) {
+  onEnabled() {
     this.reloading = false;
     this.update();
   }
 
-  onInstalled(addon) {
+  onInstalled() {
     // When a temporary addon is reloaded, onInstalled is triggered instead of
     // onEnabled.
     this.reloading = false;
@@ -2974,6 +3022,10 @@ class AddonCard extends HTMLElement {
 
     if (this.details && changed.includes("quarantineIgnoredByUser")) {
       this.details.updateQuarantinedDomainsUserAllowed();
+    }
+
+    if (changed.includes("blocklistState")) {
+      this.update();
     }
   }
 
@@ -3275,7 +3327,7 @@ class AddonList extends HTMLElement {
   }
 
   getPendingUninstallBar(addon) {
-    return this.querySelector(`message-bar[addon-id="${addon.id}"]`);
+    return this.querySelector(`moz-message-bar[addon-id="${addon.id}"]`);
   }
 
   sortByFn(aAddon, bAddon) {
@@ -3329,26 +3381,24 @@ class AddonList extends HTMLElement {
 
   addPendingUninstallBar(addon) {
     const stack = this.pendingUninstallStack;
-    const mb = document.createElement("message-bar");
+    const mb = document.createElement("moz-message-bar");
     mb.setAttribute("addon-id", addon.id);
-    mb.setAttribute("type", "generic");
+    mb.setAttribute("type", "info");
 
-    const addonName = document.createElement("span");
-    addonName.setAttribute("data-l10n-name", "addon-name");
-    const message = document.createElement("span");
-    message.append(addonName);
     const undo = document.createElement("button");
     undo.setAttribute("action", "undo");
     undo.addEventListener("click", () => {
       addon.cancelUninstall();
     });
+    undo.setAttribute("slot", "actions");
 
-    document.l10n.setAttributes(message, "pending-uninstall-description", {
+    document.l10n.setAttributes(mb, "pending-uninstall-description2", {
       addon: addon.name,
     });
+    mb.setAttribute("data-l10n-attrs", "message");
     document.l10n.setAttributes(undo, "pending-uninstall-undo-button");
 
-    mb.append(message, undo);
+    mb.appendChild(undo);
     stack.append(mb);
   }
 
@@ -3874,7 +3924,7 @@ class TaarMessageBar extends HTMLElement {
     if (this.childElementCount == 0 && !this.hidden) {
       this.appendChild(importTemplate("taar-notice"));
       this.addEventListener("click", this);
-      this.messageBar = this.querySelector("message-bar");
+      this.messageBar = this.querySelector("moz-message-bar");
       this.messageBar.addEventListener("message-bar:user-dismissed", this);
     }
   }

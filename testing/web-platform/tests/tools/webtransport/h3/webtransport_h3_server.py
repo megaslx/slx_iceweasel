@@ -1,6 +1,7 @@
 # mypy: allow-subclassing-any, no-warn-return-any
 
 import asyncio
+import contextlib
 import logging
 import os
 import ssl
@@ -9,17 +10,21 @@ import threading
 import traceback
 from enum import IntEnum
 from urllib.parse import urlparse
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 # TODO(bashi): Remove import check suppressions once aioquic dependency is resolved.
 from aioquic.buffer import Buffer  # type: ignore
 from aioquic.asyncio import QuicConnectionProtocol, serve  # type: ignore
 from aioquic.asyncio.client import connect  # type: ignore
+from aioquic.asyncio.protocol import QuicStreamAdapter  # type: ignore
 from aioquic.h3.connection import H3_ALPN, FrameType, H3Connection, ProtocolError, SettingsError  # type: ignore
 from aioquic.h3.events import H3Event, HeadersReceived, WebTransportStreamDataReceived, DatagramReceived, DataReceived  # type: ignore
 from aioquic.quic.configuration import QuicConfiguration  # type: ignore
 from aioquic.quic.connection import logger as quic_connection_logger  # type: ignore
-from aioquic.quic.connection import stream_is_unidirectional
+from aioquic.quic.connection import (
+    stream_is_client_initiated,
+    stream_is_unidirectional,
+)
 from aioquic.quic.events import QuicEvent, ProtocolNegotiated, ConnectionTerminated, StreamReset  # type: ignore
 from aioquic.tls import SessionTicket  # type: ignore
 
@@ -53,6 +58,11 @@ class H3DatagramSetting(IntEnum):
     RFC = 0x33
 
 
+class WebTransportHttp3Setting(IntEnum):
+    # https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3-07#section-8.2
+    WEBTRANSPORT_MAX_SESSIONS_DRAFT07 = 0xc671706a
+
+
 class H3ConnectionWithDatagram(H3Connection):
     """
     A H3Connection subclass, to make it work with the latest
@@ -77,12 +87,13 @@ class H3ConnectionWithDatagram(H3Connection):
         if self._datagram_setting is None:
             raise SettingsError("HTTP Datagrams support required")
 
-
     def _get_local_settings(self) -> Dict[int, int]:
         settings = super()._get_local_settings()
         settings[H3DatagramSetting.RFC] = 1
         settings[H3DatagramSetting.DRAFT04] = 1
         settings[H3ConnectionWithDatagram.ENABLE_CONNECT_PROTOCOL] = 1
+        # This connection can handle only one WebTransport session.
+        settings[WebTransportHttp3Setting.WEBTRANSPORT_MAX_SESSIONS_DRAFT07] = 1
         return settings
 
     @property
@@ -404,7 +415,7 @@ class WebTransportSession:
             _logger.warn(
                 "Sending a datagram while that's now allowed - discarding it")
             return
-        flow_id = self.session_id
+        stream_id = self.session_id
         if self._http.datagram_setting is not None:
             # We must have a WebTransport Session ID at this point because
             # an extended CONNECT request is already received.
@@ -412,8 +423,8 @@ class WebTransportSession:
             # TODO(yutakahirano): Make sure if this is the correct logic.
             # Chrome always use 0 for the initial stream and the initial flow
             # ID, we cannot check the correctness with it.
-            flow_id = self._protocol._session_stream_id // 4
-        self._http.send_datagram(flow_id=flow_id, data=data)
+            stream_id = self._protocol._session_stream_id
+        self._http.send_datagram(stream_id=stream_id, data=data)
 
     def stop_stream(self, stream_id: int, code: int) -> None:
         """
@@ -596,6 +607,25 @@ async def _connect_server_with_timeout(host: str, port: int, timeout: float) -> 
     return True
 
 
+def _close_unusable_writer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    # Starting in python3.11, `StreamWriter.__del__` implicitly `close()`s
+    # itself [0], if it has not done so already. Because aioquic sometimes
+    # models a unidirectional stream with a bidirectional transport [1], the
+    # `writer` here for a server -> client stream may log a benign but
+    # scary-looking exception when it's GC'ed and unsuccessfully writes EOF.
+    #
+    # For the purpose of checking connectivity, work around this for now by
+    # preemptively closing such streams and suppressing the resulting
+    # exceptions.
+    #
+    # [0]: https://github.com/python/cpython/blob/3.11/Lib/asyncio/streams.py#L413
+    # [1]: https://github.com/aiortc/aioquic/blob/1.2.0/src/aioquic/asyncio/protocol.py#L241
+    stream_id = cast(QuicStreamAdapter, writer.transport).stream_id
+    if stream_is_unidirectional(stream_id) and not stream_is_client_initiated(stream_id):
+        with contextlib.suppress(ValueError):
+            writer.close()
+
+
 async def _connect_to_server(host: str, port: int) -> None:
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN,
@@ -603,5 +633,6 @@ async def _connect_to_server(host: str, port: int) -> None:
         verify_mode=ssl.CERT_NONE,
     )
 
-    async with connect(host, port, configuration=configuration) as protocol:
+    async with connect(host, port, configuration=configuration,
+                       stream_handler=_close_unusable_writer) as protocol:
         await protocol.ping()

@@ -1,10 +1,6 @@
 Configuring Build Options
 =========================
 
-+--------------------------------------------------------------------+
-| This page is an import from MDN and the contents might be outdated |
-+--------------------------------------------------------------------+
-
 This document details how to configure Firefox builds.
 Most of the time a ``mozconfig`` file is not required. The default
 options are the most well-supported, so it is preferable to add as few
@@ -131,7 +127,7 @@ Parallel compilation
 
 .. note::
 
-   **Note**: The build system automatically makes an intelligent guess
+   The build system automatically makes an intelligent guess
    for how many CPU cores to use when building. The option below is
    typically not needed.
 
@@ -163,7 +159,7 @@ Browser (Firefox)
 
    .. note::
 
-      **Note**: This is the default
+      This is the default
 
 Mail (Thunderbird)
    .. code::
@@ -219,6 +215,17 @@ supports `distributed compilation
 In order to enable ``sccache`` for Firefox builds, you can use
 ``ac_add_options --with-ccache=sccache``.
 
+From version 0.7.4, sccache local builds are using the ``preprocessor cache mode``
+by default. With a hot cache, it decreases the build time by a factor of 2 to 3
+compared the previous method. This feature works like the `direct mode in ccache
+<https://ccache.dev/manual/3.7.9.html#_the_direct_mode>`__,
+using a similar way to handle caching and dependencies.
+
+   .. note::
+
+      When using sccache, because of the operation on the files and storage,
+      the initial build of Firefox will be slower.
+
 Optimization
 ^^^^^^^^^^^^
 
@@ -227,7 +234,7 @@ Optimization
 
    .. note::
 
-      **Note**: This is enabled by default
+      This is enabled by default
 
 ``ac_add_options --enable-optimize=-O2``
    Chooses particular compiler optimization options. In most cases, this
@@ -258,24 +265,17 @@ Optimization
 You can make an optimized build with debugging symbols. See :ref:`Building
 with Debug Symbols <Building with Debug Symbols>`.
 
-Extensions
-^^^^^^^^^^
+Building as Beta or Release
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``ac_add_options --enable-extensions=default|all|ext1,ext2,-skipext3``
-   There are many optional pieces of code that live in {{
-   Source("extensions/") }}. Many of these extensions are now considered
-   an integral part of the browsing experience. There is a default list
-   of extensions for the suite, and each app-specific ``mozconfig``
-   specifies a different default set. Some extensions are not compatible
-   with all apps, for example:
+``ac_add_options --as-milestone=release``
+   This makes it easy to build nightly with a release or beta configuration to
+   test the different ifdef behaviors. To do a full beta simulation see
+   `Sheriffing/How To/Beta simulations <https://wiki.mozilla.org/Sheriffing/How_To/Beta_simulations>`__.
 
-   - ``cookie`` is not compatible with thunderbird
-   - ``typeaheadfind`` is not compatible with any toolkit app (Firefox,
-      Thunderbird)
-
-   Unless you know which extensions are compatible with which apps, do
-   not use the ``--enable-extensions`` option; the build system will
-   automatically select the proper default set of extensions.
+   - ``early-beta``
+   - ``late-beta``
+   - ``release``
 
 Tests
 ^^^^^
@@ -304,14 +304,6 @@ Other Options
    to clobber and continue with the build instead of asking the user to
    manually clobber and exiting.
 
-``ac_add_options --enable-crashreporter``
-   This enables the machinery that allows Firefox to write out a
-   `minidump <https://docs.microsoft.com/en-us/windows/desktop/Debug/minidump-files>`__
-   files when crashing as well as the tools to process and submit crash
-   reports to Mozilla. After enabling the crash reporter in your local
-   build, you will need to run mach with the --enable-crash-reporter
-   (note the extra dash) to enable it at runtime, like so:
-   ``./mach run --enable-crash-reporter``
 ``ac_add_options --enable-warnings-as-errors``
    This makes compiler warnings into errors which fail the build. This
    can be useful since certain warnings coincide with reviewbot lints
@@ -402,3 +394,38 @@ they live or which ones you've created. It also saves you from having to
 export the MOZCONFIG variable each time. For information on installing
 and configuring mozconfigwrapper, see
 https://github.com/ahal/mozconfigwrapper.
+
+Changing build options per directory -- the moz.build hook
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Adding a statement like the following to a ``mozconfig`` file:
+
+.. code::
+
+    ac_add_options MOZ_BUILD_HOOK=/absolute/path/to/file/buildhook.py
+
+will cause this file to be appended to each ``moz.build`` file of the tree. It
+is recommended to place this file outside of the tree, so that it is not wiped
+when cleaning up the tree via ``hg clean`` or ``git clean``.
+
+This hook file is written in the same subset of Python as ``moz.build`` files.
+
+Possibilities are endless, but this is particularly useful to tweak compiler
+options for selected directories, such as disabling optimizations to have a
+better debugging experience without having the entire browser being very slow:
+
+.. code:: python
+
+    nonopt = (
+        "dom/media/",
+        "media/ffvpx/",
+        "media/libcubeb/",
+    )
+    if RELATIVEDIR.startswith(nonopt):
+        COMPILE_FLAGS["OPTIMIZE"] = []
+
+will make all compilation units at or under those three paths have no
+optimization.
+
+Another useful thing to set per directory is ``FILES_PER_UNIFIED_FILE=1`` to
+disable :ref:`unified builds<unified_builds>`.

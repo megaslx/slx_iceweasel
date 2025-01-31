@@ -17,7 +17,7 @@
 #include "js/Exception.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
-#include "util/StringBuffer.h"
+#include "util/StringBuilder.h"
 #include "vm/Compartment.h"
 #include "vm/Interpreter.h"
 #include "vm/JSFunction.h"
@@ -203,7 +203,11 @@ static bool CopyNameAndLength(JSContext* cx, HandleObject fun,
   Rooted<Value> targetName(cx);
   if (target->is<JSFunction>() && !target->as<JSFunction>().hasResolvedName()) {
     JSFunction* targetFun = &target->as<JSFunction>();
-    targetName.setString(targetFun->infallibleGetUnresolvedName(cx));
+    JSString* targetNameStr = targetFun->getUnresolvedName(cx);
+    if (!targetNameStr) {
+      return false;
+    }
+    targetName.setString(targetNameStr);
   } else {
     if (!GetProperty(cx, target, target, cx->names().name, &targetName)) {
       return false;

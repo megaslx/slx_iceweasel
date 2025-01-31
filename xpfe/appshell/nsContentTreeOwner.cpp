@@ -39,8 +39,10 @@
 #endif
 
 #include "mozilla/Preferences.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/UserActivation.h"
 
 using namespace mozilla;
 
@@ -342,8 +344,7 @@ NS_IMETHODIMP nsContentTreeOwner::IsWindowModal(bool* _retval) {
 // nsContentTreeOwner::nsIBaseWindow
 //*****************************************************************************
 
-NS_IMETHODIMP nsContentTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
-                                             nsIWidget* parentWidget, int32_t x,
+NS_IMETHODIMP nsContentTreeOwner::InitWindow(nsIWidget* parentWidget, int32_t x,
                                              int32_t y, int32_t cx,
                                              int32_t cy) {
   // Ignore wigdet parents for now.  Don't think those are a vaild thing to
@@ -448,18 +449,6 @@ NS_IMETHODIMP nsContentTreeOwner::SetParentWidget(nsIWidget* aParentWidget) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
-NS_IMETHODIMP nsContentTreeOwner::GetParentNativeWindow(
-    nativeWindow* aParentNativeWindow) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->GetParentNativeWindow(aParentNativeWindow);
-}
-
-NS_IMETHODIMP nsContentTreeOwner::SetParentNativeWindow(
-    nativeWindow aParentNativeWindow) {
-  NS_ASSERTION(false, "You can't call this");
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
 NS_IMETHODIMP nsContentTreeOwner::GetNativeHandle(nsAString& aNativeHandle) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetNativeHandle(aNativeHandle);
@@ -512,8 +501,10 @@ NS_IMETHODIMP
 nsContentTreeOwner::ProvideWindow(
     nsIOpenWindowInfo* aOpenWindowInfo, uint32_t aChromeFlags,
     bool aCalledFromJS, nsIURI* aURI, const nsAString& aName,
-    const nsACString& aFeatures, bool aForceNoOpener, bool aForceNoReferrer,
-    bool aIsPopupRequested, nsDocShellLoadState* aLoadState, bool* aWindowIsNew,
+    const nsACString& aFeatures,
+    const mozilla::dom::UserActivation::Modifiers& aModifiers,
+    bool aForceNoOpener, bool aForceNoReferrer, bool aIsPopupRequested,
+    nsDocShellLoadState* aLoadState, bool* aWindowIsNew,
     dom::BrowsingContext** aReturn) {
   NS_ENSURE_ARG_POINTER(aOpenWindowInfo);
 
@@ -535,10 +526,12 @@ nsContentTreeOwner::ProvideWindow(
 #endif
 
   int32_t openLocation = nsWindowWatcher::GetWindowOpenLocation(
-      parent->GetDOMWindow(), aChromeFlags, aCalledFromJS,
+      parent->GetDOMWindow(), aChromeFlags, aModifiers, aCalledFromJS,
       aOpenWindowInfo->GetIsForPrinting());
 
   if (openLocation != nsIBrowserDOMWindow::OPEN_NEWTAB &&
+      openLocation != nsIBrowserDOMWindow::OPEN_NEWTAB_BACKGROUND &&
+      openLocation != nsIBrowserDOMWindow::OPEN_NEWTAB_FOREGROUND &&
       openLocation != nsIBrowserDOMWindow::OPEN_CURRENTWINDOW &&
       openLocation != nsIBrowserDOMWindow::OPEN_PRINT_BROWSER) {
     // Just open a window normally
@@ -610,8 +603,7 @@ nsContentTreeOwner::Blur() {
     nsCOMPtr<nsIWindowMediator> windowMediator(
         do_GetService(kWindowMediatorCID));
     if (windowMediator) {
-      windowMediator->GetZOrderAppWindowEnumerator(
-          nullptr, true, getter_AddRefs(windowEnumerator));
+      windowMediator->GetEnumerator(nullptr, getter_AddRefs(windowEnumerator));
     }
   }
 

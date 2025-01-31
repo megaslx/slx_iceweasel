@@ -308,13 +308,15 @@ xpcAccessible::GetAttributes(nsIPersistentProperties** aAttributes) {
   NS_ENSURE_ARG_POINTER(aAttributes);
   *aAttributes = nullptr;
 
-  if (!IntlGeneric()) {
+  Accessible* acc = IntlGeneric();
+  if (!acc) {
     return NS_ERROR_FAILURE;
   }
 
   RefPtr<nsPersistentProperties> props = new nsPersistentProperties();
 
-  RefPtr<AccAttributes> attributes = IntlGeneric()->Attributes();
+  RefPtr<AccAttributes> attributes = acc->Attributes();
+  nsAccUtils::SetAccGroupAttrs(attributes, acc);
 
   nsAutoString unused;
   for (auto iter : *attributes) {
@@ -461,32 +463,10 @@ xpcAccessible::GetRelations(nsIArray** aRelations) {
   nsCOMPtr<nsIMutableArray> relations = do_CreateInstance(NS_ARRAY_CONTRACTID);
   NS_ENSURE_TRUE(relations, NS_ERROR_OUT_OF_MEMORY);
 
-  static const uint32_t relationTypes[] = {
-      nsIAccessibleRelation::RELATION_LABELLED_BY,
-      nsIAccessibleRelation::RELATION_LABEL_FOR,
-      nsIAccessibleRelation::RELATION_DESCRIBED_BY,
-      nsIAccessibleRelation::RELATION_DESCRIPTION_FOR,
-      nsIAccessibleRelation::RELATION_NODE_CHILD_OF,
-      nsIAccessibleRelation::RELATION_NODE_PARENT_OF,
-      nsIAccessibleRelation::RELATION_CONTROLLED_BY,
-      nsIAccessibleRelation::RELATION_CONTROLLER_FOR,
-      nsIAccessibleRelation::RELATION_FLOWS_TO,
-      nsIAccessibleRelation::RELATION_FLOWS_FROM,
-      nsIAccessibleRelation::RELATION_MEMBER_OF,
-      nsIAccessibleRelation::RELATION_SUBWINDOW_OF,
-      nsIAccessibleRelation::RELATION_EMBEDS,
-      nsIAccessibleRelation::RELATION_EMBEDDED_BY,
-      nsIAccessibleRelation::RELATION_POPUP_FOR,
-      nsIAccessibleRelation::RELATION_PARENT_WINDOW_OF,
-      nsIAccessibleRelation::RELATION_DEFAULT_BUTTON,
-      nsIAccessibleRelation::RELATION_CONTAINING_DOCUMENT,
-      nsIAccessibleRelation::RELATION_CONTAINING_TAB_PANE,
-      nsIAccessibleRelation::RELATION_CONTAINING_APPLICATION};
-
-  for (uint32_t idx = 0; idx < ArrayLength(relationTypes); idx++) {
+  for (uint32_t type = 0; type <= static_cast<uint32_t>(RelationType::LAST);
+       ++type) {
     nsCOMPtr<nsIAccessibleRelation> relation;
-    nsresult rv =
-        GetRelationByType(relationTypes[idx], getter_AddRefs(relation));
+    nsresult rv = GetRelationByType(type, getter_AddRefs(relation));
 
     if (NS_SUCCEEDED(rv) && relation) {
       uint32_t targets = 0;
@@ -658,7 +638,8 @@ xpcAccessible::ScrollToPoint(uint32_t aCoordinateType, int32_t aX, int32_t aY) {
 
 NS_IMETHODIMP
 xpcAccessible::Announce(const nsAString& aAnnouncement, uint16_t aPriority) {
-  if (RemoteAccessible* proxy = IntlGeneric()->AsRemote()) {
+  RemoteAccessible* proxy = IntlGeneric()->AsRemote();
+  if (proxy) {
 #if defined(XP_WIN)
     return NS_ERROR_NOT_IMPLEMENTED;
 #else

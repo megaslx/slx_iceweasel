@@ -6,6 +6,7 @@
 #if !defined(mozilla_dom_HTMLCanvasElement_h)
 #  define mozilla_dom_HTMLCanvasElement_h
 
+#  include "LayoutConstants.h"
 #  include "mozilla/Attributes.h"
 #  include "mozilla/StateWatching.h"
 #  include "mozilla/WeakPtr.h"
@@ -111,8 +112,6 @@ class FrameCaptureListener : public SupportsWeakPtr {
 class HTMLCanvasElement final : public nsGenericHTMLElement,
                                 public CanvasRenderingContextHelper,
                                 public SupportsWeakPtr {
-  enum { DEFAULT_CANVAS_WIDTH = 300, DEFAULT_CANVAS_HEIGHT = 150 };
-
   typedef layers::CanvasRenderer CanvasRenderer;
   typedef layers::LayerManager LayerManager;
   typedef layers::WebRenderCanvasData WebRenderCanvasData;
@@ -132,10 +131,12 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
   // WebIDL
   uint32_t Height() {
-    return GetUnsignedIntAttr(nsGkAtoms::height, DEFAULT_CANVAS_HEIGHT);
+    return GetUnsignedIntAttr(nsGkAtoms::height,
+                              kFallbackIntrinsicHeightInPixels);
   }
   uint32_t Width() {
-    return GetUnsignedIntAttr(nsGkAtoms::width, DEFAULT_CANVAS_WIDTH);
+    return GetUnsignedIntAttr(nsGkAtoms::width,
+                              kFallbackIntrinsicWidthInPixels);
   }
   void SetHeight(uint32_t aHeight, ErrorResult& aRv);
   void SetWidth(uint32_t aWidth, ErrorResult& aRv);
@@ -173,7 +174,12 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   /**
    * Get the size in pixels of this canvas element
    */
-  nsIntSize GetSize();
+  CSSIntSize GetSize();
+
+  /**
+   * Set the size in pixels of this canvas element.
+   */
+  void SetSize(const nsIntSize& aSize, ErrorResult& aRv);
 
   /**
    * Determine whether the canvas is write-only.
@@ -311,7 +317,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   virtual JSObject* WrapNode(JSContext* aCx,
                              JS::Handle<JSObject*> aGivenProto) override;
 
-  virtual nsIntSize GetWidthHeight() override;
+  CSSIntSize GetWidthHeight() override;
 
   virtual already_AddRefed<nsICanvasRenderingContextInternal> CreateContext(
       CanvasContextType aContextType) override;
@@ -326,6 +332,10 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   nsresult ToDataURLImpl(JSContext* aCx, nsIPrincipal& aSubjectPrincipal,
                          const nsAString& aMimeType,
                          const JS::Value& aEncoderOptions, nsAString& aDataURL);
+
+  UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aOutFormat,
+                                      gfx::IntSize* aOutImageSize) override;
+
   MOZ_CAN_RUN_SCRIPT void CallPrintCallback();
 
   virtual void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
@@ -347,6 +357,8 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
   layers::ImageContainer* GetImageContainer() const { return mImageContainer; }
 
+  bool UsingCaptureStream() const { return !!mRequestedFrameRefreshObserver; }
+
  protected:
   bool mResetLayer;
   bool mMaybeModified;  // we fetched the context, so we may have written to the
@@ -356,7 +368,6 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   RefPtr<HTMLCanvasPrintState> mPrintState;
   nsTArray<WeakPtr<FrameCaptureListener>> mRequestedFrameListeners;
   RefPtr<RequestedFrameRefreshObserver> mRequestedFrameRefreshObserver;
-  RefPtr<CanvasRenderer> mCanvasRenderer;
   RefPtr<OffscreenCanvas> mOffscreenCanvas;
   RefPtr<OffscreenCanvasDisplayHelper> mOffscreenDisplay;
   RefPtr<layers::ImageContainer> mImageContainer;

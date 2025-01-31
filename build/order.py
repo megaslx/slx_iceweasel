@@ -6,10 +6,11 @@ import os
 import re
 
 def write_order(obj_dir, bits) : 
-    file_path2 = obj_dir + '/' + 'orderfile' + bits + '.txt'
+    print(bits)
+    file_path2 = obj_dir + '/' + 'orderfile.txt'
     if os.path.exists(file_path2):
         os.remove(file_path2)
-    file_path1 = obj_dir + '/' + 'orderfile.txt'
+    file_path1 = obj_dir + '/' + 'order.txt'
     if os.path.exists(file_path1):
         with open(file_path1,'r') as f1:
             data = f1.read() 

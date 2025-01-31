@@ -24,7 +24,7 @@ VideoStream::VideoStream()
       max_bitrate_bps(-1),
       scale_resolution_down_by(-1.),
       max_qp(-1),
-      num_temporal_layers(absl::nullopt),
+      num_temporal_layers(std::nullopt),
       active(true) {}
 VideoStream::VideoStream(const VideoStream& other) = default;
 
@@ -59,7 +59,8 @@ VideoEncoderConfig::VideoEncoderConfig()
       bitrate_priority(1.0),
       number_of_streams(0),
       legacy_conference_mode(false),
-      is_quality_scaling_allowed(false) {}
+      is_quality_scaling_allowed(false),
+      max_qp(-1) {}
 
 VideoEncoderConfig::VideoEncoderConfig(VideoEncoderConfig&&) = default;
 
@@ -68,8 +69,7 @@ VideoEncoderConfig::~VideoEncoderConfig() = default;
 std::string VideoEncoderConfig::ToString() const {
   char buf[1024];
   rtc::SimpleStringBuilder ss(buf);
-  ss << "{codec_type: ";
-  ss << CodecTypeToPayloadString(codec_type);
+  ss << "{codec_type: " << CodecTypeToPayloadString(codec_type);
   ss << ", content_type: ";
   switch (content_type) {
     case ContentType::kRealtimeVideo:
@@ -88,6 +88,15 @@ std::string VideoEncoderConfig::ToString() const {
   return ss.str();
 }
 
+bool VideoEncoderConfig::HasRequestedResolution() const {
+  for (const VideoStream& simulcast_layer : simulcast_layers) {
+    if (simulcast_layer.requested_resolution.has_value()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 VideoEncoderConfig::VideoEncoderConfig(const VideoEncoderConfig&) = default;
 
 void VideoEncoderConfig::EncoderSpecificSettings::FillEncoderSpecificSettings(
@@ -96,6 +105,8 @@ void VideoEncoderConfig::EncoderSpecificSettings::FillEncoderSpecificSettings(
     FillVideoCodecVp8(codec->VP8());
   } else if (codec->codecType == kVideoCodecVP9) {
     FillVideoCodecVp9(codec->VP9());
+  } else if (codec->codecType == kVideoCodecAV1) {
+    FillVideoCodecAv1(codec->AV1());
   } else {
     RTC_DCHECK_NOTREACHED()
         << "Encoder specifics set/used for unknown codec type.";
@@ -109,6 +120,11 @@ void VideoEncoderConfig::EncoderSpecificSettings::FillVideoCodecVp8(
 
 void VideoEncoderConfig::EncoderSpecificSettings::FillVideoCodecVp9(
     VideoCodecVP9* vp9_settings) const {
+  RTC_DCHECK_NOTREACHED();
+}
+
+void VideoEncoderConfig::EncoderSpecificSettings::FillVideoCodecAv1(
+    VideoCodecAV1* av1_settings) const {
   RTC_DCHECK_NOTREACHED();
 }
 
@@ -128,6 +144,15 @@ VideoEncoderConfig::Vp9EncoderSpecificSettings::Vp9EncoderSpecificSettings(
 void VideoEncoderConfig::Vp9EncoderSpecificSettings::FillVideoCodecVp9(
     VideoCodecVP9* vp9_settings) const {
   *vp9_settings = specifics_;
+}
+
+VideoEncoderConfig::Av1EncoderSpecificSettings::Av1EncoderSpecificSettings(
+    const VideoCodecAV1& specifics)
+    : specifics_(specifics) {}
+
+void VideoEncoderConfig::Av1EncoderSpecificSettings::FillVideoCodecAv1(
+    VideoCodecAV1* av1_settings) const {
+  *av1_settings = specifics_;
 }
 
 }  // namespace webrtc

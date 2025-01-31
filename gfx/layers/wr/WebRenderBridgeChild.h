@@ -93,10 +93,8 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   // KnowsCompositor
   TextureForwarder* GetTextureForwarder() override;
   LayersIPCActor* GetLayersIPCActor() override;
-  void SyncWithCompositor() override;
-  ActiveResourceTracker* GetActiveResourceTracker() override {
-    return mActiveResourceTracker.get();
-  }
+  void SyncWithCompositor(
+      const Maybe<uint64_t>& aWindowID = Nothing()) override;
 
   void AddPipelineIdForCompositable(const wr::PipelineId& aPipelineId,
                                     const CompositableHandle& aHandle,
@@ -183,6 +181,10 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   void StartCaptureSequence(const nsCString& path, uint32_t aFlags);
   void StopCaptureSequence();
 
+  bool SendEnsureConnected(TextureFactoryIdentifier* textureFactoryIdentifier,
+                           MaybeIdNamespace* maybeIdNamespace,
+                           nsCString* error);
+
  private:
   friend class CompositorBridgeChild;
 
@@ -203,14 +205,10 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   void UseRemoteTexture(CompositableClient* aCompositable,
                         const RemoteTextureId aTextureId,
                         const RemoteTextureOwnerId aOwnerId,
-                        const gfx::IntSize aSize,
-                        const TextureFlags aFlags) override;
-  void EnableRemoteTexturePushCallback(CompositableClient* aCompositable,
-                                       const RemoteTextureOwnerId aOwnerId,
-                                       const gfx::IntSize aSize,
-                                       const TextureFlags aFlags) override;
-  void UpdateFwdTransactionId() override;
-  uint64_t GetFwdTransactionId() override;
+                        const gfx::IntSize aSize, const TextureFlags aFlags,
+                        const RefPtr<FwdTransactionTracker>& aTracker) override;
+  FwdTransactionCounter& GetFwdTransactionCounter() override;
+
   bool InForwarderThread() override;
 
   void ActorDestroy(ActorDestroyReason why) override;
@@ -257,8 +255,6 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
 
   uint32_t mFontInstanceKeysDeleted;
   nsTHashMap<ScaledFontHashKey, wr::FontInstanceKey> mFontInstanceKeys;
-
-  UniquePtr<ActiveResourceTracker> mActiveResourceTracker;
 
   RefCountedShmem mResourceShm;
 };

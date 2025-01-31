@@ -12,10 +12,13 @@
 
 #include <string.h>
 
+#include <optional>
 #include <utility>
 
+#include "absl/types/variant.h"
 #include "api/video/encoded_image.h"
 #include "api/video/video_timing.h"
+#include "common_video/frame_instrumentation_data.h"
 #include "rtc_base/checks.h"
 
 namespace webrtc {
@@ -34,7 +37,10 @@ RtpFrameObject::RtpFrameObject(
     VideoRotation rotation,
     VideoContentType content_type,
     const RTPVideoHeader& video_header,
-    const absl::optional<webrtc::ColorSpace>& color_space,
+    const std::optional<webrtc::ColorSpace>& color_space,
+    const std::optional<
+        absl::variant<FrameInstrumentationSyncData, FrameInstrumentationData>>&
+        frame_instrumentation_data,
     RtpPacketInfos packet_infos,
     rtc::scoped_refptr<EncodedImageBuffer> image_buffer)
     : image_buffer_(image_buffer),
@@ -49,9 +55,10 @@ RtpFrameObject::RtpFrameObject(
 
   // TODO(philipel): Remove when encoded image is replaced by EncodedFrame.
   // VCMEncodedFrame members
+  _codecSpecificInfo.frame_instrumentation_data = frame_instrumentation_data;
   CopyCodecSpecific(&rtp_video_header_);
   _payloadType = payload_type;
-  SetTimestamp(rtp_timestamp);
+  SetRtpTimestamp(rtp_timestamp);
   ntp_time_ms_ = ntp_time_ms;
   _frameType = rtp_video_header_.frame_type;
 
@@ -131,4 +138,7 @@ const RTPVideoHeader& RtpFrameObject::GetRtpVideoHeader() const {
   return rtp_video_header_;
 }
 
+void RtpFrameObject::SetHeaderFromMetadata(const VideoFrameMetadata& metadata) {
+  rtp_video_header_.SetFromMetadata(metadata);
+}
 }  // namespace webrtc

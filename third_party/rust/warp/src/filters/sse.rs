@@ -39,6 +39,8 @@
 //! which specifies the expected behavior of Server Sent Events.
 //!
 
+#![allow(rustdoc::invalid_html_tags)]
+
 use serde::Serialize;
 use std::borrow::Cow;
 use std::error::Error as StdError;
@@ -53,7 +55,7 @@ use futures_util::{future, Stream, TryStream, TryStreamExt};
 use http::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use hyper::Body;
 use pin_project::pin_project;
-use serde_json::{self, Error};
+use serde_json::Error;
 use tokio::time::{self, Sleep};
 
 use self::sealed::SseError;
@@ -376,7 +378,7 @@ impl KeepAlive {
 
     /// Wrap an event stream with keep-alive functionality.
     ///
-    /// See [`keep_alive`](keep_alive) for more.
+    /// See [`keep_alive`] for more.
     pub fn stream<S>(
         self,
         event_stream: S,

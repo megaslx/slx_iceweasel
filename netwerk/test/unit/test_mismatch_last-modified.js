@@ -32,7 +32,7 @@ var listener_3 = {
     "nsIRequestObserver",
   ]),
 
-  onStartRequest: function test_onStartR(request) {},
+  onStartRequest: function test_onStartR() {},
 
   onDataAvailable: function test_ODA(request, inputStream, offset, count) {
     var data = new BinaryInputStream(inputStream).readByteArray(count);
@@ -40,12 +40,12 @@ var listener_3 = {
     Assert.equal(data[0], "B".charCodeAt(0));
   },
 
-  onStopRequest: function test_onStopR(request, status) {
+  onStopRequest: function test_onStopR() {
     httpserver.stop(do_test_finished);
   },
 };
 
-XPCOMUtils.defineLazyGetter(this, "listener_2", function () {
+ChromeUtils.defineLazyGetter(this, "listener_2", function () {
   return {
     // this listener is used to process the revalidation of the
     // corrupted cache entry. its revalidation prompts it to be cleaned
@@ -55,7 +55,7 @@ XPCOMUtils.defineLazyGetter(this, "listener_2", function () {
       "nsIRequestObserver",
     ]),
 
-    onStartRequest: function test_onStartR(request) {},
+    onStartRequest: function test_onStartR() {},
 
     onDataAvailable: function test_ODA(request, inputStream, offset, count) {
       var data = new BinaryInputStream(inputStream).readByteArray(count);
@@ -66,7 +66,7 @@ XPCOMUtils.defineLazyGetter(this, "listener_2", function () {
       Assert.equal(data[0], "A".charCodeAt(0));
     },
 
-    onStopRequest: function test_onStopR(request, status) {
+    onStopRequest: function test_onStopR(request) {
       request.QueryInterface(Ci.nsIHttpChannel);
       var chan = NetUtil.newChannel({
         uri: "http://localhost:" + httpserver.identity.primaryPort + "/test1",
@@ -77,7 +77,7 @@ XPCOMUtils.defineLazyGetter(this, "listener_2", function () {
   };
 });
 
-XPCOMUtils.defineLazyGetter(this, "listener_1", function () {
+ChromeUtils.defineLazyGetter(this, "listener_1", function () {
   return {
     // this listener processes the initial request from a empty cache.
     // the server responds with the wrong data ('A')
@@ -87,14 +87,14 @@ XPCOMUtils.defineLazyGetter(this, "listener_1", function () {
       "nsIRequestObserver",
     ]),
 
-    onStartRequest: function test_onStartR(request) {},
+    onStartRequest: function test_onStartR() {},
 
     onDataAvailable: function test_ODA(request, inputStream, offset, count) {
       var data = new BinaryInputStream(inputStream).readByteArray(count);
       Assert.equal(data[0], "A".charCodeAt(0));
     },
 
-    onStopRequest: function test_onStopR(request, status) {
+    onStopRequest: function test_onStopR(request) {
       request.QueryInterface(Ci.nsIHttpChannel);
       var chan = NetUtil.newChannel({
         uri: "http://localhost:" + httpserver.identity.primaryPort + "/test1",

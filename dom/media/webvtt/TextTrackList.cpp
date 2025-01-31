@@ -10,7 +10,7 @@
 #include "mozilla/dom/TextTrackListBinding.h"
 #include "mozilla/dom/TrackEvent.h"
 #include "nsThreadUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "mozilla/dom/TextTrackCue.h"
 #include "mozilla/dom/TextTrackManager.h"
 
@@ -69,7 +69,7 @@ already_AddRefed<TextTrack> TextTrackList::AddTextTrack(
     TextTrackMode aMode, TextTrackReadyState aReadyState,
     TextTrackSource aTextTrackSource, const CompareTextTracks& aCompareTT) {
   RefPtr<TextTrack> track =
-      new TextTrack(GetOwner(), this, aKind, aLabel, aLanguage, aMode,
+      new TextTrack(GetOwnerWindow(), this, aKind, aLabel, aLanguage, aMode,
                     aReadyState, aTextTrackSource);
   AddTextTrack(track, aCompareTT);
   return track.forget();
@@ -121,7 +121,7 @@ nsresult TextTrackList::DispatchTrackEvent(Event* aEvent) {
 
 void TextTrackList::CreateAndDispatchChangeEvent() {
   MOZ_ASSERT(NS_IsMainThread());
-  nsPIDOMWindowInner* win = GetOwner();
+  nsPIDOMWindowInner* win = GetOwnerWindow();
   if (!win) {
     return;
   }
@@ -132,13 +132,11 @@ void TextTrackList::CreateAndDispatchChangeEvent() {
   event->SetTrusted(true);
 
   nsCOMPtr<nsIRunnable> eventRunner = new TrackEventRunner(this, event);
-  nsGlobalWindowInner::Cast(win)->Dispatch(TaskCategory::Other,
-                                           eventRunner.forget());
+  nsGlobalWindowInner::Cast(win)->Dispatch(eventRunner.forget());
 }
 
 void TextTrackList::CreateAndDispatchTrackEventRunner(
     TextTrack* aTrack, const nsAString& aEventName) {
-  DebugOnly<nsresult> rv;
   nsCOMPtr<nsIEventTarget> target = GetMainThreadSerialEventTarget();
   if (!target) {
     // If we are not able to get the main-thread object we are shutting down.
@@ -151,8 +149,8 @@ void TextTrackList::CreateAndDispatchTrackEventRunner(
       TrackEvent::Constructor(this, aEventName, eventInit);
 
   // Dispatch the TrackEvent asynchronously.
-  rv = target->Dispatch(do_AddRef(new TrackEventRunner(this, event)),
-                        NS_DISPATCH_NORMAL);
+  DebugOnly<nsresult> rv = target->Dispatch(
+      do_AddRef(new TrackEventRunner(this, event)), NS_DISPATCH_NORMAL);
 
   // If we are shutting down this can file but it's still ok.
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Dispatch failed");

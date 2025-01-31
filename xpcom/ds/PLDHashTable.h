@@ -414,7 +414,7 @@ class PLDHashTable {
   PLDHashTable(PLDHashTable&& aOther)
       // Initialize fields which are checked by the move assignment operator
       // and the destructor (which the move assignment operator calls).
-      : mOps(nullptr), mEntryStore(), mGeneration(0), mEntrySize(0) {
+      : mOps(nullptr), mGeneration(0), mEntrySize(0) {
     *this = std::move(aOther);
   }
 
@@ -600,8 +600,8 @@ class PLDHashTable {
   };
 
   template <class F>
-  auto WithEntryHandle(const void* aKey, F&& aFunc)
-      -> std::invoke_result_t<F, EntryHandle&&> {
+  auto WithEntryHandle(const void* aKey,
+                       F&& aFunc) -> std::invoke_result_t<F, EntryHandle&&> {
     return std::forward<F>(aFunc)(MakeEntryHandle(aKey));
   }
 

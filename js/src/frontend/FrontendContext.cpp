@@ -14,8 +14,9 @@
 #endif
 
 #include "gc/GC.h"
-#include "js/AllocPolicy.h"         // js::ReportOutOfMemory
-#include "js/friend/StackLimits.h"  // js::ReportOverRecursed
+#include "js/AllocPolicy.h"  // js::ReportOutOfMemory
+#include "js/experimental/CompileScript.h"
+#include "js/friend/StackLimits.h"  // js::ReportOverRecursed, js::MinimumStackLimitMargin, js::StackLimitMargin
 #include "js/Modules.h"
 #include "util/DifferentialTesting.h"
 #include "util/NativeStack.h"  // GetNativeStackBase
@@ -30,6 +31,8 @@ void FrontendErrors::clearErrors() {
   outOfMemory = false;
   allocationOverflow = false;
 }
+
+void FrontendErrors::clearWarnings() { warnings.clear(); }
 
 void FrontendAllocator::reportAllocationOverflow() {
   fc_->onAllocationOverflow();
@@ -48,16 +51,6 @@ FrontendContext::~FrontendContext() {
   }
 }
 
-bool FrontendContext::setSupportedImportAssertions(
-    const JS::ImportAssertionVector& supportedImportAssertions) {
-  MOZ_ASSERT(supportedImportAssertions_.empty());
-  if (!supportedImportAssertions_.appendAll(supportedImportAssertions)) {
-    ReportOutOfMemory();
-    return false;
-  }
-  return true;
-}
-
 void FrontendContext::setStackQuota(JS::NativeStackSize stackSize) {
 #ifdef __wasi__
   stackLimit_ = JS::WASINativeStackLimit;
@@ -74,6 +67,22 @@ void FrontendContext::setStackQuota(JS::NativeStackSize stackSize) {
 #endif
 }
 
+JS_PUBLIC_API void JS::SetNativeStackQuota(JS::FrontendContext* fc,
+                                           JS::NativeStackSize stackSize) {
+  fc->setStackQuota(stackSize);
+}
+
+JS_PUBLIC_API JS::NativeStackSize JS::ThreadStackQuotaForSize(
+    size_t stackSize) {
+  // Set the stack quota to 10% less that the actual size.
+  static constexpr double RatioWithoutMargin = 0.9;
+
+  MOZ_ASSERT(double(stackSize) * (1 - RatioWithoutMargin) >
+             js::MinimumStackLimitMargin);
+
+  return JS::NativeStackSize(double(stackSize) * RatioWithoutMargin);
+}
+
 bool FrontendContext::allocateOwnedPool() {
   MOZ_ASSERT(!nameCollectionPool_);
 
@@ -86,19 +95,26 @@ bool FrontendContext::allocateOwnedPool() {
 }
 
 bool FrontendContext::hadErrors() const {
-  if (maybeCx_) {
-    if (maybeCx_->isExceptionPending()) {
-      return true;
-    }
-  }
+  // All errors must be reported to FrontendContext.
+  MOZ_ASSERT_IF(maybeCx_, !maybeCx_->isExceptionPending());
 
   return errors_.hadErrors();
+}
+
+JS_PUBLIC_API bool JS::HadFrontendErrors(JS::FrontendContext* fc) {
+  return fc->hadErrors();
 }
 
 void FrontendContext::clearErrors() {
   MOZ_ASSERT(!maybeCx_);
   return errors_.clearErrors();
 }
+
+JS_PUBLIC_API void JS::ClearFrontendErrors(JS::FrontendContext* fc) {
+  fc->clearErrors();
+}
+
+void FrontendContext::clearWarnings() { return errors_.clearWarnings(); }
 
 void* FrontendContext::onOutOfMemory(AllocFunction allocFunc, arena_id_t arena,
                                      size_t nbytes, void* reallocPtr) {
@@ -115,11 +131,7 @@ void FrontendContext::onOutOfMemory() { addPendingOutOfMemory(); }
 void FrontendContext::onOverRecursed() { errors_.overRecursed = true; }
 
 void FrontendContext::recoverFromOutOfMemory() {
-  // TODO: Remove this branch once error report directly against JSContext is
-  //       removed from the frontend code.
-  if (maybeCx_) {
-    maybeCx_->recoverFromOutOfMemory();
-  }
+  MOZ_ASSERT_IF(maybeCx_, !maybeCx_->isThrowingOutOfMemory());
 
   errors_.outOfMemory = false;
 }
@@ -207,13 +219,24 @@ bool FrontendContext::convertToRuntimeError(
   if (hadAllocationOverflow()) {
     js::ReportAllocationOverflow(cx);
   }
+
+  MOZ_ASSERT(!extraBindingsAreNotUsed(),
+             "extraBindingsAreNotUsed shouldn't escape from FrontendContext");
   return true;
+}
+
+JS_PUBLIC_API bool JS::ConvertFrontendErrorsToRuntimeErrors(
+    JSContext* cx, JS::FrontendContext* fc,
+    const JS::ReadOnlyCompileOptions& options) {
+  return fc->convertToRuntimeError(cx);
 }
 
 #ifdef DEBUG
 static size_t GetTid() {
 #  if defined(_WIN32)
   return size_t(GetCurrentThreadId());
+#  elif defined(__wasm__)
+  return 1;
 #  else
   return size_t(pthread_self());
 #  endif
@@ -278,4 +301,79 @@ FrontendContext* js::NewFrontendContext() {
   return fc.release();
 }
 
+JS_PUBLIC_API FrontendContext* JS::NewFrontendContext() {
+  MOZ_ASSERT(JS::detail::libraryInitState == JS::detail::InitState::Running,
+             "must call JS_Init prior to creating any FrontendContexts");
+
+  return js::NewFrontendContext();
+}
+
 void js::DestroyFrontendContext(FrontendContext* fc) { js_delete_poison(fc); }
+
+JS_PUBLIC_API void JS::DestroyFrontendContext(FrontendContext* fc) {
+  return js::DestroyFrontendContext(fc);
+}
+
+#ifdef DEBUG
+void FrontendContext::checkAndUpdateFrontendContextRecursionLimit(void* sp) {
+  // For the js::MinimumStackLimitMargin to be effective, it should be larger
+  // than the largest stack space which might be consumed by successive calls
+  // to AutoCheckRecursionLimit::check.
+  //
+  // This function asserts that this property holds by recalling the stack
+  // pointer of the previous call and comparing the consumed stack size with
+  // the minimum margin.
+  //
+  // If this property does not hold, either the stack limit should be increased
+  // or more calls to check for recursion should be added.
+  if (previousStackPointer_ != nullptr) {
+#  if JS_STACK_GROWTH_DIRECTION > 0
+    if (sp > previousStackPointer_) {
+      size_t diff = uintptr_t(sp) - uintptr_t(previousStackPointer_);
+      MOZ_ASSERT(diff < js::MinimumStackLimitMargin);
+    }
+#  else
+    if (sp < previousStackPointer_) {
+      size_t diff = uintptr_t(previousStackPointer_) - uintptr_t(sp);
+      MOZ_ASSERT(diff < js::MinimumStackLimitMargin);
+    }
+#  endif
+  }
+  previousStackPointer_ = sp;
+}
+
+void js::CheckAndUpdateFrontendContextRecursionLimit(FrontendContext* fc,
+                                                     void* sp) {
+  fc->checkAndUpdateFrontendContextRecursionLimit(sp);
+}
+#endif
+
+JS_PUBLIC_API const JSErrorReport* JS::GetFrontendErrorReport(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& options) {
+  if (!fc->maybeError().isSome()) {
+    return nullptr;
+  }
+  return fc->maybeError().ptr();
+}
+
+JS_PUBLIC_API bool JS::HadFrontendOverRecursed(JS::FrontendContext* fc) {
+  return fc->hadOverRecursed();
+}
+
+JS_PUBLIC_API bool JS::HadFrontendOutOfMemory(JS::FrontendContext* fc) {
+  return fc->hadOutOfMemory();
+}
+
+JS_PUBLIC_API bool JS::HadFrontendAllocationOverflow(JS::FrontendContext* fc) {
+  return fc->hadAllocationOverflow();
+}
+
+JS_PUBLIC_API size_t JS::GetFrontendWarningCount(JS::FrontendContext* fc) {
+  return fc->warnings().length();
+}
+
+JS_PUBLIC_API const JSErrorReport* JS::GetFrontendWarningAt(
+    JS::FrontendContext* fc, size_t index,
+    const JS::ReadOnlyCompileOptions& options) {
+  return &fc->warnings()[index];
+}

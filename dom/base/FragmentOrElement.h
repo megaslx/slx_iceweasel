@@ -17,8 +17,10 @@
 #include "mozilla/EnumSet.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/dom/RadioGroupContainer.h"
 #include "nsCycleCollectionParticipant.h"  // NS_DECL_CYCLE_*
 #include "nsIContent.h"                    // base class
+#include "nsAtomHashKeys.h"
 #include "nsIHTMLCollection.h"
 #include "nsIWeakReferenceUtils.h"
 
@@ -72,6 +74,7 @@ class nsNodeSupportsWeakRefTearoff final : public nsISupportsWeakReference {
  */
 namespace mozilla::dom {
 
+class DOMIntersectionObserver;
 class ShadowRoot;
 
 class FragmentOrElement : public nsIContent {
@@ -111,6 +114,14 @@ class FragmentOrElement : public nsIContent {
       return 0;
     }
     return Children()->Length();
+  }
+
+  RadioGroupContainer& OwnedRadioGroupContainer() {
+    auto* slots = ExtendedDOMSlots();
+    if (!slots->mRadioGroupContainer) {
+      slots->mRadioGroupContainer = MakeUnique<RadioGroupContainer>();
+    }
+    return *slots->mRadioGroupContainer;
   }
 
  public:
@@ -208,6 +219,17 @@ class FragmentOrElement : public nsIContent {
     UniquePtr<PopoverData> mPopoverData;
 
     /**
+     * CustomStates for the element.
+     */
+    nsTArray<RefPtr<nsAtom>> mCustomStates;
+
+    /**
+     * RadioGroupContainer for radio buttons grouped under this disconnected
+     * element.
+     */
+    UniquePtr<RadioGroupContainer> mRadioGroupContainer;
+
+    /**
      * Last remembered size (in CSS pixels) for the element.
      * @see {@link https://drafts.csswg.org/css-sizing-4/#last-remembered}
      */
@@ -217,20 +239,50 @@ class FragmentOrElement : public nsIContent {
     /**
      * Whether the content of this element is relevant for the purposes
      * of `content-visibility: auto.
+     * Reflects 'relevant to the user' concept, see
+     * https://drafts.csswg.org/css-contain/#relevant-to-the-user.
      */
     Maybe<ContentRelevancy> mContentRelevancy;
 
     /**
      * Whether the content of this element is considered visible for
      * the purposes of `content-visibility: auto.
+     * Reflects 'proximity to the viewport' concept, see
+     * https://drafts.csswg.org/css-contain/#proximity-to-the-viewport.
      */
     Maybe<bool> mVisibleForContentVisibility;
 
     /**
-     * Explicitly set attr-elements, see
-     * https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#explicitly-set-attr-element
+     * Whether content-visibility: auto is temporarily visible for
+     * the purposes of the descendant of scrollIntoView.
      */
-    nsTHashMap<nsRefPtrHashKey<nsAtom>, nsWeakPtr> mExplicitlySetAttrElements;
+    bool mTemporarilyVisibleForScrolledIntoViewDescendant = false;
+
+    /**
+     * The .dataset attribute.
+     * @see nsGenericHTMLElement::GetDataset
+     */
+    nsDOMStringMap* MOZ_UNSAFE_REF("ClearDataSet clears it") mDataset = nullptr;
+
+    /** An object implementing the .part property for this element. */
+    RefPtr<nsDOMTokenList> mPart;
+
+    /**
+     * Explicitly set attr-element, see
+     * https://html.spec.whatwg.org/#explicitly-set-attr-element
+     */
+    nsTHashMap<RefPtr<nsAtom>, nsWeakPtr> mExplicitlySetAttrElementMap;
+    /**
+     * Explicitly set attr-elements, see
+     * https://html.spec.whatwg.org/#explicitly-set-attr-elements
+     *
+     * The first member of the pair are the explicitly set attr-elements. The
+     * second member is the cached attr-associated elements.
+     */
+
+    nsTHashMap<RefPtr<nsAtom>, std::pair<Maybe<nsTArray<nsWeakPtr>>,
+                                         Maybe<nsTArray<RefPtr<Element>>>>>
+        mAttrElementsMap;
   };
 
   class nsDOMSlots : public nsIContent::nsContentSlots {
@@ -251,12 +303,6 @@ class FragmentOrElement : public nsIContent {
     nsCOMPtr<nsICSSDeclaration> mStyle;
 
     /**
-     * The .dataset attribute.
-     * @see nsGenericHTMLElement::GetDataset
-     */
-    nsDOMStringMap* mDataset;  // [Weak]
-
-    /**
      * @see Element::Attributes
      */
     RefPtr<nsDOMAttributeMap> mAttributeMap;
@@ -270,11 +316,6 @@ class FragmentOrElement : public nsIContent {
      * An object implementing the .classList property for this element.
      */
     RefPtr<nsDOMTokenList> mClassList;
-
-    /**
-     * An object implementing the .part property for this element.
-     */
-    RefPtr<nsDOMTokenList> mPart;
   };
 
   /**

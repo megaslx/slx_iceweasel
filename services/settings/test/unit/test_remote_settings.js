@@ -1,26 +1,7 @@
 /* import-globals-from ../../../common/tests/unit/head_helpers.js */
 
-const { AppConstants } = ChromeUtils.importESModule(
-  "resource://gre/modules/AppConstants.sys.mjs"
-);
 const { ObjectUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/ObjectUtils.sys.mjs"
-);
-const { setTimeout } = ChromeUtils.importESModule(
-  "resource://gre/modules/Timer.sys.mjs"
-);
-
-const { RemoteSettings } = ChromeUtils.importESModule(
-  "resource://services-settings/remote-settings.sys.mjs"
-);
-const { Utils } = ChromeUtils.importESModule(
-  "resource://services-settings/Utils.sys.mjs"
-);
-const { UptakeTelemetry, Policy } = ChromeUtils.importESModule(
-  "resource://services-common/uptake-telemetry.sys.mjs"
-);
-const { TelemetryTestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
 );
 
 const IS_ANDROID = AppConstants.platform == "android";
@@ -54,7 +35,7 @@ async function clear_state() {
   TelemetryTestUtils.assertEvents([], {}, { process: "dummy" });
 }
 
-function run_test() {
+add_task(() => {
   // Set up an HTTP Server
   server = new HttpServer();
   server.start(-1);
@@ -64,12 +45,12 @@ function run_test() {
   Policy.getChannel = () => "nightly";
 
   // Point the blocklist clients to use this local HTTP server.
-  Services.prefs.setCharPref(
+  Services.prefs.setStringPref(
     "services.settings.server",
     `http://localhost:${server.identity.primaryPort}/v1`
   );
 
-  Services.prefs.setCharPref("services.settings.loglevel", "debug");
+  Services.prefs.setStringPref("services.settings.loglevel", "debug");
 
   client = RemoteSettings("password-fields");
   clientWithDump = RemoteSettings("language-dictionaries");
@@ -93,13 +74,11 @@ function run_test() {
   );
   server.registerPathHandler("/fake-x5u", handleResponse);
 
-  run_next_test();
-
   registerCleanupFunction(() => {
     Policy.getChannel = oldGetChannel;
     server.stop(() => {});
   });
-}
+});
 add_task(clear_state);
 
 add_task(async function test_records_obtained_from_server_are_stored_in_db() {
@@ -133,7 +112,11 @@ add_task(
     await clientWithDump.maybeSync(timestamp);
 
     const list = await clientWithDump.get();
-    ok(list.length > 20, `The dump was loaded (${list.length} records)`);
+    Assert.greater(
+      list.length,
+      20,
+      `The dump was loaded (${list.length} records)`
+    );
     equal(received.created[0].id, "xx", "Record from the sync come first.");
 
     const createdById = received.created.reduce((acc, r) => {
@@ -328,8 +311,9 @@ add_task(async function test_get_sorts_results_if_specified() {
   );
 
   const records = await client.get({ order: "field" });
-  ok(
-    records[0].field < records[records.length - 1].field,
+  Assert.less(
+    records[0].field,
+    records[records.length - 1].field,
     "records are sorted"
   );
 });
@@ -350,6 +334,7 @@ add_task(async function test_get_falls_back_sorts_results() {
     order: "-id",
   });
 
+  // eslint-disable-next-line mozilla/no-comparison-or-assignment-inside-ok
   ok(records[0].id > records[records.length - 1].id, "records are sorted");
 
   clientWithDump.db.getLastModified = backup;
@@ -526,7 +511,7 @@ add_task(async function test_get_can_verify_signature() {
   }
   equal(
     error.message,
-    "Invalid content signature (main/password-fields) using 'fake-x5u'"
+    "Invalid content signature (main/password-fields) using 'fake-x5u' and signer remote-settings.content-signature.mozilla.org"
   );
 });
 add_task(clear_state);
@@ -539,7 +524,7 @@ add_task(async function test_get_does_not_verify_signature_if_load_dump() {
 
   let called;
   clientWithDump._verifier = {
-    async asyncVerifyContentSignature(serialized, signature) {
+    async asyncVerifyContentSignature() {
       called = true;
       return true;
     },
@@ -577,7 +562,7 @@ add_task(
     const backup = clientWithDump._verifier;
     let callCount = 0;
     clientWithDump._verifier = {
-      async asyncVerifyContentSignature(serialized, signature) {
+      async asyncVerifyContentSignature() {
         callCount++;
         return true;
       },
@@ -634,7 +619,7 @@ add_task(
 
     let called;
     clientWithDump._verifier = {
-      async asyncVerifyContentSignature(serialized, signature) {
+      async asyncVerifyContentSignature() {
         called = true;
         return true;
       },
@@ -1168,7 +1153,7 @@ add_task(clear_state);
 
 add_task(async function test_sync_event_is_not_sent_from_get_when_no_dump() {
   let called = false;
-  client.on("sync", e => {
+  client.on("sync", () => {
     called = true;
   });
 
@@ -1679,3 +1664,23 @@ wNuvFqc=
     responses[req.method]
   );
 }
+
+add_task(clear_state);
+
+add_task(async function test_hasAttachments_works_as_expected() {
+  let res = await client.db.hasAttachments();
+  Assert.equal(res, false, "Should return false, no attachments at start");
+
+  await client.db.saveAttachment("foo", {
+    record: { id: "foo" },
+    blob: new Blob(["foo"]),
+  });
+
+  res = await client.db.hasAttachments();
+  Assert.equal(res, true, "Should return true, just saved an attachment");
+
+  await client.db.pruneAttachments([]);
+
+  res = await client.db.hasAttachments();
+  Assert.equal(res, false, "Should return false after attachments are pruned");
+});

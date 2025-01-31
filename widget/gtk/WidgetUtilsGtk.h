@@ -9,11 +9,11 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "mozilla/MozPromise.h"
-
 #include <stdint.h>
 
 typedef struct _GdkDisplay GdkDisplay;
 typedef struct _GdkDevice GdkDevice;
+typedef struct _GError GError;
 typedef union _GdkEvent GdkEvent;
 class nsWindow;
 
@@ -53,6 +53,7 @@ inline bool IsRunningUnderFlatpakOrSnap() {
 enum class PortalKind {
   FilePicker,
   MimeHandler,
+  NativeMessaging,
   Settings,
   Location,
   OpenUri,
@@ -74,6 +75,15 @@ nsTArray<nsCString> ParseTextURIList(const nsACString& data);
 
 using FocusRequestPromise = MozPromise<nsCString, bool, false>;
 RefPtr<FocusRequestPromise> RequestWaylandFocusPromise();
+
+bool IsCancelledGError(GError* aGError);
+
+#if defined(MOZ_X11)
+// Used by startup notifications
+nsCString SynthesizeStartupToken();
+void FindLatestUserTime(GdkDisplay* aDisplay, uintptr_t aWindow,
+                        unsigned long* aLatestTime);
+#endif
 
 }  // namespace mozilla::widget
 

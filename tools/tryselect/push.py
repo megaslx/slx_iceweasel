@@ -8,11 +8,11 @@ import os
 import sys
 import traceback
 
-import six
 from mach.util import get_state_dir
 from mozbuild.base import MozbuildObject
 from mozversioncontrol import MissingVCSExtension, get_repository_object
 
+from .lando import push_to_lando_try
 from .util.estimates import duration_summary
 from .util.manage_estimates import (
     download_task_history_data,
@@ -47,6 +47,8 @@ ERROR please commit changes before continuing
 
 MAX_HISTORY = 10
 
+MACH_TRY_PUSH_TO_VCS = os.getenv("MACH_TRY_PUSH_TO_VCS") == "1"
+
 here = os.path.abspath(os.path.dirname(__file__))
 build = MozbuildObject.from_environment(cwd=here)
 vcs = get_repository_object(build.topsrcdir)
@@ -54,14 +56,6 @@ vcs = get_repository_object(build.topsrcdir)
 history_path = os.path.join(
     get_state_dir(specific_to_topsrcdir=True), "history", "try_task_configs.json"
 )
-
-
-def write_task_config(try_task_config):
-    config_path = os.path.join(vcs.path, "try_task_config.json")
-    with open(config_path, "w") as fh:
-        json.dump(try_task_config, fh, indent=4, separators=(",", ": "), sort_keys=True)
-        fh.write("\n")
-    return config_path
 
 
 def write_task_config_history(msg, try_task_config):
@@ -88,26 +82,39 @@ def check_working_directory(push=True):
         sys.exit(1)
 
 
-def generate_try_task_config(method, labels, try_config=None, routes=None):
-    try_task_config = try_config or {}
-    try_task_config.setdefault("env", {})["TRY_SELECTOR"] = method
-    try_task_config.update(
-        {
-            "version": 1,
-            "tasks": sorted(labels),
-        }
-    )
-    if routes:
-        try_task_config["routes"] = routes
+def generate_try_task_config(method, labels, params=None, routes=None):
+    params = params or {}
 
+    # The user has explicitly requested a set of jobs, so run them all
+    # regardless of optimization (unless the selector explicitly sets this to
+    # True). Their dependencies can be optimized though.
+    params.setdefault("optimize_target_tasks", False)
+
+    # Remove selected labels from 'existing_tasks' parameter if present
+    if "existing_tasks" in params:
+        params["existing_tasks"] = {
+            label: tid
+            for label, tid in params["existing_tasks"].items()
+            if label not in labels
+        }
+
+    try_config = params.setdefault("try_task_config", {})
+    try_config.setdefault("env", {})["TRY_SELECTOR"] = method
+
+    try_config["tasks"] = sorted(labels)
+
+    if routes:
+        try_config["routes"] = routes
+
+    try_task_config = {"version": 2, "parameters": params}
     return try_task_config
 
 
 def task_labels_from_try_config(try_task_config):
     if try_task_config["version"] == 2:
         parameters = try_task_config.get("parameters", {})
-        if parameters.get("try_mode") == "try_task_config":
-            return parameters["try_task_config"]["tasks"]
+        if "try_task_config" in parameters:
+            return parameters["try_task_config"].get("tasks")
         else:
             return None
     elif try_task_config["version"] == 1:
@@ -156,17 +163,32 @@ def display_push_estimates(try_task_config):
         )
     )
     if "percentile" in durations:
-        print(
-            "estimates: In the top {}% of durations".format(
-                100 - durations["percentile"]
-            )
-        )
+        percentile = durations["percentile"]
+        if percentile > 50:
+            print("estimates: In the longest {}% of durations".format(100 - percentile))
+        else:
+            print("estimates: In the shortest {}% of durations".format(percentile))
     print(
         "estimates: Should take about {} (Finished around {})".format(
             durations["wall_duration_seconds"],
             durations["eta_datetime"].strftime("%Y-%m-%d %H:%M"),
         )
     )
+
+
+# improves on `" ".join(sys.argv[:])` by requoting argv items containing spaces or single quotes
+def get_sys_argv(injected_argv=None):
+    argv_to_use = injected_argv or sys.argv[:]
+
+    formatted_argv = []
+    for item in argv_to_use:
+        if " " in item or "'" in item:
+            formatted_item = f'"{item}"'
+        else:
+            formatted_item = item
+        formatted_argv.append(formatted_item)
+
+    return " ".join(formatted_argv)
 
 
 def push_to_try(
@@ -178,8 +200,11 @@ def push_to_try(
     closed_tree=False,
     files_to_change=None,
     allow_log_capture=False,
+    push_to_lando=False,
+    push_to_vcs=False,
 ):
     push = not stage_changes and not dry_run
+    push_to_vcs |= MACH_TRY_PUSH_TO_VCS
     check_working_directory(push)
 
     if try_task_config and method not in ("auto", "empty"):
@@ -191,49 +216,65 @@ def push_to_try(
 
     # Format the commit message
     closed_tree_string = " ON A CLOSED TREE" if closed_tree else ""
-    commit_message = "{}{}\n\nPushed via `mach try {}`".format(
+    the_cmdline = get_sys_argv()
+    full_commandline_entry = f"mach try command: `{the_cmdline}`"
+    commit_message = "{}{}\n\n{}\n\nPushed via `mach try {}`".format(
         msg,
         closed_tree_string,
+        full_commandline_entry,
         method,
     )
 
-    config_path = None
-    changed_files = []
+    changed_files = {}
+
     if try_task_config:
+        changed_files["try_task_config.json"] = (
+            json.dumps(
+                try_task_config, indent=4, separators=(",", ": "), sort_keys=True
+            )
+            + "\n"
+        )
         if push and method not in ("again", "auto", "empty"):
             write_task_config_history(msg, try_task_config)
-        config_path = write_task_config(try_task_config)
-        changed_files.append(config_path)
 
     if (push or stage_changes) and files_to_change:
-        for path, content in files_to_change.items():
-            path = os.path.join(vcs.path, path)
-            with open(path, "wb") as fh:
-                fh.write(six.ensure_binary(content))
-            changed_files.append(path)
+        changed_files.update(files_to_change.items())
+
+    if not push:
+        print("Commit message:")
+        print(commit_message)
+        config = changed_files.pop("try_task_config.json", None)
+        if config:
+            print("Calculated try_task_config.json:")
+            print(config)
+        if stage_changes:
+            vcs.stage_changes(changed_files)
+
+        return
+
+    if push_to_lando or not push_to_vcs:
+        print("Note: `--push-to-lando` is now the default behaviour of `mach try`.")
+        print("Note: Use `--push-to-vcs` to push changes to try directly.")
 
     try:
-        if not push:
-            print("Commit message:")
-            print(commit_message)
-            if config_path:
-                print("Calculated try_task_config.json:")
-                with open(config_path) as fh:
-                    print(fh.read())
-            return
-
-        vcs.add_remove_files(*changed_files)
-
-        try:
-            vcs.push_to_try(commit_message, allow_log_capture=allow_log_capture)
-        except MissingVCSExtension as e:
-            if e.ext == "push-to-try":
-                print(HG_PUSH_TO_TRY_NOT_FOUND)
-            elif e.ext == "cinnabar":
-                print(GIT_CINNABAR_NOT_FOUND)
-            else:
-                raise
-            sys.exit(1)
+        if push_to_vcs:
+            vcs.push_to_try(
+                commit_message,
+                changed_files=changed_files,
+                allow_log_capture=allow_log_capture,
+            )
+        else:
+            push_to_lando_try(vcs, commit_message, changed_files)
+    except MissingVCSExtension as e:
+        if e.ext == "push-to-try":
+            print(HG_PUSH_TO_TRY_NOT_FOUND)
+        elif e.ext == "cinnabar":
+            print(GIT_CINNABAR_NOT_FOUND)
+        else:
+            raise
+        sys.exit(1)
     finally:
-        if config_path and os.path.isfile(config_path):
-            os.remove(config_path)
+        if "try_task_config.json" in changed_files and os.path.isfile(
+            "try_task_config.json"
+        ):
+            os.remove("try_task_config.json")

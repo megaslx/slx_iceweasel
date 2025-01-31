@@ -43,6 +43,7 @@ function waitForState(dbg, predicate, msg) {
     return false;
   });
 }
+exports.waitForState = waitForState;
 
 function waitForDispatch(dbg, type, count = 1) {
   return new Promise(resolve => {
@@ -101,11 +102,10 @@ function findSource(dbg, url) {
 }
 exports.findSource = findSource;
 
-function getCM(dbg) {
-  const el = dbg.win.document.querySelector(".CodeMirror");
-  return el.CodeMirror;
+function getCMEditor(dbg) {
+  return dbg.win.codeMirrorSourceEditorTestInstance;
 }
-exports.getCM = getCM;
+exports.getCMEditor = getCMEditor;
 
 function waitForText(dbg, text) {
   return waitUntil(() => {
@@ -114,9 +114,8 @@ function waitForText(dbg, text) {
     if (welcomebox) {
       return false;
     }
-    const cm = getCM(dbg);
-    const editorText = cm.doc.getValue();
-    return editorText.includes(text);
+    const editor = getCMEditor(dbg);
+    return editor.getText().includes(text);
   }, "text is visible");
 }
 exports.waitForText = waitForText;
@@ -156,8 +155,18 @@ function waitForThreadCount(dbg, count) {
   return waitForState(dbg, threadCount, `has source ${count} threads`);
 }
 
-async function waitForPaused(dbg) {
-  const onLoadedScope = waitForLoadedScopes(dbg);
+async function waitForPaused(
+  dbg,
+  pauseOptions = { shouldWaitForLoadedScopes: true }
+) {
+  const promises = [];
+
+  // If original variable mapping is disabled the scopes for
+  // original sources are not loaded by default so lets not
+  // wait for any scopes.
+  if (pauseOptions.shouldWaitForLoadedScopes) {
+    promises.push(waitForLoadedScopes(dbg));
+  }
   const {
     selectors: { getSelectedScope, getIsPaused, getCurrentThread },
   } = dbg;
@@ -165,8 +174,12 @@ async function waitForPaused(dbg) {
     const thread = getCurrentThread(state);
     return getSelectedScope(state, thread) && getIsPaused(state, thread);
   });
-  return Promise.all([onLoadedScope, onStateChange]);
+  promises.push(onStateChange);
+
+  await Promise.all(promises);
+  await waitForSymbols(dbg);
 }
+exports.waitForPaused = waitForPaused;
 
 async function waitForResumed(dbg) {
   const {
@@ -184,8 +197,26 @@ async function waitForElement(dbg, name) {
 }
 
 async function waitForLoadedScopes(dbg) {
-  const element = '.scopes-list .tree-node[aria-level="1"]';
+  // Since scopes auto-expand, we can assume they are loaded when there is a tree node
+  // with the aria-level attribute equal to "2".
+  const element = '.scopes-list .tree-node[aria-level="2"]';
   return waitForElement(dbg, element);
+}
+
+function clickElement(dbg, selector) {
+  const clickEvent = new dbg.win.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    view: dbg.win,
+  });
+  dbg.win.document.querySelector(selector).dispatchEvent(clickEvent);
+}
+
+async function toggleOriginalScopes(dbg) {
+  const scopesLoaded = waitForLoadedScopes(dbg);
+  const onDispatch = waitForDispatch(dbg, "TOGGLE_MAP_SCOPES");
+  clickElement(dbg, ".map-scopes-header input");
+  return Promise.all([onDispatch, scopesLoaded]);
 }
 
 function createContext(panel) {
@@ -217,15 +248,16 @@ async function selectSource(dbg, url) {
       if (!location) {
         return false;
       }
+      if (location.source != source || location.line != line) {
+        return false;
+      }
       const sourceTextContent =
         dbg.selectors.getSelectedSourceTextContent(state);
       if (!sourceTextContent) {
         return false;
       }
 
-      // wait for symbols -- a flat map of all named variables in a file -- to be calculated.
-      // this is a slow process and becomes slower the larger the file is
-      return dbg.selectors.getSymbols(state, location);
+      return true;
     },
     "selected source"
   );
@@ -259,7 +291,6 @@ async function openDebuggerAndLog(label, expected) {
     await waitForSource(dbg, expected.sourceURL);
     await selectSource(dbg, expected.file);
     await waitForText(dbg, expected.text);
-    await waitForSymbols(dbg);
   };
 
   const toolbox = await openToolboxAndLog(
@@ -285,7 +316,6 @@ async function reloadDebuggerAndLog(label, toolbox, expected) {
     await waitForSources(dbg, expected.sources);
     await waitForSource(dbg, expected.sourceURL);
     await waitForText(dbg, expected.text);
-    await waitForSymbols(dbg);
   };
   await reloadPageAndLog(`${label}.jsdebugger`, toolbox, onReload);
 }
@@ -305,7 +335,7 @@ async function addBreakpoint(dbg, line, url) {
 }
 exports.addBreakpoint = addBreakpoint;
 
-async function removeBreakpoints(dbg, line, url) {
+async function removeBreakpoints(dbg) {
   dump(`remove all breakpoints\n`);
   const breakpoints = dbg.selectors.getBreakpointsList(dbg.getState());
 
@@ -319,9 +349,26 @@ async function removeBreakpoints(dbg, line, url) {
 exports.removeBreakpoints = removeBreakpoints;
 
 async function pauseDebugger(dbg, tab, testFunction, { line, file }) {
+  const { getSelectedLocation, isMapScopesEnabled } = dbg.selectors;
+
+  const state = dbg.store.getState();
+  const selectedSource = getSelectedLocation(state).source;
+
   await addBreakpoint(dbg, line, file);
-  const onPaused = waitForPaused(dbg);
+  const shouldEnableOriginalScopes =
+    selectedSource.isOriginal &&
+    !selectedSource.isPrettyPrinted &&
+    !isMapScopesEnabled(state);
+
+  const onPaused = waitForPaused(dbg, {
+    shouldWaitForLoadedScopes: !shouldEnableOriginalScopes,
+  });
   await evalInFrame(tab, testFunction);
+
+  if (shouldEnableOriginalScopes) {
+    await onPaused;
+    await toggleOriginalScopes(dbg);
+  }
   return onPaused;
 }
 exports.pauseDebugger = pauseDebugger;
@@ -341,11 +388,12 @@ async function step(dbg, stepType) {
 }
 exports.step = step;
 
-async function hoverOnToken(dbg, textToWaitFor, textToHover) {
+async function hoverOnToken(dbg, textToWaitFor, textToHover, isCm6Enabled) {
   await waitForText(dbg, textToWaitFor);
-  const tokenElement = [
-    ...dbg.win.document.querySelectorAll(".CodeMirror span"),
-  ].find(el => el.textContent === textToHover);
+  const selector = isCm6Enabled ? ".cm-editor span" : ".CodeMirror span";
+  const tokenElement = [...dbg.win.document.querySelectorAll(selector)].find(
+    el => el.textContent === textToHover
+  );
 
   const mouseOverEvent = new dbg.win.MouseEvent("mouseover", {
     bubbles: true,

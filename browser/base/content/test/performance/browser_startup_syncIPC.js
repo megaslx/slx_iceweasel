@@ -14,6 +14,11 @@ const SKELETONUI = Services.prefs.getBoolPref(
   "browser.startup.preXulSkeletonUI",
   false
 );
+// GPUPROCESS is approximate; any check for this should have "ignoreIfUnused: true".
+const GPUPROCESS =
+  ((WIN || LINUX) &&
+    Services.prefs.getBoolPref("layers.gpu-process.enabled")) ||
+  Services.prefs.getBoolPref("layers.gpu-process.force-enabled");
 
 /*
  * Specifying 'ignoreIfUnused: true' will make the test ignore unused entries;
@@ -52,19 +57,21 @@ const startupPhases = {
     {
       // bug 1373773
       name: "PCompositorBridge::Msg_NotifyChildCreated",
-      condition: !WIN,
+      condition: !GPUPROCESS,
+      ignoreIfUnused: true,
       maxCount: 1,
     },
     {
+      // bug 1373773
       name: "PCompositorBridge::Msg_NotifyChildCreated",
-      condition: WIN,
-      ignoreIfUnused: true, // Only on Win7 32
+      condition: GPUPROCESS,
+      ignoreIfUnused: true,
       maxCount: 2,
     },
     {
       name: "PCompositorBridge::Msg_MapAndNotifyChildCreated",
-      condition: WIN,
-      ignoreIfUnused: true, // Only on Win10 64
+      condition: GPUPROCESS,
+      ignoreIfUnused: true,
       maxCount: 2,
     },
     {
@@ -80,8 +87,8 @@ const startupPhases = {
     },
     {
       name: "PCompositorBridge::Msg_Initialize",
-      condition: WIN,
-      ignoreIfUnused: true, // Only on Win10 64
+      condition: GPUPROCESS,
+      ignoreIfUnused: true,
       maxCount: 3,
     },
     {
@@ -92,8 +99,8 @@ const startupPhases = {
     },
     {
       name: "PGPU::Msg_AddLayerTreeIdMapping",
-      condition: WIN,
-      ignoreIfUnused: true, // Only on Win10 64
+      condition: GPUPROCESS,
+      ignoreIfUnused: true,
       maxCount: 5,
     },
     {
@@ -118,7 +125,7 @@ const startupPhases = {
       name: "PAPZInputBridge::Msg_ProcessUnhandledEvent",
       condition: WIN,
       ignoreIfUnused: true, // Only on Win10 64
-      maxCount: 1,
+      maxCount: 2,
     },
     {
       name: "PGPU::Msg_GetDeviceStatus",
@@ -321,7 +328,7 @@ const startupPhases = {
     // Added for the search-detection built-in add-on.
     {
       name: "PGPU::Msg_AddLayerTreeIdMapping",
-      condition: WIN,
+      condition: GPUPROCESS,
       ignoreIfUnused: true,
       maxCount: 1,
     },
@@ -424,7 +431,7 @@ add_task(async function () {
         message += `happened ${entry.useCount} but max is ${entry.maxCount}`;
         shouldPass = false;
       }
-      ok(entry.useCount <= entry.maxCount, `${message} ${phase}`);
+      Assert.lessOrEqual(entry.useCount, entry.maxCount, `${message} ${phase}`);
 
       if (entry.useCount == 0 && !entry.ignoreIfUnused) {
         ok(false, `unused known IPC entry ${phase}: ${entry.name}`);

@@ -58,6 +58,11 @@ class WindowsDllDetourPatcherPrimitive {
 #if defined(_M_IX86)
     target.WriteByte(0xe9);     // jmp
     target.WriteDisp32(aDest);  // hook displacement
+    while (target.GetOffset() < target.GetNumBytes()) {
+      // bug 1816936 - need to pad to the end of the last overwritten
+      // instruction with noops.
+      target.WriteByte(0x90);
+    }
 #elif defined(_M_X64)
     // mov r11, address
     target.WriteByte(0x49);
@@ -68,6 +73,11 @@ class WindowsDllDetourPatcherPrimitive {
     target.WriteByte(0x41);
     target.WriteByte(0xff);
     target.WriteByte(0xe3);
+    while (target.GetOffset() < target.GetNumBytes()) {
+      // bug 1816936 - need to pad to the end of the last overwritten
+      // instruction with noops.
+      target.WriteByte(0x90);
+    }
 #elif defined(_M_ARM64)
     // The default patch requires 16 bytes
     // LDR x16, .+8
@@ -895,6 +905,11 @@ class WindowsDllDetourPatcher final
     target.WriteByte(BuildModRmByte(kModReg, kRegAx, kRegAx));
     target.WriteByte(0xFF);                                // JMP /4
     target.WriteByte(BuildModRmByte(kModReg, 4, kRegAx));  // rax
+    while (target.GetOffset() < target.GetNumBytes()) {
+      // bug 1816936 - need to pad to the end of the last overwritten
+      // instruction with noops.
+      target.WriteByte(0x90);
+    }
 
     return true;
   }
@@ -944,7 +959,7 @@ class WindowsDllDetourPatcher final
           DetourResultCode::DETOUR_PATCHER_CREATE_TRAMPOLINE_ERROR);
       DetourError& lastError = *this->mVMPolicy.mLastError;
       size_t bytesToCapture = std::min(
-          ArrayLength(lastError.mOrigBytes),
+          std::size(lastError.mOrigBytes),
           static_cast<size_t>(PrimitiveT::GetWorstCaseRequiredBytesToPatch()));
 #  if defined(_M_ARM64)
       size_t numInstructionsToCapture = bytesToCapture / sizeof(uint32_t);
@@ -1171,6 +1186,35 @@ class WindowsDllDetourPatcher final
           return;
         }
         COPY_CODES(len);
+      } else if (*origBytes == 0x40 && origBytes[1] == 0x38 &&
+                 (origBytes[2] & (kMaskMod | kMaskRm)) ==
+                     (kModNoRegDisp | kRmNoRegDispDisp32)) {
+        int reg = origBytes[2] & kMaskReg;
+        origBytes += 3;
+
+        // rex cmp byte ptr [rip-relative address], reg
+        // We'll compute the absolute address and do the cmp in r11
+
+        // push r11 (to save the old value)
+        tramp.WriteByte(0x49);
+        tramp.WriteByte(0x53);
+
+        uintptr_t absAddr = origBytes.ReadDisp32AsAbsolute();
+
+        // mov r11, absolute address
+        tramp.WriteByte(0x49);
+        tramp.WriteByte(0xbb);
+        tramp.WritePointer(absAddr);
+
+        // rex.b cmp byte ptr [r11], reg (.b is to get r11 instead of rbx -
+        // doesn't affect reg)
+        tramp.WriteByte(0x41);
+        tramp.WriteByte(0x38);
+        tramp.WriteByte(kModNoRegDisp | reg | kRegBx);
+
+        // pop r11 (doesn't affect the flags from the cmp)
+        tramp.WriteByte(0x49);
+        tramp.WriteByte(0x5b);
       } else if (*origBytes == 0x40 || *origBytes == 0x41) {
         // Plain REX or REX.B
         COPY_CODES(1);
@@ -1436,7 +1480,8 @@ class WindowsDllDetourPatcher final
       } else if ((*origBytes & 0xf8) == 0xb8) {
         // MOV r32, imm32
         COPY_CODES(5);
-      } else if (*origBytes == 0x33) {
+      } else if (*origBytes == 0x31 || *origBytes == 0x33) {
+        // xor r/m32, r32
         // xor r32, r/m32
         COPY_CODES(2);
       } else if (*origBytes == 0xf6) {
@@ -1722,12 +1767,14 @@ class WindowsDllDetourPatcher final
       PrimitiveT::ApplyDefaultPatch(target, aDest);
     } while (false);
 
-    if (!target.Commit()) {
-      return;
-    }
-
-    // Output the trampoline, thus signalling that this call was a success
+    // Output the trampoline, thus signalling that this call was a success. This
+    // must happen before our patched function can be reached from another
+    // thread, so before we commit the target code (bug 1838286).
     *aOutTramp = trampPtr;
+
+    if (!target.Commit()) {
+      *aOutTramp = nullptr;
+    }
   }
 };
 

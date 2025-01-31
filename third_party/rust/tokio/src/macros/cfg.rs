@@ -13,7 +13,43 @@ macro_rules! feature {
     }
 }
 
-/// Enables enter::block_on.
+/// Enables Windows-specific code.
+/// Use this macro instead of `cfg(windows)` to generate docs properly.
+macro_rules! cfg_windows {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(all(doc, docsrs), windows))]
+            #[cfg_attr(docsrs, doc(cfg(windows)))]
+            $item
+        )*
+    }
+}
+
+/// Enables Unix-specific code.
+/// Use this macro instead of `cfg(unix)` to generate docs properly.
+macro_rules! cfg_unix {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(all(doc, docsrs), unix))]
+            #[cfg_attr(docsrs, doc(cfg(unix)))]
+            $item
+        )*
+    }
+}
+
+/// Enables unstable Windows-specific code.
+/// Use this macro instead of `cfg(windows)` to generate docs properly.
+macro_rules! cfg_unstable_windows {
+    ($($item:item)*) => {
+        $(
+            #[cfg(all(any(all(doc, docsrs), windows), tokio_unstable))]
+            #[cfg_attr(docsrs, doc(cfg(all(windows, tokio_unstable))))]
+            $item
+        )*
+    }
+}
+
+/// Enables `enter::block_on`.
 macro_rules! cfg_block_on {
     ($($item:item)*) => {
         $(
@@ -61,6 +97,7 @@ macro_rules! cfg_fs {
     ($($item:item)*) => {
         $(
             #[cfg(feature = "fs")]
+            #[cfg(not(target_os = "wasi"))]
             #[cfg_attr(docsrs, doc(cfg(feature = "fs")))]
             $item
         )*
@@ -69,7 +106,11 @@ macro_rules! cfg_fs {
 
 macro_rules! cfg_io_blocking {
     ($($item:item)*) => {
-        $( #[cfg(any(feature = "io-std", feature = "fs"))] $item )*
+        $( #[cfg(any(
+                feature = "io-std",
+                feature = "fs",
+                all(windows, feature = "process"),
+        ))] $item )*
     }
 }
 
@@ -78,12 +119,12 @@ macro_rules! cfg_io_driver {
         $(
             #[cfg(any(
                 feature = "net",
-                feature = "process",
+                all(unix, feature = "process"),
                 all(unix, feature = "signal"),
             ))]
             #[cfg_attr(docsrs, doc(cfg(any(
                 feature = "net",
-                feature = "process",
+                all(unix, feature = "process"),
                 all(unix, feature = "signal"),
             ))))]
             $item
@@ -96,7 +137,7 @@ macro_rules! cfg_io_driver_impl {
         $(
             #[cfg(any(
                 feature = "net",
-                feature = "process",
+                all(unix, feature = "process"),
                 all(unix, feature = "signal"),
             ))]
             $item
@@ -109,7 +150,7 @@ macro_rules! cfg_not_io_driver {
         $(
             #[cfg(not(any(
                 feature = "net",
-                feature = "process",
+                all(unix, feature = "process"),
                 all(unix, feature = "signal"),
             )))]
             $item
@@ -174,22 +215,56 @@ macro_rules! cfg_macros {
     }
 }
 
-macro_rules! cfg_metrics {
+macro_rules! cfg_unstable_metrics {
     ($($item:item)*) => {
         $(
-            // For now, metrics is only disabled in loom tests.
-            // When stabilized, it might have a dedicated feature flag.
-            #[cfg(all(tokio_unstable, not(loom)))]
+            #[cfg(tokio_unstable)]
             #[cfg_attr(docsrs, doc(cfg(tokio_unstable)))]
             $item
         )*
     }
 }
 
-macro_rules! cfg_not_metrics {
+/// Some metrics require 64-bit atomics.
+macro_rules! cfg_64bit_metrics {
     ($($item:item)*) => {
         $(
-            #[cfg(not(all(tokio_unstable, not(loom))))]
+            #[cfg(target_has_atomic = "64")]
+            #[cfg_attr(docsrs, doc(cfg(target_has_atomic = "64")))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_no_64bit_metrics {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(target_has_atomic = "64"))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_not_unstable_metrics {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(tokio_unstable))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_not_rt_and_metrics_and_net {
+    ($($item:item)*) => {
+        $( #[cfg(not(all(feature = "net", feature = "rt", tokio_unstable)))]$item )*
+    }
+}
+
+macro_rules! cfg_net_or_process {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(feature = "net", feature = "process"))]
+            #[cfg_attr(docsrs, doc(cfg(any(feature = "net", feature = "process"))))]
             $item
         )*
     }
@@ -231,6 +306,7 @@ macro_rules! cfg_process {
             #[cfg(feature = "process")]
             #[cfg_attr(docsrs, doc(cfg(feature = "process")))]
             #[cfg(not(loom))]
+            #[cfg(not(target_os = "wasi"))]
             $item
         )*
     }
@@ -259,6 +335,7 @@ macro_rules! cfg_signal {
             #[cfg(feature = "signal")]
             #[cfg_attr(docsrs, doc(cfg(feature = "signal")))]
             #[cfg(not(loom))]
+            #[cfg(not(target_os = "wasi"))]
             $item
         )*
     }
@@ -271,6 +348,13 @@ macro_rules! cfg_signal_internal {
             #[cfg(not(loom))]
             $item
         )*
+    }
+}
+
+macro_rules! cfg_signal_internal_and_unix {
+    ($($item:item)*) => {
+        #[cfg(unix)]
+        cfg_signal_internal! { $($item)* }
     }
 }
 
@@ -329,6 +413,44 @@ macro_rules! cfg_not_rt_multi_thread {
     ($($item:item)*) => {
         $( #[cfg(not(feature = "rt-multi-thread"))] $item )*
     }
+}
+
+macro_rules! cfg_taskdump {
+    ($($item:item)*) => {
+        $(
+            #[cfg(all(
+                tokio_unstable,
+                tokio_taskdump,
+                feature = "rt",
+                target_os = "linux",
+                any(
+                    target_arch = "aarch64",
+                    target_arch = "x86",
+                    target_arch = "x86_64"
+                )
+            ))]
+            $item
+        )*
+    };
+}
+
+macro_rules! cfg_not_taskdump {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(all(
+                tokio_unstable,
+                tokio_taskdump,
+                feature = "rt",
+                target_os = "linux",
+                any(
+                    target_arch = "aarch64",
+                    target_arch = "x86",
+                    target_arch = "x86_64"
+                )
+            )))]
+            $item
+        )*
+    };
 }
 
 macro_rules! cfg_test_util {
@@ -431,12 +553,7 @@ macro_rules! cfg_not_coop {
 macro_rules! cfg_has_atomic_u64 {
     ($($item:item)*) => {
         $(
-            #[cfg(not(any(
-                    target_arch = "arm",
-                    target_arch = "mips",
-                    target_arch = "powerpc",
-                    target_arch = "riscv32"
-                    )))]
+            #[cfg(target_has_atomic = "64")]
             $item
         )*
     }
@@ -445,12 +562,43 @@ macro_rules! cfg_has_atomic_u64 {
 macro_rules! cfg_not_has_atomic_u64 {
     ($($item:item)*) => {
         $(
-            #[cfg(any(
-                    target_arch = "arm",
-                    target_arch = "mips",
-                    target_arch = "powerpc",
-                    target_arch = "riscv32"
-                    ))]
+            #[cfg(not(target_has_atomic = "64"))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_has_const_mutex_new {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(all(loom, test)))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_not_has_const_mutex_new {
+    ($($item:item)*) => {
+        $(
+            #[cfg(all(loom, test))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_not_wasi {
+    ($($item:item)*) => {
+        $(
+            #[cfg(not(target_os = "wasi"))]
+            $item
+        )*
+    }
+}
+
+macro_rules! cfg_is_wasm_not_wasi {
+    ($($item:item)*) => {
+        $(
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
             $item
         )*
     }

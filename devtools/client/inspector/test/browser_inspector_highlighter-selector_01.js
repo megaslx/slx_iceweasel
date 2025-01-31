@@ -47,12 +47,15 @@ const TEST_DATA = [
 
 requestLongerTimeout(5);
 
+const { TYPES } = ChromeUtils.importESModule(
+  "resource://devtools/shared/highlighters.mjs"
+);
+
 add_task(async function () {
-  const { inspector, highlighterTestFront } = await openInspectorForURL(
-    TEST_URL
-  );
+  const { inspector, highlighterTestFront } =
+    await openInspectorForURL(TEST_URL);
   const front = inspector.inspectorFront;
-  const highlighter = await front.getHighlighterByType("SelectorHighlighter");
+  const highlighter = await front.getHighlighterByType(TYPES.SELECTOR);
 
   const contextNode = await getNodeFront("body", inspector);
 
@@ -70,7 +73,7 @@ add_task(async function () {
     const nb = await highlighterTestFront.getSelectorHighlighterBoxNb(
       highlighter.actorID
     );
-    ok(nb !== null, "The number of highlighters was retrieved");
+    Assert.notStrictEqual(nb, null, "The number of highlighters was retrieved");
 
     is(nb, containerCount, "The correct number of highlighers were created");
     await highlighter.hide();

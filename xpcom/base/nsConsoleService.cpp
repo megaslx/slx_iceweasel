@@ -23,7 +23,6 @@
 #include "nsProxyRelease.h"
 #include "nsIScriptError.h"
 #include "nsISupportsPrimitives.h"
-#include "nsGlobalWindowInner.h"
 #include "js/friend/ErrorMessages.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/ContentParent.h"
@@ -192,7 +191,8 @@ nsresult nsConsoleService::MaybeForwardScriptError(nsIConsoleMessage* aMessage,
     return NS_ERROR_FAILURE;
   }
 
-  nsAutoString msg, sourceName, sourceLine;
+  nsAutoString msg;
+  nsAutoCString sourceName;
   nsCString category;
   uint32_t lineNum, colNum, flags;
   uint64_t innerWindowId;
@@ -201,8 +201,6 @@ nsresult nsConsoleService::MaybeForwardScriptError(nsIConsoleMessage* aMessage,
   rv = scriptError->GetErrorMessage(msg);
   NS_ENSURE_SUCCESS(rv, rv);
   rv = scriptError->GetSourceName(sourceName);
-  NS_ENSURE_SUCCESS(rv, rv);
-  rv = scriptError->GetSourceLine(sourceLine);
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = scriptError->GetCategory(getter_Copies(category));
@@ -220,9 +218,9 @@ nsresult nsConsoleService::MaybeForwardScriptError(nsIConsoleMessage* aMessage,
   rv = scriptError->GetInnerWindowID(&innerWindowId);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  *sent = contentParent->SendScriptError(
-      msg, sourceName, sourceLine, lineNum, colNum, flags, category,
-      fromPrivateWindow, innerWindowId, fromChromeContext);
+  *sent = contentParent->SendScriptError(msg, sourceName, lineNum, colNum,
+                                         flags, category, fromPrivateWindow,
+                                         innerWindowId, fromChromeContext);
   return NS_OK;
 }
 
@@ -390,7 +388,7 @@ nsresult nsConsoleService::LogMessageWithMode(
     // avoid failing in XPCShell tests
     nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
     if (mainThread) {
-      SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+      SchedulerGroup::Dispatch(r.forget());
     }
   }
 

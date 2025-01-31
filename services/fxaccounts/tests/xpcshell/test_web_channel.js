@@ -3,8 +3,14 @@
 
 "use strict";
 
-const { ON_PROFILE_CHANGE_NOTIFICATION, WEBCHANNEL_ID, log } =
-  ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
+const {
+  CLIENT_IS_THUNDERBIRD,
+  ON_PROFILE_CHANGE_NOTIFICATION,
+  WEBCHANNEL_ID,
+  log,
+} = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsCommon.sys.mjs"
+);
 const { CryptoUtils } = ChromeUtils.importESModule(
   "resource://services-crypto/utils.sys.mjs"
 );
@@ -202,7 +208,7 @@ add_test(function test_error_message_remove_profile_path() {
   const toTest = Object.keys(errors).length;
   for (const key in errors) {
     let error = errors[key];
-    channel._channel.send = (message, context) => {
+    channel._channel.send = message => {
       equal(
         message.data.error.message,
         error.expected,
@@ -254,6 +260,31 @@ add_test(function test_login_message() {
     },
   });
 
+  channel._channelCallback(WEBCHANNEL_ID, mockMessage, mockSendingContext);
+});
+
+add_test(function test_oauth_login() {
+  const mockData = {
+    code: "oauth code",
+    state: "state parameter",
+    declinedSyncEngines: ["tabs", "creditcards"],
+    offeredSyncEngines: ["tabs", "creditcards", "history"],
+  };
+  const mockMessage = {
+    command: "fxaccounts:oauth_login",
+    data: mockData,
+  };
+  const channel = new FxAccountsWebChannel({
+    channel_id: WEBCHANNEL_ID,
+    content_uri: URL_STRING,
+    helpers: {
+      oauthLogin(data) {
+        Assert.deepEqual(data, mockData);
+        run_next_test();
+        return Promise.resolve();
+      },
+    },
+  });
   channel._channelCallback(WEBCHANNEL_ID, mockMessage, mockSendingContext);
 });
 
@@ -378,7 +409,7 @@ add_test(function test_fxa_status_message() {
   });
 
   channel._channel = {
-    send(response, sendingContext) {
+    send(response) {
       Assert.equal(response.command, "fxaccounts:fxa_status");
       Assert.equal(response.messageId, 123);
 
@@ -444,6 +475,9 @@ add_test(function test_helpers_should_allow_relink_different_email() {
 add_task(async function test_helpers_login_without_customize_sync() {
   let helpers = new FxAccountsWebChannelHelpers({
     fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve(null);
+      },
       _internal: {
         setSignedInUser(accountData) {
           return new Promise(resolve => {
@@ -487,8 +521,11 @@ add_task(async function test_helpers_login_without_customize_sync() {
 add_task(async function test_helpers_login_set_previous_account_name_hash() {
   let helpers = new FxAccountsWebChannelHelpers({
     fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve(null);
+      },
       _internal: {
-        setSignedInUser(accountData) {
+        setSignedInUser() {
           return new Promise(resolve => {
             // previously signed in user preference is updated.
             Assert.equal(
@@ -524,12 +561,53 @@ add_task(async function test_helpers_login_set_previous_account_name_hash() {
   });
 });
 
+add_task(async function test_helpers_login_another_user_signed_in() {
+  let helpers = new FxAccountsWebChannelHelpers({
+    fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve({ uid: "foo" });
+      },
+      _internal: {
+        setSignedInUser(accountData) {
+          return new Promise(resolve => {
+            // ensure fxAccounts is informed of the new user being signed in.
+            Assert.equal(accountData.email, "testuser@testuser.com");
+            resolve();
+          });
+        },
+      },
+      telemetry: {
+        recordConnection: sinon.spy(),
+      },
+    },
+    weaveXPCOM: {
+      whenLoaded() {},
+      Weave: {
+        Service: {
+          configure() {},
+        },
+      },
+    },
+  });
+  helpers._disconnect = sinon.spy();
+
+  await helpers.login({
+    email: "testuser@testuser.com",
+    verifiedCanLinkAccount: true,
+    customizeSync: false,
+  });
+  Assert.ok(
+    helpers._fxAccounts.telemetry.recordConnection.calledWith([], "webchannel")
+  );
+  Assert.ok(helpers._disconnect.called);
+});
+
 add_task(
   async function test_helpers_login_dont_set_previous_account_name_hash_for_unverified_emails() {
     let helpers = new FxAccountsWebChannelHelpers({
       fxAccounts: {
         _internal: {
-          setSignedInUser(accountData) {
+          setSignedInUser() {
             return new Promise(resolve => {
               // previously signed in user preference should not be updated.
               Assert.equal(
@@ -539,6 +617,9 @@ add_task(
               resolve();
             });
           },
+        },
+        getSignedInUser() {
+          return Promise.resolve(null);
         },
         telemetry: {
           recordConnection() {},
@@ -581,6 +662,9 @@ add_task(async function test_helpers_login_with_customize_sync() {
           });
         },
       },
+      getSignedInUser() {
+        return Promise.resolve(null);
+      },
       telemetry: {
         recordConnection: sinon.spy(),
       },
@@ -606,7 +690,9 @@ add_task(async function test_helpers_login_with_customize_sync() {
 });
 
 add_task(
+  { skip_if: () => CLIENT_IS_THUNDERBIRD },
   async function test_helpers_login_with_customize_sync_and_declined_engines() {
+    ensureOauthNotConfigured();
     let configured = false;
     let helpers = new FxAccountsWebChannelHelpers({
       fxAccounts: {
@@ -622,6 +708,9 @@ add_task(
               resolve();
             });
           },
+        },
+        getSignedInUser() {
+          return Promise.resolve(null);
         },
         telemetry: {
           recordConnection: sinon.spy(),
@@ -719,6 +808,9 @@ add_task(async function test_helpers_login_with_offered_sync_engines() {
             resolve(accountData);
           },
         },
+        getSignedInUser() {
+          return Promise.resolve(null);
+        },
         telemetry: {
           recordConnection() {},
         },
@@ -776,6 +868,9 @@ add_task(async function test_helpers_login_nothing_offered() {
             resolve(accountData);
           },
         },
+        getSignedInUser() {
+          return Promise.resolve(null);
+        },
         telemetry: {
           recordConnection() {},
         },
@@ -825,6 +920,68 @@ add_task(async function test_helpers_login_nothing_offered() {
   Assert.ok(configured);
 });
 
+add_task(async function test_helpers_persist_requested_services() {
+  ensureOauthConfigured();
+  let accountData = null;
+  const helpers = new FxAccountsWebChannelHelpers({
+    fxAccounts: {
+      _internal: {
+        async setSignedInUser(newAccountData) {
+          accountData = newAccountData;
+          return accountData;
+        },
+      },
+      async getSignedInUser() {
+        return accountData;
+      },
+      telemetry: {
+        recordConnection() {},
+      },
+    },
+    weaveXPCOM: {
+      whenLoaded() {},
+      Weave: {
+        Service: {},
+      },
+    },
+  });
+
+  await helpers.login({
+    uid: "auid",
+    email: "testuser@testuser.com",
+    verifiedCanLinkAccount: true,
+    services: {
+      first_only: { x: 10 }, // this data is not in the update below.
+      sync: { important: true },
+    },
+  });
+
+  Assert.deepEqual(JSON.parse(accountData.requestedServices), {
+    first_only: { x: 10 },
+    sync: { important: true },
+  });
+  // A second "login" message without the services.
+  await helpers.login({
+    uid: "auid",
+    email: "testuser@testuser.com",
+    verifiedCanLinkAccount: true,
+    services: {
+      // the service is mentioned, but data is empty, so it's the old version of the data we want.
+      sync: {},
+      // a new service we never saw before, but we still want it.
+      new: { name: "opted in" }, // not in original, but we want in the final.
+    },
+  });
+  // the version with the data should remain.
+  Assert.deepEqual(JSON.parse(accountData.requestedServices), {
+    first_only: { x: 10 },
+    sync: { important: true },
+    new: { name: "opted in" },
+  });
+
+  resetOauthConfig();
+});
+
 add_test(function test_helpers_open_sync_preferences() {
   let helpers = new FxAccountsWebChannelHelpers({
     fxAccounts: {},
@@ -862,6 +1019,7 @@ add_task(async function test_helpers_getFxAStatus_extra_engines() {
     },
   });
 
+  ensureOauthNotConfigured();
   Services.prefs.setBoolPref(
     "services.sync.engine.creditcards.available",
     true
@@ -871,7 +1029,62 @@ add_task(async function test_helpers_getFxAStatus_extra_engines() {
   let fxaStatus = await helpers.getFxaStatus("sync", mockSendingContext);
   ok(!!fxaStatus);
   ok(!!fxaStatus.signedInUser);
+  // in the non-oauth flows we only expect "extra" engines.
   deepEqual(fxaStatus.capabilities.engines, ["creditcards"]);
+  resetOauthConfig();
+});
+
+add_task(async function test_helpers_getFxAStatus_engines_oauth() {
+  let helpers = new FxAccountsWebChannelHelpers({
+    fxAccounts: {
+      _internal: {
+        getUserAccountData() {
+          return Promise.resolve({
+            email: "testuser@testuser.com",
+            sessionToken: "sessionToken",
+            uid: "uid",
+            verified: true,
+          });
+        },
+      },
+    },
+    privateBrowsingUtils: {
+      isBrowserPrivate: () => true,
+    },
+  });
+
+  // disable the "addresses" engine.
+  Services.prefs.setBoolPref("services.sync.engine.addresses.available", false);
+  ensureOauthConfigured();
+  let fxaStatus = await helpers.getFxaStatus("sync", mockSendingContext);
+  ok(!!fxaStatus);
+  ok(!!fxaStatus.signedInUser);
+  // in the oauth flows we expect all engines.
+  deepEqual(fxaStatus.capabilities.engines.toSorted(), [
+    "addons",
+    "bookmarks",
+    "creditcards",
+    "history",
+    "passwords",
+    "prefs",
+    "tabs",
+  ]);
+
+  // try again with addresses enabled.
+  Services.prefs.setBoolPref("services.sync.engine.addresses.available", true);
+  fxaStatus = await helpers.getFxaStatus("sync", mockSendingContext);
+  deepEqual(fxaStatus.capabilities.engines.toSorted(), [
+    "addons",
+    "addresses",
+    "bookmarks",
+    "creditcards",
+    "history",
+    "passwords",
+    "prefs",
+    "tabs",
+  ]);
+
+  resetOauthConfig();
 });
 
 add_task(async function test_helpers_getFxaStatus_allowed_signedInUser() {

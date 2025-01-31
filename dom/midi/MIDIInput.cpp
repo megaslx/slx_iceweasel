@@ -10,24 +10,24 @@
 #include "mozilla/dom/MIDIInputBinding.h"
 #include "mozilla/dom/MIDIMessageEvent.h"
 #include "mozilla/dom/MIDIMessageEventBinding.h"
-#include "nsDOMNavigationTiming.h"
+#include "nsGlobalWindowInner.h"
 
 #include "MIDILog.h"
 
 namespace mozilla::dom {
 
-MIDIInput::MIDIInput(nsPIDOMWindowInner* aWindow, MIDIAccess* aMIDIAccessParent)
-    : MIDIPort(aWindow, aMIDIAccessParent), mKeepAlive(false) {}
+MIDIInput::MIDIInput(nsPIDOMWindowInner* aWindow)
+    : MIDIPort(aWindow), mKeepAlive(false) {}
 
 // static
-MIDIInput* MIDIInput::Create(nsPIDOMWindowInner* aWindow,
-                             MIDIAccess* aMIDIAccessParent,
-                             const MIDIPortInfo& aPortInfo,
-                             const bool aSysexEnabled) {
+RefPtr<MIDIInput> MIDIInput::Create(nsPIDOMWindowInner* aWindow,
+                                    MIDIAccess* aMIDIAccessParent,
+                                    const MIDIPortInfo& aPortInfo,
+                                    const bool aSysexEnabled) {
   MOZ_ASSERT(static_cast<MIDIPortType>(aPortInfo.type()) ==
              MIDIPortType::Input);
-  auto* port = new MIDIInput(aWindow, aMIDIAccessParent);
-  if (!port->Initialize(aPortInfo, aSysexEnabled)) {
+  RefPtr<MIDIInput> port = new MIDIInput(aWindow);
+  if (!port->Initialize(aPortInfo, aSysexEnabled, aMIDIAccessParent)) {
     return nullptr;
   }
   return port;
@@ -39,11 +39,11 @@ JSObject* MIDIInput::WrapObject(JSContext* aCx,
 }
 
 void MIDIInput::Receive(const nsTArray<MIDIMessage>& aMsgs) {
-  if (!GetOwner()) {
+  if (!GetOwnerWindow()) {
     return;  // Ignore messages once we've been disconnected from the owner
   }
 
-  nsCOMPtr<Document> doc = GetOwner()->GetDoc();
+  nsCOMPtr<Document> doc = GetOwnerWindow()->GetDoc();
   if (!doc) {
     NS_WARNING("No document available to send MIDIMessageEvent to!");
     return;

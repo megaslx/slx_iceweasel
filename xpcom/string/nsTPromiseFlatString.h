@@ -7,6 +7,7 @@
 #ifndef nsTPromiseFlatString_h
 #define nsTPromiseFlatString_h
 
+#include "mozilla/Attributes.h"
 #include "nsTString.h"
 
 /**
@@ -69,7 +70,7 @@
  */
 
 template <typename T>
-class nsTPromiseFlatString : public nsTString<T> {
+class MOZ_STACK_CLASS nsTPromiseFlatString : public nsTString<T> {
  public:
   typedef nsTPromiseFlatString<T> self_type;
   typedef nsTString<T> base_string_type;
@@ -88,6 +89,9 @@ class nsTPromiseFlatString : public nsTString<T> {
 
   // NOT TO BE IMPLEMENTED
   void operator=(const self_type&) = delete;
+
+  // NOT TO BE IMPLEMENTED
+  nsTPromiseFlatString(const self_type&) = delete;
 
   // NOT TO BE IMPLEMENTED
   nsTPromiseFlatString() = delete;
@@ -110,6 +114,10 @@ class nsTPromiseFlatString : public nsTString<T> {
 
 extern template class nsTPromiseFlatString<char>;
 extern template class nsTPromiseFlatString<char16_t>;
+
+template <typename Char>
+struct fmt::formatter<nsTPromiseFlatString<Char>, Char>
+    : fmt::formatter<nsTString<Char>, Char> {};
 
 // We template this so that the constructor is chosen based on the type of the
 // parameter. This allows us to reject attempts to promise a flat flat string.

@@ -13,6 +13,7 @@
 #include "nsISupportsPriority.h"
 #include "prthread.h"
 #include "Tracing.h"
+#include "mozilla/dom/WorkletThread.h"
 #include "audio_thread_priority.h"
 #ifdef MOZ_WIDGET_ANDROID
 #  include "AndroidProcess.h"
@@ -37,8 +38,10 @@ GraphRunner::~GraphRunner() {
 /* static */
 already_AddRefed<GraphRunner> GraphRunner::Create(MediaTrackGraphImpl* aGraph) {
   nsCOMPtr<nsIThread> thread;
-  if (NS_WARN_IF(NS_FAILED(
-          NS_NewNamedThread("GraphRunner", getter_AddRefs(thread))))) {
+  nsIThreadManager::ThreadCreationOptions options = {
+      .stackSize = mozilla::dom::WorkletThread::StackSize()};
+  if (NS_WARN_IF(NS_FAILED(NS_NewNamedThread(
+          "GraphRunner", getter_AddRefs(thread), nullptr, options)))) {
     return nullptr;
   }
   nsCOMPtr<nsISupportsPriority> supportsPriority = do_QueryInterface(thread);
@@ -60,12 +63,14 @@ void GraphRunner::Shutdown() {
 }
 
 auto GraphRunner::OneIteration(GraphTime aStateTime, GraphTime aIterationEnd,
-                               AudioMixer* aMixer) -> IterationResult {
+                               MixerCallbackReceiver* aMixerReceiver)
+    -> IterationResult {
   TRACE("GraphRunner::OneIteration");
 
   MonitorAutoLock lock(mMonitor);
   MOZ_ASSERT(mThreadState == ThreadState::Wait);
-  mIterationState = Some(IterationState(aStateTime, aIterationEnd, aMixer));
+  mIterationState =
+      Some(IterationState(aStateTime, aIterationEnd, aMixerReceiver));
 
 #ifdef DEBUG
   if (const auto* audioDriver =
@@ -110,7 +115,7 @@ void PromoteRenderingThreadAndroid() {
           ("GraphRunner promoted thread priority: %d",
            java::sdk::Process::GetThreadPriority(java::sdk::Process::MyTid())));
 }
-};      // namespace
+};  // namespace
 #endif  // MOZ_WIDGET_ANDROID
 
 NS_IMETHODIMP GraphRunner::Run() {
@@ -136,9 +141,9 @@ NS_IMETHODIMP GraphRunner::Run() {
     }
     MOZ_DIAGNOSTIC_ASSERT(mIterationState.isSome());
     TRACE("GraphRunner::Run");
-    mIterationResult = mGraph->OneIterationImpl(mIterationState->StateTime(),
-                                                mIterationState->IterationEnd(),
-                                                mIterationState->Mixer());
+    mIterationResult = mGraph->OneIterationImpl(
+        mIterationState->StateTime(), mIterationState->IterationEnd(),
+        mIterationState->MixerReceiver());
     // Signal that mIterationResult was updated
     mThreadState = ThreadState::Wait;
     mMonitor.Notify();

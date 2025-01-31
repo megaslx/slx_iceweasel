@@ -7,11 +7,17 @@
 JAR_MANIFESTS += ["jar.mn"]
 
 FINAL_TARGET_FILES.actors += [
+    "ReviewCheckerChild.sys.mjs",
+    "ReviewCheckerParent.sys.mjs",
     "ShoppingSidebarChild.sys.mjs",
     "ShoppingSidebarParent.sys.mjs",
 ]
 
-BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.ini"]
+EXTRA_JS_MODULES += [
+    "ShoppingUtils.sys.mjs",
+]
+
+BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.toml"]
 
 with Files("**"):
     BUG_COMPONENT = ("Firefox", "Shopping")

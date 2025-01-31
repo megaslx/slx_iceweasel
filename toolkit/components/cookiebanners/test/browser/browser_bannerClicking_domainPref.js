@@ -3,6 +3,10 @@
 
 "use strict";
 
+let { ForgetAboutSite } = ChromeUtils.importESModule(
+  "resource://gre/modules/ForgetAboutSite.sys.mjs"
+);
+
 add_setup(clickTestSetup);
 
 /**
@@ -21,6 +25,10 @@ add_task(async function test_domain_preference() {
 
   insertTestClickRules();
 
+  // Clear executed records before testing for private and normal browsing.
+  Services.cookieBanners.removeAllExecutedRecords(true);
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   for (let testPBM of [false, true]) {
     let testWin = window;
     if (testPBM) {
@@ -28,8 +36,6 @@ add_task(async function test_domain_preference() {
         private: true,
       });
     }
-
-    await testClickResultTelemetry({});
 
     info(
       "Make sure the example.org follows the pref setting when there is no domain preference."
@@ -42,13 +48,7 @@ add_task(async function test_domain_preference() {
       expected: "NoClick",
     });
 
-    await testClickResultTelemetry(
-      {
-        fail: 1,
-        fail_no_rule_for_mode: 1,
-      },
-      false
-    );
+    Services.cookieBanners.removeAllExecutedRecords(testPBM);
 
     info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
     let uri = Services.io.newURI(TEST_ORIGIN_B);
@@ -74,13 +74,6 @@ add_task(async function test_domain_preference() {
     if (testPBM) {
       await BrowserTestUtils.closeWindow(testWin);
     }
-
-    await testClickResultTelemetry({
-      fail: 1,
-      fail_no_rule_for_mode: 1,
-      success: 1,
-      success_dom_content_loaded: 1,
-    });
   }
 });
 
@@ -100,7 +93,9 @@ add_task(async function test_domain_preference_iframe() {
 
   insertTestClickRules();
 
-  await testClickResultTelemetry({});
+  // Clear executed records before testing for private and normal browsing.
+  Services.cookieBanners.removeAllExecutedRecords(true);
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
   for (let testPBM of [false, true]) {
     let testWin = window;
@@ -121,13 +116,7 @@ add_task(async function test_domain_preference_iframe() {
       expected: "NoClick",
     });
 
-    await testClickResultTelemetry(
-      {
-        fail: 1,
-        fail_no_rule_for_mode: 1,
-      },
-      false
-    );
+    Services.cookieBanners.removeAllExecutedRecords(testPBM);
 
     info(
       "Set the domain preference of the top-level domain to MODE_REJECT_OR_ACCEPT"
@@ -155,12 +144,192 @@ add_task(async function test_domain_preference_iframe() {
     if (testPBM) {
       await BrowserTestUtils.closeWindow(testWin);
     }
-
-    await testClickResultTelemetry({
-      fail: 1,
-      fail_no_rule_for_mode: 1,
-      success: 1,
-      success_dom_content_loaded: 1,
-    });
   }
+});
+
+// Verify that the ForgetAboutSite clears the domain preference properly.
+add_task(async function test_domain_preference_forgetAboutSite() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["cookiebanners.service.mode", Ci.nsICookieBannerService.MODE_REJECT],
+      [
+        "cookiebanners.service.mode.privateBrowsing",
+        Ci.nsICookieBannerService.MODE_REJECT,
+      ],
+    ],
+  });
+
+  insertTestClickRules();
+
+  // Clear executed records before testing for private and normal browsing.
+  Services.cookieBanners.removeAllExecutedRecords(true);
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
+  info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
+  let uri = Services.io.newURI(TEST_ORIGIN_B);
+  Services.cookieBanners.setDomainPref(
+    uri,
+    Ci.nsICookieBannerService.MODE_REJECT_OR_ACCEPT,
+    false
+  );
+
+  info(
+    "Verify if domain preference takes precedence over then the pref setting for example.org"
+  );
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: false,
+    expected: "OptIn",
+  });
+
+  // Call ForgetAboutSite for the domain.
+  await ForgetAboutSite.removeDataFromBaseDomain(TEST_DOMAIN_B);
+
+  info("Ensure the domain preference is cleared.");
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: true,
+    expected: "NoClick",
+  });
+});
+
+add_task(async function test_domain_preference_clearDataService() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["cookiebanners.service.mode", Ci.nsICookieBannerService.MODE_REJECT],
+      [
+        "cookiebanners.service.mode.privateBrowsing",
+        Ci.nsICookieBannerService.MODE_REJECT,
+      ],
+    ],
+  });
+
+  insertTestClickRules();
+
+  // Clear executed records before testing or private and normal browsing.
+  Services.cookieBanners.removeAllExecutedRecords(true);
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
+  info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
+  let uri = Services.io.newURI(TEST_ORIGIN_B);
+  Services.cookieBanners.setDomainPref(
+    uri,
+    Ci.nsICookieBannerService.MODE_REJECT_OR_ACCEPT,
+    false
+  );
+
+  info(
+    "Verify if domain preference takes precedence over then the pref setting for example.org"
+  );
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: false,
+    expected: "OptIn",
+  });
+
+  info("Call ClearDataService.deleteDataFromSite for the domain.");
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromSite(
+      TEST_DOMAIN_B,
+      {},
+      true /* user request */,
+      Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXCEPTION,
+      aResolve
+    );
+  });
+
+  info("Ensure the domain preference is cleared.");
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: true,
+    expected: "NoClick",
+  });
+
+  info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
+  Services.cookieBanners.setDomainPref(
+    uri,
+    Ci.nsICookieBannerService.MODE_REJECT_OR_ACCEPT,
+    false
+  );
+
+  info("Call ClearDataService.deleteDataFromHost for the domain.");
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromHost(
+      TEST_DOMAIN_B,
+      true /* user request */,
+      Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXCEPTION,
+      aResolve
+    );
+  });
+
+  info("Ensure the domain preference is cleared.");
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: true,
+    expected: "NoClick",
+  });
+
+  info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
+  Services.cookieBanners.setDomainPref(
+    uri,
+    Ci.nsICookieBannerService.MODE_REJECT_OR_ACCEPT,
+    false
+  );
+
+  info("Call ClearDataService.deleteDataFromPrincipal for the domain.");
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+      "https://" + TEST_DOMAIN_B
+    );
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromPrincipal(
+      principal,
+      true /* user request */,
+      Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXCEPTION,
+      aResolve
+    );
+  });
+
+  info("Ensure the domain preference is cleared.");
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: true,
+    expected: "NoClick",
+  });
+
+  info("Set the domain preference of example.org to MODE_REJECT_OR_ACCEPT");
+  Services.cookieBanners.setDomainPref(
+    uri,
+    Ci.nsICookieBannerService.MODE_REJECT_OR_ACCEPT,
+    false
+  );
+
+  info("Call ClearDataService.deleteData for the domain.");
+  await new Promise(aResolve => {
+    Services.clearData.deleteData(
+      Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXCEPTION,
+      aResolve
+    );
+  });
+
+  info("Ensure the domain preference is cleared.");
+  await openPageAndVerify({
+    win: window,
+    domain: TEST_DOMAIN_B,
+    testURL: TEST_PAGE_B,
+    visible: true,
+    expected: "NoClick",
+  });
 });

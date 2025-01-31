@@ -12,7 +12,7 @@
 #include <vector>
 
 #include <dwrite.h>
-#include <versionhelpers.h>
+#include <float.h>
 #include "2D.h"
 #include "Logging.h"
 #include "ImageScaling.h"
@@ -283,11 +283,10 @@ static inline D2D1_BLEND_MODE D2DBlendMode(CompositionOp aOp) {
 static inline bool D2DSupportsPrimitiveBlendMode(CompositionOp aOp) {
   switch (aOp) {
     case CompositionOp::OP_OVER:
-      //  case CompositionOp::OP_SOURCE:
-      return true;
-      //  case CompositionOp::OP_DARKEN:
+    // case CompositionOp::OP_SOURCE:
+    // case CompositionOp::OP_DARKEN:
     case CompositionOp::OP_ADD:
-      return IsWindows8Point1OrGreater();
+      return true;
     default:
       return false;
   }
@@ -959,12 +958,9 @@ class StreamingGeometrySink : public ID2D1SimplifiedGeometrySink {
                       ToPoint(aSegments[i].point3));
     }
   }
-  STDMETHOD(Close)() { /* Should never be called! */
-    return S_OK;
-  }
+  STDMETHOD(Close)() { /* Should never be called! */ return S_OK; }
   STDMETHOD_(void, SetSegmentFlags)
-  (D2D1_PATH_SEGMENT aFlags) { /* Should never be called! */
-  }
+  (D2D1_PATH_SEGMENT aFlags) { /* Should never be called! */ }
 
   STDMETHOD_(void, EndFigure)(D2D1_FIGURE_END aEnd) {
     AutoRestoreFP resetFloatingPoint;

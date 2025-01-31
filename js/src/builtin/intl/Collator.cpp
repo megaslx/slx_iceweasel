@@ -27,7 +27,6 @@
 #include "vm/PlainObject.h"  // js::PlainObject
 #include "vm/Runtime.h"
 #include "vm/StringType.h"
-#include "vm/WellKnownAtom.h"  // js_*_str
 
 #include "vm/GeckoProfiler-inl.h"
 #include "vm/JSObject-inl.h"
@@ -57,7 +56,9 @@ const JSClass CollatorObject::class_ = {
     JSCLASS_HAS_RESERVED_SLOTS(CollatorObject::SLOT_COUNT) |
         JSCLASS_HAS_CACHED_PROTO(JSProto_Collator) |
         JSCLASS_FOREGROUND_FINALIZE,
-    &CollatorObject::classOps_, &CollatorObject::classSpec_};
+    &CollatorObject::classOps_,
+    &CollatorObject::classSpec_,
+};
 
 const JSClass& CollatorObject::protoClass_ = PlainObject::class_;
 
@@ -70,15 +71,20 @@ static bool collator_toSource(JSContext* cx, unsigned argc, Value* vp) {
 static const JSFunctionSpec collator_static_methods[] = {
     JS_SELF_HOSTED_FN("supportedLocalesOf", "Intl_Collator_supportedLocalesOf",
                       1, 0),
-    JS_FS_END};
+    JS_FS_END,
+};
 
 static const JSFunctionSpec collator_methods[] = {
     JS_SELF_HOSTED_FN("resolvedOptions", "Intl_Collator_resolvedOptions", 0, 0),
-    JS_FN(js_toSource_str, collator_toSource, 0, 0), JS_FS_END};
+    JS_FN("toSource", collator_toSource, 0, 0),
+    JS_FS_END,
+};
 
 static const JSPropertySpec collator_properties[] = {
     JS_SELF_HOSTED_GET("compare", "$Intl_Collator_compare_get", 0),
-    JS_STRING_SYM_PS(toStringTag, "Intl.Collator", JSPROP_READONLY), JS_PS_END};
+    JS_STRING_SYM_PS(toStringTag, "Intl.Collator", JSPROP_READONLY),
+    JS_PS_END,
+};
 
 static bool Collator(JSContext* cx, unsigned argc, Value* vp);
 
@@ -90,7 +96,8 @@ const ClassSpec CollatorObject::classSpec_ = {
     collator_methods,
     collator_properties,
     nullptr,
-    ClassSpec::DontDefineConstructor};
+    ClassSpec::DontDefineConstructor,
+};
 
 /**
  * 10.1.2 Intl.Collator([ locales [, options]])
@@ -468,5 +475,22 @@ bool js::intl_isUpperCaseFirst(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   args.rval().setBoolean(isUpperFirst);
+  return true;
+}
+
+bool js::intl_isIgnorePunctuation(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].isString());
+
+  SharedIntlData& sharedIntlData = cx->runtime()->sharedIntlData.ref();
+
+  RootedString locale(cx, args[0].toString());
+  bool isIgnorePunctuation;
+  if (!sharedIntlData.isIgnorePunctuation(cx, locale, &isIgnorePunctuation)) {
+    return false;
+  }
+
+  args.rval().setBoolean(isIgnorePunctuation);
   return true;
 }

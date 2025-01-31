@@ -12,7 +12,7 @@ import {
   getSelectedFrame,
   getCurrentThread,
   isMapScopesEnabled,
-} from "../selectors";
+} from "../selectors/index";
 import { PROMISE } from "./utils/middleware/promise";
 import { wrapExpression } from "../utils/expressions";
 import { features } from "../utils/prefs";
@@ -23,19 +23,17 @@ import { features } from "../utils/prefs";
  * @param {string} input
  */
 export function addExpression(input) {
-  return async ({ dispatch, getState, parserWorker }) => {
+  return async ({ dispatch, getState }) => {
     if (!input) {
       return null;
     }
-
-    const expressionError = await parserWorker.hasSyntaxError(input);
 
     // If the expression already exists, only update its evaluation
     let expression = getExpression(getState(), input);
     if (!expression) {
       // This will only display the expression input,
       // evaluateExpression will update its value.
-      dispatch({ type: "ADD_EXPRESSION", input, expressionError });
+      dispatch({ type: "ADD_EXPRESSION", input });
 
       expression = getExpression(getState(), input);
       // When there is an expression error, we won't store the expression
@@ -54,7 +52,7 @@ export function autocomplete(input, cursor) {
       return;
     }
     const thread = getCurrentThread(getState());
-    const selectedFrame = getSelectedFrame(getState(), thread);
+    const selectedFrame = getSelectedFrame(getState());
     const result = await client.autocomplete(input, cursor, selectedFrame?.id);
     // Pass both selectedFrame and thread in case selectedFrame is null
     dispatch({ type: "AUTOCOMPLETE", selectedFrame, thread, input, result });
@@ -65,22 +63,16 @@ export function clearAutocomplete() {
   return { type: "CLEAR_AUTOCOMPLETE" };
 }
 
-export function clearExpressionError() {
-  return { type: "CLEAR_EXPRESSION_ERROR" };
-}
-
 export function updateExpression(input, expression) {
-  return async ({ getState, dispatch, parserWorker }) => {
+  return async ({ dispatch }) => {
     if (!input) {
       return;
     }
 
-    const expressionError = await parserWorker.hasSyntaxError(input);
     dispatch({
       type: "UPDATE_EXPRESSION",
       expression,
-      input: expressionError ? expression.input : input,
-      expressionError,
+      input,
     });
 
     await dispatch(evaluateExpressionsForCurrentContext());
@@ -101,8 +93,7 @@ export function deleteExpression(expression) {
 
 export function evaluateExpressionsForCurrentContext() {
   return async ({ getState, dispatch }) => {
-    const thread = getCurrentThread(getState());
-    const selectedFrame = getSelectedFrame(getState(), thread);
+    const selectedFrame = getSelectedFrame(getState());
     await dispatch(evaluateExpressions(selectedFrame));
   };
 }
@@ -150,7 +141,7 @@ function evaluateExpression(expression) {
 
     const { dispatch, getState, client } = thunkArgs;
     const thread = getCurrentThread(getState());
-    const selectedFrame = getSelectedFrame(getState(), thread);
+    const selectedFrame = getSelectedFrame(getState());
 
     const selectedSource = getSelectedSource(getState());
     // Only map when we are paused and if the currently selected source is original,

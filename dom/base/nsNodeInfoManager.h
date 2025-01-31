@@ -35,7 +35,8 @@ class nsNodeInfoManager final {
   ~nsNodeInfoManager();
 
  public:
-  explicit nsNodeInfoManager(mozilla::dom::Document* aDocument);
+  explicit nsNodeInfoManager(mozilla::dom::Document* aDocument,
+                             nsIPrincipal* aPrincipal);
 
   NS_DECL_CYCLE_COLLECTION_SKIPPABLE_NATIVE_CLASS(nsNodeInfoManager)
 
@@ -149,7 +150,7 @@ class nsNodeInfoManager final {
     }
     static bool Match(const mozilla::dom::NodeInfo::NodeInfoInner& aKey,
                       const mozilla::dom::NodeInfo* aVal) {
-      return aKey == aVal->mInner;
+      return (aKey.Hash() == aVal->mInner.Hash()) && (aKey == aVal->mInner);
     }
   };
 

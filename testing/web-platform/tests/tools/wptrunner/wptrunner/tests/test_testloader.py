@@ -11,10 +11,11 @@ from ..testloader import (
     DirectoryHashChunker,
     IDHashChunker,
     PathHashChunker,
+    Subsuite,
     TestFilter,
     TestLoader,
     TagFilter,
-    read_include_from_file,
+    read_test_prefixes_from_file,
 )
 from .test_wpttest import make_mock_manifest
 
@@ -53,7 +54,7 @@ def manifest():
             }
         },
         "url_base": "/",
-        "version": 8,
+        "version": 9,
     }
     return WPTManifest.from_json("/", manifest_json)
 
@@ -76,23 +77,25 @@ def test_loader_h2_tests():
             }
         },
         "url_base": "/",
-        "version": 8,
+        "version": 9,
     }
     manifest = WPTManifest.from_json("/", manifest_json)
+    subsuites = {}
+    subsuites[""] = Subsuite("", config={})
 
     # By default, the loader should include the h2 test.
-    loader = TestLoader({manifest: {"metadata_path": ""}}, ["testharness"], None)
-    assert "testharness" in loader.tests
-    assert len(loader.tests["testharness"]) == 2
-    assert len(loader.disabled_tests) == 0
+    loader = TestLoader({manifest: {"metadata_path": ""}}, ["testharness"], None, subsuites)
+    assert "testharness" in loader.tests[""]
+    assert len(loader.tests[""]["testharness"]) == 2
+    assert len(loader.disabled_tests[""]) == 0
 
     # We can also instruct it to skip them.
-    loader = TestLoader({manifest: {"metadata_path": ""}}, ["testharness"], None, include_h2=False)
-    assert "testharness" in loader.tests
-    assert len(loader.tests["testharness"]) == 1
-    assert "testharness" in loader.disabled_tests
-    assert len(loader.disabled_tests["testharness"]) == 1
-    assert loader.disabled_tests["testharness"][0].url == "/a/bar.h2.html"
+    loader = TestLoader({manifest: {"metadata_path": ""}}, ["testharness"], None, subsuites, include_h2=False)
+    assert "testharness" in loader.tests[""]
+    assert len(loader.tests[""]["testharness"]) == 1
+    assert "testharness" in loader.disabled_tests[""]
+    assert len(loader.disabled_tests[""]["testharness"]) == 1
+    assert loader.disabled_tests[""]["testharness"][0].url == "/a/bar.h2.html"
 
 
 @pytest.mark.xfail(sys.platform == "win32",
@@ -110,7 +113,7 @@ def test_include_file():
         f.write(test_cases)
         f.flush()
 
-        include = read_include_from_file(f.name)
+        include = read_test_prefixes_from_file(f.name)
 
         assert len(include) == 4
         assert "/foo/bar-error.https.html" in include
@@ -225,7 +228,7 @@ def test_loader_filter_tags():
             }
         },
         "url_base": "/",
-        "version": 8,
+        "version": 9,
     }
     manifest = WPTManifest.from_json("/", manifest_json)
 
@@ -238,6 +241,9 @@ def test_loader_filter_tags():
         with open(os.path.join(a_path, "bar.html.ini"), "w") as f:
             f.write("tags: [test-include]\n")
 
+        subsuites = {}
+        subsuites[""] = Subsuite("", config={})
+
         b_path = os.path.join(metadata_path, "b")
         os.makedirs(b_path)
         with open(os.path.join(b_path, "baz.html.ini"), "w") as f:
@@ -245,44 +251,40 @@ def test_loader_filter_tags():
 
 
         # Check: no filter loads all tests
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None)
-        assert len(loader.tests["testharness"]) == 4
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites)
+        assert len(loader.tests[""]["testharness"]) == 4
 
-        # Check: specifying a single `test-include` inclusion yields `/a/bar`
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None,
-                            test_filters=[TagFilter({"test-include"})])
-        assert len(loader.tests["testharness"]) == 1
-        assert loader.tests["testharness"][0].id == "/a/bar.html"
-        assert loader.tests["testharness"][0].tags == {"dir:a", "test-include"}
-        assert loader.tests["testharness"][1].id == "/b/baz.html"
-        assert loader.tests["testharness"][1].tags == {"dir:b", "test-include"}
+        # Check: specifying a single `test-include` inclusion yields `/a/bar` and `/b/baz`
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites,
+                            test_filters=[TagFilter({"test-include"}, {})])
+        assert len(loader.tests[""]["testharness"]) == 2
+        assert loader.tests[""]["testharness"][0].id == "/a/bar.html"
+        assert loader.tests[""]["testharness"][0].tags == {"dir:a", "test-include"}
+        assert loader.tests[""]["testharness"][1].id == "/b/baz.html"
+        assert loader.tests[""]["testharness"][1].tags == {"dir:b", "test-include", "test-exclude"}
 
         # Check: specifying a single `test-exclude` exclusion rejects only `/b/baz`
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None,
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites,
                             test_filters=[TagFilter({}, {"test-exclude"})])
-        assert len(loader.tests["testharness"]) == 3
-        assert all(test.id != "/b/baz.html" for test in loader.tests["testharness"])
+        assert len(loader.tests[""]["testharness"]) == 3
+        assert all(test.id != "/b/baz.html" for test in loader.tests[""]["testharness"])
 
         # Check: including `test-include` and excluding `test-exclude` yields only `/a/bar`
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None,
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites,
                             test_filters=[TagFilter({"test-include"}, {"test-exclude"})])
-        assert len(loader.tests["testharness"]) == 1
-        assert loader.tests["testharness"][0].id == "/a/bar.html"
-        assert loader.tests["testharness"][0].tags == {"dir:a", "test-include"}
+        assert len(loader.tests[""]["testharness"]) == 1
+        assert loader.tests[""]["testharness"][0].id == "/a/bar.html"
+        assert loader.tests[""]["testharness"][0].tags == {"dir:a", "test-include"}
 
         # Check: non-empty intersection of inclusion and exclusion yield zero tests
 
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None,
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites,
                             test_filters=[TagFilter({"test-include"}, {"test-include"})])
-        assert (len(loader.tests["testharness"] == 0))
+        assert len(loader.tests[""]["testharness"]) == 0
 
-        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None,
-                            test_filters=[
-                                TagFilter({"test-include", "test-exclude"}, {"test-include"})
-                            ])
-        assert len(loader.tests["testharness"]) == 1
-        assert loader.tests["testharness"][0].id == "/b/baz.html"
-        assert loader.tests["testharness"][0].tags == {"dir:b", "test-include", "test-exclude"}
+        loader = TestLoader({manifest: {"metadata_path": metadata_path}}, ["testharness"], None, subsuites,
+                            test_filters=[TagFilter({"test-include", "test-exclude"}, {"test-include"})])
+        assert len(loader.tests[""]["testharness"]) == 0
 
 
 def test_chunk_hash(manifest):

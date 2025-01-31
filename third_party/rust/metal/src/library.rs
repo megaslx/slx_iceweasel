@@ -7,11 +7,10 @@
 
 use super::*;
 
-use foreign_types::ForeignType;
-use objc::runtime::{Object, BOOL, NO, YES};
+use objc::runtime::{BOOL, NO, YES};
 
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_void};
+use std::os::raw::c_char;
 use std::ptr;
 
 /// Only available on (macos(10.12), ios(10.0)
@@ -50,35 +49,17 @@ impl VertexAttributeRef {
     }
 
     pub fn is_active(&self) -> bool {
-        unsafe {
-            match msg_send![self, isActive] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isActive] }
     }
 
     /// Only available on (macos(10.12), ios(10.0)
     pub fn is_patch_data(&self) -> bool {
-        unsafe {
-            match msg_send![self, isPatchData] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isPatchData] }
     }
 
     /// Only available on (macos(10.12), ios(10.0)
     pub fn is_patch_control_point_data(&self) -> bool {
-        unsafe {
-            match msg_send![self, isPatchControlPointData] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isPatchControlPointData] }
     }
 }
 
@@ -109,35 +90,17 @@ impl AttributeRef {
     }
 
     pub fn is_active(&self) -> bool {
-        unsafe {
-            match msg_send![self, isActive] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isActive] }
     }
 
     /// Only available on (macos(10.12), ios(10.0))
     pub fn is_patch_data(&self) -> bool {
-        unsafe {
-            match msg_send![self, isPatchData] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isPatchData] }
     }
 
     /// Only available on (macos(10.12), ios(10.0))
     pub fn is_patch_control_point_data(&self) -> bool {
-        unsafe {
-            match msg_send![self, isPatchControlPointData] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isPatchControlPointData] }
     }
 }
 
@@ -181,17 +144,11 @@ impl FunctionConstantRef {
     }
 
     pub fn required(&self) -> bool {
-        unsafe {
-            match msg_send![self, required] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, required] }
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Only available on (macos(11.0), ios(14.0))
     ///
     /// See <https://developer.apple.com/documentation/metal/mtlfunctionoptions/>
@@ -306,8 +263,6 @@ impl FunctionHandleRef {
 }
 
 // TODO:
-// MTLVisibleFunctionTableDescriptor
-// MTLVisibleFunctionTable
 // MTLIntersectionFunctionSignature
 // MTLIntersectionFunctionTableDescriptor
 // MTLIntersectionFunctionTable
@@ -403,6 +358,10 @@ pub enum MTLLanguageVersion {
     V2_3 = 0x20003,
     /// available on macOS 12.0+, iOS 15.0+
     V2_4 = 0x20004,
+    /// available on macOS 13.0+, iOS 16.0+
+    V3_0 = 0x30000,
+    /// available on macOS 14.0+, iOS 17.0+
+    V3_1 = 0x30001,
 }
 
 /// See <https://developer.apple.com/documentation/metal/mtlfunctionconstantvalues/>
@@ -486,13 +445,7 @@ impl CompileOptionsRef {
     }
 
     pub fn is_fast_math_enabled(&self) -> bool {
-        unsafe {
-            match msg_send![self, fastMathEnabled] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, fastMathEnabled] }
     }
 
     pub fn set_fast_math_enabled(&self, enabled: bool) {
@@ -576,13 +529,7 @@ impl CompileOptionsRef {
 
     /// Only available on (macos(11.0), macCatalyst(14.0), ios(13.0))
     pub fn preserve_invariance(&self) -> bool {
-        unsafe {
-            match msg_send![self, preserveInvariance] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, preserveInvariance] }
     }
 
     /// Only available on (macos(11.0), macCatalyst(14.0), ios(13.0))
@@ -670,7 +617,6 @@ impl LibraryRef {
                     nsstring_as_str(name).to_string()
                 })
                 .collect();
-            let () = msg_send![names, release];
             ret
         }
     }
@@ -782,24 +728,7 @@ impl DynamicLibraryRef {
     }
 
     pub fn serialize_to_url(&self, url: &URLRef) -> Result<bool, String> {
-        unsafe {
-            let mut err: *mut Object = ptr::null_mut();
-            let result: BOOL = msg_send![self, serializeToURL:url
-                                                        error:&mut err];
-            if !err.is_null() {
-                // FIXME: copy pasta
-                let desc: *mut Object = msg_send![err, localizedDescription];
-                let c_msg: *const c_char = msg_send![desc, UTF8String];
-                let message = CStr::from_ptr(c_msg).to_string_lossy().into_owned();
-                Err(message)
-            } else {
-                match result {
-                    YES => Ok(true),
-                    NO => Ok(false),
-                    _ => unreachable!(),
-                }
-            }
-        }
+        unsafe { msg_send_bool_error_check![self, serializeToURL: url] }
     }
 }
 
@@ -865,22 +794,7 @@ impl BinaryArchiveRef {
         descriptor: &ComputePipelineDescriptorRef,
     ) -> Result<bool, String> {
         unsafe {
-            let mut err: *mut Object = ptr::null_mut();
-            let result: BOOL = msg_send![self, addComputePipelineFunctionsWithDescriptor:descriptor
-                                                                        error:&mut err];
-            if !err.is_null() {
-                // FIXME: copy pasta
-                let desc: *mut Object = msg_send![err, localizedDescription];
-                let c_msg: *const c_char = msg_send![desc, UTF8String];
-                let message = CStr::from_ptr(c_msg).to_string_lossy().into_owned();
-                Err(message)
-            } else {
-                match result {
-                    YES => Ok(true),
-                    NO => Ok(false),
-                    _ => unreachable!(),
-                }
-            }
+            msg_send_bool_error_check![self, addComputePipelineFunctionsWithDescriptor: descriptor]
         }
     }
 
@@ -889,22 +803,7 @@ impl BinaryArchiveRef {
         descriptor: &RenderPipelineDescriptorRef,
     ) -> Result<bool, String> {
         unsafe {
-            let mut err: *mut Object = ptr::null_mut();
-            let result: BOOL = msg_send![self, addRenderPipelineFunctionsWithDescriptor:descriptor
-                                                                        error:&mut err];
-            if !err.is_null() {
-                // FIXME: copy pasta
-                let desc: *mut Object = msg_send![err, localizedDescription];
-                let c_msg: *const c_char = msg_send![desc, UTF8String];
-                let message = CStr::from_ptr(c_msg).to_string_lossy().into_owned();
-                Err(message)
-            } else {
-                match result {
-                    YES => Ok(true),
-                    NO => Ok(false),
-                    _ => unreachable!(),
-                }
-            }
+            msg_send_bool_error_check![self, addRenderPipelineFunctionsWithDescriptor: descriptor]
         }
     }
 
@@ -927,6 +826,7 @@ impl BinaryArchiveRef {
                 match result {
                     YES => Ok(true),
                     NO => Ok(false),
+                    #[cfg(not(target_arch = "aarch64"))]
                     _ => unreachable!(),
                 }
             }

@@ -6,9 +6,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use parser::{self, to_u32, SchemeType};
-use std::str;
-use Url;
+use crate::parser::{self, to_u32, SchemeType};
+use crate::Url;
+use alloc::string::String;
+use core::str;
 
 /// Exposes methods to manipulate the path of an URL that is not cannot-be-base.
 ///
@@ -19,9 +20,13 @@ use Url;
 ///
 /// ```rust
 /// use url::Url;
-/// # use std::error::Error;
 ///
-/// # fn run() -> Result<(), Box<Error>> {
+/// # #[cfg(feature = "std")]
+/// # use std::error::Error;
+/// # #[cfg(not(feature = "std"))]
+/// # use core::error::Error;
+///
+/// # fn run() -> Result<(), Box<dyn Error>> {
 /// let mut url = Url::parse("mailto:me@example.com")?;
 /// assert!(url.path_segments_mut().is_err());
 ///
@@ -42,10 +47,18 @@ pub struct PathSegmentsMut<'a> {
 }
 
 // Not re-exported outside the crate
-pub fn new(url: &mut Url) -> PathSegmentsMut {
+pub fn new(url: &mut Url) -> PathSegmentsMut<'_> {
     let after_path = url.take_after_path();
     let old_after_path_position = to_u32(url.serialization.len()).unwrap();
-    debug_assert!(url.byte_at(url.path_start) == b'/');
+    // Special urls always have a non empty path
+    if SchemeType::from(url.scheme()).is_special() {
+        debug_assert!(url.byte_at(url.path_start) == b'/');
+    } else {
+        debug_assert!(
+            url.serialization.len() == url.path_start as usize
+                || url.byte_at(url.path_start) == b'/'
+        );
+    }
     PathSegmentsMut {
         after_first_slash: url.path_start as usize + "/".len(),
         url,
@@ -70,9 +83,13 @@ impl<'a> PathSegmentsMut<'a> {
     ///
     /// ```rust
     /// use url::Url;
-    /// # use std::error::Error;
     ///
-    /// # fn run() -> Result<(), Box<Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # use std::error::Error;
+    /// # #[cfg(not(feature = "std"))]
+    /// # use core::error::Error;
+    ///
+    /// # fn run() -> Result<(), Box<dyn Error>> {
     /// let mut url = Url::parse("https://github.com/servo/rust-url/")?;
     /// url.path_segments_mut().map_err(|_| "cannot be base")?
     ///     .clear().push("logout");
@@ -98,9 +115,13 @@ impl<'a> PathSegmentsMut<'a> {
     ///
     /// ```rust
     /// use url::Url;
-    /// # use std::error::Error;
     ///
-    /// # fn run() -> Result<(), Box<Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # use std::error::Error;
+    /// # #[cfg(not(feature = "std"))]
+    /// # use core::error::Error;
+    ///
+    /// # fn run() -> Result<(), Box<dyn Error>> {
     /// let mut url = Url::parse("https://github.com/servo/rust-url/")?;
     /// url.path_segments_mut().map_err(|_| "cannot be base")?
     ///     .push("pulls");
@@ -115,6 +136,9 @@ impl<'a> PathSegmentsMut<'a> {
     /// # run().unwrap();
     /// ```
     pub fn pop_if_empty(&mut self) -> &mut Self {
+        if self.after_first_slash >= self.url.serialization.len() {
+            return self;
+        }
         if self.url.serialization[self.after_first_slash..].ends_with('/') {
             self.url.serialization.pop();
         }
@@ -127,6 +151,9 @@ impl<'a> PathSegmentsMut<'a> {
     ///
     /// Returns `&mut Self` so that method calls can be chained.
     pub fn pop(&mut self) -> &mut Self {
+        if self.after_first_slash >= self.url.serialization.len() {
+            return self;
+        }
         let last_slash = self.url.serialization[self.after_first_slash..]
             .rfind('/')
             .unwrap_or(0);
@@ -167,9 +194,13 @@ impl<'a> PathSegmentsMut<'a> {
     ///
     /// ```rust
     /// use url::Url;
-    /// # use std::error::Error;
     ///
-    /// # fn run() -> Result<(), Box<Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # use std::error::Error;
+    /// # #[cfg(not(feature = "std"))]
+    /// # use core::error::Error;
+    ///
+    /// # fn run() -> Result<(), Box<dyn Error>> {
     /// let mut url = Url::parse("https://github.com/")?;
     /// let org = "servo";
     /// let repo = "rust-url";
@@ -187,9 +218,13 @@ impl<'a> PathSegmentsMut<'a> {
     ///
     /// ```rust
     /// use url::Url;
-    /// # use std::error::Error;
     ///
-    /// # fn run() -> Result<(), Box<Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # use std::error::Error;
+    /// # #[cfg(not(feature = "std"))]
+    /// # use core::error::Error;
+    ///
+    /// # fn run() -> Result<(), Box<dyn Error>> {
     /// let mut url = Url::parse("https://github.com/servo")?;
     /// url.path_segments_mut().map_err(|_| "cannot be base")?
     ///     .extend(&["..", "rust-url", ".", "pulls"]);
@@ -212,7 +247,10 @@ impl<'a> PathSegmentsMut<'a> {
                 if matches!(segment, "." | "..") {
                     continue;
                 }
-                if parser.serialization.len() > path_start + 1 {
+                if parser.serialization.len() > path_start + 1
+                    // Non special url's path might still be empty
+                    || parser.serialization.len() == path_start
+                {
                     parser.serialization.push('/');
                 }
                 let mut has_host = true; // FIXME account for this?
@@ -220,7 +258,7 @@ impl<'a> PathSegmentsMut<'a> {
                     scheme_type,
                     &mut has_host,
                     path_start,
-                    parser::Input::new(segment),
+                    parser::Input::new_no_trim(segment),
                 );
             }
         });

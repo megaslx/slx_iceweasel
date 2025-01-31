@@ -12,7 +12,7 @@ use crate::parser::{Parse, ParserContext};
 use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
 use crate::Atom;
 pub use cssparser::{serialize_identifier, serialize_name, CowRcStr, Parser};
-pub use cssparser::{SourceLocation, Token, RGBA};
+pub use cssparser::{SourceLocation, Token};
 use precomputed_hash::PrecomputedHash;
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt::{self, Debug, Write};
@@ -92,10 +92,6 @@ where
     serialize_name(&ident, dest)
 }
 
-fn nan_inf_enabled() -> bool {
-    static_prefs::pref!("layout.css.nan-inf.enabled")
-}
-
 /// Serialize a number with calc, and NaN/infinity handling (if enabled)
 pub fn serialize_number<W>(v: f32, was_calc: bool, dest: &mut CssWriter<W>) -> fmt::Result
 where
@@ -118,7 +114,7 @@ where
         dest.write_str("calc(")?;
     }
 
-    if !v.is_finite() && nan_inf_enabled() {
+    if !v.is_finite() {
         // https://drafts.csswg.org/css-values/#calc-error-constants:
         // "While not technically numbers, these keywords act as numeric values,
         // similar to e and pi. Thus to get an infinite length, for example,
@@ -172,20 +168,38 @@ impl AsRef<str> for AtomString {
     }
 }
 
+impl Parse for AtomString {
+    fn parse<'i>(_: &ParserContext, input: &mut Parser<'i, '_>) -> Result<Self, ParseError<'i>> {
+        Ok(Self(Atom::from(input.expect_string()?.as_ref())))
+    }
+}
+
 impl cssparser::ToCss for AtomString {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result
     where
         W: Write,
     {
+        // Wrap in quotes to form a string literal
+        dest.write_char('"')?;
         #[cfg(feature = "servo")]
         {
-            cssparser::CssStringWriter::new(dest).write_str(self.as_ref())
+            cssparser::CssStringWriter::new(dest).write_str(self.as_ref())?;
         }
         #[cfg(feature = "gecko")]
         {
             self.0
-                .with_str(|s| cssparser::CssStringWriter::new(dest).write_str(s))
+                .with_str(|s| cssparser::CssStringWriter::new(dest).write_str(s))?;
         }
+        dest.write_char('"')
+    }
+}
+
+impl style_traits::ToCss for AtomString {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        cssparser::ToCss::to_css(self, dest)
     }
 }
 
@@ -496,11 +510,13 @@ impl<A: Debug, B: Debug> Debug for Either<A, B> {
 #[derive(
     Clone,
     Debug,
+    Default,
     Eq,
     Hash,
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
+    ToAnimatedValue,
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
@@ -577,11 +593,39 @@ impl ToCss for CustomIdent {
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
+    ToAnimatedValue,
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 pub struct DashedIdent(pub Atom);
+
+impl DashedIdent {
+    /// Parse an already-tokenizer identifier
+    pub fn from_ident<'i>(
+        location: SourceLocation,
+        ident: &CowRcStr<'i>,
+    ) -> Result<Self, ParseError<'i>> {
+        if !ident.starts_with("--") {
+            return Err(
+                location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(ident.clone()))
+            );
+        }
+        Ok(Self(Atom::from(ident.as_ref())))
+    }
+
+    /// Special value for internal use. Useful where we can't use Option<>.
+    pub fn empty() -> Self {
+        Self(atom!(""))
+    }
+
+    /// Check for special internal value.
+    pub fn is_empty(&self) -> bool {
+        self.0 == atom!("")
+    }
+}
 
 impl Parse for DashedIdent {
     fn parse<'i, 't>(
@@ -590,11 +634,7 @@ impl Parse for DashedIdent {
     ) -> Result<Self, ParseError<'i>> {
         let location = input.current_source_location();
         let ident = input.expect_ident()?;
-        if ident.starts_with("--") {
-            Ok(Self(Atom::from(ident.as_ref())))
-        } else {
-            Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(ident.clone())))
-        }
+        Self::from_ident(location, ident)
     }
 }
 
@@ -607,17 +647,16 @@ impl ToCss for DashedIdent {
     }
 }
 
-/// The <timeline-name> or <keyframes-name>.
-/// The definition of these two names are the same, so we use the same type for them.
+/// The <keyframes-name>.
 ///
-/// <https://drafts.csswg.org/css-animations-2/#typedef-timeline-name>
 /// <https://drafts.csswg.org/css-animations/#typedef-keyframes-name>
 ///
-/// We use a single atom for these. Empty atom represents `none` animation.
+/// We use a single atom for this. Empty atom represents `none` animation.
 #[repr(transparent)]
 #[derive(
     Clone,
     Debug,
+    Eq,
     Hash,
     PartialEq,
     MallocSizeOf,
@@ -626,9 +665,9 @@ impl ToCss for DashedIdent {
     ToResolvedValue,
     ToShmem,
 )]
-pub struct TimelineOrKeyframesName(Atom);
+pub struct KeyframesName(Atom);
 
-impl TimelineOrKeyframesName {
+impl KeyframesName {
     /// <https://drafts.csswg.org/css-animations/#dom-csskeyframesrule-name>
     pub fn from_ident(value: &str) -> Self {
         Self(Atom::from(value))
@@ -644,7 +683,7 @@ impl TimelineOrKeyframesName {
         self.0 == atom!("")
     }
 
-    /// Create a new TimelineOrKeyframesName from Atom.
+    /// Create a new KeyframesName from Atom.
     #[cfg(feature = "gecko")]
     pub fn from_atom(atom: Atom) -> Self {
         Self(atom)
@@ -654,118 +693,6 @@ impl TimelineOrKeyframesName {
     pub fn as_atom(&self) -> &Atom {
         &self.0
     }
-
-    fn parse<'i, 't>(input: &mut Parser<'i, 't>, invalid: &[&str]) -> Result<Self, ParseError<'i>> {
-        debug_assert!(invalid.contains(&"none"));
-        let location = input.current_source_location();
-        Ok(match *input.next()? {
-            Token::Ident(ref s) => Self(CustomIdent::from_ident(location, s, invalid)?.0),
-            Token::QuotedString(ref s) => Self(Atom::from(s.as_ref())),
-            ref t => return Err(location.new_unexpected_token_error(t.clone())),
-        })
-    }
-
-    fn to_css<W>(&self, dest: &mut CssWriter<W>, invalid: &[&str]) -> fmt::Result
-    where
-        W: Write,
-    {
-        debug_assert!(invalid.contains(&"none"));
-
-        if self.0 == atom!("") {
-            return dest.write_str("none");
-        }
-
-        self.0.with_str(|s| {
-            if CustomIdent::is_valid(s, invalid) {
-                serialize_identifier(s, dest)
-            } else {
-                s.to_css(dest)
-            }
-        })
-    }
-}
-
-impl Eq for TimelineOrKeyframesName {}
-
-/// The typedef of <timeline-name>.
-#[repr(transparent)]
-#[derive(
-    Clone,
-    Debug,
-    Deref,
-    Hash,
-    Eq,
-    PartialEq,
-    MallocSizeOf,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToResolvedValue,
-    ToShmem,
-)]
-pub struct TimelineName(TimelineOrKeyframesName);
-
-impl TimelineName {
-    /// Create a new TimelineName from Atom.
-    #[cfg(feature = "gecko")]
-    pub fn from_atom(atom: Atom) -> Self {
-        Self(TimelineOrKeyframesName::from_atom(atom))
-    }
-
-    /// Returns the `none` value.
-    pub fn none() -> Self {
-        Self(TimelineOrKeyframesName::none())
-    }
-}
-
-impl Parse for TimelineName {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        Ok(Self(TimelineOrKeyframesName::parse(
-            input,
-            &["none", "auto"],
-        )?))
-    }
-}
-
-impl ToCss for TimelineName {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        self.0.to_css(dest, &["none", "auto"])
-    }
-}
-
-/// The typedef of <keyframes-name>.
-#[repr(transparent)]
-#[derive(
-    Clone,
-    Debug,
-    Deref,
-    Hash,
-    Eq,
-    PartialEq,
-    MallocSizeOf,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToResolvedValue,
-    ToShmem,
-)]
-pub struct KeyframesName(TimelineOrKeyframesName);
-
-impl KeyframesName {
-    /// Create a new KeyframesName from Atom.
-    #[cfg(feature = "gecko")]
-    pub fn from_atom(atom: Atom) -> Self {
-        Self(TimelineOrKeyframesName::from_atom(atom))
-    }
-
-    /// Returns the `none` value.
-    pub fn none() -> Self {
-        Self(TimelineOrKeyframesName::none())
-    }
 }
 
 impl Parse for KeyframesName {
@@ -773,7 +700,12 @@ impl Parse for KeyframesName {
         _: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        Ok(Self(TimelineOrKeyframesName::parse(input, &["none"])?))
+        let location = input.current_source_location();
+        Ok(match *input.next()? {
+            Token::Ident(ref s) => Self(CustomIdent::from_ident(location, s, &["none"])?.0),
+            Token::QuotedString(ref s) => Self(Atom::from(s.as_ref())),
+            ref t => return Err(location.new_unexpected_token_error(t.clone())),
+        })
     }
 }
 
@@ -782,6 +714,20 @@ impl ToCss for KeyframesName {
     where
         W: Write,
     {
-        self.0.to_css(dest, &["none"])
+        if self.is_none() {
+            return dest.write_str("none");
+        }
+
+        let serialize = |string: &_| {
+            if CustomIdent::is_valid(string, &["none"]) {
+                serialize_identifier(string, dest)
+            } else {
+                string.to_css(dest)
+            }
+        };
+        #[cfg(feature = "gecko")]
+        return self.0.with_str(serialize);
+        #[cfg(feature = "servo")]
+        return serialize(self.0.as_ref());
     }
 }

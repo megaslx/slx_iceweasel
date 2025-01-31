@@ -12,7 +12,7 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "nsExceptionHandler.h"
 #include "nsMemoryPressure.h"
 #include "nsXULAppAPI.h"
@@ -56,7 +56,8 @@ nsAvailableMemoryWatcherBase::GetSingleton() {
 NS_IMPL_ISUPPORTS(nsAvailableMemoryWatcherBase, nsIAvailableMemoryWatcherBase);
 
 nsAvailableMemoryWatcherBase::nsAvailableMemoryWatcherBase()
-    : mNumOfTabUnloading(0),
+    : mMutex("nsAvailableMemoryWatcher mutex"),
+      mNumOfTabUnloading(0),
       mNumOfMemoryPressure(0),
       mTabUnloader(new NullTabUnloader),
       mInteracting(false) {
@@ -124,8 +125,12 @@ nsresult nsAvailableMemoryWatcherBase::RegisterTabUnloader(
   return NS_OK;
 }
 
+// This method is called as a part of UnloadTabAsync(). Like Notify(), if we
+// call this method synchronously without releasing the lock first we can lead
+// to deadlock.
 nsresult nsAvailableMemoryWatcherBase::OnUnloadAttemptCompleted(
     nsresult aResult) {
+  MutexAutoLock lock(mMutex);
   switch (aResult) {
     // A tab was unloaded successfully.
     case NS_OK:
@@ -155,14 +160,14 @@ void nsAvailableMemoryWatcherBase::UpdateLowMemoryTimeStamp() {
   }
 }
 
-void nsAvailableMemoryWatcherBase::RecordTelemetryEventOnHighMemory() {
-  Telemetry::SetEventRecordingEnabled("memory_watcher"_ns, true);
-  Telemetry::RecordEvent(
-      Telemetry::EventID::Memory_watcher_OnHighMemory_Stats,
-      Some(nsPrintfCString(
-          "%u,%u,%f", mNumOfTabUnloading, mNumOfMemoryPressure,
-          (TimeStamp::NowLoRes() - mLowMemoryStart).ToSeconds())),
-      Nothing());
+void nsAvailableMemoryWatcherBase::RecordTelemetryEventOnHighMemory(
+    const MutexAutoLock&) {
+  glean::memory_watcher::on_high_memory_stats.Record(
+      Some(glean::memory_watcher::OnHighMemoryStatsExtra{
+          Some(nsPrintfCString(
+              "%u,%u,%f", mNumOfTabUnloading, mNumOfMemoryPressure,
+              (TimeStamp::NowLoRes() - mLowMemoryStart).ToSeconds())),
+      }));
   mNumOfTabUnloading = mNumOfMemoryPressure = 0;
   mLowMemoryStart = TimeStamp();
 }

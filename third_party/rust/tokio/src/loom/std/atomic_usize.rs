@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::ops;
 
-/// `AtomicUsize` providing an additional `load_unsync` function.
+/// `AtomicUsize` providing an additional `unsync_load` function.
 pub(crate) struct AtomicUsize {
     inner: UnsafeCell<std::sync::atomic::AtomicUsize>,
 }
@@ -23,7 +23,8 @@ impl AtomicUsize {
     /// All mutations must have happened before the unsynchronized load.
     /// Additionally, there must be no concurrent mutations.
     pub(crate) unsafe fn unsync_load(&self) -> usize {
-        *(*self.inner.get()).get_mut()
+        // See <https://github.com/tokio-rs/tokio/issues/6155>
+        self.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn with_mut<R>(&mut self, f: impl FnOnce(&mut usize) -> R) -> R {

@@ -11,17 +11,21 @@ High-level interface for translating `metrics.yaml` into other formats.
 from pathlib import Path
 import os
 import shutil
-import sys
 import tempfile
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import lint
 from . import parser
+from . import go_server
 from . import javascript
+from . import javascript_server
+from . import python_server
 from . import kotlin
 from . import markdown
 from . import metrics
+from . import ruby_server
 from . import rust
+from . import rust_server
 from . import swift
 from . import util
 
@@ -52,12 +56,18 @@ class Outputter:
 
 
 OUTPUTTERS = {
+    "go_server": Outputter(go_server.output_go, []),
     "javascript": Outputter(javascript.output_javascript, []),
     "typescript": Outputter(javascript.output_typescript, []),
+    "javascript_server": Outputter(javascript_server.output_javascript, []),
+    "typescript_server": Outputter(javascript_server.output_typescript, []),
+    "python_server": Outputter(python_server.output_python, []),
+    "ruby_server": Outputter(ruby_server.output_ruby, []),
     "kotlin": Outputter(kotlin.output_kotlin, ["*.kt"]),
     "markdown": Outputter(markdown.output_markdown, []),
     "swift": Outputter(swift.output_swift, ["*.swift"]),
     "rust": Outputter(rust.output_rust, []),
+    "rust_server": Outputter(rust_server.output_rust, []),
 }
 
 
@@ -89,7 +99,6 @@ def transform_metrics(objects):
             raise ValueError(
                 f"No `counter` named {denominator_name} found to be used as"
                 "denominator for {numerators}",
-                file=sys.stderr,
             )
         counters[denominator_name].__class__ = metrics.Denominator
         counters[denominator_name].type = "denominator"

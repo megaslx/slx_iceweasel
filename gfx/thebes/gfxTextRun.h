@@ -122,7 +122,7 @@ class gfxTextRun : public gfxShapedText {
   }
 
   // Returns a gfxShapedText::CompressedGlyph::FLAG_BREAK_TYPE_* value
-  // as defined in gfxFont.h (may be NONE, NORMAL or HYPHEN).
+  // as defined in gfxFont.h (may be NONE, NORMAL, HYPHEN or EMERGENCY_WRAP).
   uint8_t CanBreakBefore(uint32_t aPos) const {
     MOZ_ASSERT(aPos < GetLength());
     return mCharacterGlyphs[aPos].CanBreakBefore();
@@ -251,10 +251,10 @@ class gfxTextRun : public gfxShapedText {
 
   struct MOZ_STACK_CLASS DrawParams {
     gfxContext* context;
+    mozilla::gfx::PaletteCache& paletteCache;
     DrawMode drawMode = DrawMode::GLYPH_FILL;
     nscolor textStrokeColor = 0;
     nsAtom* fontPalette = nullptr;
-    mozilla::gfx::FontPaletteValueSet* paletteValueSet = nullptr;
     gfxPattern* textStrokePattern = nullptr;
     const mozilla::gfx::StrokeOptions* strokeOpts = nullptr;
     const mozilla::gfx::DrawOptions* drawOpts = nullptr;
@@ -264,7 +264,9 @@ class gfxTextRun : public gfxShapedText {
     mozilla::SVGContextPaint* contextPaint = nullptr;
     gfxTextRunDrawCallbacks* callbacks = nullptr;
     bool allowGDI = true;
-    explicit DrawParams(gfxContext* aContext) : context(aContext) {}
+    bool hasTextShadow = false;
+    DrawParams(gfxContext* aContext, mozilla::gfx::PaletteCache& aPaletteCache)
+        : context(aContext), paletteCache(aPaletteCache) {}
   };
 
   /**
@@ -297,7 +299,8 @@ class gfxTextRun : public gfxShapedText {
    */
   void DrawEmphasisMarks(gfxContext* aContext, gfxTextRun* aMark,
                          gfxFloat aMarkAdvance, mozilla::gfx::Point aPt,
-                         Range aRange, const PropertyProvider* aProvider) const;
+                         Range aRange, const PropertyProvider* aProvider,
+                         mozilla::gfx::PaletteCache& aPaletteCache) const;
 
   /**
    * Computes the ReflowMetrics for a substring.
@@ -461,6 +464,7 @@ class gfxTextRun : public gfxShapedText {
       gfxFloat aWidth, const PropertyProvider& aProvider,
       SuppressBreak aSuppressBreak, gfxFont::BoundingBoxType aBoundingBoxType,
       DrawTarget* aRefDrawTarget, bool aCanWordWrap, bool aCanWhitespaceWrap,
+      bool aIsBreakSpaces,
       // Output parameters:
       TrimmableWS* aOutTrimmableWhitespace,  // may be null
       Metrics& aOutMetrics, bool& aOutUsedHyphenation, uint32_t& aOutLastBreak,
@@ -900,6 +904,8 @@ class gfxFontGroup final : public gfxTextRunFactory {
  public:
   typedef mozilla::intl::Script Script;
   typedef gfxShapedText::CompressedGlyph CompressedGlyph;
+  friend class MathMLTextRunFactory;
+  friend class nsCaseTransformTextRunFactory;
 
   static void
   Shutdown();  // platform must call this to release the languageAtomService
@@ -917,11 +923,17 @@ class gfxFontGroup final : public gfxTextRunFactory {
 
   // Returns first valid font in the fontlist or default font.
   // Initiates userfont loads if userfont not loaded.
+  // aCh: character to look for, or kCSSFirstAvailableFont for default "first
+  //      available font" as defined by CSS Fonts (i.e. the first font whose
+  //      unicode-range includes <space>, but does not require space to
+  //      actually be present)
   // aGeneric: if non-null, returns the CSS generic type that was mapped to
   //           this font
   // aIsFirst: if non-null, returns whether the font was first in the list
+  static constexpr uint32_t kCSSFirstAvailableFont = UINT32_MAX;
   already_AddRefed<gfxFont> GetFirstValidFont(
-      uint32_t aCh = 0x20, mozilla::StyleGenericFontFamily* aGeneric = nullptr,
+      uint32_t aCh = kCSSFirstAvailableFont,
+      mozilla::StyleGenericFontFamily* aGeneric = nullptr,
       bool* aIsFirst = nullptr);
 
   // Returns the first font in the font-group that has an OpenType MATH table,
@@ -1052,18 +1064,6 @@ class gfxFontGroup final : public gfxTextRunFactory {
       int32_t aAppUnitsPerDevPixel, mozilla::gfx::ShapedTextFlags aFlags,
       LazyReferenceDrawTargetGetter& aRefDrawTargetGetter);
 
-  void CheckForUpdatedPlatformList() {
-    auto* pfl = gfxPlatformFontList::PlatformFontList();
-    if (mFontListGeneration != pfl->GetGeneration()) {
-      // Forget cached fonts that may no longer be valid.
-      mLastPrefFamily = FontFamily();
-      mLastPrefFont = nullptr;
-      mDefaultFont = nullptr;
-      mFonts.Clear();
-      BuildFontList();
-    }
-  }
-
   nsAtom* Language() const { return mLanguage.get(); }
 
   // Get font metrics to be used as the basis for CSS font-relative units.
@@ -1076,6 +1076,7 @@ class gfxFontGroup final : public gfxTextRunFactory {
 
  protected:
   friend class mozilla::PostTraversalTask;
+  friend class DeferredClearResolvedFonts;
 
   struct TextRange {
     TextRange(uint32_t aStart, uint32_t aEnd, gfxFont* aFont,
@@ -1391,6 +1392,8 @@ class gfxFontGroup final : public gfxTextRunFactory {
 
   bool mExplicitLanguage;  // Does mLanguage come from an explicit attribute?
 
+  bool mResolvedFonts = false;  // Whether the mFonts array has been set up.
+
   eFontPresentation mEmojiPresentation = eFontPresentation::Any;
 
   // Generic font family used to select among font prefs during fallback.
@@ -1417,8 +1420,9 @@ class gfxFontGroup final : public gfxTextRunFactory {
       const T* aString, uint32_t aLength, const Parameters* aParams,
       mozilla::gfx::ShapedTextFlags aFlags, nsTextFrameUtils::Flags aFlags2);
 
-  // Initialize the list of fonts
-  void BuildFontList();
+  // Ensure the font-family list & style properties from CSS/prefs/defaults is
+  // resolved to the array of available font faces we'll actually use.
+  void EnsureFontList();
 
   // Get the font at index i within the fontlist, for character aCh (in case
   // of fonts with multiple resources and unicode-range partitioning).

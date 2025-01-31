@@ -2,13 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* This is a JavaScript module (JSM) to be imported via
- * ChromeUtils.import() and acts as a singleton. Only the following
+/* This is a JavaScript module to be imported via
+ * ChromeUtils.importESModule() and acts as a singleton. Only the following
  * listed symbols will exposed on import, and only when and where imported.
  */
 
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
-import { PromiseUtils } from "resource://gre/modules/PromiseUtils.sys.mjs";
 
 const lazy = {};
 
@@ -119,7 +118,7 @@ export var TPS = {
   shouldValidateBookmarks: false,
   shouldValidatePasswords: false,
   shouldValidateForms: false,
-  _placesInitDeferred: PromiseUtils.defer(),
+  _placesInitDeferred: Promise.withResolvers(),
   ACTIONS: [
     ACTION_ADD,
     ACTION_DELETE,
@@ -169,7 +168,7 @@ export var TPS = {
     "nsISupportsWeakReference",
   ]),
 
-  observe: function TPS__observe(subject, topic, data) {
+  observe: function TPS__observe(subject, topic) {
     try {
       lazy.Logger.logInfo("----------event observed: " + topic);
 
@@ -191,7 +190,7 @@ export var TPS = {
           this._setupComplete = true;
 
           if (this._syncWipeAction) {
-            lazy.Weave.Svc.PrefBranch.setCharPref(
+            lazy.Weave.Svc.PrefBranch.setStringPref(
               "firstSync",
               this._syncWipeAction
             );
@@ -217,7 +216,6 @@ export var TPS = {
           } else {
             this._triggeredSync = false;
             this.DumpError("Sync error; aborting test");
-            return;
           }
 
           break;
@@ -464,19 +462,19 @@ export var TPS = {
             break;
           case ACTION_VERIFY:
             lazy.Logger.AssertTrue(
-              passwordOb.Find() != -1,
+              (await passwordOb.Find()) != -1,
               "password not found"
             );
             break;
           case ACTION_VERIFY_NOT:
             lazy.Logger.AssertTrue(
-              passwordOb.Find() == -1,
+              (await passwordOb.Find()) == -1,
               "password found, but it shouldn't exist"
             );
             break;
           case ACTION_DELETE:
             lazy.Logger.AssertTrue(
-              passwordOb.Find() != -1,
+              (await passwordOb.Find()) != -1,
               "password not found"
             );
             passwordOb.Remove();
@@ -484,7 +482,7 @@ export var TPS = {
           case ACTION_MODIFY:
             if (passwordOb.updateProps != null) {
               lazy.Logger.AssertTrue(
-                passwordOb.Find() != -1,
+                (await passwordOb.Find()) != -1,
                 "password not found"
               );
               passwordOb.Update();
@@ -1105,7 +1103,7 @@ export var TPS = {
    */
   async _executeTestPhase(file, phase, settings) {
     try {
-      this.config = JSON.parse(Services.prefs.getCharPref("tps.config"));
+      this.config = JSON.parse(Services.prefs.getStringPref("tps.config"));
       // parse the test file
       Services.scriptloader.loadSubScript(file, this);
       this._currentPhase = phase;
@@ -1377,7 +1375,7 @@ export var TPS = {
     // also handle it via the "weave:service:setup-complete" notification.
     if (wipeAction) {
       this._syncWipeAction = wipeAction;
-      lazy.Weave.Svc.PrefBranch.setCharPref("firstSync", wipeAction);
+      lazy.Weave.Svc.PrefBranch.setStringPref("firstSync", wipeAction);
     } else {
       lazy.Weave.Svc.PrefBranch.clearUserPref("firstSync");
     }

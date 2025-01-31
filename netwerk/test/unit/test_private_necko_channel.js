@@ -45,14 +45,14 @@ function serverHandler(metadata, response) {
   response.bodyOutputStream.write(httpbody, httpbody.length);
 }
 
-function checkRequest(request, data, context) {
+function checkRequest() {
   get_device_entry_count("disk", null, function (count) {
     Assert.equal(count, 0);
     get_device_entry_count(
       "disk",
       Services.loadContextInfo.private,
-      function (count) {
-        Assert.equal(count, 1);
+      function (count1) {
+        Assert.equal(count1, 1);
         httpserver.stop(do_test_finished);
       }
     );

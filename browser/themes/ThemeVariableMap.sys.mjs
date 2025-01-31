@@ -27,11 +27,16 @@ export const ThemeVariableMap = [
     "--tab-loading-fill",
     {
       lwtProperty: "tab_loading",
-      optionalElementID: "tabbrowser-tabs",
     },
   ],
   [
-    "--lwt-tab-text",
+    "--tab-selected-bgcolor",
+    {
+      lwtProperty: "tab_selected",
+    },
+  ],
+  [
+    "--tab-selected-textcolor",
     {
       lwtProperty: "tab_text",
     },
@@ -40,7 +45,6 @@ export const ThemeVariableMap = [
     "--lwt-tab-line-color",
     {
       lwtProperty: "tab_line",
-      optionalElementID: "TabsToolbar",
     },
   ],
   [
@@ -50,22 +54,19 @@ export const ThemeVariableMap = [
     },
   ],
   [
-    "--toolbar-bgcolor",
-    {
-      lwtProperty: "toolbarColor",
-    },
-  ],
-  [
-    "--toolbar-color",
-    {
-      lwtProperty: "toolbar_text",
-    },
-  ],
-  [
-    "--lwt-tabs-border-color",
+    "--tabs-navbar-separator-color",
     {
       lwtProperty: "toolbar_top_separator",
-      optionalElementID: "navigator-toolbox",
+    },
+  ],
+  [
+    "--tabs-navbar-separator-style",
+    {
+      lwtProperty: "toolbar_top_separator",
+      processColor(rgbaChannels) {
+        // If the separator is transparent, we don't want it to take space.
+        return rgbaChannels?.a === 0 ? "none" : null;
+      },
     },
   ],
   [
@@ -81,18 +82,6 @@ export const ThemeVariableMap = [
     },
   ],
   [
-    "--toolbarbutton-icon-fill",
-    {
-      lwtProperty: "icon_color",
-    },
-  ],
-  [
-    "--lwt-toolbarbutton-icon-fill-attention",
-    {
-      lwtProperty: "icon_attention_color",
-    },
-  ],
-  [
     "--toolbarbutton-hover-background",
     {
       lwtProperty: "button_background_hover",
@@ -105,19 +94,13 @@ export const ThemeVariableMap = [
     },
   ],
   [
-    "--lwt-selected-tab-background-color",
-    {
-      lwtProperty: "tab_selected",
-    },
-  ],
-  [
-    "--autocomplete-popup-highlight-background",
+    "--urlbarView-highlight-background",
     {
       lwtProperty: "popup_highlight",
     },
   ],
   [
-    "--autocomplete-popup-highlight-color",
+    "--urlbarView-highlight-color",
     {
       lwtProperty: "popup_highlight_text",
     },
@@ -126,14 +109,11 @@ export const ThemeVariableMap = [
     "--sidebar-background-color",
     {
       lwtProperty: "sidebar",
-      optionalElementID: "sidebar-box",
-      processColor(rgbaChannels, element) {
+      processColor(rgbaChannels) {
         if (!rgbaChannels) {
-          element.removeAttribute("lwt-sidebar");
           return null;
         }
         const { r, g, b } = rgbaChannels;
-        element.setAttribute("lwt-sidebar", "true");
         // Drop alpha channel
         return `rgb(${r}, ${g}, ${b})`;
       },
@@ -143,14 +123,12 @@ export const ThemeVariableMap = [
     "--sidebar-text-color",
     {
       lwtProperty: "sidebar_text",
-      optionalElementID: "sidebar-box",
     },
   ],
   [
     "--sidebar-border-color",
     {
       lwtProperty: "sidebar_border",
-      optionalElementID: "browser",
     },
   ],
   [

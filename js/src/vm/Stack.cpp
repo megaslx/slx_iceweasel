@@ -150,7 +150,8 @@ static inline void AssertScopeMatchesEnvironment(Scope* scope,
   //
   // In the case of a syntactic env chain, the outermost env is always a
   // GlobalObject.
-  MOZ_ASSERT(env->is<GlobalObject>() || IsGlobalLexicalEnvironment(env) ||
+  MOZ_ASSERT(env->is<GlobalObject>() ||
+             env->is<GlobalLexicalEnvironmentObject>() ||
              env->is<DebugEnvironmentProxy>());
 #endif
 }
@@ -264,7 +265,8 @@ bool InterpreterFrame::pushLexicalEnvironment(JSContext* cx,
   return true;
 }
 
-bool InterpreterFrame::freshenLexicalEnvironment(JSContext* cx) {
+bool InterpreterFrame::freshenLexicalEnvironment(JSContext* cx,
+                                                 jsbytecode* pc) {
   Rooted<BlockLexicalEnvironmentObject*> env(
       cx, &envChain_->as<BlockLexicalEnvironmentObject>());
   BlockLexicalEnvironmentObject* fresh =
@@ -273,17 +275,30 @@ bool InterpreterFrame::freshenLexicalEnvironment(JSContext* cx) {
     return false;
   }
 
+  if (MOZ_UNLIKELY(cx->realm()->isDebuggee())) {
+    Rooted<BlockLexicalEnvironmentObject*> freshRoot(cx, fresh);
+    DebugEnvironments::onPopLexical(cx, this, pc);
+    fresh = freshRoot;
+  }
+
   replaceInnermostEnvironment(*fresh);
   return true;
 }
 
-bool InterpreterFrame::recreateLexicalEnvironment(JSContext* cx) {
+bool InterpreterFrame::recreateLexicalEnvironment(JSContext* cx,
+                                                  jsbytecode* pc) {
   Rooted<BlockLexicalEnvironmentObject*> env(
       cx, &envChain_->as<BlockLexicalEnvironmentObject>());
   BlockLexicalEnvironmentObject* fresh =
       BlockLexicalEnvironmentObject::recreate(cx, env);
   if (!fresh) {
     return false;
+  }
+
+  if (MOZ_UNLIKELY(cx->realm()->isDebuggee())) {
+    Rooted<BlockLexicalEnvironmentObject*> freshRoot(cx, fresh);
+    DebugEnvironments::onPopLexical(cx, this, pc);
+    fresh = freshRoot;
   }
 
   replaceInnermostEnvironment(*fresh);
@@ -495,9 +510,8 @@ void JS::ProfilingFrameIterator::operator++() {
 
 void JS::ProfilingFrameIterator::settleFrames() {
   // Handle transition frames (see comment in JitFrameIter::operator++).
-  if (isJSJit() && !jsJitIter().done() &&
-      jsJitIter().frameType() == jit::FrameType::WasmToJSJit) {
-    wasm::Frame* fp = (wasm::Frame*)jsJitIter().fp();
+  if (isJSJit() && jsJitIter().done() && jsJitIter().wasmCallerFP()) {
+    wasm::Frame* fp = (wasm::Frame*)jsJitIter().wasmCallerFP();
     iteratorDestroy();
     new (storage()) wasm::ProfilingFrameIterator(fp);
     kind_ = Kind::Wasm;
@@ -515,7 +529,6 @@ void JS::ProfilingFrameIterator::settleFrames() {
     new (storage())
         jit::JSJitProfilingFrameIterator((jit::CommonFrameLayout*)fp);
     kind_ = Kind::JSJit;
-    MOZ_ASSERT(!jsJitIter().done());
     maybeSetEndStackAddress(jsJitIter().endStackAddress());
     return;
   }
@@ -624,11 +637,28 @@ JS::ProfilingFrameIterator::getPhysicalFrameAndEntry(
   void* stackAddr = stackAddress();
 
   MOZ_DIAGNOSTIC_ASSERT(endStackAddress_);
+#ifndef ENABLE_WASM_JSPI
+  // The stack addresses are monotonically increasing, except when
+  // suspendable stacks are present (e.g. when JS PI is enabled).
   MOZ_DIAGNOSTIC_ASSERT(stackAddr >= endStackAddress_);
+#endif
 
   if (isWasm()) {
     Frame frame;
-    frame.kind = Frame_Wasm;
+    switch (wasmIter().category()) {
+      case wasm::ProfilingFrameIterator::Baseline: {
+        frame.kind = FrameKind::Frame_WasmBaseline;
+        break;
+      }
+      case wasm::ProfilingFrameIterator::Ion: {
+        frame.kind = FrameKind::Frame_WasmIon;
+        break;
+      }
+      default: {
+        frame.kind = FrameKind::Frame_WasmOther;
+        break;
+      }
+    }
     frame.stackAddress = stackAddr;
     frame.returnAddress_ = nullptr;
     frame.activation = activation_;
@@ -641,6 +671,10 @@ JS::ProfilingFrameIterator::getPhysicalFrameAndEntry(
   }
 
   MOZ_ASSERT(isJSJit());
+
+  if (jit::IsPortableBaselineInterpreterEnabled()) {
+    return mozilla::Nothing();
+  }
 
   // Look up an entry for the return address.
   void* returnAddr = jsJitIter().resumePCinCurrentFrame();

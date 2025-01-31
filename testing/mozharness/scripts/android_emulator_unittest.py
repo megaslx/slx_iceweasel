@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 
 import copy
 import datetime
@@ -152,6 +150,16 @@ class AndroidEmulatorTest(
                     "help": "Extra user prefs.",
                 },
             ],
+            [
+                ["--tag"],
+                {
+                    "action": "append",
+                    "default": [],
+                    "dest": "test_tags",
+                    "help": "Filter out tests that don't have the given tag. Can be used multiple "
+                    "times in which case the test must contain at least one of the given tags.",
+                },
+            ],
         ]
         + copy.deepcopy(testing_config_options)
         + copy.deepcopy(code_coverage_config_options)
@@ -199,6 +207,7 @@ class AndroidEmulatorTest(
         self.disable_fission = c.get("disable_fission")
         self.web_content_isolation_strategy = c.get("web_content_isolation_strategy")
         self.extra_prefs = c.get("extra_prefs")
+        self.test_tags = c.get("test_tags")
 
     def query_abs_dirs(self):
         if self.abs_dirs:
@@ -209,7 +218,6 @@ class AndroidEmulatorTest(
         dirs["abs_test_bin_dir"] = os.path.join(
             abs_dirs["abs_work_dir"], "tests", "bin"
         )
-        dirs["abs_xre_dir"] = os.path.join(abs_dirs["abs_work_dir"], "hostutils")
         dirs["abs_modules_dir"] = os.path.join(dirs["abs_test_install_dir"], "modules")
         dirs["abs_blob_upload_dir"] = os.path.join(
             abs_dirs["abs_work_dir"], "blobber_upload_dir"
@@ -222,6 +230,7 @@ class AndroidEmulatorTest(
             dirs["abs_test_install_dir"], "xpcshell"
         )
         work_dir = os.environ.get("MOZ_FETCHES_DIR") or abs_dirs["abs_work_dir"]
+        dirs["abs_xre_dir"] = os.path.join(work_dir, "hostutils")
         dirs["abs_sdk_dir"] = os.path.join(work_dir, "android-sdk-linux")
         dirs["abs_avds_dir"] = os.path.join(work_dir, "android-device")
         dirs["abs_bundletool_path"] = os.path.join(work_dir, "bundletool.jar")
@@ -241,11 +250,24 @@ class AndroidEmulatorTest(
         return os.path.join(dirs["abs_test_install_dir"], test_dir)
 
     def _get_mozharness_test_paths(self, suite):
-        test_paths = os.environ.get("MOZHARNESS_TEST_PATHS")
-        if not test_paths:
-            return
+        test_paths = json.loads(os.environ.get("MOZHARNESS_TEST_PATHS", '""'))
+        confirm_paths = json.loads(os.environ.get("MOZHARNESS_CONFIRM_PATHS", '""'))
 
-        return json.loads(test_paths).get(suite)
+        if not test_paths or not test_paths.get(suite, []):
+            return None
+
+        suite_test_paths = test_paths.get(suite, [])
+        if confirm_paths and confirm_paths.get(suite, []):
+            suite_test_paths = confirm_paths.get(suite, [])
+
+        if suite in ("reftest", "crashtest"):
+            dirs = self.query_abs_dirs()
+            suite_test_paths = [
+                os.path.join(dirs["abs_reftest_dir"], "tests", p)
+                for p in suite_test_paths
+            ]
+
+        return suite_test_paths
 
     def _build_command(self):
         c = self.config
@@ -333,9 +355,12 @@ class AndroidEmulatorTest(
         cmd.extend(["--setpref={}".format(p) for p in self.extra_prefs])
 
         if not (self.verify_enabled or self.per_test_coverage):
-            if user_paths:
-                cmd.extend(user_paths)
-            elif not (self.verify_enabled or self.per_test_coverage):
+            if user_paths or self.test_tags:
+                if user_paths:
+                    cmd.extend(user_paths)
+                if self.test_tags:
+                    cmd.extend(["--tag={}".format(t) for t in self.test_tags])
+            else:
                 if self.this_chunk is not None:
                     cmd.extend(["--this-chunk", self.this_chunk])
                 if self.total_chunks is not None:
@@ -352,7 +377,7 @@ class AndroidEmulatorTest(
 
         try_options, try_tests = self.try_args(self.test_suite)
         cmd.extend(try_options)
-        if not self.verify_enabled and not self.per_test_coverage:
+        if not self.verify_enabled and not self.per_test_coverage and not user_paths:
             cmd.extend(
                 self.query_tests_args(
                     self.config["suite_definitions"][self.test_suite].get("tests"),
@@ -369,6 +394,9 @@ class AndroidEmulatorTest(
                     self.java_coverage_output_dir,
                 ]
             )
+
+        if self.config.get("restartAfterFailure", False):
+            cmd.append("--restartAfterFailure")
 
         return cmd
 
@@ -399,7 +427,7 @@ class AndroidEmulatorTest(
             ("xpcshell", {"xpcshell": "xpcshell"}),
         ]
         suites = []
-        for (category, all_suites) in all:
+        for category, all_suites in all:
             cat_suites = self.query_per_test_category_suites(category, all_suites)
             for k in cat_suites.keys():
                 suites.append((k, cat_suites[k]))
@@ -434,7 +462,7 @@ class AndroidEmulatorTest(
                 "websocketprocessbridge_requirements_3.txt",
             )
         if requirements:
-            self.register_virtualenv_module(requirements=[requirements], two_pass=True)
+            self.register_virtualenv_module(requirements=[requirements])
 
     def download_and_extract(self):
         """
@@ -444,7 +472,7 @@ class AndroidEmulatorTest(
             suite_categories=self._query_suite_categories()
         )
         dirs = self.query_abs_dirs()
-        self.xre_path = self.download_hostutils(dirs["abs_xre_dir"])
+        self.xre_path = dirs["abs_xre_dir"]
 
     def install(self):
         """
@@ -472,7 +500,7 @@ class AndroidEmulatorTest(
         per_test_args = []
         suites = self._query_suites()
         minidump = self.query_minidump_stackwalk()
-        for (per_test_suite, suite) in suites:
+        for per_test_suite, suite in suites:
             self.test_suite = suite
 
             try:

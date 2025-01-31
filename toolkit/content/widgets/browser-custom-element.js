@@ -26,8 +26,15 @@
     RemoteWebNavigation: "resource://gre/modules/RemoteWebNavigation.sys.mjs",
   });
 
-  XPCOMUtils.defineLazyGetter(lazy, "blankURI", () =>
+  ChromeUtils.defineLazyGetter(lazy, "blankURI", () =>
     Services.io.newURI("about:blank")
+  );
+
+  XPCOMUtils.defineLazyServiceGetter(
+    lazy,
+    "contentAnalysis",
+    "@mozilla.org/contentanalysis;1",
+    Ci.nsIContentAnalysis
   );
 
   let lazyPrefs = {};
@@ -36,6 +43,13 @@
     "unloadTimeoutMs",
     "dom.beforeunload_timeout_ms"
   );
+  XPCOMUtils.defineLazyPreferenceGetter(
+    lazyPrefs,
+    "_contentAnalysisDragDropEnabled",
+    "browser.contentanalysis.interception_point.drag_and_drop.enabled",
+    true
+  );
+
   Object.defineProperty(lazy, "ProcessHangMonitor", {
     configurable: true,
     get() {
@@ -118,7 +132,7 @@
       this.mIconURL = null;
       this.lastURI = null;
 
-      XPCOMUtils.defineLazyGetter(this, "popupBlocker", () => {
+      ChromeUtils.defineLazyGetter(this, "popupBlocker", () => {
         return new lazy.PopupBlocker(this);
       });
 
@@ -159,6 +173,135 @@
       this.addEventListener(
         "drop",
         event => {
+          if (
+            lazy.contentAnalysis.isActive &&
+            lazyPrefs._contentAnalysisDragDropEnabled
+          ) {
+            let dragService = Cc[
+              "@mozilla.org/widget/dragservice;1"
+            ].getService(Ci.nsIDragService);
+            let dragSession = dragService.getCurrentSession(window);
+            if (!dragSession) {
+              return;
+            }
+
+            // Don't check items from drags that take place inside of a single
+            // frame, or in a same-origin iframe hierarchy.  Drag sessions with an
+            // external source have no sourceWindowContext and must be checked.
+            let sourceWC = dragSession.sourceWindowContext;
+            let targetWC = this.browsingContext?.currentWindowContext;
+            if (!targetWC) {
+              return;
+            }
+            if (
+              sourceWC &&
+              sourceWC.browsingContext.top == targetWC.browsingContext.top &&
+              targetWC.documentPrincipal?.subsumes(sourceWC.documentPrincipal)
+            ) {
+              return;
+            }
+
+            // Create a request for each text and file item in the DataTransfer
+            try {
+              // Tell browser to record the event target and to delay EndDragSession
+              // until the content analysis results are given.
+              dragSession.sendStoreDropTargetAndDelayEndDragSession(event);
+
+              // Submit a content analysis request for each checkable entry in the
+              // DataTransfer and stop dispatching this drop event.  Reissue the
+              // drop if all requests are permitted.
+              let caPromises = [];
+              let items = event.dataTransfer.items;
+              for (let elt of items) {
+                const kTextMimeTypes = [
+                  "text/plain",
+                  "text/html",
+                  "application/x-moz-nativehtml",
+                ];
+
+                let requestFields;
+                if (
+                  elt.kind === "string" &&
+                  kTextMimeTypes.includes(elt.type)
+                ) {
+                  let str = event.dataTransfer.getData(elt.type);
+                  if (!str) {
+                    continue;
+                  }
+                  requestFields = {
+                    analysisType: Ci.nsIContentAnalysisRequest.eBulkDataEntry,
+                    operationTypeForDisplay:
+                      Ci.nsIContentAnalysisRequest.eDroppedText,
+                    textContent: str,
+                  };
+                } else if (elt.kind === "file") {
+                  let file = elt.getAsFile();
+                  requestFields = {
+                    analysisType: Ci.nsIContentAnalysisRequest.eFileAttached,
+                    operationTypeForDisplay:
+                      Ci.nsIContentAnalysisRequest.eCustomDisplayString,
+                    operationDisplayString: file.name,
+                    filePath: file.mozFullPath,
+                  };
+                } else {
+                  // Unrecognized data type -- don't send to content analysis
+                  continue;
+                }
+
+                caPromises.push(
+                  lazy.contentAnalysis.analyzeContentRequest(
+                    {
+                      reason: Ci.nsIContentAnalysisRequest.eDragAndDrop,
+                      requestToken: Services.uuid.generateUUID().toString(),
+                      resources: [],
+                      url: lazy.contentAnalysis.getURIForDropEvent(event),
+                      windowGlobalParent:
+                        this.browsingContext.currentWindowContext,
+                      ...requestFields,
+                    },
+                    true /* autoAcknowledge */
+                  )
+                );
+              }
+
+              if (!caPromises.length) {
+                // Nothing was analyzable.
+                dragSession.sendDispatchToDropTargetAndResumeEndDragSession(
+                  true
+                );
+                return;
+              }
+
+              // Only permit the drop if all requests were approved.  Issue dragexit
+              // instead of drop if CA rejected the content or there was an error.
+              Promise.all(caPromises).then(
+                caResults => {
+                  let allApproved = caResults.reduce((prev, current) => {
+                    return prev && current.shouldAllowContent;
+                  }, true);
+                  dragSession.sendDispatchToDropTargetAndResumeEndDragSession(
+                    allApproved
+                  );
+                },
+                () => {
+                  dragSession.sendDispatchToDropTargetAndResumeEndDragSession(
+                    false
+                  );
+                }
+              );
+
+              // Do not allow this drop to continue dispatch.
+              event.preventDefault();
+              event.stopPropagation();
+            } catch {
+              // On internal error, deny any drop.  CA has its own behavior to
+              // handle internal errors, like a lost connection to the agent, but
+              // we are more strict when facing errors here.
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }
+
           // No need to handle "drop" in e10s, since nsDocShellTreeOwner.cpp in the child process
           // handles that case using "@mozilla.org/content/dropped-link-handler;1" service.
           if (
@@ -277,8 +420,6 @@
 
       this.mPrefs = Services.prefs;
 
-      this._mStrBundle = null;
-
       this._audioMuted = false;
 
       this._hasAnyPlayingMediaBeenBlocked = false;
@@ -344,6 +485,10 @@
 
     get canGoBack() {
       return this.webNavigation.canGoBack;
+    }
+
+    get canGoBackIgnoringUserInteraction() {
+      return this.webNavigation.canGoBackIgnoringUserInteraction;
     }
 
     get canGoForward() {
@@ -413,6 +558,9 @@
     }
 
     set docShellIsActive(val) {
+      if (!this.browsingContext) {
+        return;
+      }
       this.browsingContext.isActive = val;
       if (this.isRemoteBrowser) {
         let remoteTab = this.frameLoader?.remoteTab;
@@ -559,9 +707,11 @@
     }
 
     get contentTitle() {
-      return this.isRemoteBrowser
-        ? this.browsingContext?.currentWindowGlobal?.documentTitle
-        : this.contentDocument.title;
+      return (
+        (this.isRemoteBrowser
+          ? this.browsingContext?.currentWindowGlobal?.documentTitle
+          : this.contentDocument.title) ?? ""
+      );
     }
 
     forceEncodingDetection() {
@@ -687,17 +837,6 @@
       return !!this.browsingContext.opener;
     }
 
-    get mStrBundle() {
-      if (!this._mStrBundle) {
-        // need to create string bundle manually instead of using <xul:stringbundle/>
-        // see bug 63370 for details
-        this._mStrBundle = Services.strings.createBundle(
-          "chrome://global/locale/browser.properties"
-        );
-      }
-      return this._mStrBundle;
-    }
-
     get audioMuted() {
       return this._audioMuted;
     }
@@ -774,7 +913,11 @@
         .navigationRequireUserInteraction
     ) {
       var webNavigation = this.webNavigation;
-      if (webNavigation.canGoBack) {
+      if (
+        requireUserInteraction
+          ? webNavigation.canGoBack
+          : webNavigation.canGoBackIgnoringUserInteraction
+      ) {
         this._wrapURIChangeCall(() =>
           webNavigation.goBack(requireUserInteraction)
         );
@@ -885,7 +1028,7 @@
       this.webProgress.removeProgressListener(aListener);
     }
 
-    onPageHide(aEvent) {
+    onPageHide() {
       // If we're browsing from the tab crashed UI to a URI that keeps
       // this browser non-remote, we'll handle that here.
       lazy.SessionStore?.maybeExitCrashedState(this);
@@ -1128,13 +1271,19 @@
       }
     }
 
-    updateWebNavigationForLocationChange(aCanGoBack, aCanGoForward) {
+    updateWebNavigationForLocationChange(
+      aCanGoBack,
+      aCanGoBackIgnoringUserInteraction,
+      aCanGoForward
+    ) {
       if (
         this.isRemoteBrowser &&
         this.messageManager &&
         !Services.appinfo.sessionHistoryInParent
       ) {
         this._remoteWebNavigation._canGoBack = aCanGoBack;
+        this._remoteWebNavigation._canGoBackIgnoringUserInteraction =
+          aCanGoBackIgnoringUserInteraction;
         this._remoteWebNavigation._canGoForward = aCanGoForward;
       }
     }
@@ -1181,6 +1330,7 @@
     purgeSessionHistory() {
       if (this.isRemoteBrowser && !Services.appinfo.sessionHistoryInParent) {
         this._remoteWebNavigation._canGoBack = false;
+        this._remoteWebNavigation._canGoBackIgnoringUserInteraction = false;
         this._remoteWebNavigation._canGoForward = false;
       }
 
@@ -1228,7 +1378,7 @@
       }
     }
 
-    createAboutBlankContentViewer(aPrincipal, aPartitionedPrincipal) {
+    createAboutBlankDocumentViewer(aPrincipal, aPartitionedPrincipal) {
       let principal = lazy.BrowserUtils.principalWithMatchingOA(
         aPrincipal,
         this.contentPrincipal
@@ -1239,12 +1389,12 @@
       );
 
       if (this.isRemoteBrowser) {
-        this.frameLoader.remoteTab.createAboutBlankContentViewer(
+        this.frameLoader.remoteTab.createAboutBlankDocumentViewer(
           principal,
           partitionedPrincipal
         );
       } else {
-        this.docShell.createAboutBlankContentViewer(
+        this.docShell.createAboutBlankDocumentViewer(
           principal,
           partitionedPrincipal
         );
@@ -1677,11 +1827,11 @@
         return;
       }
 
-      if (!this.docShell || !this.docShell.contentViewer) {
+      if (!this.docShell || !this.docShell.docViewer) {
         aCallback(false);
         return;
       }
-      aCallback(this.docShell.contentViewer.inPermitUnload);
+      aCallback(this.docShell.docViewer.inPermitUnload);
     }
 
     async asyncPermitUnload(action) {
@@ -1753,11 +1903,11 @@
         throw result;
       }
 
-      if (!this.docShell || !this.docShell.contentViewer) {
+      if (!this.docShell || !this.docShell.docViewer) {
         return { permitUnload: true };
       }
       return {
-        permitUnload: this.docShell.contentViewer.permitUnload(),
+        permitUnload: this.docShell.docViewer.permitUnload(),
       };
     }
 
@@ -1932,7 +2082,7 @@
     // Called immediately after changing remoteness.  If this method returns
     // `true`, Gecko will assume frontend handled resuming the load, and will
     // not attempt to resume the load itself.
-    afterChangeRemoteness(browser, redirectLoadSwitchId) {
+    afterChangeRemoteness() {
       /* no-op unless replaced */
       return false;
     }

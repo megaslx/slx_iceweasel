@@ -10,17 +10,11 @@ const { BranchedAddonStudyAction } = ChromeUtils.importESModule(
 const { BaseAction } = ChromeUtils.importESModule(
   "resource://normandy/actions/BaseAction.sys.mjs"
 );
-const { TelemetryEvents } = ChromeUtils.importESModule(
-  "resource://normandy/lib/TelemetryEvents.sys.mjs"
-);
 const { AddonManager } = ChromeUtils.importESModule(
   "resource://gre/modules/AddonManager.sys.mjs"
 );
 const { AddonStudies } = ChromeUtils.importESModule(
   "resource://normandy/lib/AddonStudies.sys.mjs"
-);
-const { PromiseUtils } = ChromeUtils.importESModule(
-  "resource://gre/modules/PromiseUtils.sys.mjs"
 );
 
 /* import-globals-from utils.js */
@@ -42,8 +36,6 @@ add_task(async () => {
   );
   AddonTestUtils.overrideCertDB();
   await AddonTestUtils.promiseStartupManager();
-
-  TelemetryEvents.init();
 });
 
 decorate_task(
@@ -289,7 +281,7 @@ decorate_task(
     let addon = await AddonManager.getAddonByID(ID);
     ok(addon, "Extension is installed");
 
-    let listenerDeferred = PromiseUtils.defer();
+    let listenerDeferred = Promise.withResolvers();
 
     AddonStudies.addUnenrollListener(ID, () => {
       listenerDeferred.resolve();

@@ -4,7 +4,7 @@ const { HttpServer } = ChromeUtils.importESModule(
   "resource://testing-common/httpd.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -64,7 +64,7 @@ var listener = {
     this._done_onData = true;
   },
 
-  onStopRequest(request, status) {
+  onStopRequest() {
     Assert.ok(this._done_onData);
     this._reset();
     if (this._test <= MAX_TESTS) {

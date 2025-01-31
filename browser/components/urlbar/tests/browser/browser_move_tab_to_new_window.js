@@ -8,6 +8,9 @@
 */
 
 add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
   await PlacesUtils.bookmarks.eraseEverything();
   await PlacesUtils.history.clear();
   await PlacesTestUtils.addVisits(["https://example.com/"]);
@@ -80,6 +83,7 @@ add_task(async function move_tab_into_new_window_and_open_new_tab() {
   );
   let newWindow = gBrowser.replaceTabWithWindow(tab);
   await swapDocShellPromise;
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
 
   info("Type in the urlbar to open it and see an autofill suggestion.");
   await UrlbarTestUtils.promisePopupOpen(newWindow, async () => {

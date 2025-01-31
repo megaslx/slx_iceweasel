@@ -9,14 +9,19 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  ContextualIdentityService:
+    "resource://gre/modules/ContextualIdentityService.sys.mjs",
   L10nCache: "resource:///modules/UrlbarUtils.sys.mjs",
   ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
-  setTimeout: "resource://gre/modules/Timer.sys.mjs",
+  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+  UrlbarProviderGlobalActions:
+    "resource:///modules/UrlbarProviderGlobalActions.sys.mjs",
   UrlbarProviderQuickSuggest:
     "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+  UrlbarProviderRecentSearches:
+    "resource:///modules/UrlbarProviderRecentSearches.sys.mjs",
   UrlbarProviderTopSites: "resource:///modules/UrlbarProviderTopSites.sys.mjs",
-  UrlbarProviderWeather: "resource:///modules/UrlbarProviderWeather.sys.mjs",
   UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
   UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
   UrlbarSearchOneOffs: "resource:///modules/UrlbarSearchOneOffs.sys.mjs",
@@ -37,16 +42,11 @@ const KEYBOARD_SELECTABLE_ELEMENT_SELECTOR =
   "[role=button]:not([keyboard-inaccessible]), [selectable]";
 
 const ZERO_PREFIX_HISTOGRAM_DWELL_TIME = "FX_URLBAR_ZERO_PREFIX_DWELL_TIME_MS";
-const ZERO_PREFIX_SCALAR_ABANDONMENT = "urlbar.zeroprefix.abandonment";
-const ZERO_PREFIX_SCALAR_ENGAGEMENT = "urlbar.zeroprefix.engagement";
-const ZERO_PREFIX_SCALAR_EXPOSURE = "urlbar.zeroprefix.exposure";
-
-// The name of the pref enabling rich suggestions relative to `browser.urlbar`.
-const RICH_SUGGESTIONS_PREF = "richSuggestions.featureGate";
 
 const RESULT_MENU_COMMANDS = {
   DISMISS: "dismiss",
   HELP: "help",
+  MANAGE: "manage",
 };
 
 const getBoundsWithoutFlushing = element =>
@@ -77,7 +77,6 @@ export class UrlbarView {
     this.document = this.panel.ownerDocument;
     this.window = this.document.defaultView;
 
-    this.#mainContainer = this.panel.querySelector(".urlbarView-body-inner");
     this.#rows = this.panel.querySelector(".urlbarView-results");
     this.resultMenu = this.panel.querySelector(".urlbarView-result-menu");
     this.#resultMenuCommands = new WeakMap();
@@ -110,9 +109,6 @@ export class UrlbarView {
         addDynamicStylesheet(this.window, viewTemplate.stylesheet);
       }
     }
-
-    lazy.UrlbarPrefs.addObserver(this);
-    lazy.setTimeout(() => this.updateRichSuggestionAttribute());
   }
 
   get oneOffSearchButtons() {
@@ -343,10 +339,18 @@ export class UrlbarView {
         }
         return;
       }
-      this.selectedRowIndex = Math.max(
-        0,
-        Math.min(end, selectedRowIndex + amount * (reverse ? -1 : 1))
-      );
+
+      let index = Math.min(end, selectedRowIndex + amount * (reverse ? -1 : 1));
+      // When navigating with arrow keys we skip rows that contain
+      // global actions.
+      if (
+        this.#rows.children[index]?.result.providerName ==
+          lazy.UrlbarProviderGlobalActions.name &&
+        this.#rows.children.length > 2
+      ) {
+        index = index + (reverse ? -1 : 1);
+      }
+      this.selectedRowIndex = Math.max(0, index);
       return;
     }
 
@@ -376,10 +380,10 @@ export class UrlbarView {
 
     // We cache the first and last rows since they will not change while
     // selectBy is running.
-    let firstSelectableElement = this.#getFirstSelectableElement();
-    // #getLastSelectableElement will not return an element that is over
+    let firstSelectableElement = this.getFirstSelectableElement();
+    // getLastSelectableElement will not return an element that is over
     // maxResults and thus may be hidden and not selectable.
-    let lastSelectableElement = this.#getLastSelectableElement();
+    let lastSelectableElement = this.getLastSelectableElement();
 
     if (!selectedElement) {
       selectedElement = reverse
@@ -446,12 +450,10 @@ export class UrlbarView {
    *
    * @param {UrlbarResult} result
    *   The result that was dismissed.
-   * @param {boolean} allOfType
-   *   If true, the tip's text will indicate that all results of the given
-   *   result's type have been dismissed and won't be shown anymore. If false,
-   *   the text will indicate that only the one result was dismissed.
+   * @param {object} titleL10n
+   *   The localization object shown as dismissed feedback.
    */
-  acknowledgeDismissal(result, allOfType = false) {
+  #acknowledgeDismissal(result, titleL10n) {
     let row = this.#rows.children[result.rowIndex];
     if (!row || row.result != result) {
       return;
@@ -468,19 +470,18 @@ export class UrlbarView {
     this.#setRowSelectable(row, false);
 
     // Replace the row with a dismissal acknowledgment tip.
-    let tip = new lazy.UrlbarResult(
-      lazy.UrlbarUtils.RESULT_TYPE.TIP,
-      lazy.UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-      {
-        type: "dismissalAcknowledgment",
-        titleL10n: {
-          id: allOfType
-            ? "firefox-suggest-dismissal-acknowledgment-all"
-            : "firefox-suggest-dismissal-acknowledgment-one",
-        },
-        buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
-        icon: "chrome://branding/content/icon32.png",
-      }
+    let tip = Object.assign(
+      new lazy.UrlbarResult(
+        lazy.UrlbarUtils.RESULT_TYPE.TIP,
+        lazy.UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        {
+          type: "dismissalAcknowledgment",
+          titleL10n,
+          buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
+          icon: "chrome://branding/content/icon32.png",
+        }
+      ),
+      { rowLabel: this.#rowLabel(row) }
     );
     this.#updateRow(row, tip);
     this.#updateIndices();
@@ -502,6 +503,23 @@ export class UrlbarView {
     this.panel.setAttribute("noresults", "true");
     this.clearSelection();
     this.visibleResults = [];
+  }
+
+  /**
+   * Hide the popup that shows the Urlbar results. The popup is still
+   * considered "open", this will not trigger abandonment telemetry
+   * but will not be shown to the user.
+   */
+  hideTemporarily() {
+    this.panel.toggleAttribute("hide-temporarily", true);
+  }
+
+  /**
+   * Show the Urlbar results popup after being hidden by
+   * `hideTemporarily`
+   */
+  restoreVisibility() {
+    this.panel.toggleAttribute("hide-temporarily", false);
   }
 
   /**
@@ -534,6 +552,7 @@ export class UrlbarView {
     // implicitly unselected.
     if (this.input.searchMode?.isPreview) {
       this.input.searchMode = null;
+      this.window.gBrowser.userTypedValue = null;
     }
 
     this.resultMenu.hidePopup();
@@ -559,11 +578,19 @@ export class UrlbarView {
 
     this.controller.notify(this.controller.NOTIFICATIONS.VIEW_CLOSE);
 
+    // Revoke icon blob URLs that were created while the view was open.
+    if (this.#blobUrlsByResultUrl) {
+      for (let blobUrl of this.#blobUrlsByResultUrl.values()) {
+        URL.revokeObjectURL(blobUrl);
+      }
+      this.#blobUrlsByResultUrl.clear();
+    }
+
     if (this.#isShowingZeroPrefix) {
       if (elementPicked) {
-        Services.telemetry.scalarAdd(ZERO_PREFIX_SCALAR_ENGAGEMENT, 1);
+        Glean.urlbarZeroprefix.engagement.add(1);
       } else {
-        Services.telemetry.scalarAdd(ZERO_PREFIX_SCALAR_ABANDONMENT, 1);
+        Glean.urlbarZeroprefix.abandonment.add(1);
       }
       this.#setIsShowingZeroPrefix(false);
     }
@@ -594,11 +621,9 @@ export class UrlbarView {
     }
 
     let queryOptions = { event };
-
     if (
       !this.input.value ||
-      (this.input.getAttribute("pageproxystate") == "valid" &&
-        !this.window.gBrowser.selectedBrowser.searchTerms)
+      this.input.getAttribute("pageproxystate") == "valid"
     ) {
       if (!this.isOpen && ["mousedown", "command"].includes(event.type)) {
         // Try to reuse the cached top-sites context. If it's not cached, then
@@ -694,7 +719,7 @@ export class UrlbarView {
     this.#cacheL10nStrings();
   }
 
-  onQueryCancelled(queryContext) {
+  onQueryCancelled() {
     this.#queryWasCancelled = true;
     this.#cancelRemoveStaleRowsTimer();
   }
@@ -763,7 +788,8 @@ export class UrlbarView {
       //  * The search string starts with an `@` or a search restriction
       //    character
       this.oneOffSearchButtons.enable(
-        firstResult.providerName != "UrlbarProviderSearchTips" &&
+        (firstResult.providerName != "UrlbarProviderSearchTips" ||
+          queryContext.trimmedSearchString) &&
           queryContext.trimmedSearchString[0] != "@" &&
           (queryContext.trimmedSearchString[0] !=
             lazy.UrlbarTokenizer.RESTRICT.SEARCH ||
@@ -771,13 +797,13 @@ export class UrlbarView {
       );
     }
 
-    if (!this.selectedElement && !this.oneOffSearchButtons.selectedButton) {
+    if (!this.#selectedElement && !this.oneOffSearchButtons.selectedButton) {
       if (firstResult.heuristic) {
         // Select the heuristic result.  The heuristic may not be the first
         // result added, which is why we do this check here when each result is
         // added and not above.
         if (this.#shouldShowHeuristic(firstResult)) {
-          this.#selectElement(this.#getFirstSelectableElement(), {
+          this.#selectElement(this.getFirstSelectableElement(), {
             updateInput: false,
             setAccessibleFocus:
               this.controller._userSelectionBehavior == "arrow",
@@ -821,10 +847,10 @@ export class UrlbarView {
 
     // If we update the selected element, a new unique ID is generated for it.
     // We need to ensure that aria-activedescendant reflects this new ID.
-    if (this.selectedElement && !this.oneOffSearchButtons.selectedButton) {
+    if (this.#selectedElement && !this.oneOffSearchButtons.selectedButton) {
       let aadID = this.input.inputField.getAttribute("aria-activedescendant");
       if (aadID && !this.document.getElementById(aadID)) {
-        this.#setAccessibleFocus(this.selectedElement);
+        this.#setAccessibleFocus(this.#selectedElement);
       }
     }
 
@@ -859,14 +885,21 @@ export class UrlbarView {
    */
   onQueryResultRemoved(index) {
     let rowToRemove = this.#rows.children[index];
-    rowToRemove.remove();
 
-    this.#updateIndices();
-
-    if (rowToRemove != this.#getSelectedRow()) {
+    let { result } = rowToRemove;
+    if (result.acknowledgeDismissalL10n) {
+      // Replace the result's row with a dismissal acknowledgment tip.
+      this.#acknowledgeDismissal(result, result.acknowledgeDismissalL10n);
       return;
     }
 
+    let updateSelection = rowToRemove == this.#getSelectedRow();
+    rowToRemove.remove();
+    this.#updateIndices();
+
+    if (!updateSelection) {
+      return;
+    }
     // Select the row at the same index, if possible.
     let newSelectionIndex = index;
     if (index >= this.#queryContext.results.length) {
@@ -1031,9 +1064,9 @@ export class UrlbarView {
 
   // Private properties and methods below.
   #announceTabToSearchOnSelection;
+  #blobUrlsByResultUrl = null;
   #inputWidthOnLastClose = 0;
   #l10nCache;
-  #mainContainer;
   #mousedownSelectedElement;
   #openPanelInstance;
   #oneOffSearchButtons;
@@ -1045,8 +1078,21 @@ export class UrlbarView {
   #resultMenuResult;
   #resultMenuCommands;
   #rows;
-  #selectedElement;
+  #rawSelectedElement;
   #zeroPrefixStopwatchInstance = null;
+
+  /**
+   * #rawSelectedElement may be disconnected from the DOM (e.g. it was remove()d)
+   * but we want a connected #selectedElement usually. We don't use a WeakRef
+   * because it would depend too much on GC timing.
+   *
+   * @returns {DOMElement} the selected element.
+   */
+  get #selectedElement() {
+    return this.#rawSelectedElement?.isConnected
+      ? this.#rawSelectedElement
+      : null;
+  }
 
   #createElement(name) {
     return this.document.createElementNS("http://www.w3.org/1999/xhtml", name);
@@ -1058,7 +1104,7 @@ export class UrlbarView {
     }
     this.controller.userSelectionBehavior = "none";
 
-    this.panel.removeAttribute("actionoverride");
+    this.panel.removeAttribute("action-override");
 
     this.#enableOrDisableRowWrap();
 
@@ -1072,6 +1118,13 @@ export class UrlbarView {
     this.window.addEventListener("blur", this);
 
     this.controller.notify(this.controller.NOTIFICATIONS.VIEW_OPEN);
+
+    if (lazy.UrlbarPrefs.get("closeOtherPanelsOnOpen")) {
+      this.window.docShell.treeOwner
+        .QueryInterface(Ci.nsIInterfaceRequestor)
+        .getInterface(Ci.nsIAppWindow)
+        .rollupAllPopups();
+    }
   }
 
   #shouldShowHeuristic(result) {
@@ -1111,6 +1164,8 @@ export class UrlbarView {
    */
   #rowCanUpdateToResult(rowIndex, result, seenSearchSuggestion) {
     // The heuristic result must always be current, thus it's always compatible.
+    // Note that the `updateResults` code, when updating the selection, relies
+    // on the fact the heuristic is the first selectable row.
     if (result.heuristic) {
       return true;
     }
@@ -1157,6 +1212,10 @@ export class UrlbarView {
     // future we should make it support any type of result. Or, even better,
     // results should be grouped, thus we can directly update groups.
 
+    // Discard tentative exposures. This is analogous to marking the
+    // hypothetical hidden rows of hidden-exposure results as stale.
+    this.controller.engagementEvent.discardTentativeExposures();
+
     // Walk rows and find an insertion index for results. To avoid flicker, we
     // skip rows until we find one compatible with the result we want to apply.
     // If we couldn't find a compatible range, we'll just update.
@@ -1185,12 +1244,6 @@ export class UrlbarView {
       // suggestedIndex result that couldn't replace a current result.
       if (!seenMisplacedResult) {
         let result = results[resultIndex];
-        // skip this result if it is supposed to be hidden from the view.
-        if (result.exposureResultHidden) {
-          this.#addExposure(result);
-          resultIndex++;
-          continue;
-        }
         seenSearchSuggestion =
           seenSearchSuggestion ||
           (!row.result.heuristic && this.#resultIsSearchSuggestion(row.result));
@@ -1198,11 +1251,21 @@ export class UrlbarView {
           this.#rowCanUpdateToResult(rowIndex, result, seenSearchSuggestion)
         ) {
           // We can replace the row's current result with the new one.
-          this.#updateRow(row, result);
+          if (result.isHiddenExposure) {
+            this.controller.engagementEvent.addExposure(
+              result,
+              this.#queryContext
+            );
+          } else {
+            this.#updateRow(row, result);
+          }
           resultIndex++;
           continue;
         }
-        if (result.hasSuggestedIndex || row.result.hasSuggestedIndex) {
+        if (
+          (result.hasSuggestedIndex || row.result.hasSuggestedIndex) &&
+          !result.isHiddenExposure
+        ) {
           seenMisplacedResult = true;
         }
       }
@@ -1224,14 +1287,11 @@ export class UrlbarView {
     // Add remaining results, if we have fewer rows than results.
     for (; resultIndex < results.length; ++resultIndex) {
       let result = results[resultIndex];
-      // skip this result if it is supposed to be hidden from the view.
-      if (result.exposureResultHidden) {
-        this.#addExposure(result);
-        continue;
-      }
-      let row = this.#createRow();
-      this.#updateRow(row, result);
-      if (!seenMisplacedResult && result.hasSuggestedIndex) {
+      if (
+        !seenMisplacedResult &&
+        result.hasSuggestedIndex &&
+        !result.isHiddenExposure
+      ) {
         if (result.isSuggestedIndexRelativeToGroup) {
           // We can't know at this point what the right index of a group-
           // relative suggestedIndex result will be. To avoid all all possible
@@ -1256,14 +1316,35 @@ export class UrlbarView {
           }
         }
       }
-      let newVisibleSpanCount =
-        visibleSpanCount + lazy.UrlbarUtils.getSpanForResult(result);
-      if (
-        newVisibleSpanCount <= this.#queryContext.maxResults &&
-        !seenMisplacedResult
-      ) {
-        // The new row can be visible.
-        visibleSpanCount = newVisibleSpanCount;
+      let newSpanCount =
+        visibleSpanCount +
+        lazy.UrlbarUtils.getSpanForResult(result, {
+          includeHiddenExposures: true,
+        });
+      let canBeVisible =
+        newSpanCount <= this.#queryContext.maxResults && !seenMisplacedResult;
+      if (result.isHiddenExposure) {
+        if (canBeVisible) {
+          this.controller.engagementEvent.addExposure(
+            result,
+            this.#queryContext
+          );
+        } else {
+          // Add a tentative exposure: The hypothetical row for this
+          // hidden-exposure result can't be visible now, but as long as it were
+          // not marked stale in a later update, it would be shown when stale
+          // rows are removed.
+          this.controller.engagementEvent.addTentativeExposure(
+            result,
+            this.#queryContext
+          );
+        }
+        continue;
+      }
+      let row = this.#createRow();
+      this.#updateRow(row, result);
+      if (canBeVisible) {
+        visibleSpanCount = newSpanCount;
       } else {
         // The new row must be hidden at first because the view is already
         // showing maxResults spans, or we encountered a new suggestedIndex
@@ -1297,10 +1378,17 @@ export class UrlbarView {
     // on the row itself so that screen readers ignore it.
     item.setAttribute("role", "presentation");
 
+    // These are used to cleanup result specific entities when row contents are
+    // cleared to reuse the row for a different result.
+    item._sharedAttributes = new Set(
+      [...item.attributes].map(v => v.name).concat(["stale", "id"])
+    );
+    item._sharedClassList = new Set(item.classList);
+
     return item;
   }
 
-  #createRowContent(item, result) {
+  #createRowContent(item) {
     // The url is the only element that can wrap, thus all the other elements
     // are child of noWrap.
     let noWrap = this.#createElement("span");
@@ -1369,8 +1457,10 @@ export class UrlbarView {
    *   signals an attribute should be removed, and `undefined` in which case
    *   the attribute won't be set nor removed. The `id` attribute is reserved
    *   and cannot be set here.
+   * @param {UrlbarResult} result
+   *   The UrlbarResult displayed to the node. This is optional.
    */
-  #setDynamicAttributes(node, attributes) {
+  #setDynamicAttributes(node, attributes, result) {
     if (!attributes) {
       return;
     }
@@ -1389,6 +1479,8 @@ export class UrlbarView {
         node.removeAttribute(name);
       } else if (typeof value == "boolean") {
         node.toggleAttribute(name, value);
+      } else if (Blob.isInstance(value) && result) {
+        node.setAttribute(name, this.#getBlobUrlForResult(result, value));
       } else {
         node.setAttribute(name, value);
       }
@@ -1403,22 +1495,56 @@ export class UrlbarView {
       UrlbarView.dynamicViewTemplatesByName.get(dynamicType);
     if (!viewTemplate) {
       console.error(`No viewTemplate found for ${result.providerName}`);
+      return;
     }
-    this.#buildViewForDynamicType(
+    let classes = this.#buildViewForDynamicType(
       dynamicType,
       item._content,
       item._elements,
       viewTemplate
     );
+    item.toggleAttribute("has-url", classes.has("urlbarView-url"));
+    item.toggleAttribute("has-action", classes.has("urlbarView-action"));
     this.#setRowSelectable(item, item._content.hasAttribute("selectable"));
   }
 
-  #buildViewForDynamicType(type, parentNode, elementsByName, template) {
+  /**
+   * Recursively builds a row's DOM for a dynamic result type.
+   *
+   * @param {string} type
+   *   The name of the dynamic type.
+   * @param {Element} parentNode
+   *   The element being recursed into. Pass `row._content`
+   *   (i.e., the row's `.urlbarView-row-inner`) to start with.
+   * @param {Map} elementsByName
+   *   The `row._elements` map.
+   * @param {object} template
+   *   The template object being recursed into. Pass the top-level template
+   *   object to start with.
+   * @param {Set} classes
+   *   The CSS class names of all elements in the row's subtree are recursively
+   *   collected in this set. Don't pass anything to start with so that the
+   *   default argument, a new Set, is used.
+   * @returns {Set}
+   *   The `classes` set, which on return will contain the CSS class names of
+   *   all elements in the row's subtree.
+   */
+  #buildViewForDynamicType(
+    type,
+    parentNode,
+    elementsByName,
+    template,
+    classes = new Set()
+  ) {
     // Set attributes on parentNode.
     this.#setDynamicAttributes(parentNode, template.attributes);
+
     // Add classes to parentNode's classList.
     if (template.classList) {
       parentNode.classList.add(...template.classList);
+      for (let c of template.classList) {
+        classes.add(c);
+      }
     }
     if (template.overflowable) {
       parentNode.classList.add("urlbarView-overflowable");
@@ -1427,16 +1553,25 @@ export class UrlbarView {
       parentNode.setAttribute("name", template.name);
       elementsByName.set(template.name, parentNode);
     }
+
     // Recurse into children.
     for (let childTemplate of template.children || []) {
       let child = this.#createElement(childTemplate.tag);
       child.classList.add(`urlbarView-dynamic-${type}-${childTemplate.name}`);
       parentNode.appendChild(child);
-      this.#buildViewForDynamicType(type, child, elementsByName, childTemplate);
+      this.#buildViewForDynamicType(
+        type,
+        child,
+        elementsByName,
+        childTemplate,
+        classes
+      );
     }
+
+    return classes;
   }
 
-  #createRowContentForRichSuggestion(item, result) {
+  #createRowContentForRichSuggestion(item) {
     item._content.toggleAttribute("selectable", true);
 
     let favicon = this.#createElement("img");
@@ -1478,10 +1613,7 @@ export class UrlbarView {
     item._elements.set("url", url);
 
     let description = this.#createElement("div");
-    description.classList.add(
-      "urlbarView-row-body-description",
-      "urlbarView-overflowable"
-    );
+    description.classList.add("urlbarView-row-body-description");
     body.appendChild(description);
     item._elements.set("description", description);
 
@@ -1509,23 +1641,7 @@ export class UrlbarView {
       item._buttons.get("tip").textContent = result.payload.buttonText;
     }
 
-    if (!lazy.UrlbarPrefs.get("resultMenu")) {
-      if (result.payload.isBlockable) {
-        this.#addRowButton(item, {
-          name: "block",
-          command: "dismiss",
-          l10n: result.payload.blockL10n,
-        });
-      }
-      if (result.payload.helpUrl) {
-        this.#addRowButton(item, {
-          name: "help",
-          command: "help",
-          url: result.payload.helpUrl,
-          l10n: result.payload.helpL10n,
-        });
-      }
-    } else if (this.#getResultMenuCommands(result)) {
+    if (this.#getResultMenuCommands(result)) {
       this.#addRowButton(item, {
         name: "menu",
         l10n: {
@@ -1550,7 +1666,7 @@ export class UrlbarView {
     button.setAttribute("role", "button");
     button.dataset.name = name;
     if (l10n) {
-      this.#setElementL10n(button, l10n);
+      this.#l10nCache.setElementL10n(button, l10n);
     }
     if (command) {
       button.dataset.command = command;
@@ -1562,10 +1678,48 @@ export class UrlbarView {
     item.appendChild(button);
   }
 
+  #createSecondaryAction(action, global = false) {
+    let actionContainer = this.#createElement("div");
+    actionContainer.classList.add("urlbarView-actions-container");
+
+    let button = this.#createElement("span");
+    button.classList.add("urlbarView-action-btn");
+    if (global) {
+      button.classList.add("urlbarView-global-action-btn");
+    }
+    if (action.classList) {
+      button.classList.add(...action.classList);
+    }
+    button.setAttribute("role", "button");
+    if (action.icon) {
+      let icon = this.#createElement("img");
+      icon.src = action.icon;
+      button.appendChild(icon);
+    }
+    for (let key in action.dataset ?? {}) {
+      button.dataset[key] = action.dataset[key];
+    }
+    button.dataset.action = action.key;
+    button.dataset.providerName = action.providerName;
+
+    let label = this.#createElement("span");
+    if (action.l10nId) {
+      this.#l10nCache.setElementL10n(label, {
+        id: action.l10nId,
+        args: action.l10nArgs,
+      });
+    } else {
+      this.document.l10n.setAttributes(label, action.label, action.l10nArgs);
+    }
+    button.appendChild(label);
+    actionContainer.appendChild(button);
+    return actionContainer;
+  }
+
   // eslint-disable-next-line complexity
   #updateRow(item, result) {
     let oldResult = item.result;
-    let oldResultType = item.result && item.result.type;
+    let oldResultType = item.result?.type;
     let provider = lazy.UrlbarProvidersManager.getProvider(result.providerName);
     item.result = result;
     item.removeAttribute("stale");
@@ -1582,15 +1736,25 @@ export class UrlbarView {
       // always need updating.
       provider?.getViewTemplate ||
       oldResult.isRichSuggestion != result.isRichSuggestion ||
-      (!lazy.UrlbarPrefs.get("resultMenu") &&
-        (!!result.payload.helpUrl != item._buttons.has("help") ||
-          !!result.payload.isBlockable != item._buttons.has("block"))) ||
       !!this.#getResultMenuCommands(result) != item._buttons.has("menu") ||
       !!oldResult.showFeedbackMenu != !!result.showFeedbackMenu ||
       !lazy.ObjectUtils.deepEqual(
         oldResult.payload.buttons,
         result.payload.buttons
-      );
+      ) ||
+      // Reusing a non-heuristic as a heuristic is risky as it may have DOM
+      // nodes/attributes/classes that are normally not present in a heuristic
+      // result. This may happen for example when switching from a zero-prefix
+      // search not having a heuristic to a search string one.
+      result.heuristic != oldResult.heuristic ||
+      // Container switch-tab results have a more complex DOM content that is
+      // only updated correctly by another switch-tab result.
+      (oldResultType == lazy.UrlbarUtils.RESULT_TYPE.TAB_SWITCH &&
+        lazy.UrlbarProviderOpenTabs.isContainerUserContextId(
+          oldResult.payload.userContextId
+        ) &&
+        result.type != oldResultType) ||
+      result.testForceNewContent;
 
     if (needsNewContent) {
       while (item.lastChild) {
@@ -1601,8 +1765,18 @@ export class UrlbarView {
       item._content = this.#createElement("span");
       item._content.className = "urlbarView-row-inner";
       item.appendChild(item._content);
-      item.removeAttribute("tip-type");
-      item.removeAttribute("dynamicType");
+      // Clear previously set attributes and classes that may refer to a
+      // different result type.
+      for (const attribute of item.attributes) {
+        if (!item._sharedAttributes.has(attribute.name)) {
+          item.removeAttribute(attribute.name);
+        }
+      }
+      for (const className of item.classList) {
+        if (!item._sharedClassList.has(className)) {
+          item.classList.remove(className);
+        }
+      }
       if (item.result.type == lazy.UrlbarUtils.RESULT_TYPE.DYNAMIC) {
         this.#createRowContentForDynamicType(item, result);
       } else if (result.isRichSuggestion) {
@@ -1613,6 +1787,24 @@ export class UrlbarView {
       this.#addRowButtons(item, result);
     }
     item._content.id = item.id + "-inner";
+
+    let isFirstChild = item === this.#rows.children[0];
+    let secAction = result.payload.action;
+    let container = item.querySelector(".urlbarView-actions-container");
+    item.toggleAttribute("secondary-action", !!secAction);
+    if (secAction && !container) {
+      item.appendChild(this.#createSecondaryAction(secAction, isFirstChild));
+    } else if (
+      secAction &&
+      secAction.key != container.firstChild.dataset.action
+    ) {
+      item.replaceChild(
+        this.#createSecondaryAction(secAction, isFirstChild),
+        container
+      );
+    } else if (!secAction && container) {
+      item.removeChild(container);
+    }
 
     item.removeAttribute("feedback-acknowledgment");
 
@@ -1665,14 +1857,7 @@ export class UrlbarView {
     }
 
     let favicon = item._elements.get("favicon");
-    if (
-      result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
-      result.type == lazy.UrlbarUtils.RESULT_TYPE.KEYWORD
-    ) {
-      favicon.src = this.#iconForResult(result);
-    } else {
-      favicon.src = result.payload.icon || lazy.UrlbarUtils.ICON.DEFAULT;
-    }
+    favicon.src = this.#iconForResult(result);
 
     let title = item._elements.get("title");
     this.#setResultTitle(result, title);
@@ -1714,16 +1899,17 @@ export class UrlbarView {
     let isRowSelectable = true;
     switch (result.type) {
       case lazy.UrlbarUtils.RESULT_TYPE.TAB_SWITCH:
-        actionSetter = () => {
-          this.#setElementL10n(action, {
-            id: "urlbar-result-action-switch-tab",
-          });
-        };
+        // Hide chichlet when showing secondaryActions.
+        if (!lazy.UrlbarPrefs.get("secondaryActions.switchToTab")) {
+          actionSetter = () => {
+            this.#setSwitchTabActionChiclet(result, action);
+          };
+        }
         setURL = true;
         break;
       case lazy.UrlbarUtils.RESULT_TYPE.REMOTE_TAB:
         actionSetter = () => {
-          this.#removeElementL10n(action);
+          this.#l10nCache.removeElementL10n(action);
           action.textContent = result.payload.device;
         };
         setURL = true;
@@ -1732,21 +1918,21 @@ export class UrlbarView {
         if (result.payload.inPrivateWindow) {
           if (result.payload.isPrivateEngine) {
             actionSetter = () => {
-              this.#setElementL10n(action, {
+              this.#l10nCache.setElementL10n(action, {
                 id: "urlbar-result-action-search-in-private-w-engine",
                 args: { engine: result.payload.engine },
               });
             };
           } else {
             actionSetter = () => {
-              this.#setElementL10n(action, {
+              this.#l10nCache.setElementL10n(action, {
                 id: "urlbar-result-action-search-in-private",
               });
             };
           }
         } else if (result.providerName == "TabToSearch") {
           actionSetter = () => {
-            this.#setElementL10n(action, {
+            this.#l10nCache.setElementL10n(action, {
               id: result.payload.isGeneralPurposeEngine
                 ? "urlbar-result-action-tabtosearch-web"
                 : "urlbar-result-action-tabtosearch-other-engine",
@@ -1755,7 +1941,7 @@ export class UrlbarView {
           };
         } else if (!result.payload.providesSearchMode) {
           actionSetter = () => {
-            this.#setElementL10n(action, {
+            this.#l10nCache.setElementL10n(action, {
               id: "urlbar-result-action-search-w-engine",
               args: { engine: result.payload.engine },
             });
@@ -1767,19 +1953,43 @@ export class UrlbarView {
         break;
       case lazy.UrlbarUtils.RESULT_TYPE.OMNIBOX:
         actionSetter = () => {
-          this.#removeElementL10n(action);
+          this.#l10nCache.removeElementL10n(action);
           action.textContent = result.payload.content;
         };
         break;
       case lazy.UrlbarUtils.RESULT_TYPE.TIP:
         isRowSelectable = false;
         break;
+      case lazy.UrlbarUtils.RESULT_TYPE.URL:
+        if (result.providerName == "UrlbarProviderClipboard") {
+          result.payload.displayUrl = "";
+          actionSetter = () => {
+            this.#l10nCache.setElementL10n(action, {
+              id: "urlbar-result-action-visit-from-clipboard",
+            });
+          };
+          title.toggleAttribute("is-url", true);
+
+          let label = { id: "urlbar-result-action-visit-from-clipboard" };
+          this.#l10nCache.ensure(label).then(() => {
+            let { value } = this.#l10nCache.get(label);
+
+            // We don't have to unset these attributes because, excluding heuristic results,
+            // we never reuse results from different providers. Thus clipboard results can
+            // only be reused by other clipboard results.
+            title.setAttribute("aria-label", `${value}, ${title.innerText}`);
+            action.setAttribute("aria-hidden", "true");
+          });
+          break;
+        }
+      // fall-through
       default:
         if (result.heuristic && !result.payload.title) {
           isVisitAction = true;
         } else if (
-          result.providerName != lazy.UrlbarProviderQuickSuggest.name ||
-          result.payload.shouldShowUrl
+          (result.providerName != lazy.UrlbarProviderQuickSuggest.name ||
+            result.payload.shouldShowUrl) &&
+          !result.payload.providesSearchMode
         ) {
           setURL = true;
         }
@@ -1788,80 +1998,69 @@ export class UrlbarView {
 
     this.#setRowSelectable(item, isRowSelectable);
 
-    if (result.providerName == "TabToSearch") {
-      action.toggleAttribute("slide-in", true);
-    } else {
-      action.removeAttribute("slide-in");
-    }
+    action.toggleAttribute("slide-in", result.providerName == "TabToSearch");
 
-    if (result.payload.isPinned) {
-      item.toggleAttribute("pinned", true);
-    } else {
-      item.removeAttribute("pinned");
-    }
+    item.toggleAttribute("pinned", !!result.payload.isPinned);
 
-    if (
+    let sponsored =
       result.payload.isSponsored &&
       result.type != lazy.UrlbarUtils.RESULT_TYPE.TAB_SWITCH &&
-      result.providerName != lazy.UrlbarProviderQuickSuggest.name
-    ) {
-      item.toggleAttribute("sponsored", true);
+      result.providerName != lazy.UrlbarProviderQuickSuggest.name;
+    item.toggleAttribute("sponsored", !!sponsored);
+    if (sponsored) {
       actionSetter = () => {
-        this.#setElementL10n(action, {
+        this.#l10nCache.setElementL10n(action, {
           id: "urlbar-result-action-sponsored",
         });
       };
-    } else {
-      item.removeAttribute("sponsored");
     }
 
+    item.toggleAttribute("rich-suggestion", !!result.isRichSuggestion);
     if (result.isRichSuggestion) {
-      item.toggleAttribute("rich-suggestion", true);
       this.#updateRowForRichSuggestion(item, result);
-    } else {
-      item.removeAttribute("rich-suggestion");
     }
 
+    item.toggleAttribute("has-url", setURL);
     let url = item._elements.get("url");
     if (setURL) {
-      item.setAttribute("has-url", "true");
-      this.#addTextContentWithHighlights(
-        url,
-        result.payload.displayUrl,
-        result.payloadHighlights.displayUrl || []
-      );
+      let displayedUrl = result.payload.displayUrl;
+      let urlHighlights = result.payloadHighlights.displayUrl || [];
+      if (lazy.UrlbarUtils.isTextDirectionRTL(displayedUrl, this.window)) {
+        // Stripping the url prefix may change the initial text directionality,
+        // causing parts of it to jump to the end. To prevent that we insert a
+        // LRM character in place of the prefix.
+        displayedUrl = "\u200e" + displayedUrl;
+        urlHighlights = this.#offsetHighlights(urlHighlights, 1);
+      }
+      this.#addTextContentWithHighlights(url, displayedUrl, urlHighlights);
       this.#updateOverflowTooltip(url, result.payload.displayUrl);
     } else {
-      item.removeAttribute("has-url");
       url.textContent = "";
       this.#updateOverflowTooltip(url, "");
     }
 
+    title.toggleAttribute("is-url", isVisitAction);
     if (isVisitAction) {
       actionSetter = () => {
-        this.#setElementL10n(action, {
+        this.#l10nCache.setElementL10n(action, {
           id: "urlbar-result-action-visit",
         });
       };
-      title.setAttribute("isurl", "true");
-    } else {
-      title.removeAttribute("isurl");
     }
 
+    item.toggleAttribute("has-action", actionSetter);
     if (actionSetter) {
       actionSetter();
       item._originalActionSetter = actionSetter;
-      item.setAttribute("has-action", "true");
     } else {
       item._originalActionSetter = () => {
-        this.#removeElementL10n(action);
+        this.#l10nCache.removeElementL10n(action);
         action.textContent = "";
       };
       item._originalActionSetter();
-      item.removeAttribute("has-action");
     }
 
-    if (!title.hasAttribute("isurl")) {
+    if (!title.hasAttribute("is-url")) {
       title.setAttribute("dir", "auto");
     } else {
       title.removeAttribute("dir");
@@ -1879,21 +2078,62 @@ export class UrlbarView {
   }
 
   #iconForResult(result, iconUrlOverride = null) {
-    return (
-      (result.source == lazy.UrlbarUtils.RESULT_SOURCE.HISTORY &&
-        (result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
-          result.type == lazy.UrlbarUtils.RESULT_TYPE.KEYWORD) &&
-        lazy.UrlbarUtils.ICON.HISTORY) ||
-      iconUrlOverride ||
-      result.payload.icon ||
-      (result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH &&
-        result.payload.trending &&
-        lazy.UrlbarUtils.ICON.TRENDING) ||
-      ((result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
-        result.type == lazy.UrlbarUtils.RESULT_TYPE.KEYWORD) &&
-        lazy.UrlbarUtils.ICON.SEARCH_GLASS) ||
-      lazy.UrlbarUtils.ICON.DEFAULT
-    );
+    if (
+      result.source == lazy.UrlbarUtils.RESULT_SOURCE.HISTORY &&
+      (result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
+        result.type == lazy.UrlbarUtils.RESULT_TYPE.KEYWORD)
+    ) {
+      return lazy.UrlbarUtils.ICON.HISTORY;
+    }
+
+    if (iconUrlOverride) {
+      return iconUrlOverride;
+    }
+
+    if (result.payload.icon) {
+      return result.payload.icon;
+    }
+    if (result.payload.iconBlob) {
+      let blobUrl = this.#getBlobUrlForResult(result, result.payload.iconBlob);
+      if (blobUrl) {
+        return blobUrl;
+      }
+    }
+
+    if (
+      result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.payload.trending
+    ) {
+      return lazy.UrlbarUtils.ICON.TRENDING;
+    }
+
+    if (
+      result.type == lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
+      result.type == lazy.UrlbarUtils.RESULT_TYPE.KEYWORD
+    ) {
+      return lazy.UrlbarUtils.ICON.SEARCH_GLASS;
+    }
+
+    return lazy.UrlbarUtils.ICON.DEFAULT;
+  }
+
+  #getBlobUrlForResult(result, blob) {
+    // Blob icons are currently limited to Suggest results, which will define
+    // a `payload.originalUrl` if the result URL contains timestamp templates
+    // that are replaced at query time.
+    let resultUrl = result.payload.originalUrl || result.payload.url;
+    if (resultUrl) {
+      let blobUrl = this.#blobUrlsByResultUrl?.get(resultUrl);
+      if (!blobUrl) {
+        blobUrl = URL.createObjectURL(blob);
+        // Since most users will not trigger results with blob icons, we
+        // create this map lazily.
+        this.#blobUrlsByResultUrl ||= new Map();
+        this.#blobUrlsByResultUrl.set(resultUrl, blobUrl);
+      }
+      return blobUrl;
+    }
+    return null;
   }
 
   async #updateRowForDynamicType(item, result) {
@@ -1903,25 +2143,6 @@ export class UrlbarView {
     for (let [name, node] of item._elements) {
       node.id = `${item.id}-${name}`;
       idsByName.set(name, node.id);
-    }
-
-    // First, apply highlighting. We do this before updating via getViewUpdate
-    // so the dynamic provider can override the highlighting by setting the
-    // textContent of the highlighted node, if it wishes.
-    for (let [payloadName, highlights] of Object.entries(
-      result.payloadHighlights
-    )) {
-      if (!highlights.length) {
-        continue;
-      }
-      // Highlighting only works if the dynamic element name is the same as the
-      // highlighted payload property name.
-      let nodeToHighlight = item.querySelector(`#${item.id}-${payloadName}`);
-      this.#addTextContentWithHighlights(
-        nodeToHighlight,
-        result.payload[payloadName],
-        highlights
-      );
     }
 
     // Get the view update from the result's provider.
@@ -1934,22 +2155,20 @@ export class UrlbarView {
     // Update each node in the view by name.
     for (let [nodeName, update] of Object.entries(viewUpdate)) {
       let node = item.querySelector(`#${item.id}-${nodeName}`);
-      this.#setDynamicAttributes(node, update.attributes);
+      this.#setDynamicAttributes(node, update.attributes, result);
       if (update.style) {
         for (let [styleName, value] of Object.entries(update.style)) {
           node.style[styleName] = value;
         }
       }
       if (update.l10n) {
-        if (update.l10n.cacheable) {
-          await this.#l10nCache.ensureAll([update.l10n]);
-          if (item.result != result) {
-            return;
-          }
-        }
-        this.#setElementL10n(node, update.l10n);
+        this.#l10nCache.setElementL10n(node, update.l10n);
       } else if (update.textContent) {
-        node.textContent = update.textContent;
+        this.#addTextContentWithHighlights(
+          node,
+          update.textContent,
+          update.highlights
+        );
       }
     }
   }
@@ -1957,17 +2176,32 @@ export class UrlbarView {
   #updateRowForRichSuggestion(item, result) {
     this.#setRowSelectable(item, true);
 
+    let favicon = item._elements.get("favicon");
     if (result.richSuggestionIconSize) {
       item.setAttribute("icon-size", result.richSuggestionIconSize);
+      favicon.setAttribute("icon-size", result.richSuggestionIconSize);
     } else {
       item.removeAttribute("icon-size");
+      favicon.removeAttribute("icon-size");
+    }
+
+    if (result.richSuggestionIconVariation) {
+      favicon.setAttribute(
+        "icon-variation",
+        result.richSuggestionIconVariation
+      );
+    } else {
+      favicon.removeAttribute("icon-variation");
     }
 
     let description = item._elements.get("description");
     if (result.payload.descriptionL10n) {
-      this.#setElementL10n(description, result.payload.descriptionL10n);
+      this.#l10nCache.setElementL10n(
+        description,
+        result.payload.descriptionL10n
+      );
     } else {
-      this.#removeElementL10n(description);
+      this.#l10nCache.removeElementL10n(description);
       if (result.payload.description) {
         description.textContent = result.payload.description;
       }
@@ -1975,9 +2209,9 @@ export class UrlbarView {
 
     let bottom = item._elements.get("bottom");
     if (result.payload.bottomTextL10n) {
-      this.#setElementL10n(bottom, result.payload.bottomTextL10n);
+      this.#l10nCache.setElementL10n(bottom, result.payload.bottomTextL10n);
     } else {
-      this.#removeElementL10n(bottom);
+      this.#l10nCache.removeElementL10n(bottom);
     }
   }
 
@@ -2004,8 +2238,11 @@ export class UrlbarView {
 
       let visible = this.#isElementVisible(item);
       if (visible) {
-        if (item.result.exposureResultType) {
-          this.#addExposure(item.result);
+        if (item.result.exposureTelemetry) {
+          this.controller.engagementEvent.addExposure(
+            item.result,
+            this.#queryContext
+          );
         }
         this.visibleResults.push(item.result);
       }
@@ -2016,7 +2253,7 @@ export class UrlbarView {
       }
     }
 
-    let selectableElement = this.#getFirstSelectableElement();
+    let selectableElement = this.getFirstSelectableElement();
     let uiIndex = 0;
     while (selectableElement) {
       selectableElement.elementIndex = uiIndex++;
@@ -2028,6 +2265,11 @@ export class UrlbarView {
     } else {
       this.panel.setAttribute("noresults", "true");
     }
+
+    this.#rows.toggleAttribute(
+      "actionmode",
+      this.visibleResults[0]?.source == lazy.UrlbarUtils.RESULT_SOURCE.ACTIONS
+    );
   }
 
   /**
@@ -2063,7 +2305,7 @@ export class UrlbarView {
     let groupAriaLabel = item._elements.get("groupAriaLabel");
 
     if (!label) {
-      this.#removeElementL10n(item, { attribute: "label" });
+      this.#l10nCache.removeElementL10n(item, { attribute: "label" });
       if (groupAriaLabel) {
         groupAriaLabel.remove();
         item._elements.delete("groupAriaLabel");
@@ -2071,7 +2313,7 @@ export class UrlbarView {
       return null;
     }
 
-    this.#setElementL10n(item, {
+    this.#l10nCache.setElementL10n(item, {
       attribute: "label",
       id: label.id,
       args: label.args,
@@ -2112,23 +2354,56 @@ export class UrlbarView {
       return null;
     }
 
+    if (row.result.rowLabel) {
+      return row.result.rowLabel;
+    }
+
+    let engineName =
+      row.result.payload.engine || Services.search.defaultEngine.name;
+
+    if (row.result.payload.trending) {
+      return {
+        id: "urlbar-group-trending",
+        args: { engine: engineName },
+      };
+    }
+
+    if (row.result.providerName == lazy.UrlbarProviderRecentSearches.name) {
+      return { id: "urlbar-group-recent-searches" };
+    }
+
     if (
       row.result.isBestMatch &&
       row.result.providerName == lazy.UrlbarProviderQuickSuggest.name
     ) {
       switch (row.result.payload.telemetryType) {
+        case "adm_sponsored":
+          if (!lazy.UrlbarPrefs.get("quickSuggestSponsoredPriority")) {
+            return { id: "urlbar-group-sponsored" };
+          }
+          break;
         case "amo":
           return { id: "urlbar-group-addon" };
+        case "mdn":
+          return { id: "urlbar-group-mdn" };
         case "pocket":
           return { id: "urlbar-group-pocket" };
+        case "yelp":
+          return { id: "urlbar-group-local" };
       }
     }
 
-    if (
-      row.result.isBestMatch ||
-      row.result.providerName == lazy.UrlbarProviderWeather.name
-    ) {
+    if (row.result.isBestMatch) {
       return { id: "urlbar-group-best-match" };
+    }
+
+    // Show "Shortcuts" if there's another result before that group.
+    if (
+      row.result.providerName == lazy.UrlbarProviderTopSites.name &&
+      this.#queryContext.results[0].providerName !=
+        lazy.UrlbarProviderTopSites.name
+    ) {
+      return { id: "urlbar-group-shortcuts" };
     }
 
     if (!this.#queryContext?.searchString || row.result.heuristic) {
@@ -2136,6 +2411,12 @@ export class UrlbarView {
     }
 
     if (row.result.providerName == lazy.UrlbarProviderQuickSuggest.name) {
+      if (
+        row.result.payload.provider == "Weather" &&
+        !row.result.payload.showRowLabel
+      ) {
+        return null;
+      }
       return { id: "urlbar-group-firefox-suggest" };
     }
 
@@ -2148,8 +2429,6 @@ export class UrlbarView {
       case lazy.UrlbarUtils.RESULT_TYPE.SEARCH:
         // Show "{ $engine } suggestions" if it's not the first label.
         if (currentLabel && row.result.payload.suggestion) {
-          let engineName =
-            row.result.payload.engine || Services.search.defaultEngine.name;
           return {
             id: "urlbar-group-search-suggestions",
             args: { engine: engineName },
@@ -2213,6 +2492,10 @@ export class UrlbarView {
       row = next;
     }
     this.#updateIndices();
+
+    // Accept tentative exposures. This is analogous to unhiding the
+    // hypothetical non-stale hidden rows of hidden-exposure results.
+    this.controller.engagementEvent.acceptTentativeExposures();
   }
 
   #startRemoveStaleRowsTimer() {
@@ -2250,15 +2533,21 @@ export class UrlbarView {
         row?.toggleAttribute("selected", true);
       }
     }
-    this.#setAccessibleFocus(setAccessibleFocus && element);
-    this.#selectedElement = element;
 
     let result = row?.result;
+    let provider = lazy.UrlbarProvidersManager.getProvider(
+      result?.providerName
+    );
+    if (provider) {
+      provider.tryMethod("onBeforeSelection", result, element);
+    }
+
+    this.#setAccessibleFocus(setAccessibleFocus && element);
+    this.#rawSelectedElement = element;
+
     if (updateInput) {
       let urlOverride = null;
-      if (element?.classList?.contains("urlbarView-button-help")) {
-        urlOverride = result.payload.helpUrl;
-      } else if (element?.classList?.contains("urlbarView-button")) {
+      if (element?.classList?.contains("urlbarView-button")) {
         // Clear the input when a button is selected.
         urlOverride = "";
       }
@@ -2267,9 +2556,6 @@ export class UrlbarView {
       this.input.setResultForCurrentValue(result);
     }
 
-    let provider = lazy.UrlbarProvidersManager.getProvider(
-      result?.providerName
-    );
     if (provider) {
       provider.tryMethod("onSelection", result, element);
     }
@@ -2328,7 +2614,7 @@ export class UrlbarView {
    * @returns {Element}
    *   The first selectable element in the view.
    */
-  #getFirstSelectableElement() {
+  getFirstSelectableElement() {
     let element = this.#rows.firstElementChild;
     if (element && !this.#isSelectableElement(element)) {
       element = this.#getNextSelectableElement(element);
@@ -2342,7 +2628,7 @@ export class UrlbarView {
    * @returns {Element}
    *   The last selectable element in the view.
    */
-  #getLastSelectableElement() {
+  getLastSelectableElement() {
     let element = this.#rows.lastElementChild;
     if (element && !this.#isSelectableElement(element)) {
       element = this.#getPreviousSelectableElement(element);
@@ -2460,7 +2746,7 @@ export class UrlbarView {
    */
   #setResultTitle(result, titleNode) {
     if (result.payload.titleL10n) {
-      this.#setElementL10n(titleNode, result.payload.titleL10n);
+      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
       return;
     }
 
@@ -2472,23 +2758,153 @@ export class UrlbarView {
     }
 
     if (result.payload.providesSearchMode) {
-      // Keyword offers are the only result that require a localized title.
-      // We localize the title instead of using the action text as a title
-      // because some keyword offer results use both a title and action text
-      // (e.g. tab-to-search).
-      this.#setElementL10n(titleNode, {
-        id: "urlbar-result-action-search-w-engine",
-        args: { engine: result.payload.engine },
-      });
+      if (result.type == lazy.UrlbarUtils.RESULT_TYPE.RESTRICT) {
+        let localSearchMode =
+          result.payload.l10nRestrictKeywords[0].toLowerCase();
+        let keywords = result.payload.l10nRestrictKeywords
+          .map(keyword => `@${keyword.toLowerCase()}`)
+          .join(", ");
+
+        this.#l10nCache.setElementL10n(titleNode, {
+          id: "urlbar-result-search-with-local-search-mode",
+          args: {
+            keywords,
+            localSearchMode,
+          },
+        });
+      } else if (
+        result.providerName == "TokenAliasEngines" &&
+        lazy.UrlbarPrefs.getScotchBonnetPref(
+          "searchRestrictKeywords.featureGate"
+        )
+      ) {
+        this.#l10nCache.setElementL10n(titleNode, {
+          id: "urlbar-result-search-with-engine-keywords",
+          args: {
+            keywords: result.payload.keywords,
+            engine: result.payload.engine,
+          },
+        });
+      } else {
+        // Keyword offers are the only result that require a localized title.
+        // We localize the title instead of using the action text as a title
+        // because some keyword offer results use both a title and action text
+        // (e.g., tab-to-search).
+        this.#l10nCache.setElementL10n(titleNode, {
+          id: "urlbar-result-action-search-w-engine",
+          args: { engine: result.payload.engine },
+        });
+      }
+
       return;
     }
 
-    this.#removeElementL10n(titleNode);
+    this.#l10nCache.removeElementL10n(titleNode);
     this.#addTextContentWithHighlights(
       titleNode,
       result.title,
       result.titleHighlights
     );
+  }
+
+  /**
+   * Offsets all highlight ranges by a given amount.
+   *
+   * @param {Array} highlights The highlights which should be offset.
+   * @param {int} startOffset
+   *    The number by which we want to offset the highlights range starts.
+   * @returns {Array} The offset highlights.
+   */
+  #offsetHighlights(highlights, startOffset) {
+    return highlights.map(highlight => [
+      highlight[0] + startOffset,
+      highlight[1],
+    ]);
+  }
+
+  /**
+   * Sets the content of the 'Switch To Tab' chiclet.
+   *
+   * @param {UrlbarResult} result
+   *   The result for which the userContext is being set.
+   * @param {Element} actionNode
+   *   The DOM node for the result's action.
+   */
+  #setSwitchTabActionChiclet(result, actionNode) {
+    if (
+      lazy.UrlbarPrefs.get("switchTabs.searchAllContainers") &&
+      result.type == lazy.UrlbarUtils.RESULT_TYPE.TAB_SWITCH &&
+      lazy.UrlbarProviderOpenTabs.isContainerUserContextId(
+        result.payload.userContextId
+      )
+    ) {
+      let label = lazy.ContextualIdentityService.getUserContextLabel(
+        result.payload.userContextId
+      ).toLowerCase();
+      // To avoid flicker don't update the label unless necessary.
+      if (
+        actionNode.classList.contains("urlbarView-userContext") &&
+        label &&
+        actionNode.querySelector("span")?.innerText == label
+      ) {
+        return;
+      }
+      actionNode.innerHTML = "";
+      let identity = lazy.ContextualIdentityService.getPublicIdentityFromId(
+        result.payload.userContextId
+      );
+      if (identity) {
+        actionNode.classList.add("urlbarView-userContext");
+        if (identity.color) {
+          actionNode.className = actionNode.className.replace(
+            /identity-color-\w*/g,
+            ""
+          );
+          actionNode.classList.add("identity-color-" + identity.color);
+        }
+
+        let textModeLabel = this.#createElement("div");
+        textModeLabel.classList.add("urlbarView-userContext-textMode");
+
+        if (label) {
+          this.#l10nCache.setElementL10n(textModeLabel, {
+            id: "urlbar-result-action-switch-tab-with-container",
+            args: {
+              container: label.toLowerCase(),
+            },
+          });
+          actionNode.appendChild(textModeLabel);
+
+          let iconModeLabel = this.#createElement("div");
+          iconModeLabel.classList.add("urlbarView-userContext-iconMode");
+          actionNode.appendChild(iconModeLabel);
+          if (identity.icon) {
+            let userContextIcon = this.#createElement("img");
+            userContextIcon.classList.add("urlbarView-userContext-icon");
+            userContextIcon.setAttribute("alt", label);
+            userContextIcon.src =
+              "resource://usercontext-content/" + identity.icon + ".svg";
+            this.#l10nCache.setElementL10n(iconModeLabel, {
+              id: "urlbar-result-action-switch-tab",
+            });
+            iconModeLabel.appendChild(userContextIcon);
+          }
+          actionNode.setAttribute("tooltiptext", label);
+        }
+      }
+    } else {
+      actionNode.classList.remove("urlbarView-userContext");
+      // identity needs to be removed as well..
+      actionNode
+        .querySelectorAll(
+          ".urlbarView-userContext-textMode, .urlbarView-userContext-iconMode"
+        )
+        .forEach(node => node.remove());
+
+      this.#l10nCache.setElementL10n(actionNode, {
+        id: "urlbar-result-action-switch-tab",
+      });
+    }
   }
 
   /**
@@ -2550,11 +2966,9 @@ export class UrlbarView {
   }
 
   #enableOrDisableRowWrap() {
-    if (getBoundsWithoutFlushing(this.input.textbox).width < 650) {
-      this.#rows.setAttribute("wrap", "true");
-    } else {
-      this.#rows.removeAttribute("wrap");
-    }
+    let wrap = getBoundsWithoutFlushing(this.input.textbox).width < 650;
+    this.#rows.toggleAttribute("wrap", wrap);
+    this.oneOffSearchButtons.container.toggleAttribute("wrap", wrap);
   }
 
   /**
@@ -2658,24 +3072,39 @@ export class UrlbarView {
       { id: "urlbar-result-action-search-tabs" },
       { id: "urlbar-result-action-switch-tab" },
       { id: "urlbar-result-action-visit" },
+      { id: "urlbar-result-action-visit-from-clipboard" },
     ];
+
+    let suggestSponsoredEnabled =
+      lazy.UrlbarPrefs.get("quickSuggestEnabled") &&
+      lazy.UrlbarPrefs.get("suggest.quicksuggest.sponsored");
 
     if (lazy.UrlbarPrefs.get("groupLabels.enabled")) {
       idArgs.push({ id: "urlbar-group-firefox-suggest" });
-      if (
-        (lazy.UrlbarPrefs.get("bestMatchEnabled") &&
-          lazy.UrlbarPrefs.get("suggest.bestmatch")) ||
-        (lazy.UrlbarPrefs.get("weatherFeatureGate") &&
-          lazy.UrlbarPrefs.get("suggest.weather"))
-      ) {
-        idArgs.push({ id: "urlbar-group-best-match" });
+      idArgs.push({ id: "urlbar-group-best-match" });
+      if (lazy.UrlbarPrefs.get("quickSuggestEnabled")) {
+        if (lazy.UrlbarPrefs.get("addonsFeatureGate")) {
+          idArgs.push({ id: "urlbar-group-addon" });
+        }
+        if (lazy.UrlbarPrefs.get("mdn.featureGate")) {
+          idArgs.push({ id: "urlbar-group-mdn" });
+        }
+        if (lazy.UrlbarPrefs.get("pocketFeatureGate")) {
+          idArgs.push({ id: "urlbar-group-pocket" });
+        }
+        if (lazy.UrlbarPrefs.get("yelpFeatureGate")) {
+          idArgs.push({ id: "urlbar-group-local" });
+        }
+        if (
+          suggestSponsoredEnabled &&
+          lazy.UrlbarPrefs.get("quickSuggestAmpTopPickCharThreshold")
+        ) {
+          idArgs.push({ id: "urlbar-group-sponsored" });
+        }
       }
     }
 
-    if (
-      lazy.UrlbarPrefs.get("quickSuggestEnabled") &&
-      lazy.UrlbarPrefs.get("suggest.quicksuggest.sponsored")
-    ) {
+    if (suggestSponsoredEnabled) {
       idArgs.push({ id: "urlbar-result-action-sponsored" });
     }
 
@@ -2738,73 +3167,6 @@ export class UrlbarView {
     return idArgs;
   }
 
-  /**
-   * Sets an element's textContent or attribute to a cached l10n string. If the
-   * string isn't cached, then this falls back to the async `l10n.setAttributes`
-   * using the given l10n ID and args. The string will pop in as a result, but
-   * there's no way around it.
-   *
-   * @param {Element} element
-   *   The element to set.
-   * @param {object} options
-   *   Options object.
-   * @param {string} options.id
-   *   The l10n string ID.
-   * @param {object} options.args
-   *   The l10n string arguments.
-   * @param {string} options.attribute
-   *   If you're setting an attribute string, then pass the name of the
-   *   attribute. In that case, the string in the Fluent file should define a
-   *   value for the attribute, like ".foo = My value for the foo attribute".
-   *   If you're setting the element's textContent, then leave this undefined.
-   * @param {boolean} options.excludeArgsFromCacheKey
-   *   Pass true if the string was cached using a key that excluded arguments.
-   */
-  #setElementL10n(
-    element,
-    {
-      id,
-      args = undefined,
-      attribute = undefined,
-      excludeArgsFromCacheKey = false,
-    }
-  ) {
-    let message = this.#l10nCache.get({ id, args, excludeArgsFromCacheKey });
-    if (message) {
-      element.removeAttribute("data-l10n-id");
-      if (attribute) {
-        element.setAttribute(attribute, message.attributes[attribute]);
-      } else {
-        element.textContent = message.value;
-      }
-    } else {
-      if (attribute) {
-        element.setAttribute("data-l10n-attrs", attribute);
-      }
-      this.document.l10n.setAttributes(element, id, args);
-    }
-  }
-
-  /**
-   * Removes textContent and attributes set by `#setElementL10n`.
-   *
-   * @param {Element} element
-   *   The element that should be acted on
-   * @param {object} options
-   *   Options object
-   * @param {string} [options.attribute]
-   *   If you passed an attribute to `#setElementL10n`, then pass it here too.
-   */
-  #removeElementL10n(element, { attribute = undefined } = {}) {
-    if (attribute) {
-      element.removeAttribute(attribute);
-      element.removeAttribute("data-l10n-attrs");
-    } else {
-      element.textContent = "";
-    }
-    element.removeAttribute("data-l10n-id");
-  }
-
   get #isShowingZeroPrefix() {
     return !!this.#zeroPrefixStopwatchInstance;
   }
@@ -2829,7 +3191,7 @@ export class UrlbarView {
       this.#zeroPrefixStopwatchInstance
     );
 
-    Services.telemetry.scalarAdd(ZERO_PREFIX_SCALAR_EXPOSURE, 1);
+    Glean.urlbarZeroprefix.exposure.add(1);
   }
 
   /**
@@ -2839,9 +3201,6 @@ export class UrlbarView {
    *   Array of menu commands available for the result, null if there are none.
    */
   #getResultMenuCommands(result) {
-    if (!lazy.UrlbarPrefs.get("resultMenu")) {
-      return null;
-    }
     if (this.#resultMenuCommands.has(result)) {
       return this.#resultMenuCommands.get(result);
     }
@@ -2855,21 +3214,6 @@ export class UrlbarView {
     }
 
     commands = [];
-    if (
-      result.source == lazy.UrlbarUtils.RESULT_SOURCE.HISTORY &&
-      !result.autofill
-    ) {
-      commands.push(
-        {
-          name: RESULT_MENU_COMMANDS.DISMISS,
-          l10n: { id: "urlbar-result-menu-remove-from-history" },
-        },
-        {
-          name: RESULT_MENU_COMMANDS.HELP,
-          l10n: { id: "urlbar-result-menu-learn-more" },
-        }
-      );
-    }
     if (result.payload.isBlockable) {
       commands.push({
         name: RESULT_MENU_COMMANDS.DISMISS,
@@ -2879,9 +3223,20 @@ export class UrlbarView {
     if (result.payload.helpUrl) {
       commands.push({
         name: RESULT_MENU_COMMANDS.HELP,
-        l10n: result.payload.helpL10n,
+        l10n: result.payload.helpL10n || {
+          id: "urlbar-result-menu-learn-more",
+        },
       });
     }
+    if (result.payload.isManageable) {
+      commands.push({
+        name: RESULT_MENU_COMMANDS.MANAGE,
+        l10n: {
+          id: "urlbar-result-menu-manage-firefox-suggest",
+        },
+      });
+    }
+
     let rv = commands.length ? commands : null;
     this.#resultMenuCommands.set(result, rv);
     return rv;
@@ -2897,7 +3252,7 @@ export class UrlbarView {
         let popup = this.document.createXULElement("menupopup");
         this.#populateResultMenu(popup, data.children);
         let menu = this.document.createXULElement("menu");
-        this.#setElementL10n(menu, data.l10n);
+        this.#l10nCache.setElementL10n(menu, data.l10n);
         menu.appendChild(popup);
         menupopup.appendChild(menu);
         continue;
@@ -2909,7 +3264,7 @@ export class UrlbarView {
       let menuitem = this.document.createXULElement("menuitem");
       menuitem.dataset.command = data.name;
       menuitem.classList.add("urlbarView-result-menuitem");
-      this.#setElementL10n(menuitem, data.l10n);
+      this.#l10nCache.setElementL10n(menuitem, data.l10n);
       menupopup.appendChild(menuitem);
     }
   }
@@ -2923,6 +3278,7 @@ export class UrlbarView {
 
     let engine = this.oneOffSearchButtons.selectedButton?.engine;
     let source = this.oneOffSearchButtons.selectedButton?.source;
+    let icon = this.oneOffSearchButtons.selectedButton?.image;
 
     let localSearchMode;
     if (source) {
@@ -2966,9 +3322,9 @@ export class UrlbarView {
         continue;
       }
 
-      let action = item.querySelector(".urlbarView-action");
-      let favicon = item.querySelector(".urlbarView-favicon");
-      let title = item.querySelector(".urlbarView-title");
+      let action = item._elements.get("action");
+      let favicon = item._elements.get("favicon");
+      let title = item._elements.get("title");
 
       // If a one-off button is the only selection, force the heuristic result
       // to show its action text, so the engine name is visible.
@@ -3019,7 +3375,7 @@ export class UrlbarView {
       if (localSearchMode) {
         // Update the result action text for a local one-off.
         let name = lazy.UrlbarUtils.getResultSourceName(localSearchMode.source);
-        this.#setElementL10n(action, {
+        this.#l10nCache.setElementL10n(action, {
           id: `urlbar-result-action-search-${name}`,
         });
         if (result.heuristic) {
@@ -3027,7 +3383,7 @@ export class UrlbarView {
         }
       } else if (engine && !result.payload.inPrivateWindow) {
         // Update the result action text for an engine one-off.
-        this.#setElementL10n(action, {
+        this.#l10nCache.setElementL10n(action, {
           id: "urlbar-result-action-search-w-engine",
           args: { engine: engine.name },
         });
@@ -3046,7 +3402,15 @@ export class UrlbarView {
       }
 
       // Update result favicons.
-      let iconOverride = localSearchMode?.icon || engine?.iconURI?.spec;
+      let iconOverride = localSearchMode?.icon;
+      // If the icon is the default one-off search placeholder, assume we
+      // don't have an icon for the engine.
+      if (
+        !iconOverride &&
+        icon != "chrome://browser/skin/search-engine-placeholder.png"
+      ) {
+        iconOverride = icon;
+      }
       if (!iconOverride && (localSearchMode || engine)) {
         // For one-offs without an icon, do not allow restyled URL results to
         // use their own icons.
@@ -3065,7 +3429,7 @@ export class UrlbarView {
     }
   }
 
-  on_blur(event) {
+  on_blur() {
     // If the view is open without the input being focused, it will not close
     // automatically when the window loses focus. We might be in this state
     // after a Search Tip is shown on an engine homepage.
@@ -3158,9 +3522,15 @@ export class UrlbarView {
     this.#mousedownSelectedElement = null;
   }
 
+  #isRelevantOverflowEvent(event) {
+    // We're interested only in the horizontal axis.
+    // 0 - vertical, 1 - horizontal, 2 - both
+    return event.detail != 0;
+  }
+
   on_overflow(event) {
     if (
-      event.detail == 1 /* horizontal overflow */ &&
+      this.#isRelevantOverflowEvent(event) &&
       this.#canElementOverflow(event.target)
     ) {
       this.#setElementOverflowing(event.target, true);
@@ -3169,7 +3539,7 @@ export class UrlbarView {
 
   on_underflow(event) {
     if (
-      event.detail == 1 /* horizontal underflow */ &&
+      this.#isRelevantOverflowEvent(event) &&
       this.#canElementOverflow(event.target)
     ) {
       this.#setElementOverflowing(event.target, false);
@@ -3201,37 +3571,6 @@ export class UrlbarView {
     if (event.target == this.resultMenu) {
       this.#populateResultMenu();
     }
-  }
-
-  /**
-   * Called when a urlbar pref changes.
-   *
-   * @param {string} pref
-   *   The name of the pref relative to `browser.urlbar`.
-   */
-  onPrefChanged(pref) {
-    switch (pref) {
-      case RICH_SUGGESTIONS_PREF:
-        this.updateRichSuggestionAttribute();
-        break;
-    }
-  }
-
-  updateRichSuggestionAttribute() {
-    if (lazy.UrlbarPrefs.get(RICH_SUGGESTIONS_PREF)) {
-      this.input.setAttribute("richSuggestionsEnabled", true);
-    } else {
-      this.input.removeAttribute("richSuggestionsEnabled");
-    }
-  }
-
-  /**
-   * Add result to exposure set on the controller.
-   *
-   * @param {UrlbarResult} result UrlbarResult for which to record an exposure.
-   */
-  #addExposure(result) {
-    this.controller.engagementEvent.addExposure(result);
   }
 }
 

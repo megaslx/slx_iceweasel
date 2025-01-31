@@ -1,5 +1,3 @@
-// |jit-test| skip-if: !wasmFunctionReferencesEnabled()
-
 // br_on_null from constant
 wasmValidateText(`(module
   (func

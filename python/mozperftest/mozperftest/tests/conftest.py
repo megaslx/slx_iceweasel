@@ -143,7 +143,6 @@ def ptnb(standarized_data):
 
 @pytest.fixture(scope="function", autouse=True)
 def perftestetl_plugin():
-
     ret = HERE / "data" / "perftestetl_plugin"
 
     os.environ["PERFTESTETL_PLUGIN"] = ret.resolve().as_posix()
@@ -151,3 +150,8 @@ def perftestetl_plugin():
     yield ret
 
     del os.environ["PERFTESTETL_PLUGIN"]
+
+
+@pytest.fixture
+def set_perf_flags(monkeypatch):
+    monkeypatch.setenv("PERF_FLAGS", "gecko-profile")

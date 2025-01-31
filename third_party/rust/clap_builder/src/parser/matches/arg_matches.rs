@@ -8,11 +8,11 @@ use std::slice::Iter;
 // Internal
 #[cfg(debug_assertions)]
 use crate::builder::Str;
-use crate::parser::AnyValue;
-use crate::parser::AnyValueId;
 use crate::parser::MatchedArg;
 use crate::parser::MatchesError;
 use crate::parser::ValueSource;
+use crate::util::AnyValue;
+use crate::util::AnyValueId;
 use crate::util::FlatMap;
 use crate::util::Id;
 use crate::INTERNAL_ERROR_MSG;
@@ -43,7 +43,7 @@ use crate::INTERNAL_ERROR_MSG;
 /// // to get information about the "cfg" argument we created, such as the value supplied we use
 /// // various ArgMatches methods, such as [ArgMatches::get_one]
 /// if let Some(c) = matches.get_one::<String>("cfg") {
-///     println!("Value for -c: {}", c);
+///     println!("Value for -c: {c}");
 /// }
 ///
 /// // The ArgMatches::get_one method returns an Option because the user may not have supplied
@@ -143,10 +143,7 @@ impl ArgMatches {
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn get_count(&self, id: &str) -> u8 {
         *self.get_one::<u8>(id).unwrap_or_else(|| {
-            panic!(
-                "arg `{}`'s `ArgAction` should be `Count` which should provide a default",
-                id
-            )
+            panic!("arg `{id}`'s `ArgAction` should be `Count` which should provide a default")
         })
     }
 
@@ -182,8 +179,7 @@ impl ArgMatches {
             .get_one::<bool>(id)
             .unwrap_or_else(|| {
                 panic!(
-                    "arg `{}`'s `ArgAction` should be one of `SetTrue`, `SetFalse` which should provide a default",
-                    id
+                    "arg `{id}`'s `ArgAction` should be one of `SetTrue`, `SetFalse` which should provide a default"
                 )
             })
     }
@@ -225,7 +221,7 @@ impl ArgMatches {
     pub fn get_many<T: Any + Clone + Send + Sync + 'static>(
         &self,
         id: &str,
-    ) -> Option<ValuesRef<T>> {
+    ) -> Option<ValuesRef<'_, T>> {
         MatchesError::unwrap(id, self.try_get_many(id))
     }
 
@@ -241,7 +237,7 @@ impl ArgMatches {
     ///
     /// # Panics
     ///
-    /// If the argument definition and access mismatch. To handle this case programmatically, see
+    /// If the argument definition and access mismatch (debug builds). To handle this case programmatically, see
     /// [`ArgMatches::try_get_occurrences`].
     ///
     /// # Examples
@@ -263,7 +259,7 @@ impl ArgMatches {
     pub fn get_occurrences<T: Any + Clone + Send + Sync + 'static>(
         &self,
         id: &str,
-    ) -> Option<OccurrencesRef<T>> {
+    ) -> Option<OccurrencesRef<'_, T>> {
         MatchesError::unwrap(id, self.try_get_occurrences(id))
     }
 
@@ -494,7 +490,7 @@ impl ArgMatches {
     ///
     /// # Panics
     ///
-    /// If `id` is not a valid argument or group name.  To handle this case programmatically, see
+    /// If `id` is not a valid argument or group name (debug builds).  To handle this case programmatically, see
     /// [`ArgMatches::try_contains_id`].
     ///
     /// # Examples
@@ -518,7 +514,7 @@ impl ArgMatches {
         MatchesError::unwrap(id, self.try_contains_id(id))
     }
 
-    /// Iterate over [`Arg`][crate::Arg] and [`ArgGroup`][crate::ArgGroup] [`Id`][crate::Id]s via [`ArgMatches::ids`].
+    /// Iterate over [`Arg`][crate::Arg] and [`ArgGroup`][crate::ArgGroup] [`Id`]s via [`ArgMatches::ids`].
     ///
     /// # Examples
     ///
@@ -570,61 +566,11 @@ impl ArgMatches {
         !self.args.is_empty()
     }
 
-    /// Get an [`Iterator`] over groups of values of a specific option.
-    ///
-    /// specifically grouped by the occurrences of the options.
-    ///
-    /// Each group is a `Vec<&str>` containing the arguments passed to a single occurrence
-    /// of the option.
-    ///
-    /// If the option doesn't support multiple occurrences, or there was only a single occurrence,
-    /// the iterator will only contain a single item.
-    ///
-    /// Returns `None` if the option wasn't present.
-    ///
-    /// # Panics
-    ///
-    /// If the value is invalid UTF-8.
-    ///
-    /// If `id` is not a valid argument or group id.
-    ///
-    /// # Examples
-    /// ```rust
-    /// # use clap_builder as clap;
-    /// # use clap::{Command,Arg, ArgAction};
-    /// let m = Command::new("myprog")
-    ///     .arg(Arg::new("exec")
-    ///         .short('x')
-    ///         .num_args(1..)
-    ///         .action(ArgAction::Append)
-    ///         .value_terminator(";"))
-    ///     .get_matches_from(vec![
-    ///         "myprog", "-x", "echo", "hi", ";", "-x", "echo", "bye"]);
-    /// let vals: Vec<Vec<&str>> = m.grouped_values_of("exec").unwrap().collect();
-    /// assert_eq!(vals, [["echo", "hi"], ["echo", "bye"]]);
-    /// ```
-    /// [`Iterator`]: std::iter::Iterator
-    #[cfg(feature = "unstable-grouped")]
-    #[cfg_attr(debug_assertions, track_caller)]
-    #[deprecated(
-        since = "4.1.0",
-        note = "Use get_occurrences or remove_occurrences instead"
-    )]
-    #[allow(deprecated)]
-    pub fn grouped_values_of(&self, id: &str) -> Option<GroupedValues> {
-        let arg = some!(self.get_arg(id));
-        let v = GroupedValues {
-            iter: arg.vals().map(|g| g.iter().map(unwrap_string).collect()),
-            len: arg.vals().len(),
-        };
-        Some(v)
-    }
-
     /// Report where argument value came from
     ///
     /// # Panics
     ///
-    /// If `id` is not a valid argument or group id.
+    /// If `id` is not a valid argument or group id (debug builds).
     ///
     /// # Examples
     ///
@@ -671,7 +617,7 @@ impl ArgMatches {
     ///
     /// # Panics
     ///
-    /// If `id` is not a valid argument or group id.
+    /// If `id` is not a valid argument or group id (debug builds).
     ///
     /// # Examples
     ///
@@ -819,7 +765,7 @@ impl ArgMatches {
     ///
     /// # Panics
     ///
-    /// If `id` is not a valid argument or group id.
+    /// If `id` is not a valid argument or group id (debug builds).
     ///
     /// # Examples
     ///
@@ -978,7 +924,7 @@ impl ArgMatches {
     ///     ("clone",  sub_m) => {}, // clone was used
     ///     ("push",   sub_m) => {}, // push was used
     ///     ("commit", sub_m) => {}, // commit was used
-    ///     (name, _)         => unimplemented!("{}", name),
+    ///     (name, _)         => unimplemented!("{name}"),
     /// }
     /// ```
     ///
@@ -1023,7 +969,7 @@ impl ArgMatches {
     ///
     /// # Panics
     ///
-    /// If `id` is not a valid subcommand.
+    /// If `id` is not a valid subcommand (debug builds).
     ///
     /// # Examples
     ///
@@ -1131,7 +1077,7 @@ impl ArgMatches {
     pub fn try_get_many<T: Any + Clone + Send + Sync + 'static>(
         &self,
         id: &str,
-    ) -> Result<Option<ValuesRef<T>>, MatchesError> {
+    ) -> Result<Option<ValuesRef<'_, T>>, MatchesError> {
         let arg = match ok!(self.try_get_arg_t::<T>(id)) {
             Some(arg) => arg,
             None => return Ok(None),
@@ -1150,7 +1096,7 @@ impl ArgMatches {
     pub fn try_get_occurrences<T: Any + Clone + Send + Sync + 'static>(
         &self,
         id: &str,
-    ) -> Result<Option<OccurrencesRef<T>>, MatchesError> {
+    ) -> Result<Option<OccurrencesRef<'_, T>>, MatchesError> {
         let arg = match ok!(self.try_get_arg_t::<T>(id)) {
             Some(arg) => arg,
             None => return Ok(None),
@@ -1379,7 +1325,7 @@ pub(crate) struct SubCommand {
     pub(crate) matches: ArgMatches,
 }
 
-/// Iterate over [`Arg`][crate::Arg] and [`ArgGroup`][crate::ArgGroup] [`Id`][crate::Id]s via [`ArgMatches::ids`].
+/// Iterate over [`Arg`][crate::Arg] and [`ArgGroup`][crate::ArgGroup] [`Id`]s via [`ArgMatches::ids`].
 ///
 /// # Examples
 ///
@@ -1402,7 +1348,7 @@ pub(crate) struct SubCommand {
 /// ```
 #[derive(Clone, Debug)]
 pub struct IdsRef<'a> {
-    iter: std::slice::Iter<'a, Id>,
+    iter: Iter<'a, Id>,
 }
 
 impl<'a> Iterator for IdsRef<'a> {
@@ -1455,7 +1401,12 @@ impl<T> Iterator for Values<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        if let Some(next) = self.iter.next() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
@@ -1464,7 +1415,12 @@ impl<T> Iterator for Values<T> {
 
 impl<T> DoubleEndedIterator for Values<T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back()
+        if let Some(next) = self.iter.next_back() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
 }
 
@@ -1513,7 +1469,12 @@ impl<'a, T: 'a> Iterator for ValuesRef<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        if let Some(next) = self.iter.next() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
@@ -1522,7 +1483,12 @@ impl<'a, T: 'a> Iterator for ValuesRef<'a, T> {
 
 impl<'a, T: 'a> DoubleEndedIterator for ValuesRef<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back()
+        if let Some(next) = self.iter.next_back() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
 }
 
@@ -1576,7 +1542,12 @@ impl<'a> Iterator for RawValues<'a> {
     type Item = &'a OsStr;
 
     fn next(&mut self) -> Option<&'a OsStr> {
-        self.iter.next()
+        if let Some(next) = self.iter.next() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
@@ -1585,7 +1556,12 @@ impl<'a> Iterator for RawValues<'a> {
 
 impl<'a> DoubleEndedIterator for RawValues<'a> {
     fn next_back(&mut self) -> Option<&'a OsStr> {
-        self.iter.next_back()
+        if let Some(next) = self.iter.next_back() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
 }
 
@@ -1609,7 +1585,7 @@ impl Default for RawValues<'_> {
 
 #[derive(Clone, Debug)]
 #[deprecated(since = "4.1.0", note = "Use Occurrences instead")]
-pub struct GroupedValues<'a> {
+pub(crate) struct GroupedValues<'a> {
     #[allow(clippy::type_complexity)]
     iter: Map<Iter<'a, Vec<AnyValue>>, fn(&Vec<AnyValue>) -> Vec<&str>>,
     len: usize,
@@ -1620,7 +1596,12 @@ impl<'a> Iterator for GroupedValues<'a> {
     type Item = Vec<&'a str>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        if let Some(next) = self.iter.next() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
@@ -1630,7 +1611,12 @@ impl<'a> Iterator for GroupedValues<'a> {
 #[allow(deprecated)]
 impl<'a> DoubleEndedIterator for GroupedValues<'a> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back()
+        if let Some(next) = self.iter.next_back() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
 }
 
@@ -1880,7 +1866,12 @@ impl<'a> Iterator for Indices<'a> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
-        self.iter.next()
+        if let Some(next) = self.iter.next() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
@@ -1889,7 +1880,12 @@ impl<'a> Iterator for Indices<'a> {
 
 impl<'a> DoubleEndedIterator for Indices<'a> {
     fn next_back(&mut self) -> Option<usize> {
-        self.iter.next_back()
+        if let Some(next) = self.iter.next_back() {
+            self.len -= 1;
+            Some(next)
+        } else {
+            None
+        }
     }
 }
 
@@ -1903,18 +1899,6 @@ impl<'a> Default for Indices<'a> {
         Indices {
             iter: EMPTY[..].iter().cloned(),
             len: 0,
-        }
-    }
-}
-
-#[cfg_attr(debug_assertions, track_caller)]
-#[inline]
-#[cfg(feature = "unstable-grouped")]
-fn unwrap_string(value: &AnyValue) -> &str {
-    match value.downcast_ref::<String>() {
-        Some(value) => value,
-        None => {
-            panic!("Must use `_os` lookups with `Arg::allow_invalid_utf8`",)
         }
     }
 }
@@ -1942,13 +1926,13 @@ mod tests {
 
     #[test]
     fn test_default_raw_values() {
-        let mut values: RawValues = Default::default();
+        let mut values: RawValues<'_> = Default::default();
         assert_eq!(values.next(), None);
     }
 
     #[test]
     fn test_default_indices() {
-        let mut indices: Indices = Indices::default();
+        let mut indices: Indices<'_> = Indices::default();
         assert_eq!(indices.next(), None);
     }
 
@@ -1988,7 +1972,7 @@ mod tests {
             )
             .try_get_matches_from(["test", "one"])
             .unwrap()
-            .get_many::<std::ffi::OsString>("POTATO")
+            .get_many::<OsString>("POTATO")
             .expect("present")
             .count();
         assert_eq!(l, 1);
@@ -2009,5 +1993,38 @@ mod tests {
             .expect("present")
             .len();
         assert_eq!(l, 1);
+    }
+
+    #[test]
+    fn rev_iter() {
+        let mut matches = crate::Command::new("myprog")
+            .arg(crate::Arg::new("a").short('a').action(ArgAction::Append))
+            .arg(crate::Arg::new("b").short('b').action(ArgAction::Append))
+            .try_get_matches_from(vec!["myprog", "-a1", "-b1", "-b3"])
+            .unwrap();
+
+        let a_index = matches
+            .indices_of("a")
+            .expect("missing aopt indices")
+            .collect::<Vec<_>>();
+        dbg!(&a_index);
+        let a_value = matches
+            .remove_many::<String>("a")
+            .expect("missing aopt values");
+        dbg!(&a_value);
+        let a = a_index.into_iter().zip(a_value).rev().collect::<Vec<_>>();
+        dbg!(a);
+
+        let b_index = matches
+            .indices_of("b")
+            .expect("missing aopt indices")
+            .collect::<Vec<_>>();
+        dbg!(&b_index);
+        let b_value = matches
+            .remove_many::<String>("b")
+            .expect("missing aopt values");
+        dbg!(&b_value);
+        let b = b_index.into_iter().zip(b_value).rev().collect::<Vec<_>>();
+        dbg!(b);
     }
 }

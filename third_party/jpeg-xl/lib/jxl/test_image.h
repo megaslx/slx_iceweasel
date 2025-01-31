@@ -8,14 +8,14 @@
 
 #include <jxl/codestream_header.h>
 #include <jxl/types.h>
-#include <stddef.h>
-#include <stdint.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "lib/extras/packed_image.h"
-#include "lib/jxl/base/padded_bytes.h"
+#include "lib/jxl/base/status.h"
 
 namespace jxl {
 namespace test {
@@ -32,13 +32,13 @@ class TestImage {
 
   extras::PackedPixelFile& ppf() { return ppf_; }
 
-  TestImage& DecodeFromBytes(const PaddedBytes& bytes);
+  Status DecodeFromBytes(const std::vector<uint8_t>& bytes);
 
   TestImage& ClearMetadata();
 
-  TestImage& SetDimensions(size_t xsize, size_t ysize);
+  Status SetDimensions(size_t xsize, size_t ysize);
 
-  TestImage& SetChannels(size_t num_channels);
+  Status SetChannels(size_t num_channels);
 
   // Sets the same bit depth on color, alpha and all extra channels.
   TestImage& SetAllBitDepths(uint32_t bits_per_sample,
@@ -48,9 +48,11 @@ class TestImage {
 
   TestImage& SetEndianness(JxlEndianness endianness);
 
-  TestImage& SetColorEncoding(const std::string& description);
+  TestImage& SetRowAlignment(size_t align);
 
-  TestImage& CoalesceGIFAnimationWithAlpha();
+  Status SetColorEncoding(const std::string& description);
+
+  Status CoalesceGIFAnimationWithAlpha();
 
   class Frame {
    public:
@@ -59,7 +61,7 @@ class TestImage {
     void ZeroFill();
     void RandomFill(uint16_t seed = 177);
 
-    void SetValue(size_t y, size_t x, size_t c, float val);
+    Status SetValue(size_t y, size_t x, size_t c, float val);
 
    private:
     extras::PackedPixelFile& ppf() const { return parent_->ppf(); }
@@ -73,9 +75,7 @@ class TestImage {
     size_t index_;
   };
 
-  Frame AddFrame();
-
-  Frame AddPreview(size_t xsize, size_t ysize);
+  StatusOr<Frame> AddFrame();
 
  private:
   extras::PackedPixelFile ppf_;

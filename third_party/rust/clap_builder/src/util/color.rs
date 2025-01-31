@@ -8,10 +8,6 @@ pub enum ColorChoice {
     ///
     /// **NOTE:** This is the default behavior of `clap`.
     ///
-    /// # Platform Specific
-    ///
-    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms).
-    ///
     /// # Examples
     ///
     /// ```rust
@@ -26,10 +22,6 @@ pub enum ColorChoice {
     Auto,
 
     /// Enables colored output regardless of whether or not the output is going to a terminal/TTY.
-    ///
-    /// # Platform Specific
-    ///
-    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms).
     ///
     /// # Examples
     ///
@@ -46,10 +38,6 @@ pub enum ColorChoice {
 
     /// Disables colored output no matter if the output is going to a terminal/TTY, or not.
     ///
-    /// # Platform Specific
-    ///
-    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms)
-    ///
     /// # Examples
     ///
     /// ```rust
@@ -62,6 +50,15 @@ pub enum ColorChoice {
     /// # }
     /// ```
     Never,
+}
+
+impl ColorChoice {
+    /// Report all `possible_values`
+    pub fn possible_values() -> impl Iterator<Item = PossibleValue> {
+        Self::value_variants()
+            .iter()
+            .filter_map(ValueEnum::to_possible_value)
+    }
 }
 
 impl Default for ColorChoice {
@@ -99,11 +96,9 @@ impl ValueEnum for ColorChoice {
 
     fn to_possible_value(&self) -> Option<PossibleValue> {
         Some(match self {
-            Self::Auto => {
-                PossibleValue::new("auto").help("Use colored output if writing to a terminal/TTY")
-            }
-            Self::Always => PossibleValue::new("always").help("Always use colored output"),
-            Self::Never => PossibleValue::new("never").help("Never use colored output"),
+            Self::Auto => PossibleValue::new("auto"),
+            Self::Always => PossibleValue::new("always"),
+            Self::Never => PossibleValue::new("never"),
         })
     }
 }

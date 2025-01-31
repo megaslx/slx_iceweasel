@@ -6,7 +6,6 @@ include protocol PBackgroundDataBridge;
 include protocol PBackgroundIDBFactory;
 include protocol PBackgroundIndexedDBUtils;
 include protocol PBackgroundSDBConnection;
-include protocol PBackgroundLSDatabase;
 include protocol PBackgroundLSObserver;
 include protocol PBackgroundLSRequest;
 include protocol PBackgroundLSSimpleRequest;
@@ -20,16 +19,14 @@ include protocol PCache;
 include protocol PCacheStorage;
 include protocol PCacheStreamControl;
 include protocol PClientManager;
+include protocol PCookieStore;
 include protocol PEndpointForReport;
 include protocol PFileSystemManager;
 include protocol PFileSystemRequest;
 include protocol PGamepadEventChannel;
 include protocol PGamepadTestChannel;
 include protocol PHttpBackgroundChannel;
-include protocol PIPCClientCerts;
 include protocol PIdleScheduler;
-include protocol PMediaTransport;
-include protocol PRemoteWorker;
 include protocol PRemoteWorkerController;
 include protocol PRemoteWorkerService;
 include protocol PSharedWorker;
@@ -40,20 +37,19 @@ include protocol PCameras;
 include protocol PLockManager;
 include protocol PMIDIManager;
 include protocol PMIDIPort;
+include protocol PMLSTransaction;
 include protocol PQuota;
-include protocol PSelectTLSClientAuthCert;
 include protocol PServiceWorker;
 include protocol PServiceWorkerContainer;
 include protocol PServiceWorkerManager;
 include protocol PServiceWorkerRegistration;
 include protocol PWebAuthnTransaction;
 include protocol PUDPSocket;
-include protocol PVerifySSLServerCert;
 include protocol PVsync;
 include protocol PRemoteDecoderManager;
-include protocol PWebSocketConnection;
 include protocol PWebTransport;
 include protocol PFetch;
+include protocol PNotification;
 
 include ClientIPCTypes;
 include DOMTypes;
@@ -65,7 +61,6 @@ include PBackgroundSharedTypes;
 include PBackgroundIDBSharedTypes;
 include PFileSystemParams;
 include ProtocolTypes;
-include PSMIPCTypes;
 include RemoteWorkerTypes;
 include MIDITypes;
 
@@ -81,17 +76,17 @@ using class mozilla::dom::SSCacheCopy from "mozilla/dom/PBackgroundSessionStorag
 
 using mozilla::RemoteDecodeIn from "mozilla/RemoteDecoderManagerChild.h";
 
+using mozilla::camera::CamerasAccessStatus from "mozilla/media/CamerasTypes.h";
+
 namespace mozilla {
 namespace ipc {
 
-[NeedsOtherPid, ChildImpl=virtual, ParentImpl=virtual]
+[NeedsOtherPid, ChildImpl=virtual, ParentImpl=virtual, ChildProc=anydom]
 sync protocol PBackground
 {
-  manages PBackgroundDataBridge;
   manages PBackgroundIDBFactory;
   manages PBackgroundIndexedDBUtils;
   manages PBackgroundSDBConnection;
-  manages PBackgroundLSDatabase;
   manages PBackgroundLSObserver;
   manages PBackgroundLSRequest;
   manages PBackgroundLSSimpleRequest;
@@ -105,33 +100,27 @@ sync protocol PBackground
   manages PCacheStorage;
   manages PCacheStreamControl;
   manages PClientManager;
+  manages PCookieStore;
   manages PEndpointForReport;
   manages PFileSystemRequest;
   manages PGamepadEventChannel;
   manages PGamepadTestChannel;
   manages PHttpBackgroundChannel;
-  manages PIPCClientCerts;
   manages PIdleScheduler;
   manages PLockManager;
-  manages PMediaTransport;
-  manages PRemoteWorker;
   manages PRemoteWorkerController;
-  manages PRemoteWorkerService;
   manages PSharedWorker;
   manages PTemporaryIPCBlob;
   manages PFileCreator;
   manages PMessagePort;
   manages PCameras;
   manages PQuota;
-  manages PSelectTLSClientAuthCert;
   manages PServiceWorker;
   manages PServiceWorkerContainer;
   manages PServiceWorkerManager;
   manages PServiceWorkerRegistration;
   manages PWebAuthnTransaction;
-  manages PWebSocketConnection;
   manages PUDPSocket;
-  manages PVerifySSLServerCert;
   manages PVsync;
   manages PFetch;
 
@@ -139,9 +128,8 @@ parent:
   // Only called at startup during mochitests to check the basic infrastructure.
   async PBackgroundTest(nsCString testArg);
 
-  async PBackgroundDataBridge(uint64_t channelID);
-
-  async PBackgroundIDBFactory(LoggingInfo loggingInfo);
+  async PBackgroundIDBFactory(LoggingInfo loggingInfo,
+                              nsCString systemLocale);
 
   async PBackgroundIndexedDBUtils();
 
@@ -150,10 +138,6 @@ parent:
 
   async PBackgroundSDBConnection(PersistenceType persistenceType,
                                  PrincipalInfo principalInfo);
-
-  async PBackgroundLSDatabase(PrincipalInfo principalInfo,
-                              uint32_t privateBrowsingId,
-                              uint64_t datastoreId);
 
   async PBackgroundLSObserver(uint64_t observerId);
 
@@ -200,9 +184,24 @@ parent:
       bool aDedicated,
       bool aRequireUnreliable,
       uint32_t aCongestionControl,
-      /* Sequence<WebTransportHash>* aServerCertHashes, */
+      WebTransportHash[] aServerCertHashes,
       Endpoint<PWebTransportParent> aParentEndpoint)
       returns(nsresult rv, uint8_t aReliability); // Actually WebTransportReliabityMode enum
+
+
+  // XXX(krosylight): This should ultimately use nsID instead of scope, see bug 1881812.
+  /**
+   * Finish the setup of a new PNotification top level protocol.
+   */
+  async CreateNotificationParent(
+    Endpoint<PNotificationParent> aParentEndpoint,
+    nsIPrincipal aPrincipal,
+    nsIPrincipal aEffectiveStoragePrincipal,
+    bool aIsSecureContext,
+    nsString aId,
+    nsString aScope,
+    IPCNotificationOptions aOptions
+  ) returns (bool rv);
 
   async PVsync();
 
@@ -210,6 +209,8 @@ parent:
 
   async PUDPSocket(PrincipalInfo? pInfo, nsCString filter);
   async PBroadcastChannel(PrincipalInfo pInfo, nsCString origin, nsString channel);
+
+  async PCookieStore();
 
   async PServiceWorkerManager();
 
@@ -264,6 +265,8 @@ parent:
                        MIDIPortInfo portInfo, bool sysexEnabled);
   async HasMIDIDevice() returns (bool hasDevice);
 
+  async CreateMLSTransaction(Endpoint<PMLSTransactionParent> aEndpoint, nsIPrincipal aPrincipal);
+
   // This method is used to propagate storage activities from the child actor
   // to the parent actor. See StorageActivityService.
   async StorageActivity(PrincipalInfo principalInfo);
@@ -272,11 +275,14 @@ parent:
 
   async PRemoteWorkerController(RemoteWorkerData aData);
 
-  async PRemoteWorkerService();
-
   async PServiceWorkerContainer();
 
-  async PServiceWorkerRegistration(IPCServiceWorkerRegistrationDescriptor aDescriptor);
+  // Allows a global to listen for updates to a ServiceWorkerRegistration given
+  // receipt of a (static) snapshot via the descriptor.  `aForClient` identifies
+  // the global subscribing; in the future this will be mooted by Bug 1853706
+  // having this actor managed by an actor explicitly tied to a global.
+  async PServiceWorkerRegistration(IPCServiceWorkerRegistrationDescriptor aDescriptor,
+                                   IPCClientInfo aForClient);
 
   async PEndpointForReport(nsString aGroupName, PrincipalInfo aPrincipalInfo);
 
@@ -285,47 +291,21 @@ parent:
 
   async PIdleScheduler();
 
-  async PMediaTransport();
-
-  async PSelectTLSClientAuthCert(nsCString aHostName,
-                                 OriginAttributes aOriginAttributes,
-                                 int32_t aPort,
-                                 uint32_t aProviderFlags,
-                                 uint32_t aProviderTlsFlags,
-                                 ByteArray aServerCertBytes,
-                                 ByteArray[] aCANames);
-
-  async PVerifySSLServerCert(ByteArray[] aPeerCertChain,
-                             nsCString aHostName,
-                             int32_t aPort,
-                             OriginAttributes aOriginAttributes,
-                             ByteArray? aStapledOCSPResponse,
-                             ByteArray? aSctsFromTLSExtension,
-                             DelegatedCredentialInfoArg? aDcInfo,
-                             uint32_t aProviderFlags,
-                             uint32_t aCertVerifierFlags);
-
   async EnsureRDDProcessAndCreateBridge()
       returns (nsresult rv, Endpoint<PRemoteDecoderManagerChild> aEndpoint);
 
   async EnsureUtilityProcessAndCreateBridge(RemoteDecodeIn aLocation)
       returns (nsresult rv, Endpoint<PRemoteDecoderManagerChild> aEndpoint);
 
-  async PWebSocketConnection(uint32_t aListenerId);
-
-  async PLockManager(nsIPrincipal aPrincipalInfo, nsID aClientId);
-
-  async PIPCClientCerts();
+  async PLockManager(nsIPrincipal aPrincipalInfo, nsID? aClientId);
 
   async PFetch();
 
-  async RequestCameraAccess() returns (nsresult rv);
+  async RequestCameraAccess(bool aAllowPermissionRequest) returns (CamerasAccessStatus rv);
 
 child:
   async PCache();
   async PCacheStreamControl();
-
-  async PRemoteWorker(RemoteWorkerData data);
 };
 
 } // namespace ipc

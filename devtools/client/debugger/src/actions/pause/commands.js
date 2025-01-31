@@ -7,23 +7,26 @@ import {
   getCurrentThread,
   getIsCurrentThreadPaused,
   getIsPaused,
-} from "../../selectors";
+} from "../../selectors/index";
 import { PROMISE } from "../utils/middleware/promise";
 import { evaluateExpressions } from "../expressions";
-import { selectLocation } from "../sources";
+import { selectLocation } from "../sources/index";
 import { fetchScopes } from "./fetchScopes";
 import { fetchFrames } from "./fetchFrames";
 import { recordEvent } from "../../utils/telemetry";
 import { validateFrame } from "../../utils/context";
 
 export function selectThread(thread) {
-  return async ({ dispatch, getState, client }) => {
+  return async ({ dispatch, getState }) => {
     if (getCurrentThread(getState()) === thread) {
       return;
     }
     dispatch({ type: "SELECT_THREAD", thread });
+    if (getCurrentThread(getState()) !== thread) {
+      throw new Error("The thread wasn't selected");
+    }
 
-    const selectedFrame = getSelectedFrame(getState(), thread);
+    const selectedFrame = getSelectedFrame(getState());
 
     const serverRequests = [];
     // Update the watched expressions as we may never have evaluated them against this thread
@@ -40,7 +43,7 @@ export function selectThread(thread) {
       serverRequests.push(dispatch(selectLocation(selectedFrame.location)));
       serverRequests.push(dispatch(fetchFrames(thread)));
 
-      serverRequests.push(dispatch(fetchScopes(selectedFrame)));
+      serverRequests.push(dispatch(fetchScopes()));
     }
 
     await Promise.all(serverRequests);
@@ -60,7 +63,7 @@ export function command(type) {
     // For now, all commands are by default against the currently selected thread
     const thread = getCurrentThread(getState());
 
-    const frame = getSelectedFrame(getState(), thread);
+    const frame = getSelectedFrame(getState());
 
     return dispatch({
       type: "COMMAND",

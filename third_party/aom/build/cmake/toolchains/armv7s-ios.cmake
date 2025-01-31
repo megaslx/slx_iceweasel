@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, Alliance for Open Media. All rights reserved
+# Copyright (c) 2017, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and the
 # Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License was
@@ -28,4 +28,4 @@ include("${CMAKE_CURRENT_LIST_DIR}/arm-ios-common.cmake")
 set(AOM_NEON_INTRIN_FLAG "")
 
 # No runtime cpu detect for armv7s-ios.
-set(CONFIG_RUNTIME_CPU_DETECT 0 CACHE NUMBER "")
+set(CONFIG_RUNTIME_CPU_DETECT 0 CACHE STRING "")

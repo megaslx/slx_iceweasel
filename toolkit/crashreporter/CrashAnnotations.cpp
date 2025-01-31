@@ -8,31 +8,50 @@
 #include <cstring>
 #include <iterator>
 
+#include "nsString.h"
+
 using std::begin;
 using std::end;
 using std::find_if;
 
 namespace CrashReporter {
 
-bool AnnotationFromString(Annotation& aResult, const char* aValue) {
-  auto elem = find_if(
+using mozilla::Nothing;
+using mozilla::Some;
+
+Maybe<Annotation> AnnotationFromString(const nsACString& aValue) {
+  const auto* elem = find_if(
       begin(kAnnotationStrings), end(kAnnotationStrings),
-      [&aValue](const char* aString) { return strcmp(aString, aValue) == 0; });
+      [&aValue](const char* aString) { return aValue.Equals(aString); });
 
   if (elem == end(kAnnotationStrings)) {
-    return false;
+    return Nothing();
   }
 
-  aResult = static_cast<Annotation>(elem - begin(kAnnotationStrings));
-  return true;
+  return Some(static_cast<Annotation>(elem - begin(kAnnotationStrings)));
 }
 
-bool IsAnnotationAllowlistedForPing(Annotation aAnnotation) {
-  auto elem = find_if(
-      begin(kCrashPingAllowlist), end(kCrashPingAllowlist),
+bool IsAnnotationAllowedForPing(Annotation aAnnotation) {
+  const auto* elem = find_if(
+      begin(kCrashPingAllowedList), end(kCrashPingAllowedList),
       [&aAnnotation](Annotation aElement) { return aElement == aAnnotation; });
 
-  return elem != end(kCrashPingAllowlist);
+  return elem != end(kCrashPingAllowedList);
+}
+
+bool ShouldIncludeAnnotation(Annotation aAnnotation, const char* aValue) {
+  const auto* elem = find_if(begin(kSkipIfList), end(kSkipIfList),
+                             [&aAnnotation](AnnotationSkipValue aElement) {
+                               return aElement.annotation == aAnnotation;
+                             });
+
+  if (elem != end(kSkipIfList)) {
+    if (strcmp(aValue, elem->value) == 0) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 }  // namespace CrashReporter

@@ -187,6 +187,7 @@ var gTests = [
         `webRTC-selectSpeaker-richlistbox`
       );
       is(selectorList.selectedIndex, 2, "pre-selected index");
+      ok(selectorList.contains(document.activeElement), "richlistbox focus");
       checkDeviceSelectors(["speaker"]);
       await allowPrompt();
 
@@ -219,7 +220,7 @@ var gTests = [
         gBrowser.selectedBrowser.browsingContext,
         "getUserMedia:response:allow",
         1,
-        (aSubject, aTopic, aData) => {
+        aSubject => {
           const device = aSubject
             .QueryInterface(Ci.nsIArrayExtensions)
             .GetElementAt(0).wrappedJSObject;

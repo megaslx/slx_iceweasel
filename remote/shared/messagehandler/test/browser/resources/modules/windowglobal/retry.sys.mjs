@@ -20,6 +20,8 @@ class RetryModule extends Module {
    * Commands
    */
 
+  async _internalForward() {}
+
   // Resolves only if called while on the example.net domain.
   async blockedOnNetDomain(params) {
     // Note: we do not store a call counter here, because this is used for a
@@ -27,7 +29,7 @@ class RetryModule extends Module {
     // processes.
     const uri = this.messageHandler.window.document.baseURI;
     if (!uri.includes("example.net")) {
-      await new Promise(r => {});
+      await new Promise(() => {});
     }
 
     return { ...params };
@@ -37,7 +39,7 @@ class RetryModule extends Module {
   async blockedOneTime(params) {
     callsToBlockedOneTime++;
     if (callsToBlockedOneTime < 2) {
-      await new Promise(r => {});
+      await new Promise(() => {});
     }
 
     // Return:
@@ -51,7 +53,7 @@ class RetryModule extends Module {
   async blockedTenTimes(params) {
     callsToBlockedTenTimes++;
     if (callsToBlockedTenTimes < 11) {
-      await new Promise(r => {});
+      await new Promise(() => {});
     }
 
     // Return:
@@ -65,7 +67,7 @@ class RetryModule extends Module {
   async blockedElevenTimes(params) {
     callsToBlockedElevenTimes++;
     if (callsToBlockedElevenTimes < 12) {
-      await new Promise(r => {});
+      await new Promise(() => {});
     }
 
     // Return:

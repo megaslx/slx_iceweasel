@@ -80,18 +80,16 @@ async function checkForTabToSearchResult(engineName, isOnboarding) {
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.tabToSearch.onboard.interactionsLeft", 0]],
+    set: [
+      ["browser.urlbar.tabToSearch.onboard.interactionsLeft", 0],
+      ["browser.urlbar.scotchBonnet.enableOverride", false],
+    ],
   });
 
   await SearchTestUtils.installSearchExtension({
     name: ENGINE_NAME,
     search_url: `https://${ENGINE_DOMAIN}/`,
   });
-
-  // Reset the enginesShown sets in case a previous test showed a tab-to-search
-  // result but did not end its engagement.
-  UrlbarProviderTabToSearch.enginesShown.regular.clear();
-  UrlbarProviderTabToSearch.enginesShown.onboarding.clear();
 
   // Enable local telemetry recording for the duration of the tests.
   let oldCanRecord = Services.telemetry.canRecordExtended;
@@ -109,6 +107,7 @@ add_task(async function test() {
     for (let i = 0; i < 3; i++) {
       await PlacesTestUtils.addVisits([`https://${ENGINE_DOMAIN}/`]);
     }
+    await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
 
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
@@ -196,6 +195,7 @@ async function impressions_test(isOnboarding) {
       await PlacesTestUtils.addVisits([`https://${firstEngineHost}-2.com`]);
       await PlacesTestUtils.addVisits([`https://${ENGINE_DOMAIN}/`]);
     }
+    await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
 
     // First do multiple searches for substrings of firstEngineHost. The view
     // should show the same tab-to-search onboarding result the entire time, so
@@ -255,7 +255,7 @@ async function impressions_test(isOnboarding) {
       scalars,
       "urlbar.tips",
       isOnboarding ? "tabtosearch_onboard-shown" : "tabtosearch-shown",
-      3
+      2
     );
     TelemetryTestUtils.assertKeyedScalar(
       scalars,
@@ -263,7 +263,7 @@ async function impressions_test(isOnboarding) {
         ? "urlbar.tabtosearch.impressions_onboarding"
         : "urlbar.tabtosearch.impressions",
       "other",
-      3
+      2
     );
 
     info("Make a typo and return to autofill. Do not record impression.");
@@ -295,7 +295,7 @@ async function impressions_test(isOnboarding) {
       scalars,
       "urlbar.tips",
       isOnboarding ? "tabtosearch_onboard-shown" : "tabtosearch-shown",
-      4
+      3
     );
     TelemetryTestUtils.assertKeyedScalar(
       scalars,
@@ -303,7 +303,7 @@ async function impressions_test(isOnboarding) {
         ? "urlbar.tabtosearch.impressions_onboarding"
         : "urlbar.tabtosearch.impressions",
       "other",
-      4
+      3
     );
 
     info(
@@ -330,7 +330,7 @@ async function impressions_test(isOnboarding) {
       scalars,
       "urlbar.tips",
       isOnboarding ? "tabtosearch_onboard-shown" : "tabtosearch-shown",
-      5
+      4
     );
     TelemetryTestUtils.assertKeyedScalar(
       scalars,
@@ -339,11 +339,11 @@ async function impressions_test(isOnboarding) {
         : "urlbar.tabtosearch.impressions",
       // "other" is recorded as the engine name because we're not using a built-in engine.
       "other",
-      5
+      4
     );
 
-    // See javadoc for UrlbarProviderTabToSearch.onEngagement for discussion
-    // about retained results.
+    // See javadoc for UrlbarProviderTabToSearch.onEngagement for
+    // discussion about retained results.
     info("Reopen the result set with retained results. Record impression.");
     await UrlbarTestUtils.promisePopupOpen(window, () => {
       EventUtils.synthesizeMouseAtCenter(gURLBar.inputField, {});
@@ -355,7 +355,7 @@ async function impressions_test(isOnboarding) {
       scalars,
       "urlbar.tips",
       isOnboarding ? "tabtosearch_onboard-shown" : "tabtosearch-shown",
-      6
+      5
     );
     TelemetryTestUtils.assertKeyedScalar(
       scalars,
@@ -363,7 +363,7 @@ async function impressions_test(isOnboarding) {
         ? "urlbar.tabtosearch.impressions_onboarding"
         : "urlbar.tabtosearch.impressions",
       "other",
-      6
+      5
     );
 
     info(
@@ -399,7 +399,7 @@ async function impressions_test(isOnboarding) {
       scalars,
       "urlbar.tips",
       isOnboarding ? "tabtosearch_onboard-shown" : "tabtosearch-shown",
-      8
+      7
     );
     TelemetryTestUtils.assertKeyedScalar(
       scalars,
@@ -407,7 +407,7 @@ async function impressions_test(isOnboarding) {
         ? "urlbar.tabtosearch.impressions_onboarding"
         : "urlbar.tabtosearch.impressions",
       "other",
-      8
+      7
     );
 
     await PlacesUtils.history.clear();

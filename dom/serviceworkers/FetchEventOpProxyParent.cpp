@@ -15,14 +15,16 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/Result.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/Try.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/InternalResponse.h"
 #include "mozilla/dom/PRemoteWorkerParent.h"
 #include "mozilla/dom/PRemoteWorkerControllerParent.h"
+#include "mozilla/dom/PRemoteWorkerServiceParent.h"
 #include "mozilla/dom/FetchEventOpParent.h"
+#include "mozilla/ipc/PBackgroundParent.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/RemoteLazyInputStreamStorage.h"
@@ -121,8 +123,8 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
                                                       Nothing(), Nothing());
   if (aArgs.preloadResponse().isSome()) {
     // Convert the preload response to ParentToChildInternalResponse.
-    copyArgs.preloadResponse() = Some(ToParentToChild(
-        aArgs.preloadResponse().ref(), WrapNotNull(aManager->Manager())));
+    copyArgs.preloadResponse() =
+        Some(ToParentToChild(aArgs.preloadResponse().ref()));
   }
 
   if (aArgs.preloadResponseTiming().isSome()) {
@@ -133,7 +135,7 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
     copyArgs.preloadResponseEndArgs() = aArgs.preloadResponseEndArgs();
   }
 
-  FetchEventOpProxyParent* actor =
+  RefPtr<FetchEventOpProxyParent> actor =
       new FetchEventOpProxyParent(std::move(aReal), std::move(aPromise));
 
   // As long as the fetch event was pending, the FetchEventOpParent was
@@ -145,8 +147,7 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
   auto [preloadResponse, preloadResponseEndArgs] =
       actor->mReal->OnStart(WrapNotNull(actor));
   if (copyArgs.preloadResponse().isNothing() && preloadResponse.isSome()) {
-    copyArgs.preloadResponse() = Some(ToParentToChild(
-        preloadResponse.ref(), WrapNotNull(aManager->Manager())));
+    copyArgs.preloadResponse() = Some(ToParentToChild(preloadResponse.ref()));
   }
   if (copyArgs.preloadResponseEndArgs().isNothing() &&
       preloadResponseEndArgs.isSome()) {

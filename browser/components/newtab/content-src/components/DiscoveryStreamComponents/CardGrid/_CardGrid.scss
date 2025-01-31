@@ -3,18 +3,10 @@ $col4-header-font-size: 14;
 
 .ds-onboarding-container,
 .ds-card-grid .ds-card {
-  @include dark-theme-only {
-    background: none;
-  }
-
-  background: $white;
+  background: var(--newtab-background-color-secondary);
   border-radius: 4px;
 
   &:not(.placeholder) {
-    @include dark-theme-only {
-      background: var(--newtab-background-color-secondary);
-    }
-
     border-radius: $border-radius-new;
     box-shadow: $shadow-card;
 
@@ -111,12 +103,7 @@ $col4-header-font-size: 14;
   }
 
   .ds-onboarding-graphic {
-    background-image: url('chrome://activity-stream/content/data/content/assets/pocket-onboarding.avif');
-
-    @media (min-resolution: 2x) {
-      background-image: url('chrome://activity-stream/content/data/content/assets/pocket-onboarding@2x.avif');
-    }
-
+    background-image: image-set(url('chrome://activity-stream/content/data/content/assets/pocket-onboarding.avif'), url('chrome://activity-stream/content/data/content/assets/pocket-onboarding@2x.avif') 2x);
     border-radius: 8px;
     background-size: contain;
     background-repeat: no-repeat;
@@ -141,6 +128,12 @@ $col4-header-font-size: 14;
 
   &.ds-card-grid-compact {
     grid-gap: 20px;
+  }
+
+  &.ad-sizing-variant-a,
+  &.ad-sizing-variant-b {
+    row-gap: 24px;
+    column-gap: 18px;
   }
 
   &.ds-card-grid-recent-saves {
@@ -284,7 +277,7 @@ $col4-header-font-size: 14;
         grid-template-columns: repeat(3, 1fr);
       }
 
-      @media (max-height: 1065px) {
+      @media (height <= 1065px) {
         .excerpt {
           display: none;
         }
@@ -294,7 +287,7 @@ $col4-header-font-size: 14;
         @include small-cards;
       }
 
-      @media (min-width: $break-point-widest) and (max-height: 964px) {
+      @media (min-width: $break-point-widest) and (height <= 964px) {
         @include small-cards;
 
         grid-template-columns: repeat(4, 1fr);

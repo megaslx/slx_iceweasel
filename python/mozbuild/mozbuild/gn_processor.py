@@ -10,6 +10,7 @@ import sys
 import tempfile
 from collections import defaultdict, deque
 from copy import deepcopy
+from importlib import util
 from pathlib import Path
 from shutil import which
 
@@ -17,8 +18,8 @@ import mozpack.path as mozpath
 import six
 
 from mozbuild.bootstrap import bootstrap_toolchain
+from mozbuild.dirutils import mkdir
 from mozbuild.frontend.sandbox import alphabetical_sorted
-from mozbuild.util import mkdir
 
 license_header = """# This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -194,7 +195,7 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
     mozbuild_args = {
         "MOZ_DEBUG": "1" if input_vars.get("is_debug") else None,
         "OS_TARGET": oses[input_vars["target_os"]],
-        "CPU_ARCH": cpus.get(input_vars["target_cpu"], input_vars["target_cpu"]),
+        "TARGET_CPU": cpus.get(input_vars["target_cpu"], input_vars["target_cpu"]),
     }
     if "use_x11" in input_vars:
         mozbuild_args["MOZ_X11"] = "1" if input_vars["use_x11"] else None
@@ -297,7 +298,6 @@ def process_gn_config(
 
     # Process all targets from the given gn project and its dependencies.
     for target_fullname, spec in six.iteritems(targets):
-
         target_path, target_name = target_info(target_fullname)
         context_attrs = {}
 
@@ -383,6 +383,8 @@ def process_gn_config(
                             file=sys.stderr,
                         )
                     continue
+            if include in context_attrs["LOCAL_INCLUDES"]:
+                continue
             context_attrs["LOCAL_INCLUDES"] += [include]
 
         context_attrs["ASFLAGS"] = spec.get("asflags_mozilla", [])
@@ -396,7 +398,7 @@ def process_gn_config(
             ".mm": ("CMMFLAGS", ["cflags", "cflags_objcc"]),
         }
         variables = (suffix_map[e] for e in extensions if e in suffix_map)
-        for (var, flag_keys) in variables:
+        for var, flag_keys in variables:
             flags = [
                 _f for _k in flag_keys for _f in spec.get(_k, []) if _f in mozilla_flags
             ]
@@ -522,7 +524,6 @@ def write_mozbuild(
     mozilla_flags,
     write_mozbuild_variables,
 ):
-
     all_mozbuild_results = []
 
     for gn_config in gn_configs:
@@ -564,6 +565,16 @@ def write_mozbuild(
                     mb.write('    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]\n')
             except KeyError:
                 pass
+            try:
+                if (
+                    relsrcdir
+                    in write_mozbuild_variables["INCLUDE_SYSTEM_LIBVPX_HANDLING"]
+                ):
+                    mb.write('if not CONFIG["MOZ_SYSTEM_LIBVPX"]:\n')
+                    mb.write('    LOCAL_INCLUDES += [ "/media/libvpx/libvpx/" ]\n')
+                    mb.write('    CXXFLAGS += CONFIG["MOZ_LIBVPX_CFLAGS"]\n')
+            except KeyError:
+                pass
 
             all_args = [args for args, _ in configs]
 
@@ -575,13 +586,13 @@ def write_mozbuild(
                 (),
                 ("MOZ_DEBUG",),
                 ("OS_TARGET",),
-                ("CPU_ARCH",),
+                ("TARGET_CPU",),
                 ("MOZ_DEBUG", "OS_TARGET"),
                 ("OS_TARGET", "MOZ_X11"),
-                ("OS_TARGET", "CPU_ARCH"),
-                ("OS_TARGET", "CPU_ARCH", "MOZ_X11"),
-                ("OS_TARGET", "CPU_ARCH", "MOZ_DEBUG"),
-                ("OS_TARGET", "CPU_ARCH", "MOZ_DEBUG", "MOZ_X11"),
+                ("OS_TARGET", "TARGET_CPU"),
+                ("OS_TARGET", "TARGET_CPU", "MOZ_X11"),
+                ("OS_TARGET", "TARGET_CPU", "MOZ_DEBUG"),
+                ("OS_TARGET", "TARGET_CPU", "MOZ_DEBUG", "MOZ_X11"),
             ):
                 conditions = set()
                 for args in all_args:
@@ -605,6 +616,7 @@ def write_mozbuild(
 
             mb.finalize()
 
+    # write the project moz.build file
     dirs_mozbuild = mozpath.join(srcdir, "moz.build")
     mozbuilds.add(dirs_mozbuild)
     with open(dirs_mozbuild, "w") as fh:
@@ -623,10 +635,9 @@ def write_mozbuild(
         for attrs in (
             (),
             ("OS_TARGET",),
-            ("OS_TARGET", "CPU_ARCH"),
-            ("OS_TARGET", "CPU_ARCH", "MOZ_X11"),
+            ("OS_TARGET", "TARGET_CPU"),
+            ("OS_TARGET", "TARGET_CPU", "MOZ_X11"),
         ):
-
             conditions = set()
             for args in dirs_by_config.keys():
                 cond = tuple(((k, dict(args).get(k) or "") for k in attrs))
@@ -661,11 +672,14 @@ def write_mozbuild(
 
 
 def generate_gn_config(
-    srcdir,
+    build_root_dir,
+    target_dir,
     gn_binary,
     input_variables,
     sandbox_variables,
     gn_target,
+    preprocessor,
+    moz_build_flag,
 ):
     def str_for_arg(v):
         if v in (True, False):
@@ -675,6 +689,7 @@ def generate_gn_config(
     input_variables = input_variables.copy()
     input_variables.update(
         {
+            f"{moz_build_flag}": True,
             "concurrent_links": 1,
             "action_pool_depth": 1,
         }
@@ -705,11 +720,21 @@ def generate_gn_config(
         # relpath() does not lead to unexpected results, should it be used
         # together with another path that has symlinks resolved.
         resolved_tempdir = Path(tempdir).resolve()
-        gen_args = [gn_binary, "gen", str(resolved_tempdir), gn_args, "--ide=json"]
+        gen_args = [
+            gn_binary,
+            "gen",
+            str(resolved_tempdir),
+            gn_args,
+            "--ide=json",
+            "--root=./",  # must find the google build directory in this directory
+            f"--dotfile={target_dir}/.gn",
+        ]
         print('Running "%s"' % " ".join(gen_args), file=sys.stderr)
-        subprocess.check_call(gen_args, cwd=srcdir, stderr=subprocess.STDOUT)
+        subprocess.check_call(gen_args, cwd=build_root_dir, stderr=subprocess.STDOUT)
 
         gn_config_file = resolved_tempdir / "project.json"
+        if preprocessor:
+            preprocessor.main(gn_config_file)
 
         with open(gn_config_file, "r") as fh:
             gn_out = json.load(fh)
@@ -717,6 +742,16 @@ def generate_gn_config(
                 resolved_tempdir, gn_out, sandbox_variables, input_variables, gn_target
             )
             return gn_out
+
+
+def load_preprocessor(script_name):
+    if script_name and os.path.isfile(script_name):
+        print(f"Loading preprocessor {script_name}")
+        spec = util.spec_from_file_location("preprocess", script_name)
+        module = util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return None
 
 
 def main():
@@ -743,8 +778,10 @@ def main():
                 target_cpus.append("arm")
             if target_os in ("android", "linux", "win"):
                 target_cpus.append("x86")
+            if target_os in ("linux", "openbsd"):
+                target_cpus.append("riscv64")
             if target_os == "linux":
-                target_cpus.extend(["ppc64", "riscv64", "mipsel", "mips64el"])
+                target_cpus.extend(["ppc64", "mipsel", "mips64el"])
             for target_cpu in target_cpus:
                 vars = {
                     "host_cpu": "x64",
@@ -761,22 +798,27 @@ def main():
                         vars["use_x11"] = True
                     vars_set.append(vars)
 
+    preprocessor = load_preprocessor(config.get("preprocessing_script", None))
+
     gn_configs = []
     for vars in vars_set:
         gn_configs.append(
             generate_gn_config(
-                topsrcdir / config["target_dir"],
+                topsrcdir / config["build_root_dir"],
+                config["target_dir"],
                 gn_binary,
                 vars,
                 config["gn_sandbox_variables"],
                 config["gn_target"],
+                preprocessor,
+                config["moz_build_flag"],
             )
         )
 
     print("Writing moz.build files")
     write_mozbuild(
         topsrcdir,
-        topsrcdir / config["target_dir"],
+        topsrcdir / config["build_root_dir"] / config["target_dir"],
         config["non_unified_sources"],
         gn_configs,
         config["mozilla_flags"],

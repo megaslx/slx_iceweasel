@@ -13,10 +13,12 @@
 #include "StorageUtils.h"
 
 #include "mozilla/BasePrincipal.h"
+#include "nsCOMPtr.h"
+#include "nsICookieNotification.h"
 #include "nsIObserverService.h"
 #include "nsIURI.h"
 #include "nsIPermission.h"
-#include "nsIIDNService.h"
+#include "nsNetUtil.h"
 #include "nsICookiePermission.h"
 
 #include "nsPrintfCString.h"
@@ -166,16 +168,7 @@ nsresult StorageObserver::GetOriginScope(const char16_t* aData,
   NS_ConvertUTF16toUTF8 domain(aData);
 
   nsAutoCString convertedDomain;
-  nsCOMPtr<nsIIDNService> converter = do_GetService(NS_IDNSERVICE_CONTRACTID);
-  if (converter) {
-    // Convert the domain name to the ACE format
-    rv = converter->ConvertUTF8toACE(domain, convertedDomain);
-  } else {
-    // In case the IDN service is not available, this is the best we can come
-    // up with!
-    rv = NS_EscapeURL(domain, esc_OnlyNonASCII | esc_AlwaysCopy,
-                      convertedDomain, fallible);
-  }
+  rv = NS_DomainToASCIIAllowAnyGlyphfulASCII(domain, convertedDomain);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -243,7 +236,11 @@ StorageObserver::Observe(nsISupports* aSubject, const char* aTopic,
 
   // Clear everything, caches + database
   if (!strcmp(aTopic, "cookie-changed")) {
-    if (!u"cleared"_ns.Equals(aData)) {
+    nsCOMPtr<nsICookieNotification> notification = do_QueryInterface(aSubject);
+    NS_ENSURE_TRUE(notification, NS_ERROR_FAILURE);
+
+    if (notification->GetAction() !=
+        nsICookieNotification::ALL_COOKIES_CLEARED) {
       return NS_OK;
     }
 

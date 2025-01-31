@@ -27,6 +27,7 @@
 #include "gfxUtils.h"
 #include "nsICanvasRenderingContextInternal.h"
 #include "nsColor.h"
+#include "nsRFPService.h"
 #include "nsIFrame.h"
 
 class gfxFontGroup;
@@ -35,6 +36,7 @@ class nsXULElement;
 
 namespace mozilla {
 class ErrorResult;
+class ISVGFilterObserverList;
 class PresShell;
 
 namespace gl {
@@ -98,6 +100,10 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   void GetContextAttributes(CanvasRenderingContext2DSettings& aSettings) const;
 
+  void GetDebugInfo(bool aEnsureTarget,
+                    CanvasRenderingContext2DDebugInfo& aDebugInfo,
+                    ErrorResult& aError);
+
   void OnMemoryPressure() override;
   void OnBeforePaintTransaction() override;
   void OnDidPaintTransaction() override;
@@ -105,6 +111,9 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(
       WebGLFramebufferJS*, const bool webvr = false) override;
+
+  already_AddRefed<layers::FwdTransactionTracker> UseCompositableForwarder(
+      layers::CompositableForwarder* aForwarder) override;
 
   void Save();
   void Restore();
@@ -232,8 +241,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   void StrokeText(const nsAString& aText, double aX, double aY,
                   const Optional<double>& aMaxWidth,
                   mozilla::ErrorResult& aError);
-  TextMetrics* MeasureText(const nsAString& aRawText,
-                           mozilla::ErrorResult& aError);
+  UniquePtr<TextMetrics> MeasureText(const nsAString& aRawText,
+                                     mozilla::ErrorResult& aError);
 
   void DrawImage(const CanvasImageSource& aImage, double aDx, double aDy,
                  mozilla::ErrorResult& aError) {
@@ -360,14 +369,18 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   }
 
   void ClosePath() {
-    EnsureWritablePath();
+    if (!EnsureWritablePath()) {
+      return;
+    }
 
     mPathBuilder->Close();
     mPathPruned = false;
   }
 
   void MoveTo(double aX, double aY) {
-    EnsureWritablePath();
+    if (!EnsureWritablePath()) {
+      return;
+    }
 
     mozilla::gfx::Point pos(ToFloat(aX), ToFloat(aY));
     if (!pos.IsFinite()) {
@@ -379,13 +392,17 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   }
 
   void LineTo(double aX, double aY) {
-    EnsureWritablePath();
+    if (!EnsureWritablePath()) {
+      return;
+    }
 
     LineTo(mozilla::gfx::Point(ToFloat(aX), ToFloat(aY)));
   }
 
   void QuadraticCurveTo(double aCpx, double aCpy, double aX, double aY) {
-    EnsureWritablePath();
+    if (!EnsureWritablePath()) {
+      return;
+    }
 
     mozilla::gfx::Point cp1(ToFloat(aCpx), ToFloat(aCpy));
     mozilla::gfx::Point cp2(ToFloat(aX), ToFloat(aY));
@@ -404,7 +421,9 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   void BezierCurveTo(double aCp1x, double aCp1y, double aCp2x, double aCp2y,
                      double aX, double aY) {
-    EnsureWritablePath();
+    if (!EnsureWritablePath()) {
+      return;
+    }
 
     BezierTo(mozilla::gfx::Point(ToFloat(aCp1x), ToFloat(aCp1y)),
              mozilla::gfx::Point(ToFloat(aCp2x), ToFloat(aCp2y)),
@@ -463,7 +482,7 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
    * Gets the pres shell from either the canvas element or the doc shell
    */
   PresShell* GetPresShell() final;
-  void Initialize() override;
+  nsresult Initialize() override;
   NS_IMETHOD SetDimensions(int32_t aWidth, int32_t aHeight) override;
   NS_IMETHOD InitializeWithDrawTarget(
       nsIDocShell* aShell, NotNull<gfx::DrawTarget*> aTarget) override;
@@ -531,6 +550,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   enum class Style : uint8_t { STROKE = 0, FILL, MAX };
 
   void LineTo(const mozilla::gfx::Point& aPoint) {
+    mFeatureUsage |= CanvasFeatureUsage::LineTo;
+
     if (!aPoint.IsFinite()) {
       return;
     }
@@ -562,14 +583,21 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   virtual UniquePtr<uint8_t[]> GetImageBuffer(
       int32_t* out_format, gfx::IntSize* out_imageSize) override;
 
-  virtual void OnShutdown();
+  void OnShutdown();
+
+  bool IsContextLost() const { return mIsContextLost; }
+  void OnRemoteCanvasLost();
+  void OnRemoteCanvasRestored();
 
   /**
    * Update CurrentState().filter with the filter description for
    * CurrentState().filterChain.
-   * Flushes the PresShell, so the world can change if you call this function.
+   * Flushes the PresShell if aFlushIsNeeded is true, so the world can change
+   * if you call this function.
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY void UpdateFilter();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void UpdateFilter(bool aFlushIfNeeded);
+
+  CanvasFeatureUsage FeatureUsage() const { return mFeatureUsage; }
 
  protected:
   /**
@@ -667,7 +695,7 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   /* This function ensures there is a writable pathbuilder available
    */
-  void EnsureWritablePath();
+  bool EnsureWritablePath();
 
   // Ensures a path in UserSpace is available.
   void EnsureUserSpacePath(
@@ -690,8 +718,16 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
    *
    * Returns true on success.
    */
+  bool EnsureTarget(ErrorResult& aError,
+                    const gfx::Rect* aCoveredRect = nullptr,
+                    bool aWillClear = false, bool aSkipTransform = false);
+
   bool EnsureTarget(const gfx::Rect* aCoveredRect = nullptr,
-                    bool aWillClear = false);
+                    bool aWillClear = false, bool aSkipTransform = false) {
+    IgnoredErrorResult error;
+    return EnsureTarget(error, aCoveredRect, aWillClear, aSkipTransform);
+  }
+
   // Attempt to borrow a new target from an existing buffer provider.
   bool BorrowTarget(const gfx::IntRect& aPersistedRect, bool aNeedsClear);
 
@@ -705,7 +741,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
                        RefPtr<layers::PersistentBufferProvider>& aOutProvider);
 
   bool TryBasicTarget(RefPtr<gfx::DrawTarget>& aOutDT,
-                      RefPtr<layers::PersistentBufferProvider>& aOutProvider);
+                      RefPtr<layers::PersistentBufferProvider>& aOutProvider,
+                      ErrorResult& aError);
 
   void RegisterAllocation();
 
@@ -744,7 +781,7 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
    * Check if the target is valid after calling EnsureTarget.
    */
   bool IsTargetValid() const {
-    return !!mTarget && mTarget != sErrorTarget.get();
+    return !!mTarget && mTarget != sErrorTarget.get() && !mIsContextLost;
   }
 
   /**
@@ -778,6 +815,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
     return CurrentState().font;
   }
+
+  bool UseSoftwareRendering() const;
 
   // Member vars
   int32_t mWidth, mHeight;
@@ -823,11 +862,18 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   // Whether the application expects to use operations that perform poorly with
   // acceleration.
   bool mWillReadFrequently = false;
+  // Whether to force software rendering
+  bool mForceSoftwareRendering = false;
+  // Whether or not we have already shutdown.
+  bool mHasShutdown = false;
+  // Whether or not remote canvas is currently unavailable.
+  bool mIsContextLost = false;
+  // Whether or not we can restore the context after restoration.
+  bool mAllowContextRestore = true;
 
-  RefPtr<CanvasShutdownObserver> mShutdownObserver;
-  virtual void AddShutdownObserver();
-  virtual void RemoveShutdownObserver();
-  virtual bool AlreadyShutDown() const { return !mShutdownObserver; }
+  bool AddShutdownObserver();
+  void RemoveShutdownObserver();
+  bool AlreadyShutDown() const { return mHasShutdown; }
 
   /**
    * Flag to avoid duplicate calls to InvalidateFrame. Set to true whenever
@@ -875,6 +921,10 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   RefPtr<mozilla::gfx::Path> mPath;
   RefPtr<mozilla::gfx::PathBuilder> mPathBuilder;
   bool mPathPruned = false;
+  mozilla::gfx::Matrix mPathTransform;
+  bool mPathTransformDirty = false;
+
+  void FlushPathTransform();
 
   /**
    * Number of times we've invalidated before calling redraw
@@ -913,7 +963,7 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
   const gfx::FilterDescription& EnsureUpdatedFilter() {
     bool isWriteOnly = mCanvasElement && mCanvasElement->IsWriteOnly();
     if (CurrentState().filterSourceGraphicTainted != isWriteOnly) {
-      UpdateFilter();
+      UpdateFilter(/* aFlushIfNeeded = */ true);
       EnsureTarget();
     }
     MOZ_ASSERT(CurrentState().filterSourceGraphicTainted == isWriteOnly);
@@ -926,10 +976,11 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   // text
 
+ public:
+  gfxFontGroup* GetCurrentFontStyle();
+
  protected:
   enum class TextDrawOperation : uint8_t { FILL, STROKE, MEASURE };
-
-  gfxFontGroup* GetCurrentFontStyle();
 
   /**
    * Implementation of the fillText, strokeText, and measure functions with
@@ -937,9 +988,11 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
    * Returns a TextMetrics object _only_ if the operation is measure;
    * drawing operations (fill or stroke) always return nullptr.
    */
-  TextMetrics* DrawOrMeasureText(const nsAString& aText, float aX, float aY,
-                                 const Optional<double>& aMaxWidth,
-                                 TextDrawOperation aOp, ErrorResult& aError);
+  UniquePtr<TextMetrics> DrawOrMeasureText(const nsAString& aText, float aX,
+                                           float aY,
+                                           const Optional<double>& aMaxWidth,
+                                           TextDrawOperation aOp,
+                                           ErrorResult& aError);
 
   // A clip or a transform, recorded and restored in order.
   struct ClipState {
@@ -988,9 +1041,11 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
     RefPtr<nsAtom> fontLanguage;
     nsFont fontFont;
 
-    EnumeratedArray<Style, Style::MAX, RefPtr<CanvasGradient>> gradientStyles;
-    EnumeratedArray<Style, Style::MAX, RefPtr<CanvasPattern>> patternStyles;
-    EnumeratedArray<Style, Style::MAX, nscolor> colorStyles;
+    EnumeratedArray<Style, RefPtr<CanvasGradient>, size_t(Style::MAX)>
+        gradientStyles;
+    EnumeratedArray<Style, RefPtr<CanvasPattern>, size_t(Style::MAX)>
+        patternStyles;
+    EnumeratedArray<Style, nscolor, size_t(Style::MAX)> colorStyles;
 
     nsCString font;
     CanvasTextAlign textAlign = CanvasTextAlign::Start;
@@ -1003,6 +1058,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
     gfx::Float letterSpacing = 0.0f;
     gfx::Float wordSpacing = 0.0f;
+    mozilla::StyleLineHeight fontLineHeight =
+        mozilla::StyleLineHeight::Normal();
     nsCString letterSpacingStr;
     nsCString wordSpacingStr;
 
@@ -1027,7 +1084,7 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
     StyleOwnedSlice<StyleFilter> filterChain;
     // RAII object that we obtain when we start to observer SVG filter elements
     // for rendering changes.  When released we stop observing the SVG elements.
-    nsCOMPtr<nsISupports> autoSVGFiltersObserver;
+    nsCOMPtr<ISVGFilterObserverList> autoSVGFiltersObserver;
     mozilla::gfx::FilterDescription filter;
     nsTArray<RefPtr<mozilla::gfx::SourceSurface>> filterAdditionalImages;
 
@@ -1106,6 +1163,8 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   ColorStyleCacheEntry ParseColorSlow(const nsACString&);
 
+  mozilla::gfx::PaletteCache mPaletteCache;
+
   friend class CanvasGeneralPattern;
   friend class AdjustedTarget;
   friend class AdjustedTargetForShadow;
@@ -1124,6 +1183,10 @@ class CanvasRenderingContext2D : public nsICanvasRenderingContextInternal,
 
   bool mWriteOnly;
   bool mClipsNeedConverting = false;
+
+  uint8_t mFillTextCalls = 0;
+  // Flags used by the fingerprinting detection heuristic
+  CanvasFeatureUsage mFeatureUsage = CanvasFeatureUsage::None;
 
   virtual void AddZoneWaitingForGC();
   virtual void AddAssociatedMemory();

@@ -5,32 +5,35 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TextureRecorded.h"
+#include "mozilla/gfx/DrawTargetRecording.h"
+#include "mozilla/layers/CompositableForwarder.h"
 
 #include "RecordedCanvasEventImpl.h"
 
 namespace mozilla {
 namespace layers {
 
-// The texture ID is used in the GPU process both to lookup the real texture in
-// the canvas threads and to lookup the SurfaceDescriptor for that texture in
-// the compositor thread. It is therefore important that the ID is unique (per
-// recording process), otherwise an old descriptor can be picked up. This means
-// we can't use the pointer in the recording process as an ID like we do for
-// other objects.
-static int64_t sNextRecordedTextureId = 0;
-
 RecordedTextureData::RecordedTextureData(
     already_AddRefed<CanvasChild> aCanvasChild, gfx::IntSize aSize,
-    gfx::SurfaceFormat aFormat, TextureType aTextureType)
-    : mCanvasChild(aCanvasChild), mSize(aSize), mFormat(aFormat) {
-  mCanvasChild->EnsureRecorder(aTextureType);
-}
+    gfx::SurfaceFormat aFormat, TextureType aTextureType,
+    TextureType aWebglTextureType)
+    : mRemoteTextureOwnerId(RemoteTextureOwnerId::GetNext()),
+      mCanvasChild(aCanvasChild),
+      mSize(aSize),
+      mFormat(aFormat) {}
 
 RecordedTextureData::~RecordedTextureData() {
   // We need the translator to drop its reference for the DrawTarget first,
   // because the TextureData might need to destroy its DrawTarget within a lock.
-  mDT = nullptr;
-  mCanvasChild->RecordEvent(RecordedTextureDestruction(mTextureId));
+  mSnapshot = nullptr;
+  DetachSnapshotWrapper();
+  if (mDT) {
+    mDT->DetachTextureData(this);
+    mDT = nullptr;
+  }
+  mCanvasChild->RecordEvent(RecordedTextureDestruction(
+      mRemoteTextureOwnerId, ToRemoteTextureTxnType(mFwdTransactionTracker),
+      ToRemoteTextureTxnId(mFwdTransactionTracker)));
 }
 
 void RecordedTextureData::FillInfo(TextureData::Info& aInfo) const {
@@ -40,44 +43,80 @@ void RecordedTextureData::FillInfo(TextureData::Info& aInfo) const {
   aInfo.hasSynchronization = true;
 }
 
+void RecordedTextureData::InvalidateContents() { mInvalidContents = true; }
+
 bool RecordedTextureData::Lock(OpenMode aMode) {
-  mCanvasChild->EnsureBeginTransaction();
-  if (!mDT) {
-    mTextureId = sNextRecordedTextureId++;
-    mCanvasChild->RecordEvent(RecordedNextTextureId(mTextureId));
-    mDT = mCanvasChild->CreateDrawTarget(mSize, mFormat);
+  if (!mCanvasChild->EnsureBeginTransaction()) {
+    return false;
+  }
+
+  if (!mDT && mInited) {
+    return false;
+  }
+
+  // If modifying the texture, then allocate a new remote texture id.
+  if (aMode & OpenMode::OPEN_WRITE) {
+    mUsedRemoteTexture = false;
+  }
+
+  bool wasInvalidContents = mInvalidContents;
+  mInvalidContents = false;
+
+  if (!mDT && !mInited) {
+    mInited = true;
+    mDT = mCanvasChild->CreateDrawTarget(mRemoteTextureOwnerId, mSize, mFormat);
     if (!mDT) {
       return false;
     }
 
+    mDT->AttachTextureData(this);
+
     // We lock the TextureData when we create it to get the remote DrawTarget.
-    mCanvasChild->OnTextureWriteLock();
     mLockedMode = aMode;
     return true;
   }
 
-  mCanvasChild->RecordEvent(RecordedTextureLock(mTextureId, aMode));
-  if (aMode & OpenMode::OPEN_WRITE) {
-    mCanvasChild->OnTextureWriteLock();
-  }
+  mCanvasChild->RecordEvent(
+      RecordedTextureLock(mRemoteTextureOwnerId, aMode, wasInvalidContents));
   mLockedMode = aMode;
   return true;
+}
+
+void RecordedTextureData::DetachSnapshotWrapper(bool aInvalidate,
+                                                bool aRelease) {
+  if (mSnapshotWrapper) {
+    // If the snapshot only has one ref, then we don't need to worry about
+    // copying before invalidation since it is about to be deleted. Otherwise,
+    // we need to ensure any internal data is appropriately copied before
+    // shmems are potentially overwritten if there are still existing users.
+    mCanvasChild->DetachSurface(mSnapshotWrapper,
+                                aInvalidate && !mSnapshotWrapper->hasOneRef());
+    if (aRelease) {
+      mSnapshotWrapper = nullptr;
+    }
+  }
 }
 
 void RecordedTextureData::Unlock() {
   if ((mLockedMode == OpenMode::OPEN_READ_WRITE) &&
       mCanvasChild->ShouldCacheDataSurface()) {
+    DetachSnapshotWrapper();
     mSnapshot = mDT->Snapshot();
     mDT->DetachAllSnapshots();
     mCanvasChild->RecordEvent(RecordedCacheDataSurface(mSnapshot.get()));
   }
 
-  mCanvasChild->RecordEvent(RecordedTextureUnlock(mTextureId));
+  mCanvasChild->RecordEvent(RecordedTextureUnlock(mRemoteTextureOwnerId));
+
   mLockedMode = OpenMode::OPEN_NONE;
 }
 
 already_AddRefed<gfx::DrawTarget> RecordedTextureData::BorrowDrawTarget() {
-  mSnapshot = nullptr;
+  if (mLockedMode & OpenMode::OPEN_WRITE) {
+    // The snapshot will be invalidated.
+    mSnapshot = nullptr;
+    DetachSnapshotWrapper(true);
+  }
   return do_AddRef(mDT);
 }
 
@@ -86,36 +125,84 @@ void RecordedTextureData::EndDraw() {
   MOZ_ASSERT(mLockedMode == OpenMode::OPEN_READ_WRITE);
 
   if (mCanvasChild->ShouldCacheDataSurface()) {
+    DetachSnapshotWrapper();
     mSnapshot = mDT->Snapshot();
     mCanvasChild->RecordEvent(RecordedCacheDataSurface(mSnapshot.get()));
   }
 }
 
-already_AddRefed<gfx::SourceSurface> RecordedTextureData::BorrowSnapshot() {
-  MOZ_ASSERT(mDT);
+void RecordedTextureData::DrawTargetWillChange() {
+  // The DrawTargetRecording will be modified, so ensure that possibly the last
+  // reference to a snapshot is discarded so that it does not inadvertently
+  // force a copy.
+  mSnapshot = nullptr;
+  DetachSnapshotWrapper(true);
+}
 
-  if (mSnapshot) {
-    return mCanvasChild->WrapSurface(mSnapshot);
+already_AddRefed<gfx::SourceSurface> RecordedTextureData::BorrowSnapshot() {
+  if (mSnapshotWrapper) {
+    // The DT is unmodified since the last time snapshot was borrowed, so it
+    // is safe to reattach the snapshot for shmem readbacks.
+    mCanvasChild->AttachSurface(mSnapshotWrapper);
+    return do_AddRef(mSnapshotWrapper);
   }
 
-  return mCanvasChild->WrapSurface(mDT->Snapshot());
+  // There are some failure scenarios where we have no DrawTarget and
+  // BorrowSnapshot is called in an attempt to copy to a new texture.
+  if (!mDT) {
+    return nullptr;
+  }
+
+  RefPtr<gfx::SourceSurface> wrapper = mCanvasChild->WrapSurface(
+      mSnapshot ? mSnapshot : mDT->Snapshot(), mRemoteTextureOwnerId);
+  mSnapshotWrapper = wrapper;
+  return wrapper.forget();
+}
+
+void RecordedTextureData::ReturnSnapshot(
+    already_AddRefed<gfx::SourceSurface> aSnapshot) {
+  RefPtr<gfx::SourceSurface> snapshot = aSnapshot;
+  // The snapshot needs to be marked detached but we keep the wrapper around
+  // so that it can be reused without repeatedly creating it and accidentally
+  // reading back data for each new instantiation.
+  DetachSnapshotWrapper(false, false);
 }
 
 void RecordedTextureData::Deallocate(LayersIPCChannel* aAllocator) {}
 
 bool RecordedTextureData::Serialize(SurfaceDescriptor& aDescriptor) {
-  aDescriptor = SurfaceDescriptorRecorded(mTextureId);
+  // If something is querying the id, assume it is going to be composited.
+  if (!mUsedRemoteTexture) {
+    mLastRemoteTextureId = RemoteTextureId::GetNext();
+    mCanvasChild->RecordEvent(
+        RecordedPresentTexture(mRemoteTextureOwnerId, mLastRemoteTextureId));
+    mUsedRemoteTexture = true;
+  }
+
+  aDescriptor = SurfaceDescriptorRemoteTexture(mLastRemoteTextureId,
+                                               mRemoteTextureOwnerId);
   return true;
 }
 
+already_AddRefed<FwdTransactionTracker>
+RecordedTextureData::UseCompositableForwarder(
+    CompositableForwarder* aForwarder) {
+  return FwdTransactionTracker::GetOrCreate(mFwdTransactionTracker);
+}
+
 void RecordedTextureData::OnForwardedToHost() {
-  mCanvasChild->OnTextureForwarded();
+  // Compositing with RecordedTextureData requires RemoteTextureMap.
+  MOZ_CRASH("OnForwardedToHost not supported!");
 }
 
 TextureFlags RecordedTextureData::GetTextureFlags() const {
   // With WebRender, resource open happens asynchronously on RenderThread.
   // Use WAIT_HOST_USAGE_END to keep TextureClient alive during host side usage.
   return TextureFlags::WAIT_HOST_USAGE_END;
+}
+
+bool RecordedTextureData::RequiresRefresh() const {
+  return mCanvasChild->RequiresRefresh(mRemoteTextureOwnerId);
 }
 
 }  // namespace layers

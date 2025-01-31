@@ -8,6 +8,7 @@
 
 #include "jsapi.h"
 
+#include "gc/FinalizationObservers.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "vm/GlobalObject.h"
 #include "vm/JSContext.h"
@@ -77,8 +78,8 @@ bool WeakRefObject::construct(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  // 4. Perfom ! KeepDuringJob(target).
-  if (!target->zone()->keepDuringJob(target)) {
+  // 4. Perform AddToKeptObjects(target).
+  if (!target->zone()->addToKeptObjects(target)) {
     ReportOutOfMemory(cx);
     return false;
   };
@@ -159,19 +160,28 @@ const JSClass WeakRefObject::class_ = {
     "WeakRef",
     JSCLASS_HAS_RESERVED_SLOTS(SlotCount) |
         JSCLASS_HAS_CACHED_PROTO(JSProto_WeakRef) | JSCLASS_FOREGROUND_FINALIZE,
-    &classOps_, &classSpec_};
+    &classOps_,
+    &classSpec_,
+};
 
 const JSClass WeakRefObject::protoClass_ = {
     // https://tc39.es/proposal-weakrefs/#sec-weak-ref.prototype
     // https://tc39.es/proposal-weakrefs/#sec-properties-of-the-weak-ref-prototype-object
-    "WeakRef.prototype", JSCLASS_HAS_CACHED_PROTO(JSProto_WeakRef),
-    JS_NULL_CLASS_OPS, &classSpec_};
+    "WeakRef.prototype",
+    JSCLASS_HAS_CACHED_PROTO(JSProto_WeakRef),
+    JS_NULL_CLASS_OPS,
+    &classSpec_,
+};
 
 const JSPropertySpec WeakRefObject::properties[] = {
-    JS_STRING_SYM_PS(toStringTag, "WeakRef", JSPROP_READONLY), JS_PS_END};
+    JS_STRING_SYM_PS(toStringTag, "WeakRef", JSPROP_READONLY),
+    JS_PS_END,
+};
 
-const JSFunctionSpec WeakRefObject::methods[] = {JS_FN("deref", deref, 0, 0),
-                                                 JS_FS_END};
+const JSFunctionSpec WeakRefObject::methods[] = {
+    JS_FN("deref", deref, 0, 0),
+    JS_FS_END,
+};
 
 /* static */
 bool WeakRefObject::deref(JSContext* cx, unsigned argc, Value* vp) {
@@ -198,7 +208,7 @@ bool WeakRefObject::deref(JSContext* cx, unsigned argc, Value* vp) {
 
   // 4. Let target be the value of weakRef.[[Target]].
   // 5. If target is not empty,
-  //    a. Perform ! KeepDuringJob(target).
+  //    a. Perform AddToKeptObjects(target).
   //    b. Return target.
   // 6. Return undefined.
   if (!weakRef->target()) {
@@ -207,7 +217,7 @@ bool WeakRefObject::deref(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   RootedObject target(cx, weakRef->target());
-  if (!target->zone()->keepDuringJob(target)) {
+  if (!target->zone()->addToKeptObjects(target)) {
     return false;
   }
 
@@ -243,7 +253,7 @@ void WeakRefObject::readBarrier(JSContext* cx, Handle<WeakRefObject*> self) {
     MOZ_ASSERT(cx->runtime()->hasReleasedWrapperCallback);
     bool wasReleased = cx->runtime()->hasReleasedWrapperCallback(obj);
     if (wasReleased) {
-      self->clearTarget();
+      obj->zone()->finalizationObservers()->removeWeakRefTarget(obj, self);
       return;
     }
   }

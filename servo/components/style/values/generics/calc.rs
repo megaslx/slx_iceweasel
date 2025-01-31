@@ -12,6 +12,8 @@ use std::fmt::{self, Write};
 use std::ops::{Add, Mul, Neg, Rem, Sub};
 use std::{cmp, mem};
 use style_traits::{CssWriter, ToCss};
+use crate::values::generics::length::GenericAnchorSizeFunction;
+use crate::values::generics::position::{AnchorSide, GenericAnchorFunction};
 
 /// Whether we're a `min` or `max` function.
 #[derive(
@@ -53,6 +55,30 @@ pub enum ModRemOp {
     Mod,
     /// `rem()`
     Rem,
+}
+
+impl ModRemOp {
+    fn apply(self, dividend: f32, divisor: f32) -> f32 {
+        // In mod(A, B) only, if B is infinite and A has opposite sign to B
+        // (including an oppositely-signed zero), the result is NaN.
+        // https://drafts.csswg.org/css-values/#round-infinities
+        if matches!(self, Self::Mod) &&
+            divisor.is_infinite() &&
+            dividend.is_sign_negative() != divisor.is_sign_negative()
+        {
+            return f32::NAN;
+        }
+
+        let (r, same_sign_as) = match self {
+            Self::Mod => (dividend - divisor * (dividend / divisor).floor(), divisor),
+            Self::Rem => (dividend - divisor * (dividend / divisor).trunc(), dividend),
+        };
+        if r == 0.0 && same_sign_as.is_sign_negative() {
+            -0.0
+        } else {
+            r
+        }
+    }
 }
 
 /// The strategy used in `round()`
@@ -111,6 +137,7 @@ pub enum SortKey {
     Em,
     Ex,
     Ic,
+    Lh,
     Lvb,
     Lvh,
     Lvi,
@@ -119,6 +146,7 @@ pub enum SortKey {
     Lvw,
     Px,
     Rem,
+    Rlh,
     Sec,
     Svb,
     Svh,
@@ -132,6 +160,7 @@ pub enum SortKey {
     Vmax,
     Vmin,
     Vw,
+    ColorComponent,
     Other,
 }
 
@@ -207,6 +236,10 @@ pub enum GenericCalcNode<L> {
     Abs(Box<GenericCalcNode<L>>),
     /// A `sign()` function.
     Sign(Box<GenericCalcNode<L>>),
+    /// An `anchor()` function.
+    Anchor(Box<GenericAnchorFunction<Box<GenericCalcNode<L>>, Box<GenericCalcNode<L>>>>),
+    /// An `anchor-size()` function.
+    AnchorSize(Box<GenericAnchorSizeFunction<Box<GenericCalcNode<L>>>>),
 }
 
 pub use self::GenericCalcNode as CalcNode;
@@ -229,12 +262,15 @@ bitflags! {
         const TIME = 1 << 3;
         /// <resolution>
         const RESOLUTION = 1 << 4;
+        /// A component of a color (r, g, b, h, s, l, alpha, etc.)
+        const COLOR_COMPONENT = 1 << 5;
 
         /// <length-percentage>
-        const LENGTH_PERCENTAGE = Self::LENGTH.bits | Self::PERCENTAGE.bits;
+        const LENGTH_PERCENTAGE = Self::LENGTH.bits() | Self::PERCENTAGE.bits();
         // NOTE: When you add to this, make sure to make Atan2 deal with these.
         /// Allow all units.
-        const ALL = Self::LENGTH.bits | Self::PERCENTAGE.bits | Self::ANGLE.bits | Self::TIME.bits | Self::RESOLUTION.bits;
+        const ALL = Self::LENGTH.bits() | Self::PERCENTAGE.bits() | Self::ANGLE.bits() |
+            Self::TIME.bits() | Self::RESOLUTION.bits() | Self::COLOR_COMPONENT.bits();
     }
 }
 
@@ -258,19 +294,61 @@ impl CalcUnits {
     }
 }
 
+/// For percentage resolution, sometimes we can't assume that the percentage basis is positive (so
+/// we don't know whether a percentage is larger than another).
+pub enum PositivePercentageBasis {
+    /// The percent basis is not known-positive, we can't compare percentages.
+    Unknown,
+    /// The percent basis is known-positive, we assume larger percentages are larger.
+    Yes,
+}
+
+macro_rules! compare_helpers {
+    () => {
+        /// Return whether a leaf is greater than another.
+        #[allow(unused)]
+        fn gt(&self, other: &Self, basis_positive: PositivePercentageBasis) -> bool {
+            self.compare(other, basis_positive) == Some(cmp::Ordering::Greater)
+        }
+
+        /// Return whether a leaf is less than another.
+        fn lt(&self, other: &Self, basis_positive: PositivePercentageBasis) -> bool {
+            self.compare(other, basis_positive) == Some(cmp::Ordering::Less)
+        }
+
+        /// Return whether a leaf is smaller or equal than another.
+        fn lte(&self, other: &Self, basis_positive: PositivePercentageBasis) -> bool {
+            match self.compare(other, basis_positive) {
+                Some(cmp::Ordering::Less) => true,
+                Some(cmp::Ordering::Equal) => true,
+                Some(cmp::Ordering::Greater) => false,
+                None => false,
+            }
+        }
+    };
+}
+
 /// A trait that represents all the stuff a valid leaf of a calc expression.
-pub trait CalcNodeLeaf: Clone + Sized + PartialOrd + PartialEq + ToCss {
+pub trait CalcNodeLeaf: Clone + Sized + PartialEq + ToCss {
     /// Returns the unit of the leaf.
     fn unit(&self) -> CalcUnits;
 
-    /// Returns the unitless value of this leaf.
-    fn unitless_value(&self) -> f32;
+    /// Returns the unitless value of this leaf if one is available.
+    fn unitless_value(&self) -> Option<f32>;
 
     /// Return true if the units of both leaves are equal. (NOTE: Does not take
-    /// the values into acount)
+    /// the values into account)
     fn is_same_unit_as(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
+
+    /// Do a partial comparison of these values.
+    fn compare(
+        &self,
+        other: &Self,
+        base_is_positive: PositivePercentageBasis,
+    ) -> Option<cmp::Ordering>;
+    compare_helpers!();
 
     /// Create a new leaf with a number value.
     fn new_number(value: f32) -> Self;
@@ -279,23 +357,31 @@ pub trait CalcNodeLeaf: Clone + Sized + PartialOrd + PartialEq + ToCss {
     fn as_number(&self) -> Option<f32>;
 
     /// Whether this value is known-negative.
-    fn is_negative(&self) -> bool {
-        self.unitless_value().is_sign_negative()
+    fn is_negative(&self) -> Result<bool, ()> {
+        self.unitless_value()
+            .map(|v| Ok(v.is_sign_negative()))
+            .unwrap_or_else(|| Err(()))
     }
 
     /// Whether this value is infinite.
-    fn is_infinite(&self) -> bool {
-        self.unitless_value().is_infinite()
+    fn is_infinite(&self) -> Result<bool, ()> {
+        self.unitless_value()
+            .map(|v| Ok(v.is_infinite()))
+            .unwrap_or_else(|| Err(()))
     }
 
     /// Whether this value is zero.
-    fn is_zero(&self) -> bool {
-        self.unitless_value().is_zero()
+    fn is_zero(&self) -> Result<bool, ()> {
+        self.unitless_value()
+            .map(|v| Ok(v.is_zero()))
+            .unwrap_or_else(|| Err(()))
     }
 
     /// Whether this value is NaN.
-    fn is_nan(&self) -> bool {
-        self.unitless_value().is_nan()
+    fn is_nan(&self) -> Result<bool, ()> {
+        self.unitless_value()
+            .map(|v| Ok(v.is_nan()))
+            .unwrap_or_else(|| Err(()))
     }
 
     /// Tries to merge one leaf into another using the sum, that is, perform `x` + `y`.
@@ -311,12 +397,7 @@ pub trait CalcNodeLeaf: Clone + Sized + PartialOrd + PartialEq + ToCss {
         O: Fn(f32, f32) -> f32;
 
     /// Map the value of this node with the given operation.
-    fn map(&mut self, op: impl FnMut(f32) -> f32);
-
-    /// Negates the leaf.
-    fn negate(&mut self) {
-        self.map(std::ops::Neg::neg);
-    }
+    fn map(&mut self, op: impl FnMut(f32) -> f32) -> Result<(), ()>;
 
     /// Canonicalizes the expression if necessary.
     fn simplify(&mut self);
@@ -325,16 +406,20 @@ pub trait CalcNodeLeaf: Clone + Sized + PartialOrd + PartialEq + ToCss {
     fn sort_key(&self) -> SortKey;
 
     /// Create a new leaf containing the sign() result of the given leaf.
-    fn sign_from(leaf: &impl CalcNodeLeaf) -> Self {
-        Self::new_number(if leaf.is_nan() {
+    fn sign_from(leaf: &impl CalcNodeLeaf) -> Result<Self, ()> {
+        let Some(value) = leaf.unitless_value() else {
+            return Err(());
+        };
+
+        Ok(Self::new_number(if value.is_nan() {
             f32::NAN
-        } else if leaf.is_zero() {
-            leaf.unitless_value()
-        } else if leaf.is_negative() {
+        } else if value.is_zero() {
+            value
+        } else if value.is_sign_negative() {
             -1.0
         } else {
             1.0
-        })
+        }))
     }
 }
 
@@ -358,8 +443,8 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
     /// Change all the leaf nodes to have the given value. This is useful when
     /// you have `calc(1px * nan)` and you want to replace the product node with
     /// `calc(nan)`, in which case the unit will be retained.
-    fn coerce_to_value(&mut self, value: f32) {
-        self.map(|_| value);
+    fn coerce_to_value(&mut self, value: f32) -> Result<(), ()> {
+        self.map(|_| value)
     }
 
     /// Return true if a product is distributive over this node.
@@ -368,7 +453,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
     #[inline]
     pub fn is_product_distributive(&self) -> bool {
         match self {
-            Self::Leaf(_) => true,
+            Self::Leaf(l) => l.unit() != CalcUnits::COLOR_COMPONENT,
             Self::Sum(children) => children.iter().all(|c| c.is_product_distributive()),
             _ => false,
         }
@@ -459,10 +544,15 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 }
                 dividend_unit | divisor_unit
             },
-            CalcNode::Sign(_) => {
-                // Result of a sign() is always a number.
+            CalcNode::Sign(ref child) => {
+                // sign() always resolves to a number, but we still need to make sure that the
+                // child units make sense.
+                let _ = child.unit()?;
                 CalcUnits::empty()
             },
+            CalcNode::Anchor(..) | CalcNode::AnchorSize(..) => {
+                CalcUnits::LENGTH_PERCENTAGE
+            }
         })
     }
 
@@ -476,7 +566,11 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         }
 
         match *self {
-            CalcNode::Leaf(ref mut leaf) => leaf.negate(),
+            CalcNode::Leaf(ref mut leaf) => {
+                if leaf.map(std::ops::Neg::neg).is_err() {
+                    wrap_self_in_negate(self)
+                }
+            },
             CalcNode::Negate(ref mut value) => {
                 // Don't negate the value here.  Replace `self` with it's child.
                 let result = mem::replace(value.as_mut(), Self::dummy());
@@ -511,17 +605,34 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 ref mut center,
                 ref mut max,
             } => {
-                min.negate();
-                center.negate();
-                max.negate();
+                if min.lte(max, PositivePercentageBasis::Unknown) {
+                    min.negate();
+                    center.negate();
+                    max.negate();
 
-                mem::swap(min, max);
+                    mem::swap(min, max);
+                } else {
+                    wrap_self_in_negate(self);
+                }
             },
             CalcNode::Round {
+                ref mut strategy,
                 ref mut value,
                 ref mut step,
-                ..
             } => {
+                match *strategy {
+                    RoundingStrategy::Nearest => {
+                        // Nearest is tricky because we'd have to swap the
+                        // behavior at the half-way point from using the upper
+                        // to lower bound.
+                        // Simpler to just wrap self in a negate node.
+                        wrap_self_in_negate(self);
+                        return;
+                    },
+                    RoundingStrategy::Up => *strategy = RoundingStrategy::Down,
+                    RoundingStrategy::Down => *strategy = RoundingStrategy::Up,
+                    RoundingStrategy::ToZero => (),
+                }
                 value.negate();
                 step.negate();
             },
@@ -538,8 +649,14 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     child.negate();
                 }
             },
-            CalcNode::Abs(ref mut child) | CalcNode::Sign(ref mut child) => {
+            CalcNode::Abs(_) => {
+                wrap_self_in_negate(self);
+            },
+            CalcNode::Sign(ref mut child) => {
                 child.negate();
+            },
+            CalcNode::Anchor(_) | CalcNode::AnchorSize(_) => {
+                wrap_self_in_negate(self);
             },
         }
     }
@@ -547,6 +664,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
     fn sort_key(&self) -> SortKey {
         match *self {
             Self::Leaf(ref l) => l.sort_key(),
+            Self::Anchor(..) | Self::AnchorSize(..) => SortKey::Px,
             _ => SortKey::Other,
         }
     }
@@ -560,7 +678,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
     }
 
     /// Tries to merge one node into another using the sum, that is, perform `x` + `y`.
-    fn try_sum_in_place(&mut self, other: &Self) -> Result<(), ()> {
+    pub fn try_sum_in_place(&mut self, other: &Self) -> Result<(), ()> {
         match (self, other) {
             (&mut CalcNode::Leaf(ref mut one), &CalcNode::Leaf(ref other)) => {
                 one.try_sum_in_place(other)
@@ -578,7 +696,9 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 }
 
                 if self.is_product_distributive() {
-                    self.map(|v| v * number);
+                    if self.map(|v| v * number).is_err() {
+                        return false;
+                    }
                     return true;
                 }
             }
@@ -592,7 +712,9 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 }
 
                 if other.is_product_distributive() {
-                    other.map(|v| v * number);
+                    if other.map(|v| v * number).is_err() {
+                        return false;
+                    }
                     std::mem::swap(self, other);
                     return true;
                 }
@@ -602,7 +724,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         false
     }
 
-    /// Tries to apply a generic arithmentic operator
+    /// Tries to apply a generic arithmetic operator
     fn try_op<O>(&self, other: &Self, op: O) -> Result<Self, ()>
     where
         O: Fn(f32, f32) -> f32,
@@ -616,48 +738,55 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
     }
 
     /// Map the value of this node with the given operation.
-    pub fn map(&mut self, mut op: impl FnMut(f32) -> f32) {
-        fn map_internal<L: CalcNodeLeaf>(node: &mut CalcNode<L>, op: &mut impl FnMut(f32) -> f32) {
+    pub fn map(&mut self, mut op: impl FnMut(f32) -> f32) -> Result<(), ()> {
+        fn map_internal<L: CalcNodeLeaf>(
+            node: &mut CalcNode<L>,
+            op: &mut impl FnMut(f32) -> f32,
+        ) -> Result<(), ()> {
             match node {
                 CalcNode::Leaf(l) => l.map(op),
                 CalcNode::Negate(v) | CalcNode::Invert(v) => map_internal(v, op),
                 CalcNode::Sum(children) | CalcNode::Product(children) => {
                     for node in &mut **children {
-                        map_internal(node, op);
+                        map_internal(node, op)?;
                     }
+                    Ok(())
                 },
                 CalcNode::MinMax(children, _) => {
                     for node in &mut **children {
-                        map_internal(node, op);
+                        map_internal(node, op)?;
                     }
+                    Ok(())
                 },
                 CalcNode::Clamp { min, center, max } => {
-                    map_internal(min, op);
-                    map_internal(center, op);
-                    map_internal(max, op);
+                    map_internal(min, op)?;
+                    map_internal(center, op)?;
+                    map_internal(max, op)
                 },
                 CalcNode::Round { value, step, .. } => {
-                    map_internal(value, op);
-                    map_internal(step, op);
+                    map_internal(value, op)?;
+                    map_internal(step, op)
                 },
                 CalcNode::ModRem {
                     dividend, divisor, ..
                 } => {
-                    map_internal(dividend, op);
-                    map_internal(divisor, op);
+                    map_internal(dividend, op)?;
+                    map_internal(divisor, op)
                 },
                 CalcNode::Hypot(children) => {
                     for node in &mut **children {
-                        map_internal(node, op);
+                        map_internal(node, op)?;
                     }
+                    Ok(())
                 },
-                CalcNode::Abs(child) | CalcNode::Sign(child) => {
-                    map_internal(child, op);
-                },
+                CalcNode::Abs(child) | CalcNode::Sign(child) => map_internal(child, op),
+                // It is invalid to treat inner `CalcNode`s here - `anchor(--foo 50%) / 2` != `anchor(--foo 25%)`.
+                // Same applies to fallback, as we don't know if it will be used. Similar reasoning applies to `anchor-size()`.
+                CalcNode::Anchor(_) | CalcNode::AnchorSize(_) => Err(())
             }
         }
 
-        map_internal(self, &mut op);
+        map_internal(self, &mut op)
     }
 
     /// Convert this `CalcNode` into a `CalcNode` with a different leaf kind.
@@ -735,43 +864,63 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
             Self::Hypot(ref c) => CalcNode::Hypot(map_children(c, map)),
             Self::Abs(ref c) => CalcNode::Abs(Box::new(c.map_leaves_internal(map))),
             Self::Sign(ref c) => CalcNode::Sign(Box::new(c.map_leaves_internal(map))),
+            Self::Anchor(ref f) => CalcNode::Anchor(Box::new(
+                GenericAnchorFunction {
+                    target_element: f.target_element.clone(),
+                    side: match &f.side {
+                        AnchorSide::Keyword(k) => AnchorSide::Keyword(*k),
+                        AnchorSide::Percentage(p) => AnchorSide::Percentage(Box::new(p.map_leaves_internal(map))),
+                    },
+                    fallback: f.fallback.as_ref().map(|fb| Box::new(fb.map_leaves_internal(map))).into(),
+                }
+            )),
+            Self::AnchorSize(ref f) => CalcNode::AnchorSize(Box::new(
+                GenericAnchorSizeFunction {
+                    target_element: f.target_element.clone(),
+                    size: f.size,
+                    fallback: f.fallback.as_ref().map(|fb| Box::new(fb.map_leaves_internal(map))).into(),
+                }
+            )),
         }
     }
 
-    /// Reolve this node into a value.
+    /// Resolve this node into a value.
     pub fn resolve(&self) -> Result<L, ()> {
-        self.resolve_map(|l| Ok(l.clone()))
+        self.resolve_map(|l| Ok(l.clone()), |_| Err(()))
     }
 
-    /// Reolve this node into a value, given a function that maps the leaf values.
-    pub fn resolve_map<F>(&self, mut leaf_to_output_fn: F) -> Result<L, ()>
+    /// Resolve this node into a value, given a function that maps the leaf values.
+    pub fn resolve_map<F, NF>(&self, mut leaf_to_output_fn: F, mut node_mapping_fn: NF) -> Result<L, ()>
     where
         F: FnMut(&L) -> Result<L, ()>,
+        NF: FnMut(&CalcNode<L>) -> Result<CalcNode<L>, ()>,
     {
-        self.resolve_internal(&mut leaf_to_output_fn)
+        self.resolve_internal(&mut leaf_to_output_fn, &mut node_mapping_fn)
     }
 
-    fn resolve_internal<F>(&self, leaf_to_output_fn: &mut F) -> Result<L, ()>
+    fn resolve_internal<F, NF>(&self, leaf_to_output_fn: &mut F, node_mapping_fn: &mut NF) -> Result<L, ()>
     where
         F: FnMut(&L) -> Result<L, ()>,
+        NF: FnMut(&CalcNode<L>) -> Result<CalcNode<L>, ()>,
     {
-        match self {
+        let node = node_mapping_fn(self).ok();
+        match node.as_ref().unwrap_or(self) {
             Self::Leaf(l) => leaf_to_output_fn(l),
             Self::Negate(child) => {
-                let mut result = child.resolve_internal(leaf_to_output_fn)?;
-                result.map(|v| v.neg());
+                let mut result = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                result.map(|v| v.neg())?;
                 Ok(result)
             },
             Self::Invert(child) => {
-                let mut result = child.resolve_internal(leaf_to_output_fn)?;
-                result.map(|v| 1.0 / v);
+                let mut result = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                result.map(|v| 1.0 / v)?;
                 Ok(result)
             },
             Self::Sum(children) => {
-                let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
+                let mut result = children[0].resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                 for child in children.iter().skip(1) {
-                    let right = child.resolve_internal(leaf_to_output_fn)?;
+                    let right = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
                     // try_op will make sure we only sum leaves with the same type.
                     result = result.try_op(&right, |left, right| left + right)?;
                 }
@@ -779,22 +928,22 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 Ok(result)
             },
             Self::Product(children) => {
-                let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
+                let mut result = children[0].resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                 for child in children.iter().skip(1) {
-                    let right = child.resolve_internal(leaf_to_output_fn)?;
+                    let right = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
                     // Mutliply only allowed when either side is a number.
                     match result.as_number() {
                         Some(left) => {
                             // Left side is a number, so we use the right node as the result.
                             result = right;
-                            result.map(|v| v * left);
+                            result.map(|v| v * left)?;
                         },
                         None => {
                             // Left side is not a number, so check if the right side is.
                             match right.as_number() {
                                 Some(right) => {
-                                    result.map(|v| v * right);
+                                    result.map(|v| v * right)?;
                                 },
                                 None => {
                                     // Multiplying with both sides having units.
@@ -808,28 +957,28 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 Ok(result)
             },
             Self::MinMax(children, op) => {
-                let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
+                let mut result = children[0].resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
-                if result.is_nan() {
+                if result.is_nan()? {
                     return Ok(result);
                 }
 
                 for child in children.iter().skip(1) {
-                    let candidate = child.resolve_internal(leaf_to_output_fn)?;
+                    let candidate = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
-                    // Leave types must match for each child.
+                    // Leaf types must match for each child.
                     if !result.is_same_unit_as(&candidate) {
                         return Err(());
                     }
 
-                    if candidate.is_nan() {
+                    if candidate.is_nan()? {
                         result = candidate;
                         break;
                     }
 
                     let candidate_wins = match op {
-                        MinMaxOp::Min => candidate < result,
-                        MinMaxOp::Max => candidate > result,
+                        MinMaxOp::Min => candidate.lt(&result, PositivePercentageBasis::Yes),
+                        MinMaxOp::Max => candidate.gt(&result, PositivePercentageBasis::Yes),
                     };
 
                     if candidate_wins {
@@ -840,31 +989,31 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 Ok(result)
             },
             Self::Clamp { min, center, max } => {
-                let min = min.resolve_internal(leaf_to_output_fn)?;
-                let center = center.resolve_internal(leaf_to_output_fn)?;
-                let max = max.resolve_internal(leaf_to_output_fn)?;
+                let min = min.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                let center = center.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                let max = max.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                 if !min.is_same_unit_as(&center) || !max.is_same_unit_as(&center) {
                     return Err(());
                 }
 
-                if min.is_nan() {
+                if min.is_nan()? {
                     return Ok(min);
                 }
 
-                if center.is_nan() {
+                if center.is_nan()? {
                     return Ok(center);
                 }
 
-                if max.is_nan() {
+                if max.is_nan()? {
                     return Ok(max);
                 }
 
                 let mut result = center;
-                if result > max {
+                if result.gt(&max, PositivePercentageBasis::Yes) {
                     result = max;
                 }
-                if result < min {
+                if result.lt(&min, PositivePercentageBasis::Yes) {
                     result = min
                 }
 
@@ -875,14 +1024,17 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 value,
                 step,
             } => {
-                let mut value = value.resolve_internal(leaf_to_output_fn)?;
-                let step = step.resolve_internal(leaf_to_output_fn)?;
+                let mut value = value.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                let step = step.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                 if !value.is_same_unit_as(&step) {
                     return Err(());
                 }
 
-                let step = step.unitless_value();
+                let Some(step) = step.unitless_value() else {
+                    return Err(());
+                };
+                let step = step.abs();
 
                 value.map(|value| {
                     // TODO(emilio): Seems like at least a few of these
@@ -949,7 +1101,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                             }
                         },
                     }
-                });
+                })?;
 
                 Ok(value)
             },
@@ -958,86 +1110,80 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 divisor,
                 op,
             } => {
-                let mut dividend = dividend.resolve_internal(leaf_to_output_fn)?;
-                let divisor = divisor.resolve_internal(leaf_to_output_fn)?;
+                let mut dividend = dividend.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                let divisor = divisor.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                 if !dividend.is_same_unit_as(&divisor) {
                     return Err(());
                 }
 
-                let divisor = divisor.unitless_value();
-
-                dividend.map(|dividend| {
-                    // In mod(A, B) only, if B is infinite and A has opposite sign to B
-                    // (including an oppositely-signed zero), the result is NaN.
-                    // https://drafts.csswg.org/css-values/#round-infinities
-                    if matches!(op, ModRemOp::Mod) &&
-                        divisor.is_infinite() &&
-                        dividend.is_sign_negative() != divisor.is_sign_negative()
-                    {
-                        f32::NAN
-                    } else {
-                        match op {
-                            ModRemOp::Mod => dividend - divisor * (dividend / divisor).floor(),
-                            ModRemOp::Rem => dividend - divisor * (dividend / divisor).trunc(),
-                        }
-                    }
-                });
-
+                let Some(divisor) = divisor.unitless_value() else {
+                    return Err(());
+                };
+                dividend.map(|dividend| op.apply(dividend, divisor))?;
                 Ok(dividend)
             },
             Self::Hypot(children) => {
-                let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
-                result.map(|v| v.powi(2));
+                let mut result = children[0].resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                result.map(|v| v.powi(2))?;
 
                 for child in children.iter().skip(1) {
-                    let child_value = child.resolve_internal(leaf_to_output_fn)?;
+                    let child_value = child.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
                     if !result.is_same_unit_as(&child_value) {
                         return Err(());
                     }
 
-                    result.map(|v| v + child_value.unitless_value().powi(2));
+                    let Some(child_value) = child_value.unitless_value() else {
+                        return Err(());
+                    };
+                    result.map(|v| v + child_value.powi(2))?;
                 }
 
-                result.map(|v| v.sqrt());
+                result.map(|v| v.sqrt())?;
                 Ok(result)
             },
             Self::Abs(ref c) => {
-                let mut result = c.resolve_internal(leaf_to_output_fn)?;
+                let mut result = c.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
 
-                if !result.is_zero() {
-                    result.map(|v| v.abs());
-                }
+                result.map(|v| v.abs())?;
 
                 Ok(result)
             },
             Self::Sign(ref c) => {
-                let result = c.resolve_internal(leaf_to_output_fn)?;
-                Ok(L::sign_from(&result))
+                let result = c.resolve_internal(leaf_to_output_fn, node_mapping_fn)?;
+                Ok(L::sign_from(&result)?)
             },
+            Self::Anchor(_) | Self::AnchorSize(_) => Err(()),
         }
     }
 
-    fn is_negative_leaf(&self) -> bool {
-        match *self {
-            Self::Leaf(ref l) => l.is_negative(),
+    fn is_negative_leaf(&self) -> Result<bool, ()> {
+        Ok(match *self {
+            Self::Leaf(ref l) => l.is_negative()?,
             _ => false,
-        }
+        })
     }
 
-    fn is_zero_leaf(&self) -> bool {
-        match *self {
-            Self::Leaf(ref l) => l.is_zero(),
+    fn is_zero_leaf(&self) -> Result<bool, ()> {
+        Ok(match *self {
+            Self::Leaf(ref l) => l.is_zero()?,
             _ => false,
-        }
+        })
     }
 
-    fn is_infinite_leaf(&self) -> bool {
-        match *self {
-            Self::Leaf(ref l) => l.is_infinite(),
+    fn is_infinite_leaf(&self) -> Result<bool, ()> {
+        Ok(match *self {
+            Self::Leaf(ref l) => l.is_infinite()?,
             _ => false,
-        }
+        })
+    }
+
+    fn is_nan_leaf(&self) -> Result<bool, ()> {
+        Ok(match *self {
+            Self::Leaf(ref l) => l.is_nan()?,
+            _ => false,
+        })
     }
 
     /// Visits all the nodes in this calculation tree recursively, starting by
@@ -1090,7 +1236,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
             Self::Abs(ref mut value) | Self::Sign(ref mut value) => {
                 value.visit_depth_first_internal(f);
             },
-            Self::Leaf(..) => {},
+            Self::Leaf(..) | Self::Anchor(..) | Self::AnchorSize(..) => {},
         }
         f(self);
     }
@@ -1129,7 +1275,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 ref mut max,
             } => {
                 // NOTE: clamp() is max(min, min(center, max))
-                let min_cmp_center = match min.partial_cmp(&center) {
+                let min_cmp_center = match min.compare(&center, PositivePercentageBasis::Unknown) {
                     Some(o) => o,
                     None => return,
                 };
@@ -1142,7 +1288,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 }
 
                 // Otherwise try with max.
-                let max_cmp_center = match max.partial_cmp(&center) {
+                let max_cmp_center = match max.compare(&center, PositivePercentageBasis::Unknown) {
                     Some(o) => o,
                     None => return,
                 };
@@ -1150,7 +1296,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 if matches!(max_cmp_center, cmp::Ordering::Less) {
                     // max is less than center, so we need to return effectively
                     // `max(min, max)`.
-                    let max_cmp_min = match max.partial_cmp(&min) {
+                    let max_cmp_min = match max.compare(&min, PositivePercentageBasis::Unknown) {
                         Some(o) => o,
                         None => {
                             debug_assert!(
@@ -1179,54 +1325,64 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 ref mut value,
                 ref mut step,
             } => {
-                if step.is_zero_leaf() {
-                    value.coerce_to_value(f32::NAN);
+                if value_or_stop!(step.is_zero_leaf()) {
+                    value_or_stop!(value.coerce_to_value(f32::NAN));
                     replace_self_with!(&mut **value);
                     return;
                 }
 
-                if value.is_infinite_leaf() && step.is_infinite_leaf() {
-                    value.coerce_to_value(f32::NAN);
+                if value_or_stop!(value.is_infinite_leaf()) &&
+                    value_or_stop!(step.is_infinite_leaf())
+                {
+                    value_or_stop!(value.coerce_to_value(f32::NAN));
                     replace_self_with!(&mut **value);
                     return;
                 }
 
-                if value.is_infinite_leaf() {
+                if value_or_stop!(value.is_infinite_leaf()) {
                     replace_self_with!(&mut **value);
                     return;
                 }
 
-                if step.is_infinite_leaf() {
+                if value_or_stop!(step.is_infinite_leaf()) {
                     match strategy {
                         RoundingStrategy::Nearest | RoundingStrategy::ToZero => {
-                            value.coerce_to_value(0.0);
+                            value_or_stop!(value.coerce_to_value(0.0));
                             replace_self_with!(&mut **value);
                             return;
                         },
                         RoundingStrategy::Up => {
-                            if !value.is_negative_leaf() && !value.is_zero_leaf() {
-                                value.coerce_to_value(f32::INFINITY);
+                            if !value_or_stop!(value.is_negative_leaf()) &&
+                                !value_or_stop!(value.is_zero_leaf())
+                            {
+                                value_or_stop!(value.coerce_to_value(f32::INFINITY));
                                 replace_self_with!(&mut **value);
                                 return;
-                            } else if !value.is_negative_leaf() && value.is_zero_leaf() {
+                            } else if !value_or_stop!(value.is_negative_leaf()) &&
+                                value_or_stop!(value.is_zero_leaf())
+                            {
                                 replace_self_with!(&mut **value);
                                 return;
                             } else {
-                                value.coerce_to_value(0.0);
+                                value_or_stop!(value.coerce_to_value(0.0));
                                 replace_self_with!(&mut **value);
                                 return;
                             }
                         },
                         RoundingStrategy::Down => {
-                            if value.is_negative_leaf() && !value.is_zero_leaf() {
-                                value.coerce_to_value(f32::INFINITY);
+                            if value_or_stop!(value.is_negative_leaf()) &&
+                                !value_or_stop!(value.is_zero_leaf())
+                            {
+                                value_or_stop!(value.coerce_to_value(f32::INFINITY));
                                 replace_self_with!(&mut **value);
                                 return;
-                            } else if value.is_negative_leaf() && value.is_zero_leaf() {
+                            } else if value_or_stop!(value.is_negative_leaf()) &&
+                                value_or_stop!(value.is_zero_leaf())
+                            {
                                 replace_self_with!(&mut **value);
                                 return;
                             } else {
-                                value.coerce_to_value(0.0);
+                                value_or_stop!(value.coerce_to_value(0.0));
                                 replace_self_with!(&mut **value);
                                 return;
                             }
@@ -1234,13 +1390,18 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     }
                 }
 
-                if step.is_negative_leaf() {
+                if value_or_stop!(step.is_negative_leaf()) {
                     step.negate();
                 }
 
                 let remainder = value_or_stop!(value.try_op(step, Rem::rem));
+                if value_or_stop!(remainder.is_zero_leaf()) {
+                    replace_self_with!(&mut **value);
+                    return;
+                }
 
-                let (mut lower_bound, mut upper_bound) = if value.is_negative_leaf() {
+                let (mut lower_bound, mut upper_bound) = if value_or_stop!(value.is_negative_leaf())
+                {
                     let upper_bound = value_or_stop!(value.try_op(&remainder, Sub::sub));
                     let lower_bound = value_or_stop!(upper_bound.try_op(&step, Sub::sub));
 
@@ -1257,7 +1418,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                         let lower_diff = value_or_stop!(value.try_op(&lower_bound, Sub::sub));
                         let upper_diff = value_or_stop!(upper_bound.try_op(value, Sub::sub));
                         // In case of a tie, use the upper bound
-                        if lower_diff < upper_diff {
+                        if lower_diff.lt(&upper_diff, PositivePercentageBasis::Unknown) {
                             replace_self_with!(&mut lower_bound);
                         } else {
                             replace_self_with!(&mut upper_bound);
@@ -1273,16 +1434,16 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                         let mut lower_diff = lower_bound.clone();
                         let mut upper_diff = upper_bound.clone();
 
-                        if lower_diff.is_negative_leaf() {
+                        if value_or_stop!(lower_diff.is_negative_leaf()) {
                             lower_diff.negate();
                         }
 
-                        if upper_diff.is_negative_leaf() {
+                        if value_or_stop!(upper_diff.is_negative_leaf()) {
                             upper_diff.negate();
                         }
 
                         // In case of a tie, use the upper bound
-                        if lower_diff < upper_diff {
+                        if lower_diff.lt(&upper_diff, PositivePercentageBasis::Unknown) {
                             replace_self_with!(&mut lower_bound);
                         } else {
                             replace_self_with!(&mut upper_bound);
@@ -1295,29 +1456,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 ref divisor,
                 op,
             } => {
-                let mut result = dividend.clone();
-
-                // In mod(A, B) only, if B is infinite and A has opposite sign to B
-                // (including an oppositely-signed zero), the result is NaN.
-                // https://drafts.csswg.org/css-values/#round-infinities
-                if matches!(op, ModRemOp::Mod) &&
-                    divisor.is_infinite_leaf() &&
-                    dividend.is_negative_leaf() != divisor.is_negative_leaf()
-                {
-                    result.coerce_to_value(f32::NAN);
-                    replace_self_with!(&mut *result);
-                    return;
-                }
-
-                let mut result = value_or_stop!(match op {
-                    ModRemOp::Mod => {
-                        dividend.try_op(divisor, |a, b| a - b * (a / b).floor())
-                    },
-                    ModRemOp::Rem => {
-                        dividend.try_op(divisor, |a, b| a - b * (a / b).trunc())
-                    },
-                });
-
+                let mut result = value_or_stop!(dividend.try_op(divisor, |a, b| op.apply(a, b)));
                 replace_self_with!(&mut result);
             },
             Self::MinMax(ref mut children, op) => {
@@ -1326,9 +1465,20 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     MinMaxOp::Max => cmp::Ordering::Greater,
                 };
 
+                if value_or_stop!(children[0].is_nan_leaf()) {
+                    replace_self_with!(&mut children[0]);
+                    return;
+                }
+
                 let mut result = 0;
                 for i in 1..children.len() {
-                    let o = match children[i].partial_cmp(&children[result]) {
+                    if value_or_stop!(children[i].is_nan_leaf()) {
+                        replace_self_with!(&mut children[i]);
+                        return;
+                    }
+                    let o = match children[i]
+                        .compare(&children[result], PositivePercentageBasis::Unknown)
+                    {
                         // We can't compare all the children, so we can't
                         // know which one will actually win. Bail out and
                         // keep ourselves as a min / max function.
@@ -1437,6 +1587,9 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
 
                 debug_assert!(children.len() >= 2, "Should still have multiple kids!");
 
+                // Sort by spec order.
+                children.sort_unstable_by_key(|c| c.sort_key());
+
                 // NOTE: if the function returns true, by the docs of dedup_by,
                 // a is removed.
                 children.dedup_by(|right, left| left.try_product_in_place(right));
@@ -1463,13 +1616,13 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
             },
             Self::Abs(ref mut child) => {
                 if let CalcNode::Leaf(leaf) = child.as_mut() {
-                    leaf.map(|v| if v.is_zero() { v } else { v.abs() });
+                    value_or_stop!(leaf.map(|v| v.abs()));
                     replace_self_with!(&mut **child);
                 }
             },
             Self::Sign(ref mut child) => {
                 if let CalcNode::Leaf(leaf) = child.as_mut() {
-                    let mut result = Self::Leaf(L::sign_from(leaf));
+                    let mut result = Self::Leaf(value_or_stop!(L::sign_from(leaf)));
                     replace_self_with!(&mut result);
                 }
             },
@@ -1498,7 +1651,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                         // 1. If root’s child is a number (not a percentage or dimension) return the
                         // reciprocal of the child’s value.
                         if leaf.unit().is_empty() {
-                            child.map(|v| 1.0 / v);
+                            value_or_stop!(child.map(|v| 1.0 / v));
                             replace_self_with!(&mut **child);
                         }
                     },
@@ -1514,6 +1667,19 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
             Self::Leaf(ref mut l) => {
                 l.simplify();
             },
+            Self::Anchor(ref mut f) => {
+                if let AnchorSide::Percentage(ref mut n) =  f.side {
+                    n.simplify_and_sort();
+                }
+                if let Some(fallback) = f.fallback.as_mut() {
+                    fallback.simplify_and_sort();
+                }
+            },
+            Self::AnchorSize(ref mut f) => {
+                if let Some(fallback) = f.fallback.as_mut() {
+                    fallback.simplify_and_sort();
+                }
+            }
         }
     }
 
@@ -1580,6 +1746,9 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 true
             },
             Self::Invert(_) => {
+                if matches!(level, ArgumentLevel::CalculationRoot) {
+                    dest.write_str("calc")?;
+                }
                 dest.write_str("(1 / ")?;
                 true
             },
@@ -1594,7 +1763,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     true
                 },
             },
-            Self::Leaf(_) => match level {
+            Self::Leaf(_) | Self::Anchor(_) | Self::AnchorSize(_) => match level {
                 ArgumentLevel::CalculationRoot => {
                     dest.write_str("calc(")?;
                     true
@@ -1623,10 +1792,12 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     if !first {
                         match child {
                             Self::Leaf(l) => {
-                                if l.is_negative() {
+                                if let Ok(true) = l.is_negative() {
                                     dest.write_str(" - ")?;
                                     let mut negated = l.clone();
-                                    negated.negate();
+                                    // We can unwrap here, because we already
+                                    // checked if the value inside is negative.
+                                    negated.map(std::ops::Neg::neg).unwrap();
                                     negated.to_css(dest)?;
                                 } else {
                                     dest.write_str(" + ")?;
@@ -1701,6 +1872,8 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 v.to_css_impl(dest, ArgumentLevel::ArgumentRoot)?
             },
             Self::Leaf(ref l) => l.to_css(dest)?,
+            Self::Anchor(ref f) => f.to_css(dest)?,
+            Self::AnchorSize(ref f) => f.to_css(dest)?,
         }
 
         if write_closing_paren {
@@ -1708,15 +1881,21 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         }
         Ok(())
     }
-}
 
-impl<L: CalcNodeLeaf> PartialOrd for CalcNode<L> {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+    fn compare(
+        &self,
+        other: &Self,
+        basis_positive: PositivePercentageBasis,
+    ) -> Option<cmp::Ordering> {
         match (self, other) {
-            (&CalcNode::Leaf(ref one), &CalcNode::Leaf(ref other)) => one.partial_cmp(other),
+            (&CalcNode::Leaf(ref one), &CalcNode::Leaf(ref other)) => {
+                one.compare(other, basis_positive)
+            },
             _ => None,
         }
     }
+
+    compare_helpers!();
 }
 
 impl<L: CalcNodeLeaf> ToCss for CalcNode<L> {

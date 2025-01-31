@@ -11,12 +11,18 @@ const TEST_ENGINE_BASENAME = "searchSuggestionEngine.xml";
 
 let gMaxResults;
 
-XPCOMUtils.defineLazyGetter(this, "oneOffSearchButtons", () => {
+ChromeUtils.defineLazyGetter(this, "oneOffSearchButtons", () => {
   return UrlbarTestUtils.getOneOffSearchButtons(window);
 });
 
 let originalEngine;
 let newEngine;
+
+add_setup(async () => {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
+});
 
 // The one-off context menu should not be shown.
 add_task(async function contextMenu_not_shown() {

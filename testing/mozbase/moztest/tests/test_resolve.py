@@ -11,18 +11,14 @@ except ImportError:
 import json
 import os
 import re
-import shutil
-import tempfile
 from collections import defaultdict
 
 import manifestupdate
 import mozpack.path as mozpath
 import mozunit
 import pytest
-from mozbuild.base import MozbuildObject
 from mozbuild.frontend.reader import BuildReader
 from mozbuild.test.common import MockConfig
-from mozfile import NamedTemporaryFile
 from moztest.resolve import (
     TEST_SUITES,
     BuildBackendLoader,
@@ -55,7 +51,7 @@ def create_tests(topsrcdir):
                 "manifest",
                 defaults.pop(
                     "manifest",
-                    mozpath.join(mozpath.dirname(path), manifest_name + ".ini"),
+                    mozpath.join(mozpath.dirname(path), manifest_name + ".toml"),
                 ),
             )
 
@@ -105,6 +101,7 @@ def all_tests(create_tests):
                 "apple/test_a11y.html",
                 {
                     "expected": "pass",
+                    "manifest": "apple/a11y.toml",
                     "flavor": "a11y",
                 },
             ),
@@ -127,8 +124,8 @@ def all_tests(create_tests):
             (
                 "carrot/test_included.js",
                 {
-                    "ancestor_manifest": "carrot/xpcshell-one.ini",
-                    "manifest": "carrot/xpcshell-shared.ini",
+                    "ancestor_manifest": "carrot/xpcshell-one.toml",
+                    "manifest": "carrot/xpcshell-shared.toml",
                     "flavor": "xpcshell",
                     "stick": "one",
                 },
@@ -136,8 +133,8 @@ def all_tests(create_tests):
             (
                 "carrot/test_included.js",
                 {
-                    "ancestor_manifest": "carrot/xpcshell-two.ini",
-                    "manifest": "carrot/xpcshell-shared.ini",
+                    "ancestor_manifest": "carrot/xpcshell-two.toml",
+                    "manifest": "carrot/xpcshell-shared.toml",
                     "flavor": "xpcshell",
                     "stick": "two",
                 },
@@ -148,7 +145,7 @@ def all_tests(create_tests):
                     "flavor": "xpcshell",
                     "generated-files": "head_update.js",
                     "head": "head_update.js",
-                    "manifest": "dragonfruit/xpcshell.ini",
+                    "manifest": "dragonfruit/xpcshell.toml",
                     "reason": "busted",
                     "run-sequentially": "Launches application.",
                     "skip-if": "os == 'android'",
@@ -160,7 +157,7 @@ def all_tests(create_tests):
                     "flavor": "xpcshell",
                     "generated-files": "head_update.js",
                     "head": "head_update.js head2.js",
-                    "manifest": "dragonfruit/elderberry/xpcshell_updater.ini",
+                    "manifest": "dragonfruit/elderberry/xpcshell_updater.toml",
                     "reason": "don't work",
                     "run-sequentially": "Launches application.",
                     "skip-if": "os == 'android'",
@@ -170,7 +167,7 @@ def all_tests(create_tests):
                 "fig/grape/src/TestInstrumentationA.java",
                 {
                     "flavor": "instrumentation",
-                    "manifest": "fig/grape/instrumentation.ini",
+                    "manifest": "fig/grape/instrumentation.toml",
                     "subsuite": "background",
                 },
             ),
@@ -178,7 +175,7 @@ def all_tests(create_tests):
                 "fig/huckleberry/src/TestInstrumentationB.java",
                 {
                     "flavor": "instrumentation",
-                    "manifest": "fig/huckleberry/instrumentation.ini",
+                    "manifest": "fig/huckleberry/instrumentation.toml",
                     "subsuite": "browser",
                 },
             ),
@@ -186,7 +183,7 @@ def all_tests(create_tests):
                 "juniper/browser_chrome.js",
                 {
                     "flavor": "browser-chrome",
-                    "manifest": "juniper/browser.ini",
+                    "manifest": "juniper/browser.toml",
                     "skip-if": "e10s  # broken",
                 },
             ),
@@ -194,7 +191,7 @@ def all_tests(create_tests):
                 "kiwi/browser_devtools.js",
                 {
                     "flavor": "browser-chrome",
-                    "manifest": "kiwi/browser.ini",
+                    "manifest": "kiwi/browser.toml",
                     "subsuite": "devtools",
                     "tags": "devtools",
                 },
@@ -210,19 +207,30 @@ def defaults(topsrcdir):
         # Use platform-specific separators if needed to avoid regressing on bug 1644223.
         return os.path.normpath(os.path.join(topsrcdir, relpath))
 
+    def to_ancestor_manifest_path(relpath):
+        # ancestor_manifest uses relative paths with platform-specific path separators.
+        # This format must match the actual generation as defined in
+        # https://searchfox.org/mozilla-central/rev/1460e875c4189d975835af78fd06bd6daa9b553a/testing/mozbase/manifestparser/manifestparser/manifestparser.py#239-249
+        return os.path.normpath(relpath)
+
+    # This matches the format of "test-defaults.pkl", which is generated by
+    # testing/mozbase/manifestparser/manifestparser/manifestparser.py and
+    # test_test_defaults_metadata_with_include_and_ancestor_manifest in
+    # python/mozbuild/mozbuild/test/backend/test_test_manifest.py verifies that
+    # the format is as expected.
     return {
-        (to_abspath("dragonfruit/elderberry/xpcshell_updater.ini")): {
-            "support-files": "\ndata/**\nxpcshell_updater.ini"
+        (to_abspath("dragonfruit/elderberry/xpcshell_updater.toml")): {
+            "support-files": "data/**\nxpcshell_updater.toml"
         },
         (
-            to_abspath("carrot/xpcshell-one.ini"),
-            to_abspath("carrot/xpcshell-shared.ini"),
+            to_ancestor_manifest_path("carrot/xpcshell-one.toml"),
+            to_abspath("carrot/xpcshell-shared.toml"),
         ): {
             "head": "head_one.js",
         },
         (
-            to_abspath("carrot/xpcshell-two.ini"),
-            to_abspath("carrot/xpcshell-shared.ini"),
+            to_ancestor_manifest_path("carrot/xpcshell-two.toml"),
+            to_abspath("carrot/xpcshell-shared.toml"),
         ): {
             "head": "head_two.js",
         },
@@ -339,12 +347,12 @@ def test_resolve_multiple_paths(resolver):
 
 
 def test_resolve_support_files(resolver):
-    expected_support_files = "\ndata/**\nxpcshell_updater.ini"
+    expected_support_files = "data/**\nxpcshell_updater.toml"
     tests = list(resolver.resolve_tests(paths=["dragonfruit"]))
     assert len(tests) == 2
 
     for test in tests:
-        if test["manifest"].endswith("xpcshell_updater.ini"):
+        if test["manifest"].endswith("xpcshell_updater.toml"):
             assert test["support-files"] == expected_support_files
         else:
             assert "support-files" not in test
@@ -355,13 +363,13 @@ def test_resolve_path_prefix(resolver):
     assert len(tests) == 1
 
     # relative manifest
-    tests = list(resolver._resolve(paths=["apple/a11y.ini"]))
+    tests = list(resolver._resolve(paths=["apple/a11y.toml"]))
     assert len(tests) == 1
     assert tests[0]["name"] == "test_a11y.html"
 
     # absolute manifest
     tests = list(
-        resolver._resolve(paths=[os.path.join(resolver.topsrcdir, "apple/a11y.ini")])
+        resolver._resolve(paths=[os.path.join(resolver.topsrcdir, "apple/a11y.toml")])
     )
     assert len(tests) == 1
     assert tests[0]["name"] == "test_a11y.html"
@@ -453,18 +461,18 @@ def test_ancestor_manifest_defaults(resolver, topsrcdir, defaults):
     tests = list(resolver._resolve(paths=["carrot/test_included.js"]))
     assert len(tests) == 2
 
-    if tests[0]["ancestor_manifest"] == os.path.join("carrot", "xpcshell-one.ini"):
+    if tests[0]["ancestor_manifest"] == os.path.join("carrot", "xpcshell-one.toml"):
         [testOne, testTwo] = tests
     else:
         [testTwo, testOne] = tests
 
-    assert testOne["ancestor_manifest"] == os.path.join("carrot", "xpcshell-one.ini")
-    assert testOne["manifest_relpath"] == os.path.join("carrot", "xpcshell-shared.ini")
+    assert testOne["ancestor_manifest"] == os.path.join("carrot", "xpcshell-one.toml")
+    assert testOne["manifest_relpath"] == os.path.join("carrot", "xpcshell-shared.toml")
     assert testOne["head"] == "head_one.js"
     assert testOne["stick"] == "one"
 
-    assert testTwo["ancestor_manifest"] == os.path.join("carrot", "xpcshell-two.ini")
-    assert testTwo["manifest_relpath"] == os.path.join("carrot", "xpcshell-shared.ini")
+    assert testTwo["ancestor_manifest"] == os.path.join("carrot", "xpcshell-two.toml")
+    assert testTwo["manifest_relpath"] == os.path.join("carrot", "xpcshell-shared.toml")
     assert testTwo["head"] == "head_two.js"
     assert testTwo["stick"] == "two"
 
@@ -472,8 +480,6 @@ def test_ancestor_manifest_defaults(resolver, topsrcdir, defaults):
 def test_task_regexes():
     """Test the task_regexes defined in TEST_SUITES."""
     task_labels = [
-        "test-linux64/opt-browser-screenshots-1",
-        "test-linux64/opt-browser-screenshots-e10s-1",
         "test-linux64/opt-marionette",
         "test-linux64/opt-mochitest-plain",
         "test-linux64/debug-mochitest-plain-e10s",
@@ -489,7 +495,8 @@ def test_task_regexes():
         "test-linux64/opt-mochitest-gpu-e10s",
         "test-linux64/opt-mochitest-media-e10s-1",
         "test-linux64/opt-mochitest-media-e10s-11",
-        "test-linux64/opt-mochitest-screenshots-1",
+        "test-linux64/opt-mochitest-browser-screenshots-1",
+        "test-linux64/opt-mochitest-browser-screenshots-e10s-1",
         "test-linux64/opt-reftest",
         "test-linux64/opt-geckoview-reftest",
         "test-linux64/debug-reftest-e10s-1",
@@ -531,9 +538,9 @@ def test_task_regexes():
             "test-linux64/opt-mochitest-gpu",
             "test-linux64/opt-mochitest-gpu-e10s",
         ],
-        "mochitest-browser-chrome-screenshots": [
-            "test-linux64/opt-browser-screenshots-1",
-            "test-linux64/opt-browser-screenshots-e10s-1",
+        "mochitest-browser-screenshots": [
+            "test-linux64/opt-mochitest-browser-screenshots-1",
+            "test-linux64/opt-mochitest-browser-screenshots-e10s-1",
         ],
         "reftest": [
             "test-linux64/opt-reftest",

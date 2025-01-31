@@ -6,6 +6,7 @@ Transform the repackage task into an actual task description.
 """
 
 from taskgraph.transforms.base import TransformSequence
+from taskgraph.util.copy import deepcopy
 from taskgraph.util.dependencies import get_primary_dependency
 from taskgraph.util.schema import Schema, optionally_keyed_by, resolve_keyed_by
 from taskgraph.util.taskcluster import get_artifact_prefix
@@ -13,7 +14,6 @@ from voluptuous import Extra, Optional, Required
 
 from gecko_taskgraph.transforms.job import job_description_schema
 from gecko_taskgraph.util.attributes import copy_attributes_from_dependent_job
-from gecko_taskgraph.util.copy_task import copy_task
 from gecko_taskgraph.util.platforms import architecture, archive_format
 from gecko_taskgraph.util.workertypes import worker_type_implementation
 
@@ -42,7 +42,7 @@ packaging_description_schema = Schema(
         Optional("shipping-product"): job_description_schema["shipping-product"],
         Optional("shipping-phase"): job_description_schema["shipping-phase"],
         Required("package-formats"): optionally_keyed_by(
-            "build-platform", "release-type", [str]
+            "build-platform", "release-type", "build-type", [str]
         ),
         Optional("msix"): {
             Optional("channel"): optionally_keyed_by(
@@ -93,7 +93,7 @@ packaging_description_schema = Schema(
             Optional("run-as-root"): bool,
             Optional("use-caches"): bool,
         },
-        Optional("job-from"): job_description_schema["job-from"],
+        Optional("task-from"): job_description_schema["task-from"],
     }
 )
 
@@ -204,6 +204,41 @@ PACKAGE_FORMATS = {
         },
         "output": "target.dmg",
     },
+    "dmg-attrib": {
+        "args": [
+            "dmg",
+            "--attribution_sentinel",
+            "__MOZCUSTOM__",
+        ],
+        "inputs": {
+            "input": "target{archive_format}",
+        },
+        "output": "target.dmg",
+    },
+    "dmg-lzma": {
+        "args": [
+            "dmg",
+            "--compression",
+            "lzma",
+        ],
+        "inputs": {
+            "input": "target{archive_format}",
+        },
+        "output": "target.dmg",
+    },
+    "dmg-attrib-lzma": {
+        "args": [
+            "dmg",
+            "--compression",
+            "lzma",
+            "--attribution_sentinel",
+            "__MOZCUSTOM__",
+        ],
+        "inputs": {
+            "input": "target{archive_format}",
+        },
+        "output": "target.dmg",
+    },
     "pkg": {
         "args": ["pkg"],
         "inputs": {
@@ -246,7 +281,7 @@ PACKAGE_FORMATS = {
             "--arch",
             "{architecture}",
             "--templates",
-            "browser/installer/linux/app/debian",
+            "{deb-templates}",
             "--version",
             "{version_display}",
             "--build-number",
@@ -269,7 +304,9 @@ PACKAGE_FORMATS = {
             "--build-number",
             "{build_number}",
             "--templates",
-            "browser/installer/linux/langpack/debian",
+            "{deb-l10n-templates}",
+            "--release-product",
+            "{release_product}",
         ],
         "inputs": {
             "input-xpi-file": "target.langpack.xpi",
@@ -277,12 +314,27 @@ PACKAGE_FORMATS = {
         },
         "output": "target.langpack.deb",
     },
+    "desktop-file": {
+        "args": [
+            "desktop-file",
+            "--flavor",
+            "flatpak",
+            "--release-product",
+            "firefox",
+            "--release-type",
+            "{release_type}",
+        ],
+        "inputs": {},
+        "output": "target.flatpak.desktop",
+    },
 }
 MOZHARNESS_EXPANSIONS = [
     "package-name",
     "installer-tag",
     "fetch-dir",
     "stub-installer-tag",
+    "deb-templates",
+    "deb-l10n-templates",
     "sfx-stub",
     "wsx-stub",
 ]
@@ -310,6 +362,7 @@ def copy_in_useful_magic(config, jobs):
 
         job["build-platform"] = dep.attributes.get("build_platform")
         job["shipping-product"] = dep.attributes.get("shipping_product")
+        job["build-type"] = dep.attributes.get("build_type")
         yield job
 
 
@@ -324,7 +377,7 @@ def handle_keyed_by(config, jobs):
         "worker.max-run-time",
     ]
     for job in jobs:
-        job = copy_task(job)  # don't overwrite dict values here
+        job = deepcopy(job)  # don't overwrite dict values here
         for field in fields:
             resolve_keyed_by(
                 item=job,
@@ -475,7 +528,7 @@ def make_job_description(config, jobs):
             # if repackage_signing_task doesn't exists, generate the stub installer
             package_formats += ["installer-stub"]
         for format in package_formats:
-            command = copy_task(PACKAGE_FORMATS[format])
+            command = deepcopy(PACKAGE_FORMATS[format])
             substs = {
                 "archive_format": archive_format(build_platform),
                 "_locale": _fetch_subst_locale,
@@ -492,7 +545,7 @@ def make_job_description(config, jobs):
 
             # We need to resolve `msix.*` values keyed by `package-format` for each format, not
             # just once, so we update a temporary copy just for extracting these values.
-            temp_job = copy_task(job)
+            temp_job = deepcopy(job)
             for msix_key in (
                 "channel",
                 "identity-name",

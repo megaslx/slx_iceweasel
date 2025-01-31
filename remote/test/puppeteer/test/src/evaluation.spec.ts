@@ -1,17 +1,7 @@
 /**
- * Copyright 2018 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2018 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import expect from 'expect';
@@ -107,14 +97,14 @@ describe('Evaluation specs', function () {
       await page.goto(server.PREFIX + '/global-var.html');
       expect(await page.evaluate('globalVar')).toBe(123);
     });
-    it('should return undefined for objects with symbols', async () => {
+    it('should replace symbols with undefined', async () => {
       const {page} = await getTestState();
 
       expect(
         await page.evaluate(() => {
-          return [Symbol('foo4')];
+          return [Symbol('foo4'), 'foo'];
         })
-      ).toBe(undefined);
+      ).toEqual([undefined, 'foo']);
     });
     it('should work with function shorthands', async () => {
       const {page} = await getTestState();
@@ -195,7 +185,7 @@ describe('Evaluation specs', function () {
         }
       );
       const result = await page.evaluate(async function () {
-        return await (globalThis as any).callController(9, 3);
+        return (globalThis as any).callController(9, 3);
       });
       expect(result).toBe(27);
     });
@@ -334,34 +324,29 @@ describe('Evaluation specs', function () {
         promise: {},
       });
     });
-    it('should fail for circular object', async () => {
+    it('should work for circular object', async () => {
       const {page} = await getTestState();
 
       const result = await page.evaluate(() => {
-        const a: Record<string, any> = {};
+        const a: Record<string, unknown> = {
+          c: 5,
+          d: {
+            foo: 'bar',
+          },
+        };
         const b = {a};
         a['b'] = b;
         return a;
       });
-      expect(result).toBe(undefined);
-    });
-    it('should be able to throw a tricky error', async () => {
-      const {page} = await getTestState();
-
-      const windowHandle = await page.evaluateHandle(() => {
-        return window;
+      expect(result).toMatchObject({
+        c: 5,
+        d: {
+          foo: 'bar',
+        },
+        b: {
+          a: undefined,
+        },
       });
-      const errorText = await windowHandle.jsonValue().catch(error_ => {
-        return error_.message;
-      });
-      const error = await page
-        .evaluate(errorText => {
-          throw new Error(errorText);
-        }, errorText)
-        .catch(error_ => {
-          return error_;
-        });
-      expect(error.message).toContain(errorText);
     });
     it('should accept a string', async () => {
       const {page} = await getTestState();
@@ -385,7 +370,7 @@ describe('Evaluation specs', function () {
       const {page} = await getTestState();
 
       await page.setContent('<section>42</section>');
-      const element = (await page.$('section'))!;
+      using element = (await page.$('section'))!;
       const text = await page.evaluate(e => {
         return e.textContent;
       }, element);
@@ -395,12 +380,13 @@ describe('Evaluation specs', function () {
       const {page} = await getTestState();
 
       await page.setContent('<section>39</section>');
-      const element = (await page.$('section'))!;
+      using element = (await page.$('section'))!;
       expect(element).toBeTruthy();
+      // We want to dispose early.
       await element.dispose();
       let error!: Error;
       await page
-        .evaluate((e: HTMLElement) => {
+        .evaluate(e => {
           return e.textContent;
         }, element)
         .catch(error_ => {
@@ -412,7 +398,7 @@ describe('Evaluation specs', function () {
       const {page, server} = await getTestState();
 
       await attachFrame(page, 'frame1', server.EMPTY_PAGE);
-      const bodyHandle = await page.frames()[1]!.$('body');
+      using bodyHandle = await page.frames()[1]!.$('body');
       let error!: Error;
       await page
         .evaluate(body => {
@@ -422,9 +408,10 @@ describe('Evaluation specs', function () {
           return (error = error_);
         });
       expect(error).toBeTruthy();
-      expect(error.message).toContain(
-        'JSHandles can be evaluated only in the context they were created'
-      );
+      expect(error.message).atLeastOneToContain([
+        'JSHandles can be evaluated only in the context they were created',
+        "Trying to evaluate JSHandle from different frames. Usually this means you're using a handle from a page on a different page.",
+      ]);
     });
     it('should simulate a user gesture', async () => {
       const {page} = await getTestState();
@@ -436,35 +423,17 @@ describe('Evaluation specs', function () {
       });
       expect(result).toBe(true);
     });
-    it('should throw a nice error after a navigation', async () => {
-      const {page} = await getTestState();
-
-      const executionContext = await page.mainFrame().executionContext();
-
-      await Promise.all([
-        page.waitForNavigation(),
-        executionContext.evaluate(() => {
-          return window.location.reload();
-        }),
-      ]);
-      const error = await executionContext
-        .evaluate(() => {
-          return null;
-        })
-        .catch(error_ => {
-          return error_;
-        });
-      expect((error as Error).message).toContain('navigation');
-    });
     it('should not throw an error when evaluation does a navigation', async () => {
       const {page, server} = await getTestState();
 
       await page.goto(server.PREFIX + '/one-style.html');
+      const onRequest = server.waitForRequest('/empty.html');
       const result = await page.evaluate(() => {
         (window as any).location = '/empty.html';
         return [42];
       });
       expect(result).toEqual([42]);
+      await onRequest;
     });
     it('should transfer 100Mb of data from page to node.js', async function () {
       this.timeout(25_000);
@@ -489,6 +458,28 @@ describe('Evaluation specs', function () {
           return (error = error_);
         });
       expect(error.message).toContain('Error in promise');
+    });
+
+    it('should return properly serialize objects with unknown type fields', async () => {
+      const {page} = await getTestState();
+      await page.setContent(
+        "<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='>"
+      );
+
+      const result = await page.evaluate(async () => {
+        const image = document.querySelector('img')!;
+        const imageBitmap = await createImageBitmap(image);
+
+        return {
+          a: 'foo',
+          b: imageBitmap,
+        };
+      });
+
+      expect(result).toEqual({
+        a: 'foo',
+        b: undefined,
+      });
     });
   });
 

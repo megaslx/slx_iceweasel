@@ -1,7 +1,8 @@
 use super::{BackendResult, Error, Version, Writer};
 use crate::{
-    AddressSpace, Binding, Bytes, Expression, Handle, ImageClass, ImageDimension, Interpolation,
-    Sampling, ScalarKind, ShaderStage, StorageFormat, Type, TypeInner,
+    back::glsl::{Options, WriterFlags},
+    AddressSpace, Binding, Expression, Handle, ImageClass, ImageDimension, Interpolation,
+    SampleLevel, Sampling, Scalar, ScalarKind, ShaderStage, StorageFormat, Type, TypeInner,
 };
 use std::fmt::Write;
 
@@ -41,6 +42,16 @@ bitflags::bitflags! {
         const TEXTURE_LEVELS = 1 << 19;
         /// Image size query
         const IMAGE_SIZE = 1 << 20;
+        /// Dual source blending
+        const DUAL_SOURCE_BLENDING = 1 << 21;
+        /// Instance index
+        ///
+        /// We can always support this, either through the language or a polyfill
+        const INSTANCE_INDEX = 1 << 22;
+        /// Sample specific LODs of cube / array shadow textures
+        const TEXTURE_SHADOW_LOD = 1 << 23;
+        /// Subgroup operations
+        const SUBGROUP_OPERATIONS = 1 << 24;
     }
 }
 
@@ -61,9 +72,13 @@ impl FeaturesManager {
         self.0 |= features
     }
 
+    /// Checks if the list of features [`Features`] contains the specified [`Features`]
+    pub fn contains(&mut self, features: Features) -> bool {
+        self.0.contains(features)
+    }
+
     /// Checks that all required [`Features`] are available for the specified
-    /// [`Version`](super::Version) otherwise returns an
-    /// [`Error::MissingFeatures`](super::Error::MissingFeatures)
+    /// [`Version`] otherwise returns an [`Error::MissingFeatures`].
     pub fn check_availability(&self, version: Version) -> BackendResult {
         // Will store all the features that are unavailable
         let mut missing = Features::empty();
@@ -97,13 +112,14 @@ impl FeaturesManager {
         check_feature!(ARRAY_OF_ARRAYS, 120, 310);
         check_feature!(IMAGE_LOAD_STORE, 130, 310);
         check_feature!(CONSERVATIVE_DEPTH, 130, 300);
-        check_feature!(CONSERVATIVE_DEPTH, 130, 300);
         check_feature!(NOPERSPECTIVE_QUALIFIER, 130);
         check_feature!(SAMPLE_QUALIFIER, 400, 320);
         check_feature!(CLIP_DISTANCE, 130, 300 /* with extension */);
         check_feature!(CULL_DISTANCE, 450, 300 /* with extension */);
         check_feature!(SAMPLE_VARIABLES, 400, 300);
         check_feature!(DYNAMIC_ARRAY_SIZE, 430, 310);
+        check_feature!(DUAL_SOURCE_BLENDING, 330, 300 /* with extension */);
+        check_feature!(SUBGROUP_OPERATIONS, 430, 310);
         match version {
             Version::Embedded { is_webgl: true, .. } => check_feature!(MULTI_VIEW, 140, 300),
             _ => check_feature!(MULTI_VIEW, 140, 310),
@@ -114,6 +130,7 @@ impl FeaturesManager {
         check_feature!(TEXTURE_SAMPLES, 150);
         check_feature!(TEXTURE_LEVELS, 130);
         check_feature!(IMAGE_SIZE, 430, 310);
+        check_feature!(TEXTURE_SHADOW_LOD, 200, 300);
 
         // Return an error if there are missing features
         if missing.is_empty() {
@@ -128,13 +145,13 @@ impl FeaturesManager {
     /// # Notes
     /// This won't check for feature availability so it might output extensions that aren't even
     /// supported.[`check_availability`](Self::check_availability) will check feature availability
-    pub fn write(&self, version: Version, mut out: impl Write) -> BackendResult {
-        if self.0.contains(Features::COMPUTE_SHADER) && !version.is_es() {
+    pub fn write(&self, options: &Options, mut out: impl Write) -> BackendResult {
+        if self.0.contains(Features::COMPUTE_SHADER) && !options.version.is_es() {
             // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_compute_shader.txt
             writeln!(out, "#extension GL_ARB_compute_shader : require")?;
         }
 
-        if self.0.contains(Features::BUFFER_STORAGE) && !version.is_es() {
+        if self.0.contains(Features::BUFFER_STORAGE) && !options.version.is_es() {
             // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_shader_storage_buffer_object.txt
             writeln!(
                 out,
@@ -142,22 +159,22 @@ impl FeaturesManager {
             )?;
         }
 
-        if self.0.contains(Features::DOUBLE_TYPE) && version < Version::Desktop(400) {
+        if self.0.contains(Features::DOUBLE_TYPE) && options.version < Version::Desktop(400) {
             // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_gpu_shader_fp64.txt
             writeln!(out, "#extension GL_ARB_gpu_shader_fp64 : require")?;
         }
 
         if self.0.contains(Features::CUBE_TEXTURES_ARRAY) {
-            if version.is_es() {
+            if options.version.is_es() {
                 // https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_texture_cube_map_array.txt
                 writeln!(out, "#extension GL_EXT_texture_cube_map_array : require")?;
-            } else if version < Version::Desktop(400) {
+            } else if options.version < Version::Desktop(400) {
                 // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_texture_cube_map_array.txt
                 writeln!(out, "#extension GL_ARB_texture_cube_map_array : require")?;
             }
         }
 
-        if self.0.contains(Features::MULTISAMPLED_TEXTURE_ARRAYS) && version.is_es() {
+        if self.0.contains(Features::MULTISAMPLED_TEXTURE_ARRAYS) && options.version.is_es() {
             // https://www.khronos.org/registry/OpenGL/extensions/OES/OES_texture_storage_multisample_2d_array.txt
             writeln!(
                 out,
@@ -165,54 +182,49 @@ impl FeaturesManager {
             )?;
         }
 
-        if self.0.contains(Features::ARRAY_OF_ARRAYS) && version < Version::Desktop(430) {
+        if self.0.contains(Features::ARRAY_OF_ARRAYS) && options.version < Version::Desktop(430) {
             // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_arrays_of_arrays.txt
             writeln!(out, "#extension ARB_arrays_of_arrays : require")?;
         }
 
         if self.0.contains(Features::IMAGE_LOAD_STORE) {
-            if self.0.contains(Features::FULL_IMAGE_FORMATS) && version.is_es() {
+            if self.0.contains(Features::FULL_IMAGE_FORMATS) && options.version.is_es() {
                 // https://www.khronos.org/registry/OpenGL/extensions/NV/NV_image_formats.txt
                 writeln!(out, "#extension GL_NV_image_formats : require")?;
             }
 
-            if version < Version::Desktop(420) {
+            if options.version < Version::Desktop(420) {
                 // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_shader_image_load_store.txt
                 writeln!(out, "#extension GL_ARB_shader_image_load_store : require")?;
             }
         }
 
         if self.0.contains(Features::CONSERVATIVE_DEPTH) {
-            if version.is_es() {
+            if options.version.is_es() {
                 // https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_conservative_depth.txt
                 writeln!(out, "#extension GL_EXT_conservative_depth : require")?;
             }
 
-            if version < Version::Desktop(420) {
+            if options.version < Version::Desktop(420) {
                 // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_conservative_depth.txt
                 writeln!(out, "#extension GL_ARB_conservative_depth : require")?;
             }
         }
 
         if (self.0.contains(Features::CLIP_DISTANCE) || self.0.contains(Features::CULL_DISTANCE))
-            && version.is_es()
+            && options.version.is_es()
         {
             // https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_clip_cull_distance.txt
             writeln!(out, "#extension GL_EXT_clip_cull_distance : require")?;
         }
 
-        if self.0.contains(Features::SAMPLE_VARIABLES) && version.is_es() {
-            // https://www.khronos.org/registry/OpenGL/extensions/OES/OES_sample_variables.txt
-            writeln!(out, "#extension GL_OES_sample_variables : require")?;
-        }
-
-        if self.0.contains(Features::SAMPLE_VARIABLES) && version.is_es() {
+        if self.0.contains(Features::SAMPLE_VARIABLES) && options.version.is_es() {
             // https://www.khronos.org/registry/OpenGL/extensions/OES/OES_sample_variables.txt
             writeln!(out, "#extension GL_OES_sample_variables : require")?;
         }
 
         if self.0.contains(Features::MULTI_VIEW) {
-            if let Version::Embedded { is_webgl: true, .. } = version {
+            if let Version::Embedded { is_webgl: true, .. } = options.version {
                 // https://www.khronos.org/registry/OpenGL/extensions/OVR/OVR_multiview2.txt
                 writeln!(out, "#extension GL_OVR_multiview2 : require")?;
             } else {
@@ -229,21 +241,53 @@ impl FeaturesManager {
             )?;
         }
 
-        if self.0.contains(Features::TEXTURE_LEVELS) && version < Version::Desktop(430) {
+        if self.0.contains(Features::TEXTURE_LEVELS) && options.version < Version::Desktop(430) {
             // https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_texture_query_levels.txt
             writeln!(out, "#extension GL_ARB_texture_query_levels : require")?;
+        }
+        if self.0.contains(Features::DUAL_SOURCE_BLENDING) && options.version.is_es() {
+            // https://registry.khronos.org/OpenGL/extensions/EXT/EXT_blend_func_extended.txt
+            writeln!(out, "#extension GL_EXT_blend_func_extended : require")?;
+        }
+
+        if self.0.contains(Features::INSTANCE_INDEX) {
+            if options.writer_flags.contains(WriterFlags::DRAW_PARAMETERS) {
+                // https://registry.khronos.org/OpenGL/extensions/ARB/ARB_shader_draw_parameters.txt
+                writeln!(out, "#extension GL_ARB_shader_draw_parameters : require")?;
+            }
+        }
+
+        if self.0.contains(Features::TEXTURE_SHADOW_LOD) {
+            // https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_shadow_lod.txt
+            writeln!(out, "#extension GL_EXT_texture_shadow_lod : require")?;
+        }
+
+        if self.0.contains(Features::SUBGROUP_OPERATIONS) {
+            // https://registry.khronos.org/OpenGL/extensions/KHR/KHR_shader_subgroup.txt
+            writeln!(out, "#extension GL_KHR_shader_subgroup_basic : require")?;
+            writeln!(out, "#extension GL_KHR_shader_subgroup_vote : require")?;
+            writeln!(
+                out,
+                "#extension GL_KHR_shader_subgroup_arithmetic : require"
+            )?;
+            writeln!(out, "#extension GL_KHR_shader_subgroup_ballot : require")?;
+            writeln!(out, "#extension GL_KHR_shader_subgroup_shuffle : require")?;
+            writeln!(
+                out,
+                "#extension GL_KHR_shader_subgroup_shuffle_relative : require"
+            )?;
         }
 
         Ok(())
     }
 }
 
-impl<'a, W> Writer<'a, W> {
+impl<W> Writer<'_, W> {
     /// Helper method that searches the module for all the needed [`Features`]
     ///
     /// # Errors
     /// If the version doesn't support any of the needed [`Features`] a
-    /// [`Error::MissingFeatures`](super::Error::MissingFeatures) will be returned
+    /// [`Error::MissingFeatures`] will be returned
     pub(super) fn collect_required_features(&mut self) -> BackendResult {
         let ep_info = self.info.get_entry_point(self.entry_point_idx as usize);
 
@@ -275,11 +319,9 @@ impl<'a, W> Writer<'a, W> {
 
         for (ty_handle, ty) in self.module.types.iter() {
             match ty.inner {
-                TypeInner::Scalar { kind, width } => self.scalar_required_features(kind, width),
-                TypeInner::Vector { kind, width, .. } => self.scalar_required_features(kind, width),
-                TypeInner::Matrix { width, .. } => {
-                    self.scalar_required_features(ScalarKind::Float, width)
-                }
+                TypeInner::Scalar(scalar)
+                | TypeInner::Vector { scalar, .. }
+                | TypeInner::Matrix { scalar, .. } => self.scalar_required_features(scalar),
                 TypeInner::Array { base, size, .. } => {
                     if let TypeInner::Array { .. } = self.module.types[base].inner {
                         self.features.request(Features::ARRAY_OF_ARRAYS)
@@ -303,7 +345,7 @@ impl<'a, W> Writer<'a, W> {
                             }
 
                             // If the type of this global is a struct
-                            if let crate::TypeInner::Struct { ref members, .. } =
+                            if let TypeInner::Struct { ref members, .. } =
                                 self.module.types[global.ty].inner
                             {
                                 // Check the last element of the struct to see if it's type uses
@@ -355,8 +397,9 @@ impl<'a, W> Writer<'a, W> {
                             | StorageFormat::Rg16Uint
                             | StorageFormat::Rg16Sint
                             | StorageFormat::Rg16Float
+                            | StorageFormat::Rgb10a2Uint
                             | StorageFormat::Rgb10a2Unorm
-                            | StorageFormat::Rg11b10Float
+                            | StorageFormat::Rg11b10Ufloat
                             | StorageFormat::Rg32Uint
                             | StorageFormat::Rg32Sint
                             | StorageFormat::Rg32Float => {
@@ -404,7 +447,7 @@ impl<'a, W> Writer<'a, W> {
             ..
         } = self;
 
-        // Loop trough all expressions in both functions and the entry point
+        // Loop through all expressions in both functions and the entry point
         // to check for needed features
         for (expressions, info) in module
             .functions
@@ -417,7 +460,7 @@ impl<'a, W> Writer<'a, W> {
         {
             for (_, expr) in expressions.iter() {
                 match *expr {
-                // Check for queries that neeed aditonal features
+                // Check for queries that need aditonal features
                 Expression::ImageQuery {
                     image,
                     query,
@@ -429,7 +472,7 @@ impl<'a, W> Writer<'a, W> {
                     // layers queries are also implemented as size queries
                     crate::ImageQuery::Size { .. } | crate::ImageQuery::NumLayers => {
                         if let TypeInner::Image {
-                            class: crate::ImageClass::Storage { .. }, ..
+                            class: ImageClass::Storage { .. }, ..
                         } = *info[image].ty.inner_with(&module.types) {
                             features.request(Features::IMAGE_SIZE)
                         }
@@ -453,6 +496,51 @@ impl<'a, W> Writer<'a, W> {
                         }
                     }
                 }
+                Expression::ImageSample { image, level, offset, .. } => {
+                    if let TypeInner::Image {
+                        dim,
+                        arrayed,
+                        class: ImageClass::Depth { .. },
+                    } = *info[image].ty.inner_with(&module.types) {
+                        let lod = matches!(level, SampleLevel::Zero | SampleLevel::Exact(_));
+                        let bias = matches!(level, SampleLevel::Bias(_));
+                        let auto = matches!(level, SampleLevel::Auto);
+                        let cube = dim == ImageDimension::Cube;
+                        let array2d = dim == ImageDimension::D2 && arrayed;
+                        let gles = self.options.version.is_es();
+
+                        // We have a workaround of using `textureGrad` instead of `textureLod` if the LOD is zero,
+                        // so we don't *need* this extension for those cases.
+                        // But if we're explicitly allowed to use the extension (`WriterFlags::TEXTURE_SHADOW_LOD`),
+                        // we always use it instead of the workaround.
+                        let grad_workaround_applicable = (array2d || (cube && !arrayed)) && level == SampleLevel::Zero;
+                        let prefer_grad_workaround = grad_workaround_applicable && !self.options.writer_flags.contains(WriterFlags::TEXTURE_SHADOW_LOD);
+
+                        let mut ext_used = false;
+
+                        // float texture(sampler2DArrayShadow sampler, vec4 P [, float bias])
+                        // float texture(samplerCubeArrayShadow sampler, vec4 P, float compare [, float bias])
+                        ext_used |= (array2d || cube && arrayed) && bias;
+
+                        // The non `bias` version of this was standardized in GL 4.3, but never in GLES.
+                        // float textureOffset(sampler2DArrayShadow sampler, vec4 P, ivec2 offset [, float bias])
+                        ext_used |= array2d && (bias || (gles && auto)) && offset.is_some();
+
+                        // float textureLod(sampler2DArrayShadow sampler, vec4 P, float lod)
+                        // float textureLodOffset(sampler2DArrayShadow sampler, vec4 P, float lod, ivec2 offset)
+                        // float textureLod(samplerCubeShadow sampler, vec4 P, float lod)
+                        // float textureLod(samplerCubeArrayShadow sampler, vec4 P, float compare, float lod)
+                        ext_used |= (cube || array2d) && lod && !prefer_grad_workaround;
+
+                        if ext_used {
+                            features.request(Features::TEXTURE_SHADOW_LOD);
+                        }
+                    }
+                }
+                Expression::SubgroupBallotResult |
+                Expression::SubgroupOperationResult { .. } => {
+                    features.request(Features::SUBGROUP_OPERATIONS)
+                }
                 _ => {}
             }
             }
@@ -462,49 +550,45 @@ impl<'a, W> Writer<'a, W> {
     }
 
     /// Helper method that checks the [`Features`] needed by a scalar
-    fn scalar_required_features(&mut self, kind: ScalarKind, width: Bytes) {
-        if kind == ScalarKind::Float && width == 8 {
+    fn scalar_required_features(&mut self, scalar: Scalar) {
+        if scalar.kind == ScalarKind::Float && scalar.width == 8 {
             self.features.request(Features::DOUBLE_TYPE);
         }
     }
 
     fn varying_required_features(&mut self, binding: Option<&Binding>, ty: Handle<Type>) {
-        match self.module.types[ty].inner {
-            crate::TypeInner::Struct { ref members, .. } => {
-                for member in members {
-                    self.varying_required_features(member.binding.as_ref(), member.ty);
-                }
+        if let TypeInner::Struct { ref members, .. } = self.module.types[ty].inner {
+            for member in members {
+                self.varying_required_features(member.binding.as_ref(), member.ty);
             }
-            _ => {
-                if let Some(binding) = binding {
-                    match *binding {
-                        Binding::BuiltIn(built_in) => match built_in {
-                            crate::BuiltIn::ClipDistance => {
-                                self.features.request(Features::CLIP_DISTANCE)
-                            }
-                            crate::BuiltIn::CullDistance => {
-                                self.features.request(Features::CULL_DISTANCE)
-                            }
-                            crate::BuiltIn::SampleIndex => {
-                                self.features.request(Features::SAMPLE_VARIABLES)
-                            }
-                            crate::BuiltIn::ViewIndex => {
-                                self.features.request(Features::MULTI_VIEW)
-                            }
-                            _ => {}
-                        },
-                        Binding::Location {
-                            location: _,
-                            interpolation,
-                            sampling,
-                        } => {
-                            if interpolation == Some(Interpolation::Linear) {
-                                self.features.request(Features::NOPERSPECTIVE_QUALIFIER);
-                            }
-                            if sampling == Some(Sampling::Sample) {
-                                self.features.request(Features::SAMPLE_QUALIFIER);
-                            }
-                        }
+        } else if let Some(binding) = binding {
+            match *binding {
+                Binding::BuiltIn(built_in) => match built_in {
+                    crate::BuiltIn::ClipDistance => self.features.request(Features::CLIP_DISTANCE),
+                    crate::BuiltIn::CullDistance => self.features.request(Features::CULL_DISTANCE),
+                    crate::BuiltIn::SampleIndex => {
+                        self.features.request(Features::SAMPLE_VARIABLES)
+                    }
+                    crate::BuiltIn::ViewIndex => self.features.request(Features::MULTI_VIEW),
+                    crate::BuiltIn::InstanceIndex | crate::BuiltIn::DrawID => {
+                        self.features.request(Features::INSTANCE_INDEX)
+                    }
+                    _ => {}
+                },
+                Binding::Location {
+                    location: _,
+                    interpolation,
+                    sampling,
+                    second_blend_source,
+                } => {
+                    if interpolation == Some(Interpolation::Linear) {
+                        self.features.request(Features::NOPERSPECTIVE_QUALIFIER);
+                    }
+                    if sampling == Some(Sampling::Sample) {
+                        self.features.request(Features::SAMPLE_QUALIFIER);
+                    }
+                    if second_blend_source {
+                        self.features.request(Features::DUAL_SOURCE_BLENDING);
                     }
                 }
             }

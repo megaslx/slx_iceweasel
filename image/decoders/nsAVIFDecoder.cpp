@@ -8,7 +8,7 @@
 
 #include "nsAVIFDecoder.h"
 
-#include "aom/aomdx.h"
+#include <aom/aomdx.h>
 
 #include "DAV1DDecoder.h"
 #include "gfxPlatform.h"
@@ -17,8 +17,9 @@
 
 #include "SurfacePipeFactory.h"
 
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Telemetry.h"
-#include "mozilla/TelemetryComms.h"
+#include "mozilla/UniquePtrExtensions.h"
 
 using namespace mozilla::gfx;
 
@@ -58,7 +59,7 @@ static const LABELS_AVIF_YUV_COLOR_SPACE gColorSpaceLabel[] = {
     LABELS_AVIF_YUV_COLOR_SPACE::BT601, LABELS_AVIF_YUV_COLOR_SPACE::BT709,
     LABELS_AVIF_YUV_COLOR_SPACE::BT2020, LABELS_AVIF_YUV_COLOR_SPACE::identity};
 
-static MaybeIntSize GetImageSize(const Mp4parseAvifInfo& aInfo) {
+static Maybe<IntSize> GetImageSize(const Mp4parseAvifInfo& aInfo) {
   // Note this does not take cropping via CleanAperture (clap) into account
   const struct Mp4parseImageSpatialExtents* ispe = aInfo.spatial_extents;
 
@@ -217,6 +218,38 @@ Mp4parseStatus AVIFParser::Create(const Mp4parseIo* aIo, ByteStream* aBuffer,
   return status;
 }
 
+uint32_t AVIFParser::GetFrameCount() {
+  MOZ_ASSERT(mParser);
+
+  // Note that because this consumes the frame iterators, this can only be
+  // requested for metadata decodes. Since we had to partially decode the
+  // first frame to determine the size, we need to add one to the result.
+  // This means we return 0 for 1 frame, 1 for 2 frames, etc.
+
+  if (!IsAnimated()) {
+    return 0;
+  }
+
+  uint32_t frameCount = 0;
+  while (true) {
+    RefPtr<MediaRawData> header = mColorSampleIter->GetNextHeader();
+    if (!header) {
+      break;
+    }
+
+    if (mAlphaSampleIter) {
+      header = mAlphaSampleIter->GetNextHeader();
+      if (!header) {
+        break;
+      }
+    }
+
+    ++frameCount;
+  }
+
+  return frameCount;
+}
+
 nsAVIFDecoder::DecodeResult AVIFParser::GetImage(AVIFImage& aImage) {
   MOZ_ASSERT(mParser);
 
@@ -269,7 +302,12 @@ nsAVIFDecoder::DecodeResult AVIFParser::GetImage(AVIFImage& aImage) {
     return AsVariant(status);
   }
 
-  MOZ_ASSERT(image.primary_image.data);
+  // Ideally has_primary_item and no errors would guarantee primary_image.data
+  // exists but it doesn't so we check it too.
+  if (!image.primary_image.data) {
+    return AsVariant(nsAVIFDecoder::NonDecoderResult::NoSamples);
+  }
+
   RefPtr<MediaRawData> colorImage =
       new MediaRawData(image.primary_image.data, image.primary_image.length);
   RefPtr<MediaRawData> alphaImage = nullptr;
@@ -635,12 +673,10 @@ class Dav1dDecoder final : AVIFDecoderInterface {
     // the easiest way to see if we're getting unexpected behavior to
     // investigate.
     if (aShouldSendTelemetry && r != 0) {
-      // Uncomment once bug 1691156 is fixed
-      // mozilla::Telemetry::SetEventRecordingEnabled("avif"_ns, true);
-
-      mozilla::Telemetry::RecordEvent(
-          mozilla::Telemetry::EventID::Avif_Dav1dGetPicture_ReturnValue,
-          Some(nsPrintfCString("%d", r)), Nothing());
+      mozilla::glean::avif::Dav1dGetPictureReturnValueExtra extra = {
+          .value = Some(nsPrintfCString("%d", r)),
+      };
+      mozilla::glean::avif::dav1d_get_picture_return_value.Record(Some(extra));
     }
 
     return r;
@@ -680,7 +716,7 @@ bool OwnedAOMImage::CloneFrom(aom_image_t* aImage, bool aIsAlpha) {
 
   // If aImage is alpha plane. The data is located in Y channel.
   if (aIsAlpha) {
-    mBuffer = MakeUnique<uint8_t[]>(yBufSize);
+    mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize);
     if (!mBuffer) {
       return false;
     }
@@ -702,7 +738,7 @@ bool OwnedAOMImage::CloneFrom(aom_image_t* aImage, bool aIsAlpha) {
   int crHeight = aom_img_plane_height(aImage, AOM_PLANE_V);
   size_t crBufSize = crStride * crHeight;
 
-  mBuffer = MakeUnique<uint8_t[]>(yBufSize + cbBufSize + crBufSize);
+  mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize + cbBufSize + crBufSize);
   if (!mBuffer) {
     return false;
   }
@@ -887,27 +923,51 @@ class AOMDecoder final : AVIFDecoderInterface {
           break;
         case AOM_CODEC_ERROR:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::error);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eError)
+              .Add();
           break;
         case AOM_CODEC_MEM_ERROR:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::mem_error);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eMemError)
+              .Add();
           break;
         case AOM_CODEC_ABI_MISMATCH:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::abi_mismatch);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eAbiMismatch)
+              .Add();
           break;
         case AOM_CODEC_INCAPABLE:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::incapable);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eIncapable)
+              .Add();
           break;
         case AOM_CODEC_UNSUP_BITSTREAM:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::unsup_bitstream);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eUnsupBitstream)
+              .Add();
           break;
         case AOM_CODEC_UNSUP_FEATURE:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::unsup_feature);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eUnsupFeature)
+              .Add();
           break;
         case AOM_CODEC_CORRUPT_FRAME:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::corrupt_frame);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eCorruptFrame)
+              .Add();
           break;
         case AOM_CODEC_INVALID_PARAM:
           AccumulateCategorical(LABELS_AVIF_AOM_DECODE_ERROR::invalid_param);
+          mozilla::glean::avif::aom_decode_error
+              .EnumGet(glean::avif::AomDecodeErrorLabel::eInvalidParam)
+              .Add();
           break;
         default:
           MOZ_ASSERT_UNREACHABLE(
@@ -1059,8 +1119,6 @@ UniquePtr<AVIFDecodedData> AOMDecoder::AOMImageToToDecodedData(
   aom_image_t* alphaImage = aAlphaPlane ? aAlphaPlane->GetImage() : nullptr;
 
   MOZ_ASSERT(colorImage);
-  MOZ_ASSERT(colorImage->stride[AOM_PLANE_Y] ==
-             colorImage->stride[AOM_PLANE_ALPHA]);
   MOZ_ASSERT(colorImage->stride[AOM_PLANE_Y] >=
              aom_img_plane_width(colorImage, AOM_PLANE_Y));
   MOZ_ASSERT(colorImage->stride[AOM_PLANE_U] ==
@@ -1275,13 +1333,24 @@ static void RecordMetadataTelem(const Mp4parseAvifInfo& aInfo) {
 
     if (h_spacing == 0 || v_spacing == 0) {
       AccumulateCategorical(LABELS_AVIF_PASP::invalid);
+      mozilla::glean::avif::pasp
+          .EnumGet(mozilla::glean::avif::PaspLabel::eInvalid)
+          .Add();
     } else if (h_spacing == v_spacing) {
       AccumulateCategorical(LABELS_AVIF_PASP::square);
+      mozilla::glean::avif::pasp
+          .EnumGet(mozilla::glean::avif::PaspLabel::eSquare)
+          .Add();
     } else {
       AccumulateCategorical(LABELS_AVIF_PASP::nonsquare);
+      mozilla::glean::avif::pasp
+          .EnumGet(mozilla::glean::avif::PaspLabel::eNonsquare)
+          .Add();
     }
   } else {
     AccumulateCategorical(LABELS_AVIF_PASP::absent);
+    mozilla::glean::avif::pasp.EnumGet(mozilla::glean::avif::PaspLabel::eAbsent)
+        .Add();
   }
 
   const auto& major_brand = aInfo.major_brand;
@@ -1308,14 +1377,36 @@ static void RecordMetadataTelem(const Mp4parseAvifInfo& aInfo) {
   FEATURE_TELEMETRY(IPRO);
   FEATURE_TELEMETRY(LSEL);
 
+#define FEATURE_RECORD_GLEAN(metric, metricLabel, fourcc)        \
+  mozilla::glean::avif::metric                                   \
+      .EnumGet(aInfo.unsupported_features_bitfield &             \
+                       (1 << MP4PARSE_FEATURE_##fourcc)          \
+                   ? mozilla::glean::avif::metricLabel::ePresent \
+                   : mozilla::glean::avif::metricLabel::eAbsent) \
+      .Add()
+  FEATURE_RECORD_GLEAN(a1lx, A1lxLabel, A1LX);
+  FEATURE_RECORD_GLEAN(a1op, A1opLabel, A1OP);
+  FEATURE_RECORD_GLEAN(clap, ClapLabel, CLAP);
+  FEATURE_RECORD_GLEAN(grid, GridLabel, GRID);
+  FEATURE_RECORD_GLEAN(ipro, IproLabel, IPRO);
+  FEATURE_RECORD_GLEAN(lsel, LselLabel, LSEL);
+
   if (aInfo.nclx_colour_information && aInfo.icc_colour_information.data) {
     AccumulateCategorical(LABELS_AVIF_COLR::both);
+    mozilla::glean::avif::colr.EnumGet(mozilla::glean::avif::ColrLabel::eBoth)
+        .Add();
   } else if (aInfo.nclx_colour_information) {
     AccumulateCategorical(LABELS_AVIF_COLR::nclx);
+    mozilla::glean::avif::colr.EnumGet(mozilla::glean::avif::ColrLabel::eNclx)
+        .Add();
   } else if (aInfo.icc_colour_information.data) {
     AccumulateCategorical(LABELS_AVIF_COLR::icc);
+    mozilla::glean::avif::colr.EnumGet(mozilla::glean::avif::ColrLabel::eIcc)
+        .Add();
   } else {
     AccumulateCategorical(LABELS_AVIF_COLR::absent);
+    mozilla::glean::avif::colr.EnumGet(mozilla::glean::avif::ColrLabel::eAbsent)
+        .Add();
   }
 }
 
@@ -1324,14 +1415,23 @@ static void RecordPixiTelemetry(uint8_t aPixiBitDepth,
                                 const char* aItemName) {
   if (aPixiBitDepth == 0) {
     AccumulateCategorical(LABELS_AVIF_PIXI::absent);
+    mozilla::glean::avif::pixi.EnumGet(mozilla::glean::avif::PixiLabel::eAbsent)
+        .Add();
+
   } else if (aPixiBitDepth == aBitstreamBitDepth) {
     AccumulateCategorical(LABELS_AVIF_PIXI::valid);
+    mozilla::glean::avif::pixi.EnumGet(mozilla::glean::avif::PixiLabel::eValid)
+        .Add();
+
   } else {
     MOZ_LOG(sAVIFLog, LogLevel::Error,
             ("%s item pixi bit depth (%hhu) doesn't match "
              "bitstream (%hhu)",
              aItemName, aPixiBitDepth, aBitstreamBitDepth));
     AccumulateCategorical(LABELS_AVIF_PIXI::bitstream_mismatch);
+    mozilla::glean::avif::pixi
+        .EnumGet(mozilla::glean::avif::PixiLabel::eBitstreamMismatch)
+        .Add();
   }
 }
 
@@ -1342,8 +1442,16 @@ static void RecordFrameTelem(bool aAnimated, const Mp4parseAvifInfo& aInfo,
                              const AVIFDecodedData& aData) {
   AccumulateCategorical(
       gColorSpaceLabel[static_cast<size_t>(aData.mYUVColorSpace)]);
+  mozilla::glean::avif::yuv_color_space
+      .EnumGet(static_cast<mozilla::glean::avif::YuvColorSpaceLabel>(
+          aData.mYUVColorSpace))
+      .Add();
   AccumulateCategorical(
       gColorDepthLabel[static_cast<size_t>(aData.mColorDepth)]);
+  mozilla::glean::avif::bit_depth
+      .EnumGet(
+          static_cast<mozilla::glean::avif::BitDepthLabel>(aData.mColorDepth))
+      .Add();
 
   RecordPixiTelemetry(
       aAnimated ? aInfo.color_track_bit_depth : aInfo.primary_item_bit_depth,
@@ -1351,32 +1459,55 @@ static void RecordFrameTelem(bool aAnimated, const Mp4parseAvifInfo& aInfo,
 
   if (aData.mAlpha) {
     AccumulateCategorical(LABELS_AVIF_ALPHA::present);
+    mozilla::glean::avif::alpha
+        .EnumGet(mozilla::glean::avif::AlphaLabel::ePresent)
+        .Add();
     RecordPixiTelemetry(
         aAnimated ? aInfo.alpha_track_bit_depth : aInfo.alpha_item_bit_depth,
         BitDepthForColorDepth(aData.mColorDepth), "alpha");
   } else {
     AccumulateCategorical(LABELS_AVIF_ALPHA::absent);
+    mozilla::glean::avif::alpha
+        .EnumGet(mozilla::glean::avif::AlphaLabel::eAbsent)
+        .Add();
   }
 
   if (CICP::IsReserved(aData.mColourPrimaries)) {
     AccumulateCategorical(LABELS_AVIF_CICP_CP::RESERVED_REST);
+    mozilla::glean::avif::cicp_cp
+        .EnumGet(mozilla::glean::avif::CicpCpLabel::eReservedRest)
+        .Add();
   } else {
     AccumulateCategorical(
         static_cast<LABELS_AVIF_CICP_CP>(aData.mColourPrimaries));
+    mozilla::glean::avif::cicp_cp.EnumGet(
+        static_cast<mozilla::glean::avif::CicpCpLabel>(aData.mColourPrimaries));
   }
 
   if (CICP::IsReserved(aData.mTransferCharacteristics)) {
     AccumulateCategorical(LABELS_AVIF_CICP_TC::RESERVED);
+    mozilla::glean::avif::cicp_tc
+        .EnumGet(mozilla::glean::avif::CicpTcLabel::eReserved)
+        .Add();
   } else {
     AccumulateCategorical(
         static_cast<LABELS_AVIF_CICP_TC>(aData.mTransferCharacteristics));
+    mozilla::glean::avif::cicp_tc.EnumGet(
+        static_cast<mozilla::glean::avif::CicpTcLabel>(
+            aData.mTransferCharacteristics));
   }
 
   if (CICP::IsReserved(aData.mMatrixCoefficients)) {
     AccumulateCategorical(LABELS_AVIF_CICP_MC::RESERVED);
+    mozilla::glean::avif::cicp_mc
+        .EnumGet(mozilla::glean::avif::CicpMcLabel::eReserved)
+        .Add();
   } else {
     AccumulateCategorical(
         static_cast<LABELS_AVIF_CICP_MC>(aData.mMatrixCoefficients));
+    mozilla::glean::avif::cicp_mc.EnumGet(
+        static_cast<mozilla::glean::avif::CicpMcLabel>(
+            aData.mMatrixCoefficients));
   }
 }
 
@@ -1471,6 +1602,20 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
 
   if (mIsAnimated) {
     PostIsAnimated(parsedImage.mDuration);
+
+    switch (mParser->GetInfo().loop_mode) {
+      case MP4PARSE_AVIF_LOOP_MODE_LOOP_BY_COUNT: {
+        auto loopCount = mParser->GetInfo().loop_count;
+        PostLoopCount(loopCount > INT32_MAX ? -1
+                                            : static_cast<int32_t>(loopCount));
+        break;
+      }
+      case MP4PARSE_AVIF_LOOP_MODE_LOOP_INFINITELY:
+      case MP4PARSE_AVIF_LOOP_MODE_NO_EDITS:
+      default:
+        PostLoopCount(-1);
+        break;
+    }
   }
   if (mHasAlpha) {
     PostHasTransparency();
@@ -1484,7 +1629,7 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
     orientation = Orientation{};
   }
 
-  MaybeIntSize ispeImageSize = GetImageSize(parsedInfo);
+  Maybe<IntSize> ispeImageSize = GetImageSize(parsedInfo);
 
   bool sendDecodeTelemetry = IsMetadataDecode();
   if (ispeImageSize.isSome()) {
@@ -1496,6 +1641,12 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
              mIsAnimated ? parsedInfo.alpha_track_bit_depth
                          : parsedInfo.alpha_item_bit_depth));
     PostSize(ispeImageSize->width, ispeImageSize->height, orientation);
+    if (WantsFrameCount()) {
+      // Note that this consumes the frame iterators, so this can only be
+      // requested for metadata decodes. Since we had to partially decode the
+      // first frame to determine the size, we need to add one to the result.
+      PostFrameCount(mParser->GetFrameCount() + 1);
+    }
     if (IsMetadataDecode()) {
       MOZ_LOG(
           sAVIFLog, LogLevel::Debug,
@@ -1556,7 +1707,15 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
          decodedData->mPictureRect.width, decodedData->mPictureRect.height));
     PostSize(decodedData->mPictureRect.width, decodedData->mPictureRect.height,
              orientation);
+    if (WantsFrameCount()) {
+      // Note that this consumes the frame iterators, so this can only be
+      // requested for metadata decodes. Since we had to partially decode the
+      // first frame to determine the size, we need to add one to the result.
+      PostFrameCount(mParser->GetFrameCount() + 1);
+    }
     AccumulateCategorical(LABELS_AVIF_ISPE::absent);
+    mozilla::glean::avif::ispe.EnumGet(mozilla::glean::avif::IspeLabel::eAbsent)
+        .Add();
   } else {
     // Verify that the bitstream hasn't changed the image size compared to
     // either the ispe box or the previous frames.
@@ -1575,6 +1734,10 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
              decodedData->mPictureRect.width,
              decodedData->mPictureRect.height));
         AccumulateCategorical(LABELS_AVIF_ISPE::bitstream_mismatch);
+        mozilla::glean::avif::ispe
+            .EnumGet(mozilla::glean::avif::IspeLabel::eBitstreamMismatch)
+            .Add();
+
         return AsVariant(NonDecoderResult::MetadataImageSizeMismatch);
       }
 
@@ -1589,6 +1752,9 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
 
     if (isFirstFrame) {
       AccumulateCategorical(LABELS_AVIF_ISPE::valid);
+      mozilla::glean::avif::ispe
+          .EnumGet(mozilla::glean::avif::IspeLabel::eValid)
+          .Add();
     }
   }
 
@@ -1679,18 +1845,19 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
 
     uint32_t profileSpace = qcms_profile_get_color_space(mInProfile);
     if (profileSpace != icSigGrayData) {
-      // If the transform happens with SurfacePipe, it will be in RGBA if we
-      // have an alpha channel, because the swizzle and premultiplication
-      // happens after color management. Otherwise it will be in BGRA because
-      // the swizzle happens at the start.
-      if (mHasAlpha) {
-        inType = QCMS_DATA_RGBA_8;
-        outType = QCMS_DATA_RGBA_8;
-      } else {
-        inType = gfxPlatform::GetCMSOSRGBAType();
-        outType = inType;
-      }
+      mUsePipeTransform = true;
+      // When we convert the data to rgb we always pass either B8G8R8A8 or
+      // B8G8R8X8 to ConvertYCbCrToRGB32. After that we input the data to the
+      // surface pipe where qcms happens in the pipeline. So when the data gets
+      // to qcms it will always be in our preferred format and so
+      // gfxPlatform::GetCMSOSRGBAType is the correct type.
+      inType = gfxPlatform::GetCMSOSRGBAType();
+      outType = inType;
     } else {
+      // We can't use SurfacePipe to do the color management (it can't handle
+      // grayscale data), we have to do it ourselves on the grayscale data
+      // before passing the now RGB data to SurfacePipe.
+      mUsePipeTransform = false;
       if (mHasAlpha) {
         inType = QCMS_DATA_GRAYA_8;
         outType = gfxPlatform::GetCMSOSRGBAType();
@@ -1728,9 +1895,8 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
     return AsVariant(NonDecoderResult::SizeOverflow);
   }
 
-  UniquePtr<uint8_t[]> rgbBuf = MakeUnique<uint8_t[]>(rgbBufLength.value());
-  const uint8_t* endOfRgbBuf = {rgbBuf.get() + rgbBufLength.value()};
-
+  UniquePtr<uint8_t[]> rgbBuf =
+      MakeUniqueFallible<uint8_t[]>(rgbBufLength.value());
   if (!rgbBuf) {
     MOZ_LOG(sAVIFLog, LogLevel::Debug,
             ("[this=%p] allocation of %u-byte rgbBuf failed", this,
@@ -1738,35 +1904,56 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
     return AsVariant(NonDecoderResult::OutOfMemory);
   }
 
+  PremultFunc premultOp = nullptr;
+  const auto wantPremultiply =
+      !bool(GetSurfaceFlags() & SurfaceFlags::NO_PREMULTIPLY_ALPHA);
   if (decodedData->mAlpha) {
-    const auto wantPremultiply =
-        !bool(GetSurfaceFlags() & SurfaceFlags::NO_PREMULTIPLY_ALPHA);
     const bool& hasPremultiply = decodedData->mAlpha->mPremultiplied;
-
-    PremultFunc premultOp = nullptr;
-    if (wantPremultiply && !hasPremultiply) {
-      premultOp = libyuv::ARGBAttenuate;
-    } else if (!wantPremultiply && hasPremultiply) {
-      premultOp = libyuv::ARGBUnattenuate;
+    if (mTransform) {
+      // Color management needs to be done on non-premult data, so
+      // ConvertYCbCrToRGB32 needs to produce non-premult data, then color
+      // management can happen (either here for grayscale data, or in surface
+      // pipe otherwise) and then later in the surface pipe we will convert to
+      // premult if needed.
+      if (hasPremultiply) {
+        premultOp = libyuv::ARGBUnattenuate;
+      }
+    } else {
+      // no color management, so premult conversion (if needed) can be done by
+      // ConvertYCbCrToRGB32 before surface pipe
+      if (wantPremultiply && !hasPremultiply) {
+        premultOp = libyuv::ARGBAttenuate;
+      } else if (!wantPremultiply && hasPremultiply) {
+        premultOp = libyuv::ARGBUnattenuate;
+      }
     }
+  }
 
+  MOZ_LOG(sAVIFLog, LogLevel::Debug,
+          ("[this=%p] calling gfx::ConvertYCbCrToRGB32 premultOp: %p", this,
+           premultOp));
+  nsresult result = gfx::ConvertYCbCrToRGB32(*decodedData, format, rgbBuf.get(),
+                                             rgbStride.value(), premultOp);
+  if (!NS_SUCCEEDED(result)) {
     MOZ_LOG(sAVIFLog, LogLevel::Debug,
-            ("[this=%p] calling gfx::ConvertYCbCrAToARGB premultOp: %p", this,
-             premultOp));
-    gfx::ConvertYCbCrAToARGB(*decodedData, *decodedData->mAlpha, format,
-                             rgbSize, rgbBuf.get(), rgbStride.value(),
-                             premultOp);
-  } else {
-    MOZ_LOG(sAVIFLog, LogLevel::Debug,
-            ("[this=%p] calling gfx::ConvertYCbCrToRGB", this));
-    gfx::ConvertYCbCrToRGB(*decodedData, format, rgbSize, rgbBuf.get(),
-                           rgbStride.value());
+            ("[this=%p] ConvertYCbCrToRGB32 failure", this));
+    return AsVariant(NonDecoderResult::ConvertYCbCrFailure);
   }
 
   MOZ_LOG(sAVIFLog, LogLevel::Debug,
           ("[this=%p] calling SurfacePipeFactory::CreateSurfacePipe", this));
 
+  SurfacePipeFlags pipeFlags = SurfacePipeFlags();
+  if (decodedData->mAlpha && mTransform) {
+    // we know data is non-premult in this case, see above, so if we
+    // wantPremultiply then we have to ask the surface pipe to convert for us
+    if (wantPremultiply) {
+      pipeFlags |= SurfacePipeFlags::PREMULTIPLY_ALPHA;
+    }
+  }
+
   Maybe<SurfacePipe> pipe = Nothing();
+  auto* transform = mUsePipeTransform ? mTransform : nullptr;
 
   if (mIsAnimated) {
     SurfaceFormat outFormat =
@@ -1779,10 +1966,11 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
     }
     pipe = SurfacePipeFactory::CreateSurfacePipe(
         this, Size(), OutputSize(), FullFrame(), format, outFormat, animParams,
-        mTransform, SurfacePipeFlags());
+        transform, pipeFlags);
   } else {
     pipe = SurfacePipeFactory::CreateReorientSurfacePipe(
-        this, Size(), OutputSize(), format, mTransform, GetOrientation());
+        this, Size(), OutputSize(), format, transform, GetOrientation(),
+        pipeFlags);
   }
 
   if (pipe.isNothing()) {
@@ -1792,9 +1980,31 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
   }
 
   MOZ_LOG(sAVIFLog, LogLevel::Debug, ("[this=%p] writing to surface", this));
+  const uint8_t* endOfRgbBuf = {rgbBuf.get() + rgbBufLength.value()};
   WriteState writeBufferResult = WriteState::NEED_MORE_DATA;
+  uint8_t* grayLine = nullptr;
+  int32_t multiplier = 1;
+  if (mTransform && !mUsePipeTransform) {
+    if (mHasAlpha) {
+      multiplier = 2;
+    }
+    // We know this calculation doesn't overflow because rgbStride is a larger
+    // value and is valid here.
+    grayLine = new uint8_t[multiplier * rgbSize.width];
+  }
   for (uint8_t* rowPtr = rgbBuf.get(); rowPtr < endOfRgbBuf;
        rowPtr += rgbStride.value()) {
+    if (mTransform && !mUsePipeTransform) {
+      // format is B8G8R8A8 or B8G8R8X8, so 1 offset picks G
+      for (int32_t i = 0; i < rgbSize.width; i++) {
+        grayLine[multiplier * i] = rowPtr[i * bytesPerPixel + 1];
+        if (mHasAlpha) {
+          grayLine[multiplier * i + 1] = rowPtr[i * bytesPerPixel + 3];
+        }
+      }
+      qcms_transform_data(mTransform, grayLine, rowPtr, rgbSize.width);
+    }
+
     writeBufferResult = pipe->WriteBuffer(reinterpret_cast<uint32_t*>(rowPtr));
 
     Maybe<SurfaceInvalidRect> invalidRect = pipe->TakeInvalidRect();
@@ -1811,6 +2021,9 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
       MOZ_ASSERT(rowPtr + rgbStride.value() == endOfRgbBuf);
     }
   }
+  if (mTransform && !mUsePipeTransform) {
+    delete[] grayLine;
+  }
 
   MOZ_LOG(sAVIFLog, LogLevel::Debug,
           ("[this=%p] writing to surface complete", this));
@@ -1820,24 +2033,12 @@ nsAVIFDecoder::DecodeResult nsAVIFDecoder::DoDecodeInternal(
                             : Opacity::FULLY_OPAQUE);
 
     if (!mIsAnimated || IsFirstFrameDecode()) {
-      PostDecodeDone(0);
+      PostDecodeDone();
       return DecodeResult(NonDecoderResult::Complete);
     }
 
     if (isDone) {
-      switch (mParser->GetInfo().loop_mode) {
-        case MP4PARSE_AVIF_LOOP_MODE_LOOP_BY_COUNT: {
-          auto loopCount = mParser->GetInfo().loop_count;
-          PostDecodeDone(
-              loopCount > INT32_MAX ? -1 : static_cast<int32_t>(loopCount));
-          break;
-        }
-        case MP4PARSE_AVIF_LOOP_MODE_LOOP_INFINITELY:
-        case MP4PARSE_AVIF_LOOP_MODE_NO_EDITS:
-        default:
-          PostDecodeDone(-1);
-          break;
-      }
+      PostDecodeDone();
       return DecodeResult(NonDecoderResult::Complete);
     }
 
@@ -1869,57 +2070,111 @@ void nsAVIFDecoder::RecordDecodeResultTelemetry(
       case MP4PARSE_STATUS_EOF:
       case MP4PARSE_STATUS_IO:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::parse_error);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eParseError)
+            .Add();
         return;
       case MP4PARSE_STATUS_OOM:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::out_of_memory);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eOutOfMemory)
+            .Add();
         return;
       case MP4PARSE_STATUS_MISSING_AVIF_OR_AVIS_BRAND:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::missing_brand);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eMissingBrand)
+            .Add();
         return;
       case MP4PARSE_STATUS_FTYP_NOT_FIRST:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::ftyp_not_first);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eFtypNotFirst)
+            .Add();
         return;
       case MP4PARSE_STATUS_NO_IMAGE:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::no_image);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eNoImage)
+            .Add();
         return;
       case MP4PARSE_STATUS_MOOV_BAD_QUANTITY:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::multiple_moov);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eMultipleMoov)
+            .Add();
         return;
       case MP4PARSE_STATUS_MOOV_MISSING:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::no_moov);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eNoMoov)
+            .Add();
         return;
       case MP4PARSE_STATUS_LSEL_NO_ESSENTIAL:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::lsel_no_essential);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eLselNoEssential)
+            .Add();
         return;
       case MP4PARSE_STATUS_A1OP_NO_ESSENTIAL:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::a1op_no_essential);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eA1opNoEssential)
+            .Add();
         return;
       case MP4PARSE_STATUS_A1LX_ESSENTIAL:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::a1lx_essential);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eA1lxEssential)
+            .Add();
         return;
       case MP4PARSE_STATUS_TXFORM_NO_ESSENTIAL:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::txform_no_essential);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eTxformNoEssential)
+            .Add();
         return;
       case MP4PARSE_STATUS_PITM_MISSING:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::no_primary_item);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eNoPrimaryItem)
+            .Add();
         return;
       case MP4PARSE_STATUS_IMAGE_ITEM_TYPE:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::image_item_type);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eImageItemType)
+            .Add();
         return;
       case MP4PARSE_STATUS_ITEM_TYPE_MISSING:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::item_type_missing);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eItemTypeMissing)
+            .Add();
         return;
       case MP4PARSE_STATUS_CONSTRUCTION_METHOD:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::construction_method);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eConstructionMethod)
+            .Add();
         return;
       case MP4PARSE_STATUS_PITM_NOT_FOUND:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::item_loc_not_found);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eItemLocNotFound)
+            .Add();
         return;
       case MP4PARSE_STATUS_IDAT_MISSING:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::no_item_data_box);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eNoItemDataBox)
+            .Add();
         return;
       default:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::uncategorized);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eUncategorized)
+            .Add();
         return;
     }
 
@@ -1928,6 +2183,9 @@ void nsAVIFDecoder::RecordDecodeResultTelemetry(
              aResult.as<Mp4parseStatus>()));
     MOZ_ASSERT(false, "unexpected Mp4parseStatus value");
     AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::invalid_parse_status);
+    mozilla::glean::avif::decode_result
+        .EnumGet(glean::avif::DecodeResultLabel::eInvalidParseStatus)
+        .Add();
 
   } else if (aResult.is<NonDecoderResult>()) {
     switch (aResult.as<NonDecoderResult>()) {
@@ -1939,36 +2197,75 @@ void nsAVIFDecoder::RecordDecodeResultTelemetry(
         return;
       case NonDecoderResult::SizeOverflow:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::size_overflow);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eSizeOverflow)
+            .Add();
         return;
       case NonDecoderResult::OutOfMemory:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::out_of_memory);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eOutOfMemory)
+            .Add();
         return;
       case NonDecoderResult::PipeInitError:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::pipe_init_error);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::ePipeInitError)
+            .Add();
         return;
       case NonDecoderResult::WriteBufferError:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::write_buffer_error);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eWriteBufferError)
+            .Add();
         return;
       case NonDecoderResult::AlphaYSizeMismatch:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::alpha_y_sz_mismatch);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eAlphaYSzMismatch)
+            .Add();
         return;
       case NonDecoderResult::AlphaYColorDepthMismatch:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::alpha_y_bpc_mismatch);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eAlphaYBpcMismatch)
+            .Add();
         return;
       case NonDecoderResult::MetadataImageSizeMismatch:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::ispe_mismatch);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eIspeMismatch)
+            .Add();
         return;
       case NonDecoderResult::RenderSizeMismatch:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::render_size_mismatch);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eRenderSizeMismatch)
+            .Add();
         return;
       case NonDecoderResult::FrameSizeChanged:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::frame_size_changed);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eFrameSizeChanged)
+            .Add();
         return;
       case NonDecoderResult::InvalidCICP:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::invalid_cicp);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eInvalidCicp)
+            .Add();
         return;
       case NonDecoderResult::NoSamples:
         AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::no_samples);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eNoSamples)
+            .Add();
+        return;
+      case NonDecoderResult::ConvertYCbCrFailure:
+        AccumulateCategorical(LABELS_AVIF_DECODE_RESULT::ConvertYCbCr_failure);
+        mozilla::glean::avif::decode_result
+            .EnumGet(glean::avif::DecodeResultLabel::eConvertycbcrFailure)
+            .Add();
         return;
     }
     MOZ_ASSERT_UNREACHABLE("unknown NonDecoderResult");
@@ -1976,9 +2273,26 @@ void nsAVIFDecoder::RecordDecodeResultTelemetry(
     MOZ_ASSERT(aResult.is<Dav1dResult>() || aResult.is<AOMResult>());
     AccumulateCategorical(aResult.is<Dav1dResult>() ? LABELS_AVIF_DECODER::dav1d
                                                     : LABELS_AVIF_DECODER::aom);
+    if (aResult.is<Dav1dResult>()) {
+      mozilla::glean::avif::decoder.EnumGet(glean::avif::DecoderLabel::eDav1d)
+          .Add();
+    } else {
+      mozilla::glean::avif::decoder.EnumGet(glean::avif::DecoderLabel::eAom)
+          .Add();
+    }
+
     AccumulateCategorical(IsDecodeSuccess(aResult)
                               ? LABELS_AVIF_DECODE_RESULT::success
                               : LABELS_AVIF_DECODE_RESULT::decode_error);
+    if (IsDecodeSuccess(aResult)) {
+      mozilla::glean::avif::decode_result
+          .EnumGet(glean::avif::DecodeResultLabel::eSuccess)
+          .Add();
+    } else {
+      mozilla::glean::avif::decode_result
+          .EnumGet(glean::avif::DecodeResultLabel::eDecodeError)
+          .Add();
+    }
   }
 }
 

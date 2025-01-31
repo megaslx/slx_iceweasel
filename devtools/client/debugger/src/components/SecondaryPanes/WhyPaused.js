@@ -5,13 +5,14 @@
 const {
   LocalizationProvider,
   Localized,
-} = require("devtools/client/shared/vendor/fluent-react");
+} = require("resource://devtools/client/shared/vendor/fluent-react.js");
 
-import React, { PureComponent } from "react";
-import PropTypes from "prop-types";
-import { connect } from "../../utils/connect";
+import React, { PureComponent } from "devtools/client/shared/vendor/react";
+import { div, span } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 import AccessibleImage from "../shared/AccessibleImage";
-import actions from "../../actions";
+import actions from "../../actions/index";
 
 import Reps from "devtools/client/shared/components/reps/index";
 const {
@@ -19,19 +20,20 @@ const {
   MODE,
 } = Reps;
 
-import { getPauseReason } from "../../utils/pause";
+import { getPauseReason } from "../../utils/pause/index";
 import {
   getCurrentThread,
   getPaneCollapse,
   getPauseReason as getWhy,
-} from "../../selectors";
+  getVisibleSelectedFrame,
+} from "../../selectors/index";
 
-import "./WhyPaused.css";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
 class WhyPaused extends PureComponent {
   constructor(props) {
     super(props);
-    this.state = { hideWhyPaused: "" };
+    this.state = { hideWhyPaused: true };
   }
 
   static get propTypes() {
@@ -50,10 +52,10 @@ class WhyPaused extends PureComponent {
 
     if (delay) {
       setTimeout(() => {
-        this.setState({ hideWhyPaused: "" });
+        this.setState({ hideWhyPaused: true });
       }, delay);
     } else {
-      this.setState({ hideWhyPaused: "pane why-paused" });
+      this.setState({ hideWhyPaused: false });
     }
   }
 
@@ -77,7 +79,12 @@ class WhyPaused extends PureComponent {
       // Our types for 'Why' are too general because 'type' can be 'string'.
       // $FlowFixMe - We should have a proper discriminating union of reasons.
       const summary = this.renderExceptionSummary(exception);
-      return <div className="message warning">{summary}</div>;
+      return div(
+        {
+          className: "message error",
+        },
+        summary
+      );
     }
 
     if (type === "mutationBreakpoint" && why.nodeGrip) {
@@ -107,36 +114,61 @@ class WhyPaused extends PureComponent {
             onDOMNodeMouseOut: () => unHighlightDomElement(),
           })
         : null;
-
-      return (
-        <div>
-          <div className="message">{why.message}</div>
-          <div className="mutationNode">
-            {ancestorRep}
-            {ancestorGrip ? (
-              <span className="why-paused-ancestor">
-                <Localized
-                  id={
+      return div(
+        null,
+        div(
+          {
+            className: "message",
+          },
+          why.message
+        ),
+        div(
+          {
+            className: "mutationNode",
+          },
+          ancestorRep,
+          ancestorGrip
+            ? span(
+                {
+                  className: "why-paused-ancestor",
+                },
+                React.createElement(Localized, {
+                  id:
                     action === "remove"
                       ? "whypaused-mutation-breakpoint-removed"
-                      : "whypaused-mutation-breakpoint-added"
-                  }
-                ></Localized>
-                {targetRep}
-              </span>
-            ) : (
-              targetRep
-            )}
-          </div>
-        </div>
+                      : "whypaused-mutation-breakpoint-added",
+                }),
+                targetRep
+              )
+            : targetRep
+        )
       );
     }
 
     if (typeof message == "string") {
-      return <div className="message">{message}</div>;
+      return div(
+        {
+          className: "message",
+        },
+        message
+      );
     }
 
     return null;
+  }
+
+  renderLocation() {
+    const { visibleSelectedFrame } = this.props;
+    if (!visibleSelectedFrame || !visibleSelectedFrame.location?.source) {
+      return null;
+    }
+    const { location, displayName } = visibleSelectedFrame;
+    let pauseLocation = "";
+    if (visibleSelectedFrame.displayName) {
+      pauseLocation += `${displayName} - `;
+    }
+    pauseLocation += `${location.source.displayURL?.filename}:${location.line}:${location.column}`;
+    return div({ className: "location" }, pauseLocation);
   }
 
   render() {
@@ -144,27 +176,59 @@ class WhyPaused extends PureComponent {
     const { fluentBundles } = this.context;
     const reason = getPauseReason(why);
 
-    if (!why || !reason || endPanelCollapsed) {
-      return <div className={this.state.hideWhyPaused} />;
+    let content = "";
+    if (!why || !reason) {
+      if (this.state.hideWhyPaused) {
+        content = null;
+      }
+    } else {
+      content = div(
+        null,
+        div(
+          {
+            className: "info icon",
+          },
+          React.createElement(AccessibleImage, {
+            className: "info",
+          })
+        ),
+        div(
+          {
+            className: "pause reason",
+          },
+          div(
+            {},
+            React.createElement(Localized, {
+              id: reason,
+            })
+          ),
+          this.renderLocation(),
+          this.renderMessage(why)
+        )
+      );
     }
+
     return (
       // We're rendering the LocalizationProvider component from here and not in an upper
       // component because it does set a new context, overriding the context that we set
       // in the first place in <App>, which breaks some components.
       // This should be fixed in Bug 1743155.
-      <LocalizationProvider bundles={fluentBundles || []}>
-        <div className="pane why-paused">
-          <div>
-            <div className="info icon">
-              <AccessibleImage className="info" />
-            </div>
-            <div className="pause reason">
-              <Localized id={reason}></Localized>
-              {this.renderMessage(why)}
-            </div>
-          </div>
-        </div>
-      </LocalizationProvider>
+      React.createElement(
+        LocalizationProvider,
+        {
+          bundles: fluentBundles || [],
+        },
+        // Always render the component so the live region works as expected
+        div(
+          {
+            className: classnames("pane why-paused", {
+              hidden: content == null || endPanelCollapsed,
+            }),
+            "aria-live": "polite",
+          },
+          content
+        )
+      )
     );
   }
 }
@@ -174,6 +238,7 @@ WhyPaused.contextTypes = { fluentBundles: PropTypes.array };
 const mapStateToProps = state => ({
   endPanelCollapsed: getPaneCollapse(state, "end"),
   why: getWhy(state, getCurrentThread(state)),
+  visibleSelectedFrame: getVisibleSelectedFrame(state),
 });
 
 export default connect(mapStateToProps, {

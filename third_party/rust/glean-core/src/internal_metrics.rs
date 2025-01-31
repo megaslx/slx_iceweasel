@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use super::{metrics::*, CommonMetricData, Lifetime};
+use super::{metrics::*, CommonMetricData, LabeledMetricData, Lifetime};
 
 #[derive(Debug)]
 pub struct CoreMetrics {
@@ -27,6 +27,10 @@ pub struct AdditionalMetrics {
 
     /// Time waited for the dispatcher to unblock during shutdown.
     pub shutdown_dispatcher_wait: TimingDistributionMetric,
+
+    /// An experimentation identifier derived and provided by the application
+    /// for the purpose of experimentation enrollment.
+    pub experimentation_id: StringMetric,
 }
 
 impl CoreMetrics {
@@ -78,13 +82,15 @@ impl AdditionalMetrics {
             }),
 
             pings_submitted: LabeledMetric::<CounterMetric>::new(
-                CommonMetricData {
-                    name: "pings_submitted".into(),
-                    category: "glean.validation".into(),
-                    send_in_pings: vec!["metrics".into(), "baseline".into()],
-                    lifetime: Lifetime::Ping,
-                    disabled: false,
-                    dynamic_label: None,
+                LabeledMetricData::Common {
+                    cmd: CommonMetricData {
+                        name: "pings_submitted".into(),
+                        category: "glean.validation".into(),
+                        send_in_pings: vec!["metrics".into(), "baseline".into()],
+                        lifetime: Lifetime::Ping,
+                        disabled: false,
+                        dynamic_label: None,
+                    },
                 },
                 None,
             ),
@@ -112,6 +118,23 @@ impl AdditionalMetrics {
                 },
                 TimeUnit::Millisecond,
             ),
+
+            // This uses a `send_in_pings` that contains "all-ping".
+            // This works because all of our other current "all-pings" metrics
+            // have special handling internally and are not actually processed
+            // into a store quite like this identifier is.
+            //
+            // This could become an issue if we ever decide to start generating
+            // code from the internal Glean metrics.yaml (there aren't currently
+            // any plans for this).
+            experimentation_id: StringMetric::new(CommonMetricData {
+                name: "experimentation_id".into(),
+                category: "glean.client.annotation".into(),
+                send_in_pings: vec!["all-pings".into()],
+                lifetime: Lifetime::Application,
+                disabled: false,
+                dynamic_label: None,
+            }),
         }
     }
 }
@@ -133,13 +156,15 @@ impl UploadMetrics {
     pub fn new() -> UploadMetrics {
         UploadMetrics {
             ping_upload_failure: LabeledMetric::<CounterMetric>::new(
-                CommonMetricData {
-                    name: "ping_upload_failure".into(),
-                    category: "glean.upload".into(),
-                    send_in_pings: vec!["metrics".into()],
-                    lifetime: Lifetime::Ping,
-                    disabled: false,
-                    dynamic_label: None,
+                LabeledMetricData::Common {
+                    cmd: CommonMetricData {
+                        name: "ping_upload_failure".into(),
+                        category: "glean.upload".into(),
+                        send_in_pings: vec!["metrics".into()],
+                        lifetime: Lifetime::Ping,
+                        disabled: false,
+                        dynamic_label: None,
+                    },
                 },
                 Some(vec![
                     Cow::from("status_code_4xx"),
@@ -240,6 +265,12 @@ impl UploadMetrics {
 #[derive(Debug)]
 pub struct DatabaseMetrics {
     pub size: MemoryDistributionMetric,
+
+    /// RKV's load result, indicating success or relaying the detected error.
+    pub rkv_load_error: StringMetric,
+
+    /// The time it takes for a write-commit for the Glean database.
+    pub write_time: TimingDistributionMetric,
 }
 
 impl DatabaseMetrics {
@@ -255,6 +286,27 @@ impl DatabaseMetrics {
                     dynamic_label: None,
                 },
                 MemoryUnit::Byte,
+            ),
+
+            rkv_load_error: StringMetric::new(CommonMetricData {
+                name: "rkv_load_error".into(),
+                category: "glean.error".into(),
+                send_in_pings: vec!["metrics".into()],
+                lifetime: Lifetime::Ping,
+                disabled: false,
+                dynamic_label: None,
+            }),
+
+            write_time: TimingDistributionMetric::new(
+                CommonMetricData {
+                    name: "write_time".into(),
+                    category: "glean.database".into(),
+                    send_in_pings: vec!["metrics".into()],
+                    lifetime: Lifetime::Ping,
+                    disabled: true,
+                    dynamic_label: None,
+                },
+                TimeUnit::Microsecond,
             ),
         }
     }

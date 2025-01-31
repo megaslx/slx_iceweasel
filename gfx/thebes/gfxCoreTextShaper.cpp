@@ -9,6 +9,7 @@
 #include "gfxFontUtils.h"
 #include "gfxTextRun.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/ScaledFontMac.h"
 #include "mozilla/UniquePtrExtensions.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <dlfcn.h>
 
 using namespace mozilla;
+using namespace mozilla::gfx;
 
 // standard font descriptors that we construct the first time they're needed
 CTFontDescriptorRef gfxCoreTextShaper::sFeaturesDescriptor[kMaxFontInstances];
@@ -37,7 +39,7 @@ CFDictionaryRef gfxCoreTextShaper::CreateAttrDict(bool aRightToLeft) {
   CFTypeRef attrs[] = {kCTFontAttributeName, kCTWritingDirectionAttributeName};
   CFTypeRef values[] = {mCTFont[0], dirArray};
   CFDictionaryRef attrDict = ::CFDictionaryCreate(
-      kCFAllocatorDefault, attrs, values, ArrayLength(attrs),
+      kCFAllocatorDefault, attrs, values, std::size(attrs),
       &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
   ::CFRelease(dirArray);
   return attrDict;
@@ -569,7 +571,7 @@ CTFontDescriptorRef gfxCoreTextShaper::CreateFontFeaturesDescriptor(
     CFTypeRef values[] = {type, selector};
     featureSettings[i] = ::CFDictionaryCreate(
         kCFAllocatorDefault, (const void**)keys, (const void**)values,
-        ArrayLength(keys), &kCFTypeDictionaryKeyCallBacks,
+        std::size(keys), &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks);
 
     ::CFRelease(selector);
@@ -578,7 +580,7 @@ CTFontDescriptorRef gfxCoreTextShaper::CreateFontFeaturesDescriptor(
 
   CFArrayRef featuresArray =
       ::CFArrayCreate(kCFAllocatorDefault, (const void**)featureSettings,
-                      aCount,  // not ArrayLength(featureSettings), as we
+                      aCount,  // not std::size(featureSettings), as we
                                // may not have used all the allocated slots
                       &kCFTypeArrayCallBacks);
 
@@ -590,7 +592,7 @@ CTFontDescriptorRef gfxCoreTextShaper::CreateFontFeaturesDescriptor(
   const CFTypeRef attrValues[] = {featuresArray};
   CFDictionaryRef attributesDict = ::CFDictionaryCreate(
       kCFAllocatorDefault, (const void**)attrKeys, (const void**)attrValues,
-      ArrayLength(attrKeys), &kCFTypeDictionaryKeyCallBacks,
+      std::size(attrKeys), &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks);
   ::CFRelease(featuresArray);
 
@@ -634,8 +636,8 @@ CTFontRef gfxCoreTextShaper::CreateCTFontWithFeatures(
   const gfxFontEntry* fe = mFont->GetFontEntry();
   bool isInstalledFont = !fe->IsUserFont() || fe->IsLocalUserFont();
   CGFontRef cgFont = static_cast<gfxMacFont*>(mFont)->GetCGFontRef();
-  return gfxMacFont::CreateCTFontFromCGFontWithVariations(
-      cgFont, aSize, isInstalledFont, aDescriptor);
+  return CreateCTFontFromCGFontWithVariations(cgFont, aSize, isInstalledFont,
+                                              aDescriptor);
 }
 
 void gfxCoreTextShaper::Shutdown()  // [static]

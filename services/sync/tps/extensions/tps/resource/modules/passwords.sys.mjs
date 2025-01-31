@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* This is a JavaScript module (JSM) to be imported via
- * ChromeUtils.import() and acts as a singleton. Only the following
+/* This is a JavaScript module to be imported via
+ * ChromeUtils.importESModule() and acts as a singleton. Only the following
  * listed symbols will exposed on import, and only when and where imported.
  */
 
@@ -112,12 +112,12 @@ Password.prototype = {
    *
    * @return the guid of the password if found, otherwise -1
    */
-  Find() {
-    let logins = Services.logins.findLogins(
-      this.props.hostname,
-      this.props.submitURL,
-      this.props.realm
-    );
+  async Find() {
+    let logins = await Services.logins.searchLoginsAsync({
+      origin: this.props.hostname,
+      formActionOrigin: this.props.submitURL,
+      httpRealm: this.props.realm,
+    });
     for (var i = 0; i < logins.length; i++) {
       if (
         logins[i].username == this.props.username &&

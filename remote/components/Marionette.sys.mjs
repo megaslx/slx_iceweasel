@@ -5,8 +5,6 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  Preferences: "resource://gre/modules/Preferences.sys.mjs",
-
   Deferred: "chrome://remote/content/shared/Sync.sys.mjs",
   EnvironmentPrefs: "chrome://remote/content/marionette/prefs.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
@@ -41,13 +39,6 @@ const ENV_ENABLED = "MOZ_MARIONETTE";
 // something like {"port": 4444} would result in the marionette.port
 // pref being set to 4444.
 const ENV_PRESERVE_PREFS = "MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS";
-
-// Map of Marionette-specific preferences that should be set via
-// RecommendedPreferences.
-const RECOMMENDED_PREFS = new Map([
-  // Automatically unload beforeunload alerts
-  ["dom.disable_beforeunload", true],
-]);
 
 const isRemote =
   Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT;
@@ -149,14 +140,26 @@ class MarionetteParentProcess {
             Services.obs.addObserver(this, "domwindowopened");
           }
 
-          lazy.RecommendedPreferences.applyPreferences(RECOMMENDED_PREFS);
+          lazy.RecommendedPreferences.applyPreferences();
 
           // Only set preferences to preserve in a new profile
           // when Marionette is enabled.
           for (let [pref, value] of lazy.EnvironmentPrefs.from(
             ENV_PRESERVE_PREFS
           )) {
-            lazy.Preferences.set(pref, value);
+            switch (typeof value) {
+              case "string":
+                Services.prefs.setStringPref(pref, value);
+                break;
+              case "boolean":
+                Services.prefs.setBoolPref(pref, value);
+                break;
+              case "number":
+                Services.prefs.setIntPref(pref, value);
+                break;
+              default:
+                throw new TypeError(`Invalid preference type: ${typeof value}`);
+            }
           }
         }
         break;

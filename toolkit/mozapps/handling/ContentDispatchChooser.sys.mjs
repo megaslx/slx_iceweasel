@@ -47,7 +47,8 @@ export class nsContentDispatchChooser {
   ) {
     let callerHasPermission = this._hasProtocolHandlerPermission(
       aHandler.type,
-      aPrincipal
+      aPrincipal,
+      aTriggeredExternally
     );
 
     // Force showing the dialog for links passed from outside the application.
@@ -62,6 +63,12 @@ export class nsContentDispatchChooser {
       )
     ) {
       aHandler.alwaysAskBeforeHandling = true;
+    }
+
+    if ("mailto" === aURI.scheme) {
+      Glean.protocolhandlerMailto.visit.record({
+        triggered_externally: aTriggeredExternally,
+      });
     }
 
     // Skip the dialog if a preferred application is set and the caller has
@@ -269,12 +276,7 @@ export class nsContentDispatchChooser {
    * @param {nsIPrincipal} aPrincipal - Principal to test for permission.
    * @returns {boolean} - true if permission is set, false otherwise.
    */
-  _hasProtocolHandlerPermission(scheme, aPrincipal) {
-    // Permission disabled by pref
-    if (!nsContentDispatchChooser.isPermissionEnabled) {
-      return true;
-    }
-
+  _hasProtocolHandlerPermission(scheme, aPrincipal, aTriggeredExternally) {
     // If a handler is set to open externally by default we skip the dialog.
     if (
       Services.prefs.getBoolPref(
@@ -285,7 +287,10 @@ export class nsContentDispatchChooser {
       return true;
     }
 
-    if (!aPrincipal) {
+    if (
+      !aPrincipal ||
+      (aPrincipal.isSystemPrincipal && !aTriggeredExternally)
+    ) {
       return false;
     }
 
@@ -311,7 +316,8 @@ export class nsContentDispatchChooser {
 
   /**
    * Opens a dialog as a SubDialog on tab level.
-   * If we don't have a BrowsingContext we will fallback to a standalone window.
+   * If we don't have a BrowsingContext or tab level dialogs are not supported,
+   * we will fallback to a standalone window.
    * @param {string} aDialogURL - URL of the dialog to open.
    * @param {Object} aDialogArgs - Arguments passed to the dialog.
    * @param {BrowsingContext} [aBrowsingContext] - BrowsingContext associated
@@ -338,16 +344,20 @@ export class nsContentDispatchChooser {
         );
       }
 
-      let tabDialogBox = window.gBrowser.getTabDialogBox(topFrameElement);
-      return tabDialogBox.open(
-        aDialogURL,
-        {
-          features: resizable,
-          allowDuplicateDialogs: false,
-          keepOpenSameOriginNav: true,
-        },
-        aDialogArgs
-      ).closedPromise;
+      // If the app does not support window.gBrowser or getTabDialogBox(),
+      // fallback to the standalone application chooser window.
+      let getTabDialogBox = window.gBrowser?.getTabDialogBox;
+      if (getTabDialogBox) {
+        return getTabDialogBox(topFrameElement).open(
+          aDialogURL,
+          {
+            features: resizable,
+            allowDuplicateDialogs: false,
+            keepOpenSameOriginNav: true,
+          },
+          aDialogArgs
+        ).closedPromise;
+      }
     }
 
     // If we don't have a BrowsingContext, we need to show a standalone window.
@@ -381,7 +391,6 @@ export class nsContentDispatchChooser {
   _updatePermission(aPrincipal, aScheme, aAllow) {
     // If enabled, store open-protocol-handler permission for content principals.
     if (
-      !nsContentDispatchChooser.isPermissionEnabled ||
       aPrincipal.isSystemPrincipal ||
       !this._isSupportedPrincipal(aPrincipal)
     ) {
@@ -441,10 +450,3 @@ nsContentDispatchChooser.prototype.classID = Components.ID(
 nsContentDispatchChooser.prototype.QueryInterface = ChromeUtils.generateQI([
   "nsIContentDispatchChooser",
 ]);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  nsContentDispatchChooser,
-  "isPermissionEnabled",
-  "security.external_protocol_requires_permission",
-  true
-);

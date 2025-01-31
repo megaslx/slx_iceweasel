@@ -37,7 +37,6 @@ function withStubInits() {
       withStub(PreferenceRollouts, "init"),
       withStub(PreferenceExperiments, "init"),
       withStub(RecipeRunner, "init"),
-      withStub(TelemetryEvents, "init"),
       testFunction
     );
   };
@@ -141,7 +140,7 @@ decorate_task(
   withStub(Normandy, "finishInit"),
   async function testStartupDelayed({ finishInitStub }) {
     let originalDeferred = Normandy.uiAvailableNotificationObserved;
-    let mockUiAvailableDeferred = PromiseUtils.defer();
+    let mockUiAvailableDeferred = Promise.withResolvers();
     Normandy.uiAvailableNotificationObserved = mockUiAvailableDeferred;
 
     let initPromise = Normandy.init();
@@ -247,7 +246,6 @@ decorate_task(withStubInits(), async function testStartupPrefInitFail() {
     "startup calls PreferenceExperiments.init"
   );
   ok(RecipeRunner.init.called, "startup calls RecipeRunner.init");
-  ok(TelemetryEvents.init.called, "startup calls TelemetryEvents.init");
   ok(PreferenceRollouts.init.called, "startup calls PreferenceRollouts.init");
 });
 
@@ -264,25 +262,6 @@ decorate_task(
       "startup calls PreferenceExperiments.init"
     );
     ok(RecipeRunner.init.called, "startup calls RecipeRunner.init");
-    ok(TelemetryEvents.init.called, "startup calls TelemetryEvents.init");
-    ok(PreferenceRollouts.init.called, "startup calls PreferenceRollouts.init");
-  }
-);
-
-decorate_task(
-  withStubInits(),
-  async function testStartupTelemetryEventsInitFail() {
-    TelemetryEvents.init.throws();
-
-    await Normandy.finishInit();
-    ok(AddonStudies.init.called, "startup calls AddonStudies.init");
-    ok(AddonRollouts.init.called, "startup calls AddonRollouts.init");
-    ok(
-      PreferenceExperiments.init.called,
-      "startup calls PreferenceExperiments.init"
-    );
-    ok(RecipeRunner.init.called, "startup calls RecipeRunner.init");
-    ok(TelemetryEvents.init.called, "startup calls TelemetryEvents.init");
     ok(PreferenceRollouts.init.called, "startup calls PreferenceRollouts.init");
   }
 );
@@ -300,87 +279,6 @@ decorate_task(
       "startup calls PreferenceExperiments.init"
     );
     ok(RecipeRunner.init.called, "startup calls RecipeRunner.init");
-    ok(TelemetryEvents.init.called, "startup calls TelemetryEvents.init");
     ok(PreferenceRollouts.init.called, "startup calls PreferenceRollouts.init");
-  }
-);
-
-// Test that disabling telemetry removes all stored enrollment IDs
-decorate_task(
-  PreferenceExperiments.withMockExperiments([
-    factories.preferenceStudyFactory({
-      enrollmentId: "test-enrollment-id",
-    }),
-  ]),
-  AddonStudies.withStudies([
-    factories.addonStudyFactory({ slug: "test-study" }),
-  ]),
-  PreferenceRollouts.withTestMock(),
-  AddonRollouts.withTestMock(),
-  async function disablingTelemetryClearsEnrollmentIds({
-    prefExperiments: [prefExperiment],
-    addonStudies: [addonStudy],
-  }) {
-    const prefRollout = {
-      slug: "test-rollout",
-      state: PreferenceRollouts.STATE_ACTIVE,
-      preferences: [],
-      enrollmentId: "test-enrollment-id",
-    };
-    await PreferenceRollouts.add(prefRollout);
-    const addonRollout = {
-      slug: "test-rollout",
-      state: AddonRollouts.STATE_ACTIVE,
-      extension: {},
-      enrollmentId: "test-enrollment-id",
-    };
-    await AddonRollouts.add(addonRollout);
-
-    // pre-check
-    ok(
-      (await PreferenceExperiments.get(prefExperiment.slug)).enrollmentId,
-      "pref experiment should have an enrollment id"
-    );
-    ok(
-      (await AddonStudies.get(addonStudy.recipeId)).enrollmentId,
-      "addon study should have an enrollment id"
-    );
-    ok(
-      (await PreferenceRollouts.get(prefRollout.slug)).enrollmentId,
-      "pref rollout should have an enrollment id"
-    );
-    ok(
-      (await AddonRollouts.get(addonRollout.slug)).enrollmentId,
-      "addon rollout should have an enrollment id"
-    );
-
-    // trigger telemetry being disabled
-    await Normandy.observe(
-      null,
-      TelemetryUtils.TELEMETRY_UPLOAD_DISABLED_TOPIC,
-      null
-    );
-
-    // no enrollment IDs anymore
-    is(
-      (await PreferenceExperiments.get(prefExperiment.slug)).enrollmentId,
-      TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
-      "pref experiment should not have an enrollment id"
-    );
-    is(
-      (await AddonStudies.get(addonStudy.recipeId)).enrollmentId,
-      TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
-      "addon study should not have an enrollment id"
-    );
-    is(
-      (await PreferenceRollouts.get(prefRollout.slug)).enrollmentId,
-      TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
-      "pref rollout should not have an enrollment id"
-    );
-    is(
-      (await AddonRollouts.get(addonRollout.slug)).enrollmentId,
-      TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
-      "addon rollout should not have an enrollment id"
-    );
   }
 );

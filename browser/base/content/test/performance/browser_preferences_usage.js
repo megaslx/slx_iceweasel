@@ -70,13 +70,6 @@ function checkPrefGetters(stats, max, knownProblematicPrefs = {}) {
     }
   }
 
-  // This pref will be accessed by mozJSComponentLoader when loading modules,
-  // which fails TV runs since they run the test multiple times without restarting.
-  // We just ignore this pref, since it's for testing only anyway.
-  if (knownProblematicPrefs["browser.startup.record"]) {
-    delete knownProblematicPrefs["browser.startup.record"];
-  }
-
   let unusedPrefs = Object.keys(knownProblematicPrefs);
   is(
     unusedPrefs.length,
@@ -104,17 +97,8 @@ add_task(async function startup() {
   let max = 40;
 
   let knownProblematicPrefs = {
-    "browser.startup.record": {
-      // This pref is accessed in Nighly and debug builds only.
-      min: 200,
-      max: 400,
-    },
     "network.loadinfo.skip_type_assertion": {
       // This is accessed in debug only.
-    },
-    "chrome.override_package.global": {
-      min: 0,
-      max: 50,
     },
   };
 
@@ -135,9 +119,6 @@ add_task(async function open_10_tabs() {
   const max = 4 * DEFAULT_PROCESS_COUNT;
 
   let knownProblematicPrefs = {
-    "browser.startup.record": {
-      max: 20,
-    },
     "browser.tabs.remote.logSwitchTiming": {
       max: 35,
     },
@@ -175,8 +156,7 @@ add_task(async function navigate_around() {
       // Disable bfcache so that we can measure more accurately the number of
       // pref accesses in the child processes.
       // If bfcache is enabled on Fission
-      // dom.ipc.keepProcessesAlive.webIsolated.perOrigin and
-      // security.sandbox.content.force-namespace are accessed only a couple of
+      // security.sandbox.content.force-namespace is accessed only a couple of
       // times.
       ["browser.sessionhistory.max_total_viewers", 0],
     ],
@@ -190,16 +170,6 @@ add_task(async function navigate_around() {
     },
   };
 
-  if (Services.prefs.getBoolPref("browser.translations.enable")) {
-    // The translations pref logs the translation decision on each DOMContentLoaded,
-    // and only shows the log by the preferences set in the console.createInstance.
-    // See Bug 1835693. This means that it is invoked on each page load.
-    knownProblematicPrefs["browser.translations.logLevel"] = {
-      min: 50,
-      max: 150,
-    };
-  }
-
   if (SpecialPowers.useRemoteSubframes) {
     // We access this when considering starting a new content process.
     // Because there is no complete list of content process types,
@@ -212,12 +182,6 @@ add_task(async function navigate_around() {
       min: 50,
       max: 51,
     };
-    // This pref is only accessed in automation to speed up tests.
-    knownProblematicPrefs["dom.ipc.keepProcessesAlive.webIsolated.perOrigin"] =
-      {
-        min: 100,
-        max: 102,
-      };
     if (AppConstants.platform == "linux") {
       // The following sandbox pref is covered by
       // https://bugzilla.mozilla.org/show_bug.cgi?id=1600189
@@ -271,7 +235,7 @@ add_task(async function navigate_around() {
   for (let i = 0; i < 50; i++) {
     let url = urls[i % urls.length];
     info(`Navigating to ${url}...`);
-    BrowserTestUtils.loadURIString(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
     await BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, url);
     info(`Loaded ${url}.`);
   }

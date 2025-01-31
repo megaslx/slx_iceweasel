@@ -11,7 +11,7 @@
 #include "./vpx_config.h"
 #include "./vp8_rtcd.h"
 
-#include "third_party/googletest/src/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 #include "test/buffer.h"
 #include "test/clear_system_state.h"
@@ -27,7 +27,7 @@ using libvpx_test::Buffer;
 
 class IDCTTest : public ::testing::TestWithParam<IdctFunc> {
  protected:
-  virtual void SetUp() {
+  void SetUp() override {
     UUT = GetParam();
 
     input = new Buffer<int16_t>(4, 4, 0);
@@ -41,7 +41,7 @@ class IDCTTest : public ::testing::TestWithParam<IdctFunc> {
     ASSERT_TRUE(output->Init());
   }
 
-  virtual void TearDown() {
+  void TearDown() override {
     delete input;
     delete predict;
     delete output;

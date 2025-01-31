@@ -26,7 +26,7 @@ const TESTS = [
   {
     description: "Test 3 - Explicit Custom Port (scheme: http, port: 8888)",
     url: "http://test1.example.com:8888",
-    expectedScheme: "http",
+    expectedScheme: "https",
     expectedPort: 8888,
   },
   {
@@ -41,13 +41,13 @@ const TESTS = [
 function ChannelListener() {}
 
 ChannelListener.prototype = {
-  onStartRequest(request) {
+  onStartRequest() {
     // dummy implementation
   },
-  onDataAvailable(request, stream, offset, count) {
+  onDataAvailable() {
     do_throw("Should not get any data!");
   },
-  onStopRequest(request, status) {
+  onStopRequest(request) {
     var chan = request.QueryInterface(Ci.nsIChannel);
     let requestURL = chan.URI;
     Assert.equal(
@@ -79,7 +79,7 @@ function setUpChannel() {
   return chan;
 }
 
-function serverHandler(metadata, response) {
+function serverHandler() {
   // dummy implementation
 }
 

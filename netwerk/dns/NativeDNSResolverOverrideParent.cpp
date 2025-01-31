@@ -34,9 +34,10 @@ NativeDNSResolverOverrideParent::GetSingleton() {
   ClearOnShutdown(&gNativeDNSResolverOverrideParent);
 
   auto initTask = []() {
-    Unused << SocketProcessParent::GetSingleton()
-                  ->SendPNativeDNSResolverOverrideConstructor(
-                      gNativeDNSResolverOverrideParent);
+    RefPtr<SocketProcessParent> socketParent =
+        SocketProcessParent::GetSingleton();
+    Unused << socketParent->SendPNativeDNSResolverOverrideConstructor(
+        gNativeDNSResolverOverrideParent);
   };
   gIOService->CallOrWaitForSocketProcess(initTask);
   return do_AddRef(gNativeDNSResolverOverrideParent);
@@ -57,6 +58,17 @@ NS_IMETHODIMP NativeDNSResolverOverrideParent::AddIPOverride(
     Unused << self->SendAddIPOverride(host, ip);
   };
   gIOService->CallOrWaitForSocketProcess(task);
+  return NS_OK;
+}
+
+NS_IMETHODIMP NativeDNSResolverOverrideParent::AddHTTPSRecordOverride(
+    const nsACString& aHost, const uint8_t* aData, uint32_t aLength) {
+  nsCString host(aHost);
+  CopyableTArray<uint8_t> data(aData, aLength);
+  auto task = [self = RefPtr{this}, host, data = std::move(data)]() {
+    Unused << self->SendAddHTTPSRecordOverride(host, data);
+  };
+  gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
 }
 

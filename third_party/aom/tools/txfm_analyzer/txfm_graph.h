@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -23,7 +23,6 @@ struct Node {
   int visited;
 };
 
-#define PI (3.141592653589793238462643383279502884)
 #define STAGENUM (10)
 #define NODENUM (32)
 #define COS_MOD (128)

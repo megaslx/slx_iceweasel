@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -8,7 +8,7 @@ description: Property bag with offset property is rejected if offset is in the w
 features: [Temporal]
 ---*/
 
-const timeZone = new Temporal.TimeZone("UTC");
+const timeZone = "UTC";
 
 const offsetOptions = ['use', 'prefer', 'ignore', 'reject'];
 
@@ -16,15 +16,20 @@ const badOffsets = [
   "00:00",    // missing sign
   "+0",       // too short
   "-000:00",  // too long
-  0,          // converts to a string that is invalid
+  0,          // must be a string
+  null,       // must be a string
+  true,       // must be a string
+  1000n,      // must be a string
+  {},         // must be a string
+  Symbol()    // must be a string
 ];
 offsetOptions.forEach((offsetOption) => {
   badOffsets.forEach((offset) => {
     const arg = { year: 2021, month: 10, day: 28, offset, timeZone };
     assert.throws(
-      RangeError,
+      typeof(offset) === 'string' || (typeof offset === "object" && offset !== null) ? RangeError : TypeError,
       () => Temporal.ZonedDateTime.from(arg, { offset: offsetOption }),
-      `"${offset} is not a valid offset string (with offset option ${offsetOption})`
+        `"${String(offset)} is not a valid offset string (with offset option ${offsetOption})`
     );
   });
 });

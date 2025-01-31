@@ -20,7 +20,6 @@
 #include "mozilla/StaticPrefs_content.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "mozilla/StaticPrefs_view_source.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/css/Loader.h"
 #include "mozilla/fallible.h"
 #include "nsContentUtils.h"
@@ -47,8 +46,12 @@
 
 using namespace mozilla;
 
+#ifdef DEBUG
+static LazyLogModule gHtml5TreeOpExecutorLog("Html5TreeOpExecutor");
+#endif  // DEBUG
 static LazyLogModule gCharsetMenuLog("Chardetng");
 
+#define LOG(args) MOZ_LOG(gHtml5TreeOpExecutorLog, LogLevel::Debug, args)
 #define LOGCHARDETNG(args) MOZ_LOG(gCharsetMenuLog, LogLevel::Debug, args)
 
 NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(nsHtml5TreeOpExecutor,
@@ -71,8 +74,7 @@ class nsHtml5ExecutorReflusher : public Runnable {
       // Possible early paint pending, reuse the runnable and try to
       // call RunFlushLoop later.
       nsCOMPtr<nsIRunnable> flusher = this;
-      if (NS_SUCCEEDED(
-              doc->Dispatch(TaskCategory::Network, flusher.forget()))) {
+      if (NS_SUCCEEDED(doc->Dispatch(flusher.forget()))) {
         PROFILER_MARKER_UNTYPED("HighPrio blocking parser flushing(2)", DOM);
         return NS_OK;
       }
@@ -219,21 +221,21 @@ nsHtml5TreeOpExecutor::DidBuildModel(bool aTerminated) {
   if (mStarted) {
     mDocument->EndLoad();
 
-    // Gather telemetry only for top-level content navigations in order to
+    // Log outcome only for top-level content navigations in order to
     // avoid noise from ad iframes.
     bool topLevel = false;
     if (mozilla::dom::BrowsingContext* bc = mDocument->GetBrowsingContext()) {
       topLevel = bc->IsTopContent();
     }
 
-    // Gather telemetry only for text/html and text/plain (excluding CSS, JS,
+    // Log outcome only for text/html and text/plain (excluding CSS, JS,
     // etc. being viewed as text.)
     nsAutoString contentType;
     mDocument->GetContentType(contentType);
     bool htmlOrPlain = contentType.EqualsLiteral(u"text/html") ||
                        contentType.EqualsLiteral(u"text/plain");
 
-    // Gather telemetry only for HTTP status code 200 in order to exclude
+    // Log outcome only for HTTP status code 200 in order to exclude
     // error pages.
     bool httpOk = false;
     nsCOMPtr<nsIChannel> channel;
@@ -249,7 +251,7 @@ nsHtml5TreeOpExecutor::DidBuildModel(bool aTerminated) {
       }
     }
 
-    // Gather chardetng telemetry
+    // Log chardetng outcome
     MOZ_ASSERT(mDocument->IsHTMLDocument());
     if (httpOk && htmlOrPlain && topLevel && !aTerminated &&
         !mDocument->AsHTMLDocument()->IsViewSource()) {
@@ -262,134 +264,78 @@ nsHtml5TreeOpExecutor::DidBuildModel(bool aTerminated) {
         case kCharsetFromInitialAutoDetectionWouldHaveBeenUTF8:
           if (plain) {
             LOGCHARDETNG(("TEXT::UtfInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::UtfInitial);
           } else {
             LOGCHARDETNG(("HTML::UtfInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::UtfInitial);
           }
           break;
         case kCharsetFromInitialAutoDetectionWouldNotHaveBeenUTF8Generic:
           if (plain) {
             LOGCHARDETNG(("TEXT::GenericInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    GenericInitial);
           } else {
             LOGCHARDETNG(("HTML::GenericInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    GenericInitial);
           }
           break;
         case kCharsetFromInitialAutoDetectionWouldNotHaveBeenUTF8Content:
           if (plain) {
             LOGCHARDETNG(("TEXT::ContentInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    ContentInitial);
           } else {
             LOGCHARDETNG(("HTML::ContentInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    ContentInitial);
           }
           break;
         case kCharsetFromInitialAutoDetectionWouldNotHaveBeenUTF8DependedOnTLD:
           if (plain) {
             LOGCHARDETNG(("TEXT::TldInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::TldInitial);
           } else {
             LOGCHARDETNG(("HTML::TldInitial"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::TldInitial);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldHaveBeenUTF8InitialWasASCII:
           if (plain) {
             LOGCHARDETNG(("TEXT::UtfFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::UtfFinal);
           } else {
             LOGCHARDETNG(("HTML::UtfFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::UtfFinal);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8Generic:
           if (plain) {
             LOGCHARDETNG(("TEXT::GenericFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    GenericFinal);
           } else {
             LOGCHARDETNG(("HTML::GenericFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    GenericFinal);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8GenericInitialWasASCII:
           if (plain) {
             LOGCHARDETNG(("TEXT::GenericFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    GenericFinalA);
           } else {
             LOGCHARDETNG(("HTML::GenericFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    GenericFinalA);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8Content:
           if (plain) {
             LOGCHARDETNG(("TEXT::ContentFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    ContentFinal);
           } else {
             LOGCHARDETNG(("HTML::ContentFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    ContentFinal);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8ContentInitialWasASCII:
           if (plain) {
             LOGCHARDETNG(("TEXT::ContentFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::
-                    ContentFinalA);
           } else {
             LOGCHARDETNG(("HTML::ContentFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::
-                    ContentFinalA);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8DependedOnTLD:
           if (plain) {
             LOGCHARDETNG(("TEXT::TldFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::TldFinal);
           } else {
             LOGCHARDETNG(("HTML::TldFinal"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::TldFinal);
           }
           break;
         case kCharsetFromFinalAutoDetectionWouldNotHaveBeenUTF8DependedOnTLDInitialWasASCII:
           if (plain) {
             LOGCHARDETNG(("TEXT::TldFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_TEXT::TldFinalA);
           } else {
             LOGCHARDETNG(("HTML::TldFinalA"));
-            Telemetry::AccumulateCategorical(
-                Telemetry::LABELS_ENCODING_DETECTION_OUTCOME_HTML::TldFinalA);
           }
           break;
         default:
@@ -411,11 +357,11 @@ nsHtml5TreeOpExecutor::DidBuildModel(bool aTerminated) {
   printf("TOKENIZER-SAFE SCRIPTS: %d\n", sTokenSafeDocWrites);
   printf("TREEBUILDER-SAFE SCRIPTS: %d\n", sTreeSafeDocWrites);
 #endif
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
-  printf("MAX NOTIFICATION BATCH LEN: %d\n", sAppendBatchMaxSize);
+#ifdef DEBUG
+  LOG(("MAX NOTIFICATION BATCH LEN: %d\n", sAppendBatchMaxSize));
   if (sAppendBatchExaminations != 0) {
-    printf("AVERAGE SLOTS EXAMINED: %d\n",
-           sAppendBatchSlotsExamined / sAppendBatchExaminations);
+    LOG(("AVERAGE SLOTS EXAMINED: %d\n",
+         sAppendBatchSlotsExamined / sAppendBatchExaminations));
   }
 #endif
   return NS_OK;
@@ -464,8 +410,7 @@ nsresult nsHtml5TreeOpExecutor::MarkAsBroken(nsresult aReason) {
   if (mParser && mDocument) {  // can mParser ever be null here?
     nsCOMPtr<nsIRunnable> terminator = NewRunnableMethod(
         "nsHtml5Parser::Terminate", GetParser(), &nsHtml5Parser::Terminate);
-    if (NS_FAILED(
-            mDocument->Dispatch(TaskCategory::Network, terminator.forget()))) {
+    if (NS_FAILED(mDocument->Dispatch(terminator.forget()))) {
       NS_WARNING("failed to dispatch executor flush event");
     }
   }
@@ -490,8 +435,7 @@ static bool BackgroundFlushCallback(TimeStamp /*aDeadline*/) {
 void nsHtml5TreeOpExecutor::ContinueInterruptedParsingAsync() {
   if (mDocument && !mDocument->IsInBackgroundWindow()) {
     nsCOMPtr<nsIRunnable> flusher = new nsHtml5ExecutorReflusher(this);
-    if (NS_FAILED(
-            mDocument->Dispatch(TaskCategory::Network, flusher.forget()))) {
+    if (NS_FAILED(mDocument->Dispatch(flusher.forget()))) {
       NS_WARNING("failed to dispatch executor flush event");
     }
   } else {
@@ -535,13 +479,13 @@ void nsHtml5TreeOpExecutor::FlushSpeculativeLoads() {
 class nsHtml5FlushLoopGuard {
  private:
   RefPtr<nsHtml5TreeOpExecutor> mExecutor;
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
+#ifdef DEBUG
   uint32_t mStartTime;
 #endif
  public:
   explicit nsHtml5FlushLoopGuard(nsHtml5TreeOpExecutor* aExecutor)
       : mExecutor(aExecutor)
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
+#ifdef DEBUG
         ,
         mStartTime(PR_IntervalToMilliseconds(PR_IntervalNow()))
 #endif
@@ -549,15 +493,15 @@ class nsHtml5FlushLoopGuard {
     mExecutor->mRunFlushLoopOnStack = true;
   }
   ~nsHtml5FlushLoopGuard() {
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
+#ifdef DEBUG
     uint32_t timeOffTheEventLoop =
         PR_IntervalToMilliseconds(PR_IntervalNow()) - mStartTime;
     if (timeOffTheEventLoop >
         nsHtml5TreeOpExecutor::sLongestTimeOffTheEventLoop) {
       nsHtml5TreeOpExecutor::sLongestTimeOffTheEventLoop = timeOffTheEventLoop;
     }
-    printf("Longest time off the event loop: %d\n",
-           nsHtml5TreeOpExecutor::sLongestTimeOffTheEventLoop);
+    LOG(("Longest time off the event loop: %d\n",
+         nsHtml5TreeOpExecutor::sLongestTimeOffTheEventLoop));
 #endif
 
     mExecutor->mRunFlushLoopOnStack = false;
@@ -738,15 +682,15 @@ void nsHtml5TreeOpExecutor::RunFlushLoop() {
 #endif
     } else if (scriptElement) {
       // must be tail call when mFlushState is eNotFlushing
-      RunScript(scriptElement);
+      RunScript(scriptElement, true);
 
       // Always check the clock in nsContentSink right after a script
       StopDeflecting();
       if (nsContentSink::DidProcessATokenImpl() ==
           NS_ERROR_HTMLPARSER_INTERRUPTED) {
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
-        printf("REFLUSH SCHEDULED (after script): %d\n",
-               ++sTimesFlushLoopInterrupted);
+#ifdef DEBUG
+        LOG(("REFLUSH SCHEDULED (after script): %d\n",
+             ++sTimesFlushLoopInterrupted));
 #endif
         nsHtml5TreeOpExecutor::ContinueInterruptedParsingAsync();
         return;
@@ -843,7 +787,7 @@ nsresult nsHtml5TreeOpExecutor::FlushDocumentWrite() {
 #endif
   } else if (scriptElement) {
     // must be tail call when mFlushState is eNotFlushing
-    RunScript(scriptElement);
+    RunScript(scriptElement, true);
   }
   return rv;
 }
@@ -909,12 +853,13 @@ void nsHtml5TreeOpExecutor::PauseDocUpdate(bool* aInterrupted) {
  * before scripts run. This way, the tokenizer is not invoked re-entrantly
  * although the parser is.
  *
- * The reason why this is called as a tail call when mFlushState is set to
- * eNotFlushing is to allow re-entry to Flush() but only after the current
- * Flush() has cleared the op queue and is otherwise done cleaning up after
- * itself.
+ * The reason why this is called with `aMayDocumentWriteOrBlock=true` as a
+ * tail call when `mFlushState` is set to `eNotFlushing` is to allow re-entry
+ * to `Flush()` but only after the current `Flush()` has cleared the op queue
+ * and is otherwise done cleaning up after itself.
  */
-void nsHtml5TreeOpExecutor::RunScript(nsIContent* aScriptElement) {
+void nsHtml5TreeOpExecutor::RunScript(nsIContent* aScriptElement,
+                                      bool aMayDocumentWriteOrBlock) {
   if (mRunsToCompletion) {
     // We are in createContextualFragment() or in the upcoming document.parse().
     // Do nothing. Let's not even mark scripts malformed here, because that
@@ -931,18 +876,23 @@ void nsHtml5TreeOpExecutor::RunScript(nsIContent* aScriptElement) {
     return;
   }
 
-  if (sele->GetScriptDeferred() || sele->GetScriptAsync()) {
+  sele->SetCreatorParser(GetParser());
+
+  if (!aMayDocumentWriteOrBlock) {
+    MOZ_ASSERT(sele->GetScriptDeferred() || sele->GetScriptAsync() ||
+               sele->GetScriptIsModule() || sele->GetScriptIsImportMap() ||
+               aScriptElement->AsElement()->HasAttr(nsGkAtoms::nomodule));
     DebugOnly<bool> block = sele->AttemptToExecute();
-    NS_ASSERTION(!block, "Defer or async script tried to block.");
+    MOZ_ASSERT(!block,
+               "Defer, async, module, importmap, or nomodule tried to block.");
     return;
   }
 
-  MOZ_RELEASE_ASSERT(mFlushState == eNotFlushing,
-                     "Tried to run script while flushing.");
+  MOZ_RELEASE_ASSERT(
+      mFlushState == eNotFlushing,
+      "Tried to run a potentially-blocking script while flushing.");
 
   mReadingFromStage = false;
-
-  sele->SetCreatorParser(GetParser());
 
   // Copied from nsXMLContentSink
   // Now tell the script that it's ready to go. This may execute the script
@@ -1024,7 +974,8 @@ void nsHtml5TreeOpExecutor::MaybeComplainAboutCharset(const char* aMsgId,
   nsContentUtils::ReportToConsole(
       aError ? nsIScriptError::errorFlag : nsIScriptError::warningFlag,
       "HTML parser"_ns, mDocument, nsContentUtils::eHTMLPARSER_PROPERTIES,
-      aMsgId, nsTArray<nsString>(), nullptr, u""_ns, aLineNumber);
+      aMsgId, nsTArray<nsString>(),
+      SourceLocation{mDocument->GetDocumentURI(), aLineNumber});
 }
 
 void nsHtml5TreeOpExecutor::ComplainAboutBogusProtocolCharset(
@@ -1046,7 +997,8 @@ void nsHtml5TreeOpExecutor::MaybeComplainAboutDeepTree(uint32_t aLineNumber) {
   nsContentUtils::ReportToConsole(
       nsIScriptError::errorFlag, "HTML parser"_ns, mDocument,
       nsContentUtils::eHTMLPARSER_PROPERTIES, "errDeepTree",
-      nsTArray<nsString>(), nullptr, u""_ns, aLineNumber);
+      nsTArray<nsString>(),
+      SourceLocation{mDocument->GetDocumentURI(), aLineNumber});
 }
 
 nsHtml5Parser* nsHtml5TreeOpExecutor::GetParser() {
@@ -1205,9 +1157,9 @@ dom::ReferrerPolicy nsHtml5TreeOpExecutor::GetPreloadReferrerPolicy(
 void nsHtml5TreeOpExecutor::PreloadScript(
     const nsAString& aURL, const nsAString& aCharset, const nsAString& aType,
     const nsAString& aCrossOrigin, const nsAString& aMedia,
-    const nsAString& aNonce, const nsAString& aIntegrity,
-    dom::ReferrerPolicy aReferrerPolicy, bool aScriptFromHead, bool aAsync,
-    bool aDefer, bool aNoModule, bool aLinkPreload) {
+    const nsAString& aNonce, const nsAString& aFetchPriority,
+    const nsAString& aIntegrity, dom::ReferrerPolicy aReferrerPolicy,
+    bool aScriptFromHead, bool aAsync, bool aDefer, bool aLinkPreload) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYetAndMediaApplies(aURL, aMedia);
   if (!uri) {
     return;
@@ -1217,18 +1169,17 @@ void nsHtml5TreeOpExecutor::PreloadScript(
     return;
   }
   mDocument->ScriptLoader()->PreloadURI(
-      uri, aCharset, aType, aCrossOrigin, aNonce, aIntegrity, aScriptFromHead,
-      aAsync, aDefer, aNoModule, aLinkPreload,
+      uri, aCharset, aType, aCrossOrigin, aNonce, aFetchPriority, aIntegrity,
+      aScriptFromHead, aAsync, aDefer, aLinkPreload,
       GetPreloadReferrerPolicy(aReferrerPolicy), 0);
 }
 
-void nsHtml5TreeOpExecutor::PreloadStyle(const nsAString& aURL,
-                                         const nsAString& aCharset,
-                                         const nsAString& aCrossOrigin,
-                                         const nsAString& aMedia,
-                                         const nsAString& aReferrerPolicy,
-                                         const nsAString& aIntegrity,
-                                         bool aLinkPreload) {
+void nsHtml5TreeOpExecutor::PreloadStyle(
+    const nsAString& aURL, const nsAString& aCharset,
+    const nsAString& aCrossOrigin, const nsAString& aMedia,
+    const nsAString& aReferrerPolicy, const nsAString& aNonce,
+    const nsAString& aIntegrity, bool aLinkPreload,
+    const nsAString& aFetchPriority) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYetAndMediaApplies(aURL, aMedia);
   if (!uri) {
     return;
@@ -1244,19 +1195,19 @@ void nsHtml5TreeOpExecutor::PreloadStyle(const nsAString& aURL,
     }
   }
 
-  mDocument->PreloadStyle(uri, Encoding::ForLabel(aCharset), aCrossOrigin,
-                          GetPreloadReferrerPolicy(aReferrerPolicy), aIntegrity,
-                          aLinkPreload
-                              ? css::StylePreloadKind::FromLinkRelPreloadElement
-                              : css::StylePreloadKind::FromParser,
-                          0);
+  mDocument->PreloadStyle(
+      uri, Encoding::ForLabel(aCharset), aCrossOrigin,
+      GetPreloadReferrerPolicy(aReferrerPolicy), aNonce, aIntegrity,
+      aLinkPreload ? css::StylePreloadKind::FromLinkRelPreloadElement
+                   : css::StylePreloadKind::FromParser,
+      0, aFetchPriority);
 }
 
 void nsHtml5TreeOpExecutor::PreloadImage(
     const nsAString& aURL, const nsAString& aCrossOrigin,
     const nsAString& aMedia, const nsAString& aSrcset, const nsAString& aSizes,
     const nsAString& aImageReferrerPolicy, bool aLinkPreload,
-    const TimeStamp& aInitTimestamp) {
+    const nsAString& aFetchPriority) {
   nsCOMPtr<nsIURI> baseURI = BaseURIForPreload();
   bool isImgSet = false;
   nsCOMPtr<nsIURI> uri =
@@ -1265,7 +1216,7 @@ void nsHtml5TreeOpExecutor::PreloadImage(
     // use document wide referrer policy
     mDocument->MaybePreLoadImage(uri, aCrossOrigin,
                                  GetPreloadReferrerPolicy(aImageReferrerPolicy),
-                                 isImgSet, aLinkPreload, aInitTimestamp);
+                                 isImgSet, aLinkPreload, aFetchPriority);
   }
 }
 
@@ -1281,25 +1232,29 @@ void nsHtml5TreeOpExecutor::PreloadPictureSource(const nsAString& aSrcset,
 void nsHtml5TreeOpExecutor::PreloadFont(const nsAString& aURL,
                                         const nsAString& aCrossOrigin,
                                         const nsAString& aMedia,
-                                        const nsAString& aReferrerPolicy) {
+                                        const nsAString& aReferrerPolicy,
+                                        const nsAString& aFetchPriority) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYetAndMediaApplies(aURL, aMedia);
   if (!uri) {
     return;
   }
 
-  mDocument->Preloads().PreloadFont(uri, aCrossOrigin, aReferrerPolicy, 0);
+  mDocument->Preloads().PreloadFont(uri, aCrossOrigin, aReferrerPolicy, 0,
+                                    aFetchPriority);
 }
 
 void nsHtml5TreeOpExecutor::PreloadFetch(const nsAString& aURL,
                                          const nsAString& aCrossOrigin,
                                          const nsAString& aMedia,
-                                         const nsAString& aReferrerPolicy) {
+                                         const nsAString& aReferrerPolicy,
+                                         const nsAString& aFetchPriority) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYetAndMediaApplies(aURL, aMedia);
   if (!uri) {
     return;
   }
 
-  mDocument->Preloads().PreloadFetch(uri, aCrossOrigin, aReferrerPolicy, 0);
+  mDocument->Preloads().PreloadFetch(uri, aCrossOrigin, aReferrerPolicy, 0,
+                                     aFetchPriority);
 }
 
 void nsHtml5TreeOpExecutor::PreloadOpenPicture() {
@@ -1330,6 +1285,13 @@ void nsHtml5TreeOpExecutor::SetSpeculationBase(const nsAString& aURL) {
                                      mDocument->GetDocumentURI());
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to create a URI");
   if (!newBaseURI) {
+    return;
+  }
+
+  // See
+  // https://html.spec.whatwg.org/multipage/semantics.html#set-the-frozen-base-url
+  // data: and javascript: base URLs are not allowed.
+  if (newBaseURI->SchemeIs("data") || newBaseURI->SchemeIs("javascript")) {
     return;
   }
 
@@ -1396,7 +1358,7 @@ void nsHtml5TreeOpExecutor::AddSpeculationCSP(const nsAString& aCSP) {
   mDocument->ApplySettingsFromCSP(true);
 }
 
-#ifdef DEBUG_NS_HTML5_TREE_OP_EXECUTOR_FLUSH
+#ifdef DEBUG
 uint32_t nsHtml5TreeOpExecutor::sAppendBatchMaxSize = 0;
 uint32_t nsHtml5TreeOpExecutor::sAppendBatchSlotsExamined = 0;
 uint32_t nsHtml5TreeOpExecutor::sAppendBatchExaminations = 0;

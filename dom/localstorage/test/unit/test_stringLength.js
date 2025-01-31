@@ -19,7 +19,7 @@ add_task(async function testSteps() {
 
     // This forces any pending changes to be flushed to disk.  It also forces
     // data to be reloaded from disk at next localStorage API call.
-    request = resetOrigin(principal);
+    request = resetClient(principal);
     await requestFinished(request);
 
     request = getOriginUsage(principal);
@@ -70,5 +70,5 @@ add_task(async function testSteps() {
   info("Stage 4 - Checking length of the copied value");
 
   value = storage.getItem(data.secondKey);
-  ok(value.length === data.value.length, "Correct string length");
+  Assert.strictEqual(value.length, data.value.length, "Correct string length");
 });

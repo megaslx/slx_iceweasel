@@ -9,7 +9,6 @@
 #include "celldata.h"
 #include "nsTArray.h"
 #include "nsCOMPtr.h"
-#include "nsAlgorithm.h"
 #include "nsRect.h"
 #include <algorithm>
 #include "TableArea.h"
@@ -210,7 +209,7 @@ class nsTableCellMap {
   BCInfo* mBCInfo;
 };
 
-/** nsCellMap is a support class for nsTablePart.
+/**
  * It maintains an Rows x Columns grid onto which the cells of the table are
  * mapped. This makes processing of rowspan and colspan attributes much easier.
  * Each cell is represented by a CellData object.

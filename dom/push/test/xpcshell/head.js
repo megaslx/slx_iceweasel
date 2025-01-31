@@ -15,8 +15,7 @@ ChromeUtils.defineESModuleGetters(this, {
   Preferences: "resource://gre/modules/Preferences.sys.mjs",
   PushCrypto: "resource://gre/modules/PushCrypto.sys.mjs",
   PushService: "resource://gre/modules/PushService.sys.mjs",
-  PushServiceHttp2: "resource://gre/modules/PushService.sys.mjs",
-  PushServiceWebSocket: "resource://gre/modules/PushService.sys.mjs",
+  PushServiceWebSocket: "resource://gre/modules/PushServiceWebSocket.sys.mjs",
   pushBroadcastService: "resource://gre/modules/PushBroadcastService.sys.mjs",
 });
 
@@ -46,7 +45,7 @@ var isParent =
   Services.appinfo.processType == Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT;
 
 // Stop and clean up after the PushService.
-Services.obs.addObserver(function observe(subject, topic, data) {
+Services.obs.addObserver(function observe(subject, topic) {
   Services.obs.removeObserver(observe, topic);
   PushService.uninit();
   // Occasionally, `profile-change-teardown` and `xpcom-shutdown` will fire
@@ -107,7 +106,7 @@ function waterfall(...callbacks) {
  * @returns {Promise} A promise that fulfills when the notification is fired.
  */
 function promiseObserverNotification(topic, matchFunc) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     Services.obs.addObserver(function observe(subject, aTopic, data) {
       let matches = typeof matchFunc != "function" || matchFunc(subject, data);
       if (!matches) {
@@ -169,9 +168,6 @@ function setPrefs(prefs = {}) {
       retryBaseInterval: 5000,
       pingInterval: 30 * 60 * 1000,
       // Misc. defaults.
-      "http2.maxRetries": 2,
-      "http2.retryInterval": 500,
-      "http2.reset_retry_count_after_ms": 60000,
       maxQuotaPerSubscription: 16,
       quotaUpdateDelay: 3000,
       "testing.notifyWorkers": false,
@@ -305,7 +301,7 @@ MockWebSocket.prototype = {
     this._handleMessage(msg);
   },
 
-  close(code, reason) {
+  close() {
     waterfall(() => this._listener.onStop(this._context, Cr.NS_OK));
   },
 
@@ -413,7 +409,7 @@ var setUpServiceInParent = async function (service, db) {
     }),
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
-        onHello(request) {
+        onHello() {
           this.serverSendMsg(
             JSON.stringify({
               messageType: "hello",

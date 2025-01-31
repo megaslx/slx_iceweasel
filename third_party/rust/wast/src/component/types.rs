@@ -83,6 +83,8 @@ impl<'a> Parse<'a> for ModuleType<'a> {
 pub enum ModuleTypeDecl<'a> {
     /// A core type.
     Type(core::Type<'a>),
+    /// A core recursion group.
+    Rec(core::Rec<'a>),
     /// An alias local to the component type.
     Alias(Alias<'a>),
     /// An import.
@@ -96,6 +98,8 @@ impl<'a> Parse<'a> for ModuleTypeDecl<'a> {
         let mut l = parser.lookahead1();
         if l.peek::<kw::r#type>()? {
             Ok(Self::Type(parser.parse()?))
+        } else if l.peek::<kw::rec>()? {
+            Ok(Self::Rec(parser.parse()?))
         } else if l.peek::<kw::alias>()? {
             Ok(Self::Alias(Alias::parse_outer_core_type_alias(parser)?))
         } else if l.peek::<kw::import>()? {
@@ -230,8 +234,8 @@ pub enum PrimitiveValType {
     U32,
     S64,
     U64,
-    Float32,
-    Float64,
+    F32,
+    F64,
     Char,
     String,
 }
@@ -266,12 +270,18 @@ impl<'a> Parse<'a> for PrimitiveValType {
         } else if l.peek::<kw::u64>()? {
             parser.parse::<kw::u64>()?;
             Ok(Self::U64)
+        } else if l.peek::<kw::f32>()? {
+            parser.parse::<kw::f32>()?;
+            Ok(Self::F32)
+        } else if l.peek::<kw::f64>()? {
+            parser.parse::<kw::f64>()?;
+            Ok(Self::F64)
         } else if l.peek::<kw::float32>()? {
             parser.parse::<kw::float32>()?;
-            Ok(Self::Float32)
+            Ok(Self::F32)
         } else if l.peek::<kw::float64>()? {
             parser.parse::<kw::float64>()?;
-            Ok(Self::Float64)
+            Ok(Self::F64)
         } else if l.peek::<kw::char>()? {
             parser.parse::<kw::char>()?;
             Ok(Self::Char)
@@ -297,6 +307,8 @@ impl Peek for PrimitiveValType {
                 | Some(("u32", _))
                 | Some(("s64", _))
                 | Some(("u64", _))
+                | Some(("f32", _))
+                | Some(("f64", _))
                 | Some(("float32", _))
                 | Some(("float64", _))
                 | Some(("char", _))
@@ -372,7 +384,6 @@ pub enum ComponentDefinedType<'a> {
     Tuple(Tuple<'a>),
     Flags(Flags<'a>),
     Enum(Enum<'a>),
-    Union(Union<'a>),
     Option(OptionType<'a>),
     Result(ResultType<'a>),
     Own(Index<'a>),
@@ -394,8 +405,6 @@ impl<'a> ComponentDefinedType<'a> {
             Ok(Self::Flags(parser.parse()?))
         } else if l.peek::<kw::enum_>()? {
             Ok(Self::Enum(parser.parse()?))
-        } else if l.peek::<kw::union>()? {
-            Ok(Self::Union(parser.parse()?))
         } else if l.peek::<kw::option>()? {
             Ok(Self::Option(parser.parse()?))
         } else if l.peek::<kw::result>()? {
@@ -433,7 +442,6 @@ impl Peek for ComponentDefinedType<'_> {
                     | Some(("tuple", _))
                     | Some(("flags", _))
                     | Some(("enum", _))
-                    | Some(("union", _))
                     | Some(("option", _))
                     | Some(("result", _))
                     | Some(("own", _))
@@ -627,24 +635,6 @@ impl<'a> Parse<'a> for Enum<'a> {
             names.push(parser.parse()?);
         }
         Ok(Self { names })
-    }
-}
-
-/// A union type.
-#[derive(Debug)]
-pub struct Union<'a> {
-    /// The types of the union.
-    pub types: Vec<ComponentValType<'a>>,
-}
-
-impl<'a> Parse<'a> for Union<'a> {
-    fn parse(parser: Parser<'a>) -> Result<Self> {
-        parser.parse::<kw::union>()?;
-        let mut types = Vec::new();
-        while !parser.is_empty() {
-            types.push(parser.parse()?);
-        }
-        Ok(Self { types })
     }
 }
 

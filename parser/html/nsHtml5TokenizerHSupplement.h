@@ -2,49 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+friend struct nsHtml5ViewSourcePolicy;
+friend struct nsHtml5LineColPolicy;
+friend struct nsHtml5FastestPolicy;
+
 private:
-inline void silentCarriageReturn() {
-  nextCharOnNewLine = true;
-  lastCR = true;
-}
-
-inline void silentLineFeed() { nextCharOnNewLine = true; }
-
-inline char16_t checkChar(char16_t* buf, int32_t pos) {
-  // The name of this method comes from the validator.
-  // We aren't checking a char here. We read the next
-  // UTF-16 code unit and, before returning it, adjust
-  // the line and column numbers.
-  char16_t c = buf[pos];
-  if (MOZ_UNLIKELY(nextCharOnNewLine)) {
-    // By changing the line and column here instead
-    // of doing so eagerly when seeing the line break
-    // causes the line break itself to be considered
-    // column-wise at the end of a line.
-    line++;
-    col = 1;
-    nextCharOnNewLine = false;
-  } else if (MOZ_LIKELY(!NS_IS_LOW_SURROGATE(c))) {
-    // SpiderMonkey wants to count scalar values
-    // instead of UTF-16 code units. We omit low
-    // surrogates from the count so that only the
-    // high surrogate increments the count for
-    // two-code-unit scalar values.
-    //
-    // It's somewhat questionable from the performance
-    // perspective to make the human-perceivable column
-    // count correct for non-BMP characters in the case
-    // where there is a single scalar value per extended
-    // grapheme cluster when even on the BMP there are
-    // various cases where the scalar count doesn't make
-    // much sense as a human-perceived "column count" due
-    // to extended grapheme clusters consisting of more
-    // than one scalar value.
-    col++;
-  }
-  return c;
-}
-
 int32_t col;
 bool nextCharOnNewLine;
 
@@ -97,7 +59,7 @@ mozilla::Result<bool, nsresult> FlushViewSource();
 
 void StartViewSource(const nsAutoString& aTitle);
 
-void StartViewSourceCharacters();
+void StartViewSourceBodyContents();
 
 [[nodiscard]] bool EndViewSource();
 
@@ -165,15 +127,7 @@ void maybeErrAttributesOnEndTag(nsHtml5HtmlAttributes* attrs);
 
 void maybeErrSlashInEndTag(bool selfClosing);
 
-char16_t errNcrNonCharacter(char16_t ch);
-
-void errAstralNonCharacter(int32_t ch);
-
 void errNcrSurrogate();
-
-char16_t errNcrControlChar(char16_t ch);
-
-void errNcrCr();
 
 void errNcrInC1Range();
 
@@ -208,8 +162,6 @@ void errExpectedSystemId();
 void errMissingSpaceBeforeDoctypeName();
 
 void errNestedComment();
-
-void errNcrControlChar();
 
 void errNcrZero();
 

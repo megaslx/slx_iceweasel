@@ -34,17 +34,6 @@ where
         return true;
     }
 
-    // Cousins are a bit more complicated.
-    //
-    // The fact that the candidate is here means that its element does not anchor
-    // the relative selector. However, it may have considered relative selector(s)
-    // to compute its style, i.e. there's a rule `<..> :has(<..>) <..> candidate`.
-    // In this case, evaluating style sharing requires evaluating the relative
-    // selector for the target anyway.
-    if candidate.considered_relative_selector {
-        return false;
-    }
-
     // If a parent element was already styled and we traversed past it without
     // restyling it, that may be because our clever invalidation logic was able
     // to prove that the styles of that element would remain unchanged despite
@@ -139,10 +128,24 @@ where
 
     let for_candidate = candidate.revalidation_match_results(stylist, bloom, selector_caches);
 
-    // This assert "ensures", to some extent, that the two candidates have
-    // matched the same rulehash buckets, and as such, that the bits we're
-    // comparing represent the same set of selectors.
-    debug_assert_eq!(for_element.len(), for_candidate.len());
+    for_element == for_candidate
+}
+
+/// Whether a given element and a candidate share a set of scope activations
+/// for revalidation.
+#[inline]
+pub fn revalidate_scope<E>(
+    target: &mut StyleSharingTarget<E>,
+    candidate: &mut StyleSharingCandidate<E>,
+    shared_context: &SharedStyleContext,
+    selector_caches: &mut SelectorCaches,
+) -> bool
+where
+    E: TElement,
+{
+    let stylist = &shared_context.stylist;
+    let for_element = target.scope_revalidation_results(stylist, selector_caches);
+    let for_candidate = candidate.scope_revalidation_results(stylist, selector_caches);
 
     for_element == for_candidate
 }

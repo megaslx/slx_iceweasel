@@ -301,7 +301,6 @@ USE_LIBS += [
 ]
 
 DIRS += [
-    "../angle_common",
     "../preprocessor",
 ]
 

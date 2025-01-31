@@ -12,7 +12,6 @@
 #include "XULButtonElement.h"
 #include "nsCOMPtr.h"
 #include "nsGkAtoms.h"
-#include "nsContentCID.h"
 #include "nsContentUtils.h"
 #include "nsXULPopupManager.h"
 #include "nsIScriptContext.h"
@@ -275,7 +274,8 @@ nsresult nsXULPopupListener::LaunchPopup(MouseEvent* aEvent) {
     pm->ShowPopup(mPopupContent, mElement, u""_ns, 0, 0, false, true, false,
                   aEvent);
   } else {
-    CSSIntPoint pos = aEvent->ScreenPoint(CallerType::System);
+    const CSSIntPoint pos =
+        RoundedToInt(aEvent->ScreenPoint(CallerType::System));
     pm->ShowPopupAtScreen(mPopupContent, pos.x, pos.y, mIsContext, aEvent);
   }
 

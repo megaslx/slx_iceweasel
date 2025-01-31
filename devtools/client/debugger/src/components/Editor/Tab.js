@@ -2,19 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import React, { PureComponent } from "react";
-import PropTypes from "prop-types";
-import { connect } from "../../utils/connect";
+import React, { PureComponent } from "devtools/client/shared/vendor/react";
+import { div, span } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import SourceIcon from "../shared/SourceIcon";
-import { CloseButton } from "../shared/Button";
+import { CloseButton } from "../shared/Button/index";
 
-import actions from "../../actions";
+import actions from "../../actions/index";
 
 import {
   getDisplayPath,
   getFileURL,
-  getSourceQueryString,
   getTruncatedFileName,
   isPretty,
 } from "../../utils/source";
@@ -24,9 +24,9 @@ import {
   getSelectedLocation,
   getSourcesForTabs,
   isSourceBlackBoxed,
-} from "../../selectors";
+} from "../../selectors/index";
 
-const classnames = require("devtools/client/shared/classnames.js");
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
 class Tab extends PureComponent {
   static get propTypes() {
@@ -86,39 +86,39 @@ class Tab extends PureComponent {
     });
 
     const path = getDisplayPath(source, tabSources);
-    const query = getSourceQueryString(source);
-
-    return (
-      <div
-        draggable
-        onDragOver={onDragOver}
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        className={className}
-        data-index={index}
-        data-source-id={sourceId}
-        onClick={handleTabClick}
+    return div(
+      {
+        draggable: true,
+        onDragOver,
+        onDragStart,
+        onDragEnd,
+        className,
+        "data-index": index,
+        "data-source-id": sourceId,
+        onClick: handleTabClick,
         // Accommodate middle click to close tab
-        onMouseUp={e => e.button === 1 && closeTab(source)}
-        onContextMenu={this.onContextMenu}
-        title={getFileURL(source, false)}
-      >
-        <SourceIcon
-          location={createLocation({ source, sourceActor })}
-          forTab={true}
-          modifier={icon =>
-            ["file", "javascript"].includes(icon) ? null : icon
-          }
-        />
-        <div className="filename">
-          {getTruncatedFileName(source, query)}
-          {path && <span>{`../${path}/..`}</span>}
-        </div>
-        <CloseButton
-          handleClick={onClickClose}
-          tooltip={L10N.getStr("sourceTabs.closeTabButtonTooltip")}
-        />
-      </div>
+        onMouseUp: e => e.button === 1 && closeTab(source),
+        onContextMenu: this.onContextMenu,
+        title: getFileURL(source, false),
+      },
+      React.createElement(SourceIcon, {
+        location: createLocation({
+          source,
+          sourceActor,
+        }),
+        forTab: true,
+      }),
+      div(
+        {
+          className: "filename",
+        },
+        getTruncatedFileName(source),
+        path && span(null, `../${path}/..`)
+      ),
+      React.createElement(CloseButton, {
+        handleClick: onClickClose,
+        tooltip: L10N.getStr("sourceTabs.closeTabButtonTooltip"),
+      })
     );
   }
 }

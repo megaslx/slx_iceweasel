@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <iterator>
 #include <type_traits>
 
@@ -149,6 +150,10 @@ template <typename T,
 class ArrayView final : public array_view_internal::ArrayViewBase<T, Size> {
  public:
   using value_type = T;
+  using reference = value_type&;
+  using const_reference = const value_type&;
+  using pointer = value_type*;
+  using const_pointer = const value_type*;
   using const_iterator = const T*;
 
   // Construct an ArrayView from a pointer and a length.

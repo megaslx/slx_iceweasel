@@ -231,7 +231,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
                tn.kind() == TryNoteKind::Finally)) {
             uint32_t catchOrFinallyOffset = tn.start + tn.length;
             uint32_t targetDepth =
-                tn.kind() == TryNoteKind::Finally ? stackDepth + 2 : stackDepth;
+                tn.kind() == TryNoteKind::Finally ? stackDepth + 3 : stackDepth;
             BytecodeInfo& targetInfo = infos_[catchOrFinallyOffset];
             targetInfo.init(targetDepth);
             targetInfo.setJumpTarget(/* normallyReachable = */ false);
@@ -246,6 +246,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
 
 #ifdef DEBUG
       case JSOp::Exception:
+      case JSOp::ExceptionAndStack:
         // Sanity check: ops only emitted in catch blocks are never
         // normally reachable.
         MOZ_ASSERT(!normallyReachable);
@@ -312,7 +313,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
   }
 
   if (!normallyReachableReturn) {
-    script_->setUninlineable();
+    disableInlining();
   }
 
   if (!analyzer.canIon()) {
@@ -320,8 +321,9 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
       JitSpew(
           JitSpew_IonAbort,
           "Disabling Warp support for %s:%d:%d due to Yield being in a loop",
-          script_->filename(), script_->lineno(), script_->column());
-      script_->disableIon();
+          script_->filename(), script_->lineno(),
+          script_->column().oneOriginValue());
+      disableIon();
     }
   }
 
@@ -335,9 +337,9 @@ void BytecodeAnalysis::checkWarpSupport(JSOp op) {
 #undef DEF_CASE
     if (script_->canIonCompile()) {
       JitSpew(JitSpew_IonAbort, "Disabling Warp support for %s:%d:%d due to %s",
-              script_->filename(), script_->lineno(), script_->column(),
-              CodeName(op));
-      script_->disableIon();
+              script_->filename(), script_->lineno(),
+              script_->column().oneOriginValue(), CodeName(op));
+      disableIon();
     }
     break;
     default:

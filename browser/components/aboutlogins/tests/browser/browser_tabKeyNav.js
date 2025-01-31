@@ -44,15 +44,15 @@ add_task(async function test_tab_key_nav() {
     // in the order we expect them to be navigated.
     const expectedElementsInOrder = [
       ["login-list", "login-filter", "input"],
-      ["login-list", "login-command-button.create-login-button", "button"],
+      ["login-list", "create-login-button", "button"],
       ["login-list", "select#login-sort"],
       ["login-list", "ol"],
-      ["login-item", "login-command-button.edit-button", "button"],
-      ["login-item", "login-command-button.delete-button", "button"],
+      ["login-item", "edit-button", "button"],
+      ["login-item", "delete-button", "button"],
       ["login-item", "a.origin-input"],
-      ["login-item", "login-command-button.copy-username-button", "button"],
+      ["login-item", "copy-username-button", "button"],
       ["login-item", "input.reveal-password-checkbox"],
-      ["login-item", "login-command-button.copy-password-button", "button"],
+      ["login-item", "copy-password-button", "button"],
     ];
 
     const firstElement = selectWithShadowRootIfNeeded(
@@ -100,14 +100,6 @@ add_task(async function test_tab_key_nav() {
         expectedSelector
       );
 
-      // By default, MacOS will skip over certain text controls, such as links.
-      if (
-        content.window.navigator.platform.toLowerCase().includes("mac") &&
-        expectedElement.tagName === "A"
-      ) {
-        continue;
-      }
-
       const actualElement = getFocusedElement();
 
       Assert.equal(
@@ -126,13 +118,6 @@ add_task(async function test_tab_key_nav() {
         content.document,
         expectedSelector
       );
-      // By default, MacOS will skip over certain text controls, such as links.
-      if (
-        content.window.navigator.platform.toLowerCase().includes("mac") &&
-        expectedElement.tagName === "A"
-      ) {
-        continue;
-      }
 
       const actualElement = getFocusedElement();
       Assert.equal(
@@ -165,7 +150,7 @@ add_task(async function test_tab_to_create_button() {
     const loginSort = loginList.shadowRoot.getElementById("login-sort");
     const loginListbox = loginList.shadowRoot.querySelector("ol");
     const createButton = loginList.shadowRoot.querySelector(
-      ".create-login-button"
+      "create-login-button"
     );
 
     const getFocusedElement = () => loginList.shadowRoot.activeElement;
@@ -207,11 +192,11 @@ add_task(async function test_tab_to_edit_button() {
       const loginItem = content.document.querySelector("login-item");
       const loginFilter = loginList.shadowRoot.querySelector("login-filter");
       const createButton = loginList.shadowRoot.querySelector(
-        ".create-login-button"
+        "create-login-button"
       );
       const loginSort = loginList.shadowRoot.getElementById("login-sort");
       const loginListbox = loginList.shadowRoot.querySelector("ol");
-      const editButton = loginItem.shadowRoot.querySelector(".edit-button");
+      const editButton = loginItem.shadowRoot.querySelector("edit-button");
       const breachAlert =
         loginItem.shadowRoot.querySelector("login-breach-alert");
       const getFocusedElement = () => {
@@ -234,7 +219,7 @@ add_task(async function test_tab_to_edit_button() {
 
       for (let guidToSelect of [testLoginNormalGuid, testLoginBreachedGuid]) {
         let loginListItem = loginList.shadowRoot.querySelector(
-          `.login-list-item[data-guid="${guidToSelect}"]`
+          `login-list-item[data-guid="${guidToSelect}"]`
         );
         loginListItem.click();
         await ContentTaskUtils.waitForCondition(() => {

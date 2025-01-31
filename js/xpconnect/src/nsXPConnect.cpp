@@ -47,6 +47,7 @@
 #include "nsContentUtils.h"
 #include "nsScriptError.h"
 #include "nsJSUtils.h"
+#include "nsRFPService.h"
 #include "prsystem.h"
 
 #include "xpcprivate.h"
@@ -152,7 +153,6 @@ void nsXPConnect::InitStatics() {
   // as possible to avoid missing any classes' creations.
   JS::SetLogCtorDtorFunctions(NS_LogCtor, NS_LogDtor);
 #endif
-  ReadOnlyPage::Init();
 
   gSelf = new nsXPConnect();
   gOnceAliveNowDead = false;
@@ -189,13 +189,12 @@ void xpc::ErrorBase::Init(JSErrorBase* aReport) {
   if (!aReport->filename) {
     mFileName.SetIsVoid(true);
   } else {
-    CopyUTF8toUTF16(mozilla::MakeStringSpan(aReport->filename.c_str()),
-                    mFileName);
+    mFileName.Assign(aReport->filename.c_str());
   }
 
   mSourceId = aReport->sourceId;
   mLineNumber = aReport->lineno;
-  mColumn = aReport->column;
+  mColumn = aReport->column.oneOriginValue();
 }
 
 void xpc::ErrorNote::Init(JSErrorNotes::Note* aNote) {
@@ -219,8 +218,6 @@ void xpc::ErrorReport::Init(JSErrorReport* aReport, const char* aToStringResult,
   if (mErrorMsg.IsEmpty()) {
     mErrorMsg.AssignLiteral("<unknown>");
   }
-
-  mSourceLine.Assign(aReport->linebuf(), aReport->linebufLength());
 
   if (aReport->errorMessageName) {
     mErrorMsgName.AssignASCII(aReport->errorMessageName);
@@ -263,7 +260,7 @@ void xpc::ErrorReport::Init(JSContext* aCx, mozilla::dom::Exception* aException,
 static LazyLogModule gJSDiagnostics("JSDiagnostics");
 
 void xpc::ErrorBase::AppendErrorDetailsTo(nsCString& error) {
-  AppendUTF16toUTF8(mFileName, error);
+  error.Append(mFileName);
   error.AppendLiteral(", line ");
   error.AppendInt(mLineNumber, 10);
   error.AppendLiteral(": ");
@@ -324,8 +321,8 @@ void xpc::ErrorReport::LogToConsoleWithStack(
   LogToStderr();
 
   MOZ_LOG(gJSDiagnostics, IsWarning() ? LogLevel::Warning : LogLevel::Error,
-          ("file %s, line %u\n%s", NS_ConvertUTF16toUTF8(mFileName).get(),
-           mLineNumber, NS_ConvertUTF16toUTF8(mErrorMsg).get()));
+          ("file %s, line %u\n%s", mFileName.get(), mLineNumber,
+           NS_ConvertUTF16toUTF8(mErrorMsg).get()));
 
   // Log to the console. We do this last so that we can simply return if
   // there's no console service without affecting the other reporting
@@ -341,8 +338,8 @@ void xpc::ErrorReport::LogToConsoleWithStack(
   uint32_t flags =
       mIsWarning ? nsIScriptError::warningFlag : nsIScriptError::errorFlag;
   nsresult rv = errorObject->InitWithWindowID(
-      mErrorMsg, mFileName, mSourceLine, mLineNumber, mColumn, flags, mCategory,
-      mWindowID, mCategory.Equals("chrome javascript"_ns));
+      mErrorMsg, mFileName, mLineNumber, mColumn, flags, mCategory, mWindowID,
+      mCategory.Equals("chrome javascript"_ns));
   NS_ENSURE_SUCCESS_VOID(rv);
 
   rv = errorObject->InitSourceId(mSourceId);
@@ -482,23 +479,27 @@ JSObject* CreateGlobalObject(JSContext* cx, const JSClass* clasp,
 }
 
 void InitGlobalObjectOptions(JS::RealmOptions& aOptions,
-                             bool aIsSystemPrincipal, bool aForceUTC,
-                             bool aAlwaysUseFdlibm) {
-  bool shouldDiscardSystemSource = ShouldDiscardSystemSource();
-
+                             bool aIsSystemPrincipal, bool aSecureContext,
+                             bool aForceUTC, bool aAlwaysUseFdlibm,
+                             bool aLocaleEnUS) {
   if (aIsSystemPrincipal) {
     // Make toSource functions [ChromeOnly]
     aOptions.creationOptions().setToSourceEnabled(true);
     // Make sure [SecureContext] APIs are visible:
     aOptions.creationOptions().setSecureContext(true);
     aOptions.behaviors().setClampAndJitterTime(false);
+    aOptions.behaviors().setDiscardSource(ShouldDiscardSystemSource());
+    MOZ_ASSERT(aSecureContext,
+               "aIsSystemPrincipal should imply aSecureContext");
+  } else {
+    aOptions.creationOptions().setSecureContext(aSecureContext);
   }
 
   aOptions.creationOptions().setForceUTC(aForceUTC);
   aOptions.creationOptions().setAlwaysUseFdlibm(aAlwaysUseFdlibm);
-
-  if (shouldDiscardSystemSource) {
-    aOptions.behaviors().setDiscardSource(aIsSystemPrincipal);
+  if (aLocaleEnUS) {
+    nsCString locale = nsRFPService::GetSpoofedJSLocale();
+    aOptions.creationOptions().setLocaleCopyZ(locale.get());
   }
 }
 
@@ -547,8 +548,14 @@ nsresult InitClassesWithNewWrappedGlobal(JSContext* aJSContext,
   // If this changes, ShouldRFP needs to be updated accordingly.
   MOZ_RELEASE_ASSERT(aPrincipal->IsSystemPrincipal());
 
+  // Similarly we can thus hardcode the RTPCallerType.
+  aOptions.behaviors().setReduceTimerPrecisionCallerType(
+      RTPCallerTypeToToken(RTPCallerType::SystemPrincipal));
+
   InitGlobalObjectOptions(aOptions, /* aSystemPrincipal */ true,
-                          /* aForceUTC */ false, /* aAlwaysUseFdlibm */ false);
+                          /* aSecureContext */ true,
+                          /* aForceUTC */ false, /* aAlwaysUseFdlibm */ false,
+                          /* aLocaleEnUS */ false);
 
   // Call into XPCWrappedNative to make a new global object, scope, and global
   // prototype.
@@ -556,8 +563,7 @@ nsresult InitClassesWithNewWrappedGlobal(JSContext* aJSContext,
   MOZ_ASSERT(helper.GetScriptableFlags() & XPC_SCRIPTABLE_IS_GLOBAL_OBJECT);
   RefPtr<XPCWrappedNative> wrappedGlobal;
   nsresult rv = XPCWrappedNative::WrapNewGlobal(
-      aJSContext, helper, aPrincipal, aFlags & xpc::INIT_JS_STANDARD_CLASSES,
-      aOptions, getter_AddRefs(wrappedGlobal));
+      aJSContext, helper, aPrincipal, aOptions, getter_AddRefs(wrappedGlobal));
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Grab a copy of the global and enter its compartment.
@@ -620,7 +626,7 @@ nsCString GetFunctionName(JSContext* cx, HandleObject obj) {
     return GetFunctionName(cx, vobj);
   }
 
-  RootedString funName(cx, JS_GetFunctionDisplayId(fun));
+  RootedString funName(cx, JS_GetMaybePartialFunctionDisplayId(fun));
   RootedScript script(cx, JS_GetFunctionScript(cx, fun));
   const char* filename = script ? JS_GetScriptFilename(script) : "anonymous";
   const char* filenameSuffix = strrchr(filename, '/');

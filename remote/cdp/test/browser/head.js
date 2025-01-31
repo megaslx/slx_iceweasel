@@ -19,21 +19,12 @@ const { Stream } = ChromeUtils.importESModule(
   "chrome://remote/content/cdp/StreamRegistry.sys.mjs"
 );
 
+const { getTimeoutMultiplier } = ChromeUtils.importESModule(
+  "chrome://remote/content/shared/AppInfo.sys.mjs"
+);
+
 const TIMEOUT_MULTIPLIER = getTimeoutMultiplier();
 const TIMEOUT_EVENTS = 1000 * TIMEOUT_MULTIPLIER;
-
-function getTimeoutMultiplier() {
-  if (
-    AppConstants.DEBUG ||
-    AppConstants.MOZ_CODE_COVERAGE ||
-    AppConstants.ASAN ||
-    AppConstants.TSAN
-  ) {
-    return 4;
-  }
-
-  return 1;
-}
 
 /*
 add_task() is overriden to setup and teardown a test environment
@@ -131,7 +122,7 @@ function createTestDocument() {
   // when using document's JS Objects.
   const webNavigation = browser.docShell.QueryInterface(Ci.nsIWebNavigation);
   const system = Services.scriptSecurityManager.getSystemPrincipal();
-  webNavigation.createAboutBlankContentViewer(system, system);
+  webNavigation.createAboutBlankDocumentViewer(system, system);
 
   return webNavigation.document;
 }
@@ -328,7 +319,7 @@ async function loadURL(url, expectedURL = undefined) {
   const browser = gBrowser.selectedTab.linkedBrowser;
   const loaded = BrowserTestUtils.browserLoaded(browser, true, expectedURL);
 
-  BrowserTestUtils.loadURIString(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
   await loaded;
 }
 
@@ -449,7 +440,6 @@ async function throwScriptError(options = {}) {
     scriptError.initWithWindowID(
       options.text,
       options.sourceName || "sourceName",
-      null,
       options.lineNumber || 0,
       options.columnNumber || 0,
       flag,
@@ -478,20 +468,20 @@ class RecordEvents {
    * Then `await record(someTimeout)` to record a timeline that you
    * can make assertions about.
    *
+   * ```js
    * const history = new RecordEvents(expectedNumberOfEvents);
    *
    * history.addRecorder({
-   *  event: Runtime.executionContextDestroyed,
-   *  eventName: "Runtime.executionContextDestroyed",
-   *  messageFn: payload => {
-   *    return `Received Runtime.executionContextDestroyed for id ${payload.executionContextId}`;
-   *  },
+   *   event: Runtime.executionContextDestroyed,
+   *   eventName: "Runtime.executionContextDestroyed",
+   *   messageFn: payload => {
+   *     return `Received Runtime.executionContextDestroyed for id ${payload.executionContextId}`;
+   *   },
    * });
-   *
+   * ```
    *
    * @param {number} total
    *     Number of expected events. Stop recording when this number is exceeded.
-   *
    */
   constructor(total) {
     this.events = [];

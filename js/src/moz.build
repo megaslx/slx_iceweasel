@@ -93,12 +93,6 @@ CONFIGURE_DEFINE_FILES += [
     "js-confdefs.h",
 ]
 
-if not CONFIG["JS_STANDALONE"]:
-    CONFIGURE_SUBST_FILES += [
-        "../../config/autoconf-js.mk",
-        "../../config/emptyvars-js.mk",
-    ]
-
 CONFIGURE_DEFINE_FILES += [
     "js-config.h",
 ]
@@ -119,6 +113,7 @@ EXPORTS += [
 ]
 
 EXPORTS.js += [
+    "!../public/PrefsGenerated.h",
     "../public/AllocationLogging.h",
     "../public/AllocationRecording.h",
     "../public/AllocPolicy.h",
@@ -132,6 +127,7 @@ EXPORTS.js += [
     "../public/CallNonGenericMethod.h",
     "../public/CharacterEncoding.h",
     "../public/Class.h",
+    "../public/ColumnNumber.h",
     "../public/ComparisonOperators.h",
     "../public/CompilationAndEvaluation.h",
     "../public/CompileOptions.h",
@@ -140,6 +136,7 @@ EXPORTS.js += [
     "../public/Conversions.h",
     "../public/Date.h",
     "../public/Debug.h",
+    "../public/EnvironmentChain.h",
     "../public/Equality.h",
     "../public/ErrorInterceptor.h",
     "../public/ErrorReport.h",
@@ -160,7 +157,6 @@ EXPORTS.js += [
     "../public/Initialization.h",
     "../public/Interrupt.h",
     "../public/Iterator.h",
-    "../public/JitCodeAPI.h",
     "../public/JSON.h",
     "../public/LocaleSensitive.h",
     "../public/MapAndSet.h",
@@ -169,7 +165,7 @@ EXPORTS.js += [
     "../public/MemoryMetrics.h",
     "../public/Modules.h",
     "../public/Object.h",
-    "../public/OffThreadScriptCompilation.h",
+    "../public/Prefs.h",
     "../public/Principals.h",
     "../public/Printer.h",
     "../public/Printf.h",
@@ -242,12 +238,14 @@ EXPORTS.js += [
 # change, but they're at least plausible first passes at designing something.
 # We expose them as-is, buyer beware.
 EXPORTS.js.experimental += [
+    "../public/experimental/BindingAllocs.h",
     "../public/experimental/CodeCoverage.h",
     "../public/experimental/CompileScript.h",
     "../public/experimental/CTypes.h",
     "../public/experimental/Intl.h",
     "../public/experimental/JitInfo.h",
     "../public/experimental/JSStencil.h",
+    "../public/experimental/LoggingInterface.h",
     "../public/experimental/PCCountProfiling.h",
     "../public/experimental/SourceHook.h",
     "../public/experimental/TypedData.h",
@@ -307,8 +305,10 @@ UNIFIED_SOURCES += [
     "builtin/MapObject.cpp",
     "builtin/ModuleObject.cpp",
     "builtin/Object.cpp",
+    "builtin/ParseRecordObject.cpp",
     "builtin/Profilers.cpp",
     "builtin/Promise.cpp",
+    "builtin/RawJSONObject.cpp",
     "builtin/Reflect.cpp",
     "builtin/ReflectParse.cpp",
     "builtin/ShadowRealm.cpp",
@@ -359,6 +359,7 @@ UNIFIED_SOURCES += [
     "vm/Compartment.cpp",
     "vm/CompilationAndEvaluation.cpp",
     "vm/Compression.cpp",
+    "vm/ConcurrentDelazification.cpp",
     "vm/DateTime.cpp",
     "vm/EnvironmentObject.cpp",
     "vm/EqualityOperations.cpp",
@@ -377,6 +378,7 @@ UNIFIED_SOURCES += [
     "vm/Id.cpp",
     "vm/Initialization.cpp",
     "vm/InternalThreadPool.cpp",
+    "vm/InvalidatingFuse.cpp",
     "vm/Iteration.cpp",
     "vm/Iterator.cpp",
     "vm/JitActivation.cpp",
@@ -388,13 +390,14 @@ UNIFIED_SOURCES += [
     "vm/JSONPrinter.cpp",
     "vm/JSScript.cpp",
     "vm/List.cpp",
+    "vm/Logging.cpp",
     "vm/MemoryMetrics.cpp",
     "vm/Modules.cpp",
     "vm/NativeObject.cpp",
     "vm/OffThreadPromiseRuntimeState.cpp",
-    "vm/OffThreadScriptCompilation.cpp",
     "vm/PIC.cpp",
     "vm/PlainObject.cpp",
+    "vm/Prefs.cpp",
     "vm/Printer.cpp",
     "vm/Probes.cpp",
     "vm/PromiseLookup.cpp",
@@ -403,6 +406,7 @@ UNIFIED_SOURCES += [
     "vm/PropMap.cpp",
     "vm/ProxyObject.cpp",
     "vm/Realm.cpp",
+    "vm/RealmFuses.cpp",
     "vm/RegExpObject.cpp",
     "vm/RegExpStatics.cpp",
     "vm/Runtime.cpp",
@@ -417,7 +421,6 @@ UNIFIED_SOURCES += [
     "vm/SourceHook.cpp",
     "vm/Stack.cpp",
     "vm/StaticStrings.cpp",
-    "vm/StencilCache.cpp",
     "vm/StencilObject.cpp",
     "vm/StringType.cpp",
     "vm/SymbolType.cpp",
@@ -451,6 +454,11 @@ SOURCES += [
     "vm/ProfilingStack.cpp",
 ]
 
+if CONFIG["ENABLE_PORTABLE_BASELINE_INTERP"]:
+    SOURCES += [
+        "vm/PortableBaselineInterpret.cpp",
+    ]
+
 if CONFIG["ENABLE_RECORD_TUPLE"]:
     UNIFIED_SOURCES += [
         "builtin/RecordObject.cpp",
@@ -460,12 +468,21 @@ if CONFIG["ENABLE_RECORD_TUPLE"]:
         "vm/TupleType.cpp",
     ]
 
+if CONFIG["ENABLE_EXPLICIT_RESOURCE_MANAGEMENT"]:
+    UNIFIED_SOURCES += [
+        "builtin/AsyncDisposableStackObject.cpp",
+        "builtin/DisposableStackObject.cpp",
+        "builtin/DisposableStackObjectBase.cpp",
+        "vm/DisposableRecord.cpp",
+    ]
+
 if CONFIG["JS_HAS_INTL_API"]:
     UNIFIED_SOURCES += [
         "builtin/intl/Collator.cpp",
         "builtin/intl/CommonFunctions.cpp",
         "builtin/intl/DateTimeFormat.cpp",
         "builtin/intl/DisplayNames.cpp",
+        "builtin/intl/DurationFormat.cpp",
         "builtin/intl/IntlObject.cpp",
         "builtin/intl/LanguageTag.cpp",
         "builtin/intl/ListFormat.cpp",
@@ -473,10 +490,12 @@ if CONFIG["JS_HAS_INTL_API"]:
         "builtin/intl/NumberFormat.cpp",
         "builtin/intl/PluralRules.cpp",
         "builtin/intl/RelativeTimeFormat.cpp",
+        "builtin/intl/Segmenter.cpp",
         "builtin/intl/SharedIntlData.cpp",
     ]
 
 if CONFIG["MOZ_INSTRUMENTS"]:
+    OS_LIBS += ["-framework CoreFoundation"]
     SOURCES += [
         "devtools/Instruments.cpp",
     ]
@@ -499,6 +518,11 @@ else:
     UNIFIED_SOURCES += [
         "threading/posix/CpuCount.cpp",
         "threading/posix/PosixThread.cpp",
+    ]
+
+if CONFIG["JS_HAS_INTL_API"] and CONFIG["MOZ_ICU4X"]:
+    LOCAL_INCLUDES += [
+        "/intl/icu_capi/bindings/c",
     ]
 
 if CONFIG["JS_HAS_CTYPES"]:
@@ -577,7 +601,6 @@ selfhosted_inputs = [
     "builtin/RegExpLocalReplaceOpt.h.js",
     "builtin/String.js",
     "builtin/Set.js",
-    "builtin/Sorting.js",
     "builtin/TypedArray.js",
     "builtin/WeakMap.js",
     "builtin/WeakSet.js",
@@ -589,12 +612,14 @@ selfhosted_inputs = [
         "builtin/intl/CurrencyDataGenerated.js",
         "builtin/intl/DateTimeFormat.js",
         "builtin/intl/DisplayNames.js",
+        "builtin/intl/DurationFormat.js",
         "builtin/intl/IntlObject.js",
         "builtin/intl/ListFormat.js",
         "builtin/intl/NumberFormat.js",
         "builtin/intl/PluralRules.js",
         "builtin/intl/RelativeTimeFormat.js",
         "builtin/intl/SanctionedSimpleUnitIdentifiersGenerated.js",
+        "builtin/intl/Segmenter.js",
     ]
     if CONFIG["JS_HAS_INTL_API"]
     else []
@@ -602,6 +627,12 @@ selfhosted_inputs = [
 
 if CONFIG["ENABLE_RECORD_TUPLE"]:
     selfhosted_inputs += ["builtin/Tuple.js"]
+
+if CONFIG["ENABLE_EXPLICIT_RESOURCE_MANAGEMENT"]:
+    selfhosted_inputs += [
+        "builtin/AsyncDisposableStack.js",
+        "builtin/DisposableStack.js",
+    ]
 
 # Prepare self-hosted JS code for embedding
 GeneratedFile(
@@ -612,13 +643,22 @@ GeneratedFile(
     inputs=selfhosted_inputs,
 )
 
+GeneratedFile(
+    "../public/PrefsGenerated.h",
+    script="GeneratePrefs.py",
+    entry_point="generate_prefs_header",
+    inputs=["../../modules/libpref/init/StaticPrefList.yaml"],
+)
+
 if CONFIG["JS_HAS_CTYPES"]:
     if CONFIG["MOZ_SYSTEM_FFI"]:
         CXXFLAGS += CONFIG["MOZ_FFI_CFLAGS"]
 
 if CONFIG["JS_HAS_INTL_API"]:
-    DIRS += [
-        "../../intl/components",
-    ]
+    if CONFIG["JS_STANDALONE"]:
+        DIRS += [
+            "../../intl/bidi",
+            "../../intl/components",
+        ]
 
     USE_LIBS += ["intlcomponents"]

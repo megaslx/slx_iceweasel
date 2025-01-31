@@ -1,11 +1,11 @@
-use crate::io_source::IoSource;
-use crate::{event, sys, Interest, Registry, Token};
-
 use std::net::Shutdown;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
-use std::os::unix::net;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::net::{self, SocketAddr};
 use std::path::Path;
 use std::{fmt, io};
+
+use crate::io_source::IoSource;
+use crate::{event, sys, Interest, Registry, Token};
 
 /// A Unix datagram socket.
 pub struct UnixDatagram {
@@ -15,15 +15,21 @@ pub struct UnixDatagram {
 impl UnixDatagram {
     /// Creates a Unix datagram socket bound to the given path.
     pub fn bind<P: AsRef<Path>>(path: P) -> io::Result<UnixDatagram> {
-        sys::uds::datagram::bind(path.as_ref()).map(UnixDatagram::from_std)
+        let addr = SocketAddr::from_pathname(path)?;
+        UnixDatagram::bind_addr(&addr)
+    }
+
+    /// Creates a new `UnixDatagram` bound to the specified socket `address`.
+    pub fn bind_addr(address: &SocketAddr) -> io::Result<UnixDatagram> {
+        sys::uds::datagram::bind_addr(address).map(UnixDatagram::from_std)
     }
 
     /// Creates a new `UnixDatagram` from a standard `net::UnixDatagram`.
     ///
     /// This function is intended to be used to wrap a Unix datagram from the
     /// standard library in the Mio equivalent. The conversion assumes nothing
-    /// about the underlying datagram; ; it is left up to the user to set it
-    /// in non-blocking mode.
+    /// about the underlying datagram; it is left up to the user to set it in
+    /// non-blocking mode.
     pub fn from_std(socket: net::UnixDatagram) -> UnixDatagram {
         UnixDatagram {
             inner: IoSource::new(socket),
@@ -31,6 +37,9 @@ impl UnixDatagram {
     }
 
     /// Connects the socket to the specified address.
+    ///
+    /// This may return a `WouldBlock` in which case the socket connection
+    /// cannot be completed immediately.
     pub fn connect<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         self.inner.connect(path)
     }
@@ -51,24 +60,23 @@ impl UnixDatagram {
     }
 
     /// Returns the address of this socket.
-    pub fn local_addr(&self) -> io::Result<sys::SocketAddr> {
-        sys::uds::datagram::local_addr(&self.inner)
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
     }
 
     /// Returns the address of this socket's peer.
     ///
     /// The `connect` method will connect the socket to a peer.
-    pub fn peer_addr(&self) -> io::Result<sys::SocketAddr> {
-        sys::uds::datagram::peer_addr(&self.inner)
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.peer_addr()
     }
 
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read and the address from
     /// whence the data came.
-    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, sys::SocketAddr)> {
-        self.inner
-            .do_io(|inner| sys::uds::datagram::recv_from(inner, buf))
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.inner.do_io(|inner| inner.recv_from(buf))
     }
 
     /// Receives data from the socket.
@@ -107,6 +115,74 @@ impl UnixDatagram {
     /// (see the documentation of `Shutdown`).
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         self.inner.shutdown(how)
+    }
+
+    /// Execute an I/O operation ensuring that the socket receives more events
+    /// if it hits a [`WouldBlock`] error.
+    ///
+    /// # Notes
+    ///
+    /// This method is required to be called for **all** I/O operations to
+    /// ensure the user will receive events once the socket is ready again after
+    /// returning a [`WouldBlock`] error.
+    ///
+    /// [`WouldBlock`]: io::ErrorKind::WouldBlock
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::error::Error;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// use std::io;
+    /// use std::os::fd::AsRawFd;
+    /// use mio::net::UnixDatagram;
+    ///
+    /// let (dgram1, dgram2) = UnixDatagram::pair()?;
+    ///
+    /// // Wait until the dgram is writable...
+    ///
+    /// // Write to the dgram using a direct libc call, of course the
+    /// // `io::Write` implementation would be easier to use.
+    /// let buf = b"hello";
+    /// let n = dgram1.try_io(|| {
+    ///     let buf_ptr = &buf as *const _ as *const _;
+    ///     let res = unsafe { libc::send(dgram1.as_raw_fd(), buf_ptr, buf.len(), 0) };
+    ///     if res != -1 {
+    ///         Ok(res as usize)
+    ///     } else {
+    ///         // If EAGAIN or EWOULDBLOCK is set by libc::send, the closure
+    ///         // should return `WouldBlock` error.
+    ///         Err(io::Error::last_os_error())
+    ///     }
+    /// })?;
+    /// eprintln!("write {} bytes", n);
+    ///
+    /// // Wait until the dgram is readable...
+    ///
+    /// // Read from the dgram using a direct libc call, of course the
+    /// // `io::Read` implementation would be easier to use.
+    /// let mut buf = [0; 512];
+    /// let n = dgram2.try_io(|| {
+    ///     let buf_ptr = &mut buf as *mut _ as *mut _;
+    ///     let res = unsafe { libc::recv(dgram2.as_raw_fd(), buf_ptr, buf.len(), 0) };
+    ///     if res != -1 {
+    ///         Ok(res as usize)
+    ///     } else {
+    ///         // If EAGAIN or EWOULDBLOCK is set by libc::recv, the closure
+    ///         // should return `WouldBlock` error.
+    ///         Err(io::Error::last_os_error())
+    ///     }
+    /// })?;
+    /// eprintln!("read {} bytes", n);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_io<F, T>(&self, f: F) -> io::Result<T>
+    where
+        F: FnOnce() -> io::Result<T>,
+    {
+        self.inner.do_io(|_| f())
     }
 }
 
@@ -161,5 +237,20 @@ impl FromRawFd for UnixDatagram {
     /// non-blocking mode.
     unsafe fn from_raw_fd(fd: RawFd) -> UnixDatagram {
         UnixDatagram::from_std(FromRawFd::from_raw_fd(fd))
+    }
+}
+
+impl From<UnixDatagram> for net::UnixDatagram {
+    fn from(datagram: UnixDatagram) -> Self {
+        // Safety: This is safe since we are extracting the raw fd from a well-constructed
+        // mio::net::uds::UnixListener which ensures that we actually pass in a valid file
+        // descriptor/socket
+        unsafe { net::UnixDatagram::from_raw_fd(datagram.into_raw_fd()) }
+    }
+}
+
+impl AsFd for UnixDatagram {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.inner.as_fd()
     }
 }

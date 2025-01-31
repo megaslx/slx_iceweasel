@@ -295,7 +295,6 @@ class ReadableStreamFromAlgorithms final
               }
 
               JS::Rooted<JSObject*> iterResult(aCx, &aIterResult.toObject());
-              JSAutoRealm ar(aCx, iterResult);
 
               // Step 4.2. Let done be ? IteratorComplete(iterResult).
               bool done = false;
@@ -368,9 +367,16 @@ class ReadableStreamFromAlgorithms final
 
     // Step 5. Let returnResult be Call(returnMethod.[[Value]], iterator, «
     // reason »).
+    JS::Rooted<JS::Value> reason(aCx, aReason.Value());
+    if (!JS_WrapValue(aCx, &reason)) {
+      JS_ClearPendingException(aCx);
+      aRv.Throw(NS_ERROR_UNEXPECTED);
+      return nullptr;
+    }
+
     JS::Rooted<JS::Value> returnResult(aCx);
-    if (!JS::Call(aCx, iterator, returnMethod,
-                  JS::HandleValueArray(aReason.Value()), &returnResult)) {
+    if (!JS::Call(aCx, iterator, returnMethod, JS::HandleValueArray(reason),
+                  &returnResult)) {
       // Step 6. If returnResult is an abrupt completion, return a promise
       // rejected with returnResult.[[Value]].
       aRv.StealExceptionFromJSContext(aCx);
@@ -1345,8 +1351,8 @@ already_AddRefed<ReadableStream> ReadableStream::CreateByteNative(
 
 // https://streams.spec.whatwg.org/#readablestream-close
 void ReadableStream::CloseNative(JSContext* aCx, ErrorResult& aRv) {
-  MOZ_ASSERT(mController->GetAlgorithms()->IsNative());
-
+  MOZ_ASSERT_IF(mController->GetAlgorithms(),
+                mController->GetAlgorithms()->IsNative());
   // Step 1: If stream.[[controller]] implements ReadableByteStreamController,
   if (mController->IsByte()) {
     RefPtr<ReadableByteStreamController> controller = mController->AsByte();

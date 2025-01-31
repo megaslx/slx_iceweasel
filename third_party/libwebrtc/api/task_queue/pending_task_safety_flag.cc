@@ -10,6 +10,12 @@
 
 #include "api/task_queue/pending_task_safety_flag.h"
 
+#include "absl/base/nullability.h"
+#include "api/scoped_refptr.h"
+#include "api/sequence_checker.h"
+#include "api/task_queue/task_queue_base.h"
+#include "rtc_base/checks.h"
+
 namespace webrtc {
 
 // static
@@ -30,6 +36,17 @@ PendingTaskSafetyFlag::CreateDetached() {
   rtc::scoped_refptr<PendingTaskSafetyFlag> safety_flag = CreateInternal(true);
   safety_flag->main_sequence_.Detach();
   return safety_flag;
+}
+
+// Creates a flag, but with its SequenceChecker explicitly initialized for
+// a given task queue and the `alive()` flag specified.
+rtc::scoped_refptr<PendingTaskSafetyFlag>
+PendingTaskSafetyFlag::CreateAttachedToTaskQueue(
+    bool alive,
+    absl::Nonnull<TaskQueueBase*> attached_queue) {
+  RTC_DCHECK(attached_queue) << "Null TaskQueue provided";
+  return rtc::scoped_refptr<PendingTaskSafetyFlag>(
+      new PendingTaskSafetyFlag(alive, attached_queue));
 }
 
 rtc::scoped_refptr<PendingTaskSafetyFlag>

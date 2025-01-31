@@ -20,6 +20,7 @@
 #include "UnitTransforms.h"
 #include "mozilla/gfx/CompositorHitTestInfo.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/layers/APZPublicUtils.h"  // for DispatchToContent
 #include "mozilla/DefineEnum.h"
 #include "mozilla/EnumSet.h"
 #include "mozilla/FloatingPoint.h"
@@ -135,6 +136,10 @@ struct TargetConfirmationFlags final {
             !(aHitTestInfo & gfx::CompositorHitTestDispatchToContent)
                  .isEmpty()) {}
 
+  DispatchToContent NeedDispatchToContent() const {
+    return mDispatchToContent ? DispatchToContent::Yes : DispatchToContent::No;
+  }
+
   bool mTargetConfirmed : 1;
   bool mRequiresTargetConfirmation : 1;
   bool mHitScrollbar : 1;
@@ -148,6 +153,34 @@ using AsyncTransformComponents = EnumSet<AsyncTransformComponent>;
 
 constexpr AsyncTransformComponents LayoutAndVisual(
     AsyncTransformComponent::eLayout, AsyncTransformComponent::eVisual);
+
+/**
+ * Allows consumers of async transforms to specify for what purpose they are
+ * using the async transform:
+ *
+ *   |eForEventHandling| is intended for event handling and other uses that
+ *                       need the most up-to-date transform, reflecting all
+ *                       events that have been processed so far, even if the
+ *                       transform is not yet reflected visually.
+ *   |eForCompositing| is intended for the transform that should be reflected
+ *                     visually.
+ *
+ * For example, if an APZC has metrics with the mForceDisableApz flag set,
+ * then the |eForCompositing| async transform will be empty, while the
+ * |eForEventHandling| async transform will reflect processed input events
+ * regardless of mForceDisableApz.
+ */
+enum class AsyncTransformConsumer {
+  eForEventHandling,
+  eForCompositing,
+};
+
+/**
+ * A flag type for use by functions which return information about
+ * handoff, in case they need to differentiate between handoff for
+ * the purpose of scrolling and handoff for the purpose of pull-to-refresh.
+ */
+enum class HandoffConsumer { Scrolling, PullToRefresh };
 
 /**
  * Metrics that GeckoView wants to know at every composite.
@@ -185,14 +218,6 @@ bool IsStuckAtTop(gfxFloat aTranslation, const LayerRectAbsolute& aInnerRange,
                   const LayerRectAbsolute& aOuterRange);
 
 /**
- * Compute the translation that should be applied to a layer that's fixed
- * at |eFixedSides|, to respect the fixed layer margins |aFixedMargins|.
- */
-ScreenPoint ComputeFixedMarginsOffset(
-    const ScreenMargin& aCompositorFixedLayerMargins, SideBits aFixedSides,
-    const ScreenMargin& aGeckoFixedLayerMargins);
-
-/**
  * Takes the visible rect from the compositor metrics, adds a pref-based
  * margin around it, and checks to see if it is contained inside the painted
  * rect from the painted metrics. Returns true if it is contained, or false
@@ -211,6 +236,14 @@ bool AboutToCheckerboard(const FrameMetrics& aPaintedMetrics,
  * Returns SideBits where the given |aOverscrollAmount| overscrolls.
  */
 SideBits GetOverscrollSideBits(const ParentLayerPoint& aOverscrollAmount);
+
+// Represents tri-state when a touch-end event received.
+enum class SingleTapState : uint8_t {
+  NotClick,          // The touch-block doesn't trigger a click event
+  WasClick,          // The touch-block did trigger a click event
+  NotYetDetermined,  // It's not yet determined whether the touch-block trigger
+                     // a click event or not since double-tapping might happen
+};
 
 }  // namespace apz
 

@@ -7,16 +7,21 @@
 #ifndef builtin_temporal_ZonedDateTime_h
 #define builtin_temporal_ZonedDateTime_h
 
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
+
 #include <stdint.h>
 
 #include "builtin/temporal/Calendar.h"
+#include "builtin/temporal/Instant.h"
 #include "builtin/temporal/TemporalTypes.h"
 #include "builtin/temporal/TimeZone.h"
-#include "builtin/temporal/Wrapped.h"
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
 #include "vm/NativeObject.h"
+
+class JS_PUBLIC_API JSTracer;
 
 namespace js {
 struct ClassSpec;
@@ -35,16 +40,17 @@ class ZonedDateTimeObject : public NativeObject {
   static constexpr uint32_t CALENDAR_SLOT = 3;
   static constexpr uint32_t SLOT_COUNT = 4;
 
-  int64_t seconds() const {
+  /**
+   * Extract the epoch nanoseconds fields from this ZonedDateTime object.
+   */
+  EpochNanoseconds epochNanoseconds() const {
     double seconds = getFixedSlot(SECONDS_SLOT).toNumber();
     MOZ_ASSERT(-8'640'000'000'000 <= seconds && seconds <= 8'640'000'000'000);
-    return int64_t(seconds);
-  }
 
-  int32_t nanoseconds() const {
     int32_t nanoseconds = getFixedSlot(NANOSECONDS_SLOT).toInt32();
     MOZ_ASSERT(0 <= nanoseconds && nanoseconds <= 999'999'999);
-    return nanoseconds;
+
+    return {{int64_t(seconds), nanoseconds}};
   }
 
   TimeZoneValue timeZone() const {
@@ -59,13 +65,46 @@ class ZonedDateTimeObject : public NativeObject {
   static const ClassSpec classSpec_;
 };
 
-/**
- * Extract the instant fields from the ZonedDateTime object.
- */
-inline Instant ToInstant(const ZonedDateTimeObject* zonedDateTime) {
-  return {zonedDateTime->seconds(), zonedDateTime->nanoseconds()};
-}
+class MOZ_STACK_CLASS ZonedDateTime final {
+  EpochNanoseconds epochNanoseconds_;
+  TimeZoneValue timeZone_;
+  CalendarValue calendar_;
 
+ public:
+  ZonedDateTime() = default;
+
+  ZonedDateTime(const EpochNanoseconds& epochNanoseconds,
+                const TimeZoneValue& timeZone, const CalendarValue& calendar)
+      : epochNanoseconds_(epochNanoseconds),
+        timeZone_(timeZone),
+        calendar_(calendar) {
+    MOZ_ASSERT(IsValidEpochNanoseconds(epochNanoseconds));
+    MOZ_ASSERT(timeZone);
+    MOZ_ASSERT(calendar);
+  }
+
+  explicit ZonedDateTime(const ZonedDateTimeObject* obj)
+      : ZonedDateTime(obj->epochNanoseconds(), obj->timeZone(),
+                      obj->calendar()) {}
+
+  const auto& epochNanoseconds() const { return epochNanoseconds_; }
+
+  const auto& timeZone() const { return timeZone_; }
+
+  const auto& calendar() const { return calendar_; }
+
+  explicit operator bool() const { return !!timeZone_ && !!calendar_; }
+
+  void trace(JSTracer* trc) {
+    timeZone_.trace(trc);
+    calendar_.trace(trc);
+  }
+
+  const auto* timeZoneDoNotUse() const { return &timeZone_; }
+  const auto* calendarDoNotUse() const { return &calendar_; }
+};
+
+struct DifferenceSettings;
 enum class TemporalDisambiguation;
 enum class TemporalOffset;
 enum class TemporalUnit;
@@ -75,107 +114,82 @@ enum class TemporalUnit;
  * newTarget ] )
  */
 ZonedDateTimeObject* CreateTemporalZonedDateTime(
-    JSContext* cx, const Instant& instant, JS::Handle<TimeZoneValue> timeZone,
-    JS::Handle<CalendarValue> calendar);
+    JSContext* cx, const EpochNanoseconds& epochNanoseconds,
+    JS::Handle<TimeZoneValue> timeZone, JS::Handle<CalendarValue> calendar);
 
 /**
- * AddZonedDateTime ( epochNanoseconds, timeZone, calendar, years, months,
- * weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds
- * [ , options ] )
+ * AddZonedDateTime ( epochNanoseconds, timeZone, calendar, duration, overflow )
  */
-bool AddZonedDateTime(JSContext* cx, const Instant& epochInstant,
-                      JS::Handle<TimeZoneValue> timeZone,
-                      JS::Handle<CalendarValue> calendar,
-                      const Duration& duration, Instant* result);
+bool AddZonedDateTime(JSContext* cx, JS::Handle<ZonedDateTime> zonedDateTime,
+                      const InternalDuration& duration,
+                      EpochNanoseconds* result);
 
 /**
- * DifferenceZonedDateTime ( ns1, ns2, timeZone, calendar, largestUnit, options
- * )
+ * DifferenceZonedDateTimeWithRounding ( ns1, ns2, timeZone, calendar,
+ * largestUnit, roundingIncrement, smallestUnit, roundingMode )
  */
-bool DifferenceZonedDateTime(JSContext* cx, const Instant& ns1,
-                             const Instant& ns2,
-                             JS::Handle<TimeZoneValue> timeZone,
-                             JS::Handle<CalendarValue> calendar,
-                             TemporalUnit largestUnit, Duration* result);
-
-struct NanosecondsAndDays final {
-  JS::BigInt* days = nullptr;
-  int64_t daysInt = 0;
-  InstantSpan nanoseconds;
-  InstantSpan dayLength;
-
-  double daysNumber() const;
-
-  void trace(JSTracer* trc);
-};
+bool DifferenceZonedDateTimeWithRounding(
+    JSContext* cx, JS::Handle<ZonedDateTime> zonedDateTime,
+    const EpochNanoseconds& ns2, const DifferenceSettings& settings,
+    InternalDuration* result);
 
 /**
- * NanosecondsToDays ( nanoseconds, zonedRelativeTo )
+ * DifferenceZonedDateTimeWithTotal ( ns1, ns2, timeZone, calendar, unit )
  */
-bool NanosecondsToDays(
-    JSContext* cx, const InstantSpan& nanoseconds,
-    JS::Handle<Wrapped<ZonedDateTimeObject*>> zonedRelativeTo,
-    JS::MutableHandle<NanosecondsAndDays> result);
+bool DifferenceZonedDateTimeWithTotal(JSContext* cx,
+                                      JS::Handle<ZonedDateTime> zonedDateTime,
+                                      const EpochNanoseconds& ns2,
+                                      TemporalUnit unit, double* result);
 
 enum class OffsetBehaviour { Option, Exact, Wall };
 
 enum class MatchBehaviour { MatchExactly, MatchMinutes };
 
 /**
- * InterpretISODateTimeOffset ( year, month, day, hour, minute, second,
- * millisecond, microsecond, nanosecond, offsetBehaviour, offsetNanoseconds,
- * timeZone, disambiguation, offsetOption, matchBehaviour )
+ * InterpretISODateTimeOffset ( isoDate, time, offsetBehaviour,
+ * offsetNanoseconds, timeZone, disambiguation, offsetOption, matchBehaviour )
  */
-bool InterpretISODateTimeOffset(JSContext* cx, const PlainDateTime& dateTime,
-                                OffsetBehaviour offsetBehaviour,
-                                int64_t offsetNanoseconds,
-                                JS::Handle<TimeZoneValue> timeZone,
-                                TemporalDisambiguation disambiguation,
-                                TemporalOffset offsetOption,
-                                MatchBehaviour matchBehaviour, Instant* result);
+bool InterpretISODateTimeOffset(
+    JSContext* cx, const ISODateTime& dateTime, OffsetBehaviour offsetBehaviour,
+    int64_t offsetNanoseconds, JS::Handle<TimeZoneValue> timeZone,
+    TemporalDisambiguation disambiguation, TemporalOffset offsetOption,
+    MatchBehaviour matchBehaviour, EpochNanoseconds* result);
+
+/**
+ * InterpretISODateTimeOffset ( isoDate, time, offsetBehaviour,
+ * offsetNanoseconds, timeZone, disambiguation, offsetOption, matchBehaviour )
+ */
+bool InterpretISODateTimeOffset(
+    JSContext* cx, const ISODate& isoDate, OffsetBehaviour offsetBehaviour,
+    int64_t offsetNanoseconds, JS::Handle<TimeZoneValue> timeZone,
+    TemporalDisambiguation disambiguation, TemporalOffset offsetOption,
+    MatchBehaviour matchBehaviour, EpochNanoseconds* result);
 
 } /* namespace js::temporal */
 
 namespace js {
 
 template <typename Wrapper>
-class WrappedPtrOperations<temporal::NanosecondsAndDays, Wrapper> {
-  const auto& object() const {
+class WrappedPtrOperations<temporal::ZonedDateTime, Wrapper> {
+  const auto& container() const {
     return static_cast<const Wrapper*>(this)->get();
   }
 
  public:
-  double daysNumber() const { return object().daysNumber(); }
+  explicit operator bool() const { return bool(container()); }
 
-  JS::Handle<JS::BigInt*> days() const {
-    return JS::Handle<JS::BigInt*>::fromMarkedLocation(&object().days);
+  const auto& epochNanoseconds() const {
+    return container().epochNanoseconds();
   }
 
-  int64_t daysInt() const { return object().daysInt; }
-
-  temporal::InstantSpan nanoseconds() const { return object().nanoseconds; }
-
-  temporal::InstantSpan dayLength() const { return object().dayLength; }
-};
-
-template <typename Wrapper>
-class MutableWrappedPtrOperations<temporal::NanosecondsAndDays, Wrapper>
-    : public WrappedPtrOperations<temporal::NanosecondsAndDays, Wrapper> {
-  auto& object() { return static_cast<Wrapper*>(this)->get(); }
-
- public:
-  void initialize(int64_t days, const temporal::InstantSpan& nanoseconds,
-                  const temporal::InstantSpan& dayLength) {
-    object().daysInt = days;
-    object().nanoseconds = nanoseconds;
-    object().dayLength = dayLength;
+  JS::Handle<temporal::TimeZoneValue> timeZone() const {
+    return JS::Handle<temporal::TimeZoneValue>::fromMarkedLocation(
+        container().timeZoneDoNotUse());
   }
 
-  void initialize(JS::BigInt* days, const temporal::InstantSpan& nanoseconds,
-                  const temporal::InstantSpan& dayLength) {
-    object().days = days;
-    object().nanoseconds = nanoseconds;
-    object().dayLength = dayLength;
+  JS::Handle<temporal::CalendarValue> calendar() const {
+    return JS::Handle<temporal::CalendarValue>::fromMarkedLocation(
+        container().calendarDoNotUse());
   }
 };
 

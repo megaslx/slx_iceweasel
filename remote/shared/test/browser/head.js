@@ -12,11 +12,13 @@
  *     The browser element where the tab should be added.
  * @param {string} url
  *     The URL for the tab.
+ * @param {object=} options
+ *     Options object to forward to BrowserTestUtils.addTab.
  * @returns {Tab}
  *     The created tab.
  */
-function addTab(browser, url) {
-  const tab = BrowserTestUtils.addTab(browser, url);
+function addTab(browser, url, options) {
+  const tab = BrowserTestUtils.addTab(browser, url, options);
   registerCleanupFunction(() => browser.removeTab(tab));
   return tab;
 }
@@ -32,7 +34,11 @@ function addTab(browser, url) {
 function assertNavigation(navigation, expectedUrl) {
   ok(!!navigation, "Retrieved a navigation");
   is(navigation.url, expectedUrl, "Navigation has the expected URL");
-  is(typeof navigation.id, "string", "Navigation has a string id");
+  is(
+    typeof navigation.navigationId,
+    "string",
+    "Navigation has a string navigationId"
+  );
 }
 
 /**
@@ -44,45 +50,72 @@ function assertNavigation(navigation, expectedUrl) {
  *     The pair of events to validate.
  * @param {string} url
  *     The expected url for the navigation.
- * @param {string} id
+ * @param {string} navigationId
  *     The expected navigation id.
  * @param {string} navigableId
  *     The expected navigable id.
  * @param {boolean} isSameDocument
  *     If the navigation should be a same document navigation.
  */
-function assertNavigationEvents(events, url, id, navigableId, isSameDocument) {
-  const expectedEvents = isSameDocument ? 3 : 2;
+function assertNavigationEvents(
+  events,
+  url,
+  navigationId,
+  navigableId,
+  isSameDocument
+) {
+  const expectedEvents = isSameDocument ? 1 : 2;
 
-  const navigationEvents = events.filter(e => e.data.id == id);
+  const navigationEvents = events.filter(
+    e => e.data.navigationId == navigationId
+  );
   is(
     navigationEvents.length,
     expectedEvents,
-    `Found ${expectedEvents} events for id ${id}`
+    `Found ${expectedEvents} events for navigationId ${navigationId}`
   );
 
-  const started = navigationEvents.find(e => e.name === "navigation-started");
-  const stopped = navigationEvents.find(e => e.name === "navigation-stopped");
-
-  // Check navigation-started
-  is(started.name, "navigation-started", "event has the expected name");
-  is(started.data.url, url, "event has the expected url");
-  is(started.data.navigableId, navigableId, "event has the expected navigable");
-
-  // Check navigation-stopped
-  is(stopped.name, "navigation-stopped", "event has the expected name");
-  is(stopped.data.url, url, "event has the expected url");
-  is(stopped.data.navigableId, navigableId, "event has the expected navigable");
+  const sameDocumentEvents = ["fragment-navigated", "same-document-changed"];
 
   if (isSameDocument) {
-    // If relevant check location-changed
-    const locationChanged = navigationEvents.find(
-      e => e.name === "location-changed"
+    // Check there are no navigation-started/stopped events.
+    ok(!navigationEvents.some(e => e.name === "navigation-started"));
+    ok(!navigationEvents.some(e => e.name === "navigation-stopped"));
+
+    const locationChanged = navigationEvents.find(e =>
+      sameDocumentEvents.includes(e.name)
     );
-    is(locationChanged.name, "location-changed", "event has the expected name");
+    ok(
+      sameDocumentEvents.includes(locationChanged.name),
+      "event has the expected name"
+    );
     is(locationChanged.data.url, url, "event has the expected url");
     is(
       locationChanged.data.navigableId,
+      navigableId,
+      "event has the expected navigable"
+    );
+  } else {
+    // Check there is no fragment-navigated/same-document-changed event.
+    ok(!navigationEvents.some(e => sameDocumentEvents.includes(e.name)));
+
+    const started = navigationEvents.find(e => e.name === "navigation-started");
+    const stopped = navigationEvents.find(e => e.name === "navigation-stopped");
+
+    // Check navigation-started
+    is(started.name, "navigation-started", "event has the expected name");
+    is(started.data.url, url, "event has the expected url");
+    is(
+      started.data.navigableId,
+      navigableId,
+      "event has the expected navigable"
+    );
+
+    // Check navigation-stopped
+    is(stopped.name, "navigation-stopped", "event has the expected name");
+    is(stopped.data.url, url, "event has the expected url");
+    is(
+      stopped.data.navigableId,
       navigableId,
       "event has the expected navigable"
     );
@@ -96,7 +129,7 @@ function assertNavigationEvents(events, url, id, navigableId, isSameDocument) {
  *     The navigations to validate.
  */
 function assertUniqueNavigationIds(...navigations) {
-  const ids = navigations.map(navigation => navigation.id);
+  const ids = navigations.map(navigation => navigation.navigationId);
   is(new Set(ids).size, ids.length, "Navigation ids are all different");
 }
 
@@ -172,6 +205,6 @@ async function loadURL(browser, url, options = {}) {
     url,
     maybeErrorPage
   );
-  BrowserTestUtils.loadURIString(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
   return loaded;
 }

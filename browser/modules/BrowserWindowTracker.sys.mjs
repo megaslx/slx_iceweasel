@@ -21,7 +21,6 @@ XPCOMUtils.defineLazyServiceGetters(lazy, {
 ChromeUtils.defineESModuleGetters(lazy, {
   HomePage: "resource:///modules/HomePage.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
 });
 
 // Constants
@@ -176,11 +175,17 @@ export const BrowserWindowTracker = {
   /**
    * Get the most recent browser window.
    *
-   * @param options an object accepting the arguments for the search.
-   *        * private: true to restrict the search to private windows
-   *            only, false to restrict the search to non-private only.
-   *            Omit the property to search in both groups.
-   *        * allowPopups: true if popup windows are permissable.
+   * @param {Object} options - An object accepting the arguments for the search.
+   * @param {boolean} [options.private]
+   *   true to only search for private windows.
+   *   false to restrict the search to non-private windows.
+   *   If the property is not provided, search for either. If permanent private
+   *   browsing is enabled this option will be ignored!
+   * @param {boolean} [options.allowPopups]: true if popup windows are
+   *   permitted.
+   *
+   * @returns {Window | null} The current top/selected window.
+   *  Can return null on MacOS when there is no open window.
    */
   getTopWindow(options = {}) {
     for (let win of _trackedWindows) {
@@ -235,7 +240,7 @@ export const BrowserWindowTracker = {
    *   Whether the opening window is a private browsing window.
    */
   registerOpeningWindow(window, isPrivate) {
-    let deferred = lazy.PromiseUtils.defer();
+    let deferred = Promise.withResolvers();
 
     this.pendingWindows.set(window, {
       isPrivate,
@@ -245,7 +250,7 @@ export const BrowserWindowTracker = {
     // Prevent leaks in case the window closes before we track it as an open
     // window.
     const topic = "browsing-context-discarded";
-    const observer = (aSubject, aTopic, aData) => {
+    const observer = aSubject => {
       if (window.browsingContext == aSubject) {
         let pending = this.pendingWindows.get(window);
         if (pending) {
@@ -288,9 +293,6 @@ export const BrowserWindowTracker = {
     remote = undefined,
     fission = undefined,
   } = {}) {
-    let telemetryObj = {};
-    TelemetryStopwatch.start("FX_NEW_WINDOW_MS", telemetryObj);
-
     let windowFeatures = "chrome,dialog=no,all";
     if (features) {
       windowFeatures += `,${features}`;
@@ -345,7 +347,6 @@ export const BrowserWindowTracker = {
     win.addEventListener(
       "MozAfterPaint",
       () => {
-        TelemetryStopwatch.finish("FX_NEW_WINDOW_MS", telemetryObj);
         if (
           Services.prefs.getIntPref("browser.startup.page") == 1 &&
           loadURIString == lazy.HomePage.get()
@@ -436,7 +437,7 @@ export const BrowserWindowTracker = {
 
   // For tests only, this function will remove this window from the list of
   // tracked windows. Please don't forget to add it back at the end of your
-  // tests!
+  // tests using BrowserWindowTracker.track(window)!
   untrackForTestsOnly(window) {
     return WindowHelper.removeWindow(window);
   },

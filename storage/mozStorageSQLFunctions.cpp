@@ -10,6 +10,7 @@
 #include "nsTArray.h"
 #include "nsUnicharUtils.h"
 #include <algorithm>
+#include "sqlite3.h"
 
 namespace mozilla {
 namespace storage {
@@ -82,7 +83,8 @@ int likeCompare(nsAString::const_iterator aPatternItr,
 
       // No match
       return 0;
-    } else if (!lastWasEscape && *aPatternItr == MATCH_ONE) {
+    }
+    if (!lastWasEscape && *aPatternItr == MATCH_ONE) {
       // CASE 2
       if (aStringItr == aStringEnd) {
         // If we've hit the end of the string we are testing, no match
@@ -245,7 +247,7 @@ int registerFunctions(sqlite3* aDB) {
   };
 
   int rv = SQLITE_OK;
-  for (size_t i = 0; SQLITE_OK == rv && i < ArrayLength(functions); ++i) {
+  for (size_t i = 0; SQLITE_OK == rv && i < std::size(functions); ++i) {
     struct Functions* p = &functions[i];
     rv = ::sqlite3_create_function(aDB, p->zName, p->nArg, p->enc, p->pContext,
                                    p->xFunc, nullptr, nullptr);
@@ -284,7 +286,9 @@ void caseFunction(sqlite3_context* aCtx, int aArgc, sqlite3_value** aArgv) {
 void likeFunction(sqlite3_context* aCtx, int aArgc, sqlite3_value** aArgv) {
   NS_ASSERTION(2 == aArgc || 3 == aArgc, "Invalid number of arguments!");
 
-  if (::sqlite3_value_bytes(aArgv[0]) > SQLITE_MAX_LIKE_PATTERN_LENGTH) {
+  if (::sqlite3_value_bytes(aArgv[0]) >
+      ::sqlite3_limit(::sqlite3_context_db_handle(aCtx),
+                      SQLITE_LIMIT_LIKE_PATTERN_LENGTH, -1)) {
     ::sqlite3_result_error(aCtx, "LIKE or GLOB pattern too complex",
                            SQLITE_TOOBIG);
     return;

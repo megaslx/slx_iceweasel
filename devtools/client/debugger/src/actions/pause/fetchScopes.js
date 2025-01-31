@@ -2,13 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import { getGeneratedFrameScope, getOriginalFrameScope } from "../../selectors";
+import {
+  getGeneratedFrameScope,
+  getOriginalFrameScope,
+  getSelectedFrame,
+} from "../../selectors/index";
 import { mapScopes } from "./mapScopes";
 import { generateInlinePreview } from "./inlinePreview";
 import { PROMISE } from "../utils/middleware/promise";
+import { validateSelectedFrame } from "../../utils/context";
 
-export function fetchScopes(selectedFrame) {
+/**
+ * Retrieve the scopes and map them for the currently selected frame.
+ * Once this is done, update the inline previews.
+ */
+export function fetchScopes() {
   return async function ({ dispatch, getState, client }) {
+    const selectedFrame = getSelectedFrame(getState());
     // See if we already fetched the scopes.
     // We may have pause on multiple thread and re-select a paused thread
     // for which we already fetched the scopes.
@@ -23,7 +33,10 @@ export function fetchScopes(selectedFrame) {
       });
 
       scopes.then(() => {
-        dispatch(generateInlinePreview(selectedFrame));
+        // Avoid generating previews, if we resumed or switched to another frame while retrieving scopes
+        validateSelectedFrame(getState(), selectedFrame);
+
+        dispatch(generateInlinePreview());
       });
     }
 

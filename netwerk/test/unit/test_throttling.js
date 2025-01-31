@@ -30,7 +30,7 @@ function run_test() {
   let sstream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  sstream.data = "x".repeat(size);
+  sstream.setByteStringData("x".repeat(size));
 
   let mime = Cc["@mozilla.org/network/mime-input-stream;1"].createInstance(
     Ci.nsIMIMEInputStream
@@ -56,7 +56,11 @@ function run_test() {
   let startTime = Date.now();
   channel.asyncOpen(
     new ChannelListener(() => {
-      ok(Date.now() - startTime > 1000, "request took more than one second");
+      Assert.greater(
+        Date.now() - startTime,
+        1000,
+        "request took more than one second"
+      );
 
       httpserver.stop(do_test_finished);
     })

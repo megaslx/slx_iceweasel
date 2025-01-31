@@ -7,9 +7,9 @@
 
 use super::*;
 
-use block::{Block, ConcreteBlock};
-use foreign_types::ForeignType;
-use objc::runtime::{Object, NO, YES};
+use block::Block;
+use log::warn;
+use objc::runtime::{NO, YES};
 
 use std::{ffi::CStr, os::raw::c_char, path::Path, ptr};
 
@@ -93,7 +93,7 @@ pub enum MTLDeviceLocation {
     Unspecified = u64::MAX,
 }
 
-bitflags! {
+bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
     pub struct PixelFormatCapabilities: u32 {
         const Filter = 1 << 0;
@@ -1431,7 +1431,7 @@ pub enum MTLSparseTextureRegionAlignmentMode {
     Inward = 1,
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Options that determine how Metal prepares the pipeline.
     #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MTLPipelineOption: NSUInteger {
@@ -1461,7 +1461,7 @@ pub struct MTLAccelerationStructureSizes {
 #[cfg_attr(feature = "link", link(name = "Metal", kind = "framework"))]
 extern "C" {
     fn MTLCreateSystemDefaultDevice() -> *mut MTLDevice;
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "visionos")))]
     fn MTLCopyAllDevices() -> *mut Object; //TODO: Array
 }
 
@@ -1472,12 +1472,14 @@ pub type dispatch_queue_t = *mut Object;
 #[allow(non_camel_case_types)]
 type dispatch_block_t = *const Block<(), ()>;
 
+const DISPATCH_DATA_DESTRUCTOR_DEFAULT: dispatch_block_t = ptr::null();
+
 #[cfg_attr(
-    all(feature = "link", any(target_os = "macos", target_os = "ios")),
+    all(feature = "link", any(target_os = "macos", target_os = "ios", target_os = "visionos")),
     link(name = "System", kind = "dylib")
 )]
 #[cfg_attr(
-    all(feature = "link", not(any(target_os = "macos", target_os = "ios"))),
+    all(feature = "link", not(any(target_os = "macos", target_os = "ios", target_os = "visionos"))),
     link(name = "dispatch", kind = "dylib")
 )]
 #[allow(improper_ctypes)]
@@ -1518,11 +1520,11 @@ impl Device {
     }
 
     pub fn all() -> Vec<Self> {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "visionos"))]
         {
             Self::system_default().into_iter().collect()
         }
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "visionos")))]
         unsafe {
             let array = MTLCopyAllDevices();
             let count: NSUInteger = msg_send![array, count];
@@ -1580,54 +1582,24 @@ impl DeviceRef {
     }
 
     pub fn is_low_power(&self) -> bool {
-        unsafe {
-            match msg_send![self, isLowPower] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isLowPower] }
     }
 
     pub fn is_headless(&self) -> bool {
-        unsafe {
-            match msg_send![self, isHeadless] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isHeadless] }
     }
 
     pub fn is_removable(&self) -> bool {
-        unsafe {
-            match msg_send![self, isRemovable] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isRemovable] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_raytracing(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsRaytracing] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsRaytracing] }
     }
 
     pub fn has_unified_memory(&self) -> bool {
-        unsafe {
-            match msg_send![self, hasUnifiedMemory] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send![self, hasUnifiedMemory] }
     }
 
     pub fn recommended_max_working_set_size(&self) -> u64 {
@@ -1639,95 +1611,41 @@ impl DeviceRef {
     }
 
     pub fn supports_feature_set(&self, feature: MTLFeatureSet) -> bool {
-        unsafe {
-            match msg_send![self, supportsFeatureSet: feature] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsFeatureSet: feature] }
     }
 
     pub fn supports_family(&self, family: MTLGPUFamily) -> bool {
-        unsafe {
-            match msg_send![self, supportsFamily: family] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsFamily: family] }
     }
 
     pub fn supports_vertex_amplification_count(&self, count: NSUInteger) -> bool {
-        unsafe {
-            match msg_send![self, supportsVertexAmplificationCount: count] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsVertexAmplificationCount: count] }
     }
 
     pub fn supports_texture_sample_count(&self, count: NSUInteger) -> bool {
-        unsafe {
-            match msg_send![self, supportsTextureSampleCount: count] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsTextureSampleCount: count] }
     }
 
     pub fn supports_shader_barycentric_coordinates(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsShaderBarycentricCoordinates] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsShaderBarycentricCoordinates] }
     }
 
     pub fn supports_function_pointers(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsFunctionPointers] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsFunctionPointers] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_dynamic_libraries(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsDynamicLibraries] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsDynamicLibraries] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_counter_sampling(&self, sampling_point: MTLCounterSamplingPoint) -> bool {
-        unsafe {
-            match msg_send![self, supportsCounterSampling: sampling_point] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsCounterSampling: sampling_point] }
     }
 
     pub fn d24_s8_supported(&self) -> bool {
-        unsafe {
-            match msg_send![self, isDepth24Stencil8PixelFormatSupported] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isDepth24Stencil8PixelFormatSupported] }
     }
 
     pub fn new_fence(&self) -> Fence {
@@ -1789,12 +1707,20 @@ impl DeviceRef {
 
     pub fn new_library_with_data(&self, library_data: &[u8]) -> Result<Library, String> {
         unsafe {
-            let destructor_block = ConcreteBlock::new(|| {}).copy();
+            // SAFETY:
+            // `library_data` does not necessarily outlive the dispatch data
+            // in which it will be contained (since the dispatch data will be
+            // contained in the MTLLibrary returned by this function).
+            //
+            // To prevent the MTLLibrary from referencing the data outside of
+            // its lifetime, we use DISPATCH_DATA_DESTRUCTOR_DEFAULT as the
+            // destructor block, which will make `dispatch_data_create` copy
+            // the buffer for us automatically.
             let data = dispatch_data_create(
                 library_data.as_ptr() as *const std::ffi::c_void,
                 library_data.len() as crate::c_size_t,
                 &_dispatch_main_q as *const _ as dispatch_queue_t,
-                &*destructor_block.deref(),
+                DISPATCH_DATA_DESTRUCTOR_DEFAULT,
             );
 
             let library: *mut MTLLibrary = try_objc! { err =>
@@ -2042,6 +1968,19 @@ impl DeviceRef {
         }
     }
 
+    pub fn new_indirect_command_buffer_with_descriptor(
+        &self,
+        descriptor: &IndirectCommandBufferDescriptorRef,
+        max_command_count: NSUInteger,
+        options: MTLResourceOptions,
+    ) -> IndirectCommandBuffer {
+        unsafe {
+            msg_send![self, newIndirectCommandBufferWithDescriptor:descriptor
+                                                   maxCommandCount:max_command_count
+                                                           options:options]
+        }
+    }
+
     pub fn new_texture(&self, descriptor: &TextureDescriptorRef) -> Texture {
         unsafe { msg_send![self, newTextureWithDescriptor: descriptor] }
     }
@@ -2066,68 +2005,32 @@ impl DeviceRef {
     }
 
     pub fn raster_order_groups_supported(&self) -> bool {
-        unsafe {
-            match msg_send![self, rasterOrderGroupsSupported] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, rasterOrderGroupsSupported] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_32bit_float_filtering(&self) -> bool {
-        unsafe {
-            match msg_send![self, supports32BitFloatFiltering] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supports32BitFloatFiltering] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_32bit_MSAA(&self) -> bool {
-        unsafe {
-            match msg_send![self, supports32BitMSAA] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supports32BitMSAA] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_query_texture_LOD(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsQueryTextureLOD] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsQueryTextureLOD] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_BC_texture_compression(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsBCTextureCompression] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsBCTextureCompression] }
     }
 
     /// Only available on (macos(11.0), ios(14.0))
     pub fn supports_pull_model_interpolation(&self) -> bool {
-        unsafe {
-            match msg_send![self, supportsPullModelInterpolation] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsPullModelInterpolation] }
     }
 
     pub fn new_argument_encoder(
@@ -2155,6 +2058,14 @@ impl DeviceRef {
         options: MTLResourceOptions,
     ) -> MTLSizeAndAlign {
         unsafe { msg_send![self, heapBufferSizeAndAlignWithLength: length options: options] }
+    }
+
+    /// Only available on macos(13.0), ios(16.0)
+    pub fn heap_acceleration_structure_size_and_align_with_size(
+        &self,
+        size: NSUInteger,
+    ) -> MTLSizeAndAlign {
+        unsafe { msg_send![self, heapAccelerationStructureSizeAndAlignWithSize: size] }
     }
 
     pub fn heap_texture_size_and_align(

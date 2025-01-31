@@ -16,50 +16,45 @@
 
 namespace mozilla {
 
-static const TimeDuration kOneMinute = TimeDuration::FromSeconds(60.0f);
+extern const TimeDuration kOneMinute;
 
 // The amount of time we wait between a request to CC (after GC ran)
 // and doing the actual CC.
-static const TimeDuration kCCDelay = TimeDuration::FromSeconds(6);
+extern const TimeDuration kCCDelay;
 
-static const TimeDuration kCCSkippableDelay =
-    TimeDuration::FromMilliseconds(250);
+extern const TimeDuration kCCSkippableDelay;
 
 // In case the cycle collector isn't run at all, we don't want forget skippables
 // to run too often. So limit the forget skippable cycle to start at earliest 2
 // seconds after the end of the previous cycle.
-static const TimeDuration kTimeBetweenForgetSkippableCycles =
-    TimeDuration::FromSeconds(2);
+extern const TimeDuration kTimeBetweenForgetSkippableCycles;
 
 // ForgetSkippable is usually fast, so we can use small budgets.
 // This isn't a real budget but a hint to IdleTaskRunner whether there
 // is enough time to call ForgetSkippable.
-static const TimeDuration kForgetSkippableSliceDuration =
-    TimeDuration::FromMilliseconds(2);
+extern const TimeDuration kForgetSkippableSliceDuration;
 
 // Maximum amount of time that should elapse between incremental CC slices
-static const TimeDuration kICCIntersliceDelay =
-    TimeDuration::FromMilliseconds(64);
+extern const TimeDuration kICCIntersliceDelay;
 
 // Time budget for an incremental CC slice when using timer to run it.
-static const TimeDuration kICCSliceBudget = TimeDuration::FromMilliseconds(3);
+extern const TimeDuration kICCSliceBudget;
 // Minimum budget for an incremental CC slice when using idle time to run it.
-static const TimeDuration kIdleICCSliceBudget =
-    TimeDuration::FromMilliseconds(2);
+extern const TimeDuration kIdleICCSliceBudget;
 
 // Maximum total duration for an ICC
-static const TimeDuration kMaxICCDuration = TimeDuration::FromSeconds(2);
+extern const TimeDuration kMaxICCDuration;
 
 // Force a CC after this long if there's more than NS_CC_FORCED_PURPLE_LIMIT
 // objects in the purple buffer.
-static const TimeDuration kCCForced = kOneMinute * 2;
-static const uint32_t kCCForcedPurpleLimit = 10;
+extern const TimeDuration kCCForced;
+constexpr uint32_t kCCForcedPurpleLimit = 10;
 
 // Don't allow an incremental GC to lock out the CC for too long.
-static const TimeDuration kMaxCCLockedoutTime = TimeDuration::FromSeconds(30);
+extern const TimeDuration kMaxCCLockedoutTime;
 
 // Trigger a CC if the purple buffer exceeds this size when we check it.
-static const uint32_t kCCPurpleLimit = 200;
+constexpr uint32_t kCCPurpleLimit = 200;
 
 // Actions performed by the GCRunner state machine.
 enum class GCRunnerAction {
@@ -137,7 +132,7 @@ class CCGCScheduler {
         mReadyForMajorGC(!mAskParentBeforeMajorGC),
         mInterruptRequested(false) {}
 
-  static bool CCRunnerFired(TimeStamp aDeadline);
+  bool CCRunnerFired(TimeStamp aDeadline);
 
   // Parameter setting
 
@@ -180,9 +175,12 @@ class CCGCScheduler {
   void KillCCRunner();
   void KillAllTimersAndRunners();
 
-  js::SliceBudget CreateGCSliceBudget(mozilla::TimeDuration aDuration,
+  JS::SliceBudget CreateGCSliceBudget(mozilla::TimeDuration aDuration,
                                       bool isIdle, bool isExtended) {
-    auto budget = js::SliceBudget(aDuration, &mInterruptRequested);
+    mInterruptRequested = false;
+    // Don't try to interrupt if we are in a mode where idle time is rare.
+    auto budget = JS::SliceBudget(
+        aDuration, mPreferFasterCollection ? nullptr : &mInterruptRequested);
     budget.idle = isIdle;
     budget.extended = isExtended;
     return budget;
@@ -194,6 +192,10 @@ class CCGCScheduler {
    * StaticPrefs::javascript_options_gc_delay_interslice()
    */
   void EnsureGCRunner(TimeDuration aDelay);
+
+  // If GCRunner isn't active, this calls EnsureGCRunner(0). Otherwise the timer
+  // is reset.
+  void EnsureOrResetGCRunner();
 
   void EnsureCCRunner(TimeDuration aDelay, TimeDuration aBudget);
 
@@ -277,16 +279,13 @@ class CCGCScheduler {
 
   // This is invoked when we reach the actual cycle collection portion of the
   // overall cycle collection.
-  void NoteCCBegin(CCReason aReason, TimeStamp aWhen,
-                   uint32_t aNumForgetSkippables, uint32_t aSuspected,
-                   uint32_t aRemovedPurples);
+  void NoteCCBegin();
 
   // This is invoked when the whole process of collection is done -- i.e., CC
   // preparation (eg ForgetSkippables) in addition to the CC itself. There
   // really ought to be a separate name for the overall CC as opposed to the
   // actual cycle collection portion.
-  void NoteCCEnd(const CycleCollectorResults& aResults, TimeStamp aWhen,
-                 mozilla::TimeDuration aMaxSliceTime);
+  void NoteCCEnd(const CycleCollectorResults& aResults, TimeStamp aWhen);
 
   // A single slice has completed.
   void NoteGCSliceEnd(TimeStamp aStart, TimeStamp aEnd);
@@ -318,13 +317,11 @@ class CCGCScheduler {
   void UnblockCC() { mCCBlockStart = TimeStamp(); }
 
   // Returns the number of purple buffer items that were processed and removed.
-  uint32_t NoteForgetSkippableComplete(TimeStamp aNow,
-                                       uint32_t aSuspectedBeforeForgetSkippable,
-                                       uint32_t aSuspectedCCObjects) {
+  void NoteForgetSkippableComplete(TimeStamp aNow,
+                                   uint32_t aSuspectedCCObjects) {
     mLastForgetSkippableEndTime = aNow;
     mPreviousSuspectedCount = aSuspectedCCObjects;
     mCleanupsSinceLastGC++;
-    return aSuspectedBeforeForgetSkippable - aSuspectedCCObjects;
   }
 
   // Test if we are in the NoteCCBegin .. NoteCCEnd interval.
@@ -346,14 +343,16 @@ class CCGCScheduler {
   // Return a budget along with a boolean saying whether to prefer to run short
   // slices and stop rather than continuing to the next phase of cycle
   // collection.
-  js::SliceBudget ComputeCCSliceBudget(TimeStamp aDeadline,
+  JS::SliceBudget ComputeCCSliceBudget(TimeStamp aDeadline,
                                        TimeStamp aCCBeginTime,
                                        TimeStamp aPrevSliceEndTime,
                                        TimeStamp aNow,
                                        bool* aPreferShorterSlices) const;
 
-  js::SliceBudget ComputeInterSliceGCBudget(TimeStamp aDeadline,
+  JS::SliceBudget ComputeInterSliceGCBudget(TimeStamp aDeadline,
                                             TimeStamp aNow);
+
+  TimeDuration ComputeMinimumBudgetForRunner(TimeDuration aBaseValue);
 
   bool ShouldForgetSkippable(uint32_t aSuspectedCCObjects) const {
     // Only do a forget skippable if there are more than a few new objects
@@ -453,8 +452,10 @@ class CCGCScheduler {
 
   // aStartTimeStamp : when the ForgetSkippable timer fired. This may be some
   // time ago, if an incremental GC needed to be finished.
-  js::SliceBudget ComputeForgetSkippableBudget(TimeStamp aStartTimeStamp,
+  JS::SliceBudget ComputeForgetSkippableBudget(TimeStamp aStartTimeStamp,
                                                TimeStamp aDeadline);
+
+  bool PreferFasterCollection() const { return mPreferFasterCollection; }
 
  private:
   // State
@@ -476,7 +477,7 @@ class CCGCScheduler {
 
   // Set when the IdleTaskRunner requests the current task be interrupted.
   // Cleared when the GC slice budget has detected the interrupt request.
-  js::SliceBudget::InterruptRequestFlag mInterruptRequested;
+  JS::SliceBudget::InterruptRequestFlag mInterruptRequested;
 
   // When a shrinking GC has been requested but we back-out, if this is true
   // we run a non-shrinking GC.
@@ -527,6 +528,9 @@ class CCGCScheduler {
   bool mIsCompactingOnUserInactive = false;
   bool mIsCollectingCycles = false;
   bool mUserIsActive = true;
+
+  bool mCurrentCollectionHasSeenNonIdle = false;
+  bool mPreferFasterCollection = false;
 
  public:
   uint32_t mCCollectedWaitingForGC = 0;

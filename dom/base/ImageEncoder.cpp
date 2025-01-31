@@ -8,6 +8,7 @@
 #include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
 #include "mozilla/dom/MemoryBlobImpl.h"
+#include "mozilla/dom/OffscreenCanvasDisplayHelper.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
@@ -83,7 +84,6 @@ class EncodingCompleteEvent final : public DiscardableRunnable {
       EncodeCompleteCallback* aEncodeCompleteCallback)
       : DiscardableRunnable("EncodingCompleteEvent"),
         mImgSize(0),
-        mType(),
         mImgData(nullptr),
         mEncodeCompleteCallback(aEncodeCompleteCallback),
         mFailed(false) {
@@ -149,8 +149,8 @@ class EncodingRunnable : public Runnable {
                    UniquePtr<uint8_t[]> aImageBuffer, layers::Image* aImage,
                    imgIEncoder* aEncoder,
                    EncodingCompleteEvent* aEncodingCompleteEvent,
-                   int32_t aFormat, const nsIntSize aSize, bool aUsePlaceholder,
-                   bool aUsingCustomOptions)
+                   int32_t aFormat, const CSSIntSize aSize,
+                   bool aUsePlaceholder, bool aUsingCustomOptions)
       : Runnable("EncodingRunnable"),
         mType(aType),
         mOptions(aOptions),
@@ -215,25 +215,24 @@ class EncodingRunnable : public Runnable {
   nsCOMPtr<imgIEncoder> mEncoder;
   RefPtr<EncodingCompleteEvent> mEncodingCompleteEvent;
   int32_t mFormat;
-  const nsIntSize mSize;
+  const CSSIntSize mSize;
   bool mUsePlaceholder;
   bool mUsingCustomOptions;
 };
 
 /* static */
-nsresult ImageEncoder::ExtractData(nsAString& aType, const nsAString& aOptions,
-                                   const nsIntSize aSize, bool aUsePlaceholder,
-                                   nsICanvasRenderingContextInternal* aContext,
-                                   layers::CanvasRenderer* aRenderer,
-                                   nsIInputStream** aStream) {
+nsresult ImageEncoder::ExtractData(
+    nsAString& aType, const nsAString& aOptions, const CSSIntSize aSize,
+    bool aUsePlaceholder, nsICanvasRenderingContextInternal* aContext,
+    OffscreenCanvasDisplayHelper* aOffscreenDisplay, nsIInputStream** aStream) {
   nsCOMPtr<imgIEncoder> encoder = ImageEncoder::GetImageEncoder(aType);
   if (!encoder) {
     return NS_IMAGELIB_ERROR_NO_ENCODER;
   }
 
   return ExtractDataInternal(aType, aOptions, nullptr, 0, aSize,
-                             aUsePlaceholder, nullptr, aContext, aRenderer,
-                             aStream, encoder);
+                             aUsePlaceholder, nullptr, aContext,
+                             aOffscreenDisplay, aStream, encoder);
 }
 
 /* static */
@@ -249,7 +248,7 @@ nsresult ImageEncoder::ExtractDataFromLayersImageAsync(
   RefPtr<EncodingCompleteEvent> completeEvent =
       new EncodingCompleteEvent(aEncodeCallback);
 
-  nsIntSize size(aImage->GetSize().width, aImage->GetSize().height);
+  CSSIntSize size = CSSIntSize::FromUnknownSize(aImage->GetSize());
   nsCOMPtr<nsIRunnable> event =
       new EncodingRunnable(aType, aOptions, nullptr, aImage, encoder,
                            completeEvent, imgIEncoder::INPUT_FORMAT_HOSTARGB,
@@ -260,7 +259,7 @@ nsresult ImageEncoder::ExtractDataFromLayersImageAsync(
 /* static */
 nsresult ImageEncoder::ExtractDataAsync(
     nsAString& aType, const nsAString& aOptions, bool aUsingCustomOptions,
-    UniquePtr<uint8_t[]> aImageBuffer, int32_t aFormat, const nsIntSize aSize,
+    UniquePtr<uint8_t[]> aImageBuffer, int32_t aFormat, const CSSIntSize aSize,
     bool aUsePlaceholder, EncodeCompleteCallback* aEncodeCallback) {
   nsCOMPtr<imgIEncoder> encoder = ImageEncoder::GetImageEncoder(aType);
   if (!encoder) {
@@ -295,9 +294,9 @@ nsresult ImageEncoder::GetInputStream(int32_t aWidth, int32_t aHeight,
 /* static */
 nsresult ImageEncoder::ExtractDataInternal(
     const nsAString& aType, const nsAString& aOptions, uint8_t* aImageBuffer,
-    int32_t aFormat, const nsIntSize aSize, bool aUsePlaceholder,
+    int32_t aFormat, const CSSIntSize aSize, bool aUsePlaceholder,
     layers::Image* aImage, nsICanvasRenderingContextInternal* aContext,
-    layers::CanvasRenderer* aRenderer, nsIInputStream** aStream,
+    OffscreenCanvasDisplayHelper* aOffscreenDisplay, nsIInputStream** aStream,
     imgIEncoder* aEncoder) {
   if (aSize.IsEmpty()) {
     return NS_ERROR_INVALID_ARG;
@@ -319,19 +318,19 @@ nsresult ImageEncoder::ExtractDataInternal(
     NS_ConvertUTF16toUTF8 encoderType(aType);
     rv = aContext->GetInputStream(encoderType.get(), aOptions,
                                   getter_AddRefs(imgStream));
-  } else if (aRenderer && !aUsePlaceholder) {
-    MOZ_CRASH("unused?");
+  } else if (aOffscreenDisplay && !aUsePlaceholder) {
     const NS_ConvertUTF16toUTF8 encoderType(aType);
     if (BufferSizeFromDimensions(aSize.width, aSize.height, 4) == 0) {
       return NS_ERROR_INVALID_ARG;
     }
 
-    const auto snapshot = aRenderer->BorrowSnapshot();
+    const RefPtr<SourceSurface> snapshot =
+        aOffscreenDisplay->GetSurfaceSnapshot();
     if (!snapshot) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
-    const RefPtr<DataSourceSurface> data = snapshot->mSurf->GetDataSurface();
+    const RefPtr<DataSourceSurface> data = snapshot->GetDataSurface();
     if (!data) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
@@ -341,10 +340,14 @@ nsresult ImageEncoder::ExtractDataInternal(
       if (!data->Map(gfx::DataSourceSurface::MapType::READ, &map)) {
         return NS_ERROR_INVALID_ARG;
       }
-      rv = aEncoder->InitFromData(map.mData, aSize.width * aSize.height * 4,
-                                  aSize.width, aSize.height, aSize.width * 4,
+      auto size = data->GetSize();
+      rv = aEncoder->InitFromData(map.mData, size.width * size.height * 4,
+                                  size.width, size.height, size.width * 4,
                                   imgIEncoder::INPUT_FORMAT_HOSTARGB, aOptions);
       data->Unmap();
+    }
+    if (NS_SUCCEEDED(rv)) {
+      imgStream = aEncoder;
     }
   } else if (aImage && !aUsePlaceholder) {
     // It is safe to convert PlanarYCbCr format from YUV to RGB off-main-thread.
@@ -356,15 +359,19 @@ nsresult ImageEncoder::ExtractDataInternal(
       layers::PlanarYCbCrImage* ycbcrImage =
           static_cast<layers::PlanarYCbCrImage*>(aImage);
       gfxImageFormat format = SurfaceFormat::A8R8G8B8_UINT32;
-      uint32_t stride = GetAlignedStride<16>(aSize.width, 4);
+      int32_t stride = GetAlignedStride<16>(aSize.width, 4);
       size_t length = BufferSizeFromStrideAndHeight(stride, aSize.height);
       if (length == 0) {
         return NS_ERROR_INVALID_ARG;
       }
       data.SetCapacity(length);
 
-      ConvertYCbCrToRGB(*ycbcrImage->GetData(), format, aSize, data.Elements(),
-                        stride);
+      rv = ConvertYCbCrToRGB(*ycbcrImage->GetData(), format,
+                             aSize.ToUnknownSize(), data.Elements(), stride);
+      if (NS_FAILED(rv)) {
+        MOZ_ASSERT_UNREACHABLE("Failed to convert YUV into RGB data");
+        return rv;
+      }
 
       rv = aEncoder->InitFromData(data.Elements(),
                                   aSize.width * aSize.height * 4, aSize.width,
@@ -383,8 +390,9 @@ nsresult ImageEncoder::ExtractDataInternal(
       if (!dataSurface->Map(gfx::DataSourceSurface::MapType::READ, &map)) {
         return NS_ERROR_INVALID_ARG;
       }
-      rv = aEncoder->InitFromData(map.mData, aSize.width * aSize.height * 4,
-                                  aSize.width, aSize.height, aSize.width * 4,
+      auto size = dataSurface->GetSize();
+      rv = aEncoder->InitFromData(map.mData, size.width * size.height * 4,
+                                  size.width, size.height, size.width * 4,
                                   imgIEncoder::INPUT_FORMAT_HOSTARGB, aOptions);
       dataSurface->Unmap();
     }

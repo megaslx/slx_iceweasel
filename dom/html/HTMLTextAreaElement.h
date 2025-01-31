@@ -71,23 +71,22 @@ class HTMLTextAreaElement final : public TextControlElement,
 
   void FieldSetDisabledChanged(bool aNotify) override;
 
-  ElementState IntrinsicState() const override;
-
   void SetLastValueChangeWasInteractive(bool);
 
   // TextControlElement
+  bool IsSingleLineTextControlOrTextArea() const override { return true; }
   void SetValueChanged(bool aValueChanged) override;
   bool IsSingleLineTextControl() const override;
   bool IsTextArea() const override;
   bool IsPasswordTextControl() const override;
-  int32_t GetCols() override;
+  Maybe<int32_t> GetCols() override;
   int32_t GetWrapCols() override;
   int32_t GetRows() override;
   void GetDefaultValueFromContent(nsAString& aValue, bool aForDisplay) override;
   bool ValueChanged() const override;
   void GetTextEditorValue(nsAString& aValue) const override;
   MOZ_CAN_RUN_SCRIPT TextEditor* GetTextEditor() override;
-  TextEditor* GetTextEditorWithoutCreation() override;
+  TextEditor* GetTextEditorWithoutCreation() const override;
   nsISelectionController* GetSelectionController() override;
   nsFrameSelection* GetConstFrameSelection() override;
   TextControlState* GetTextControlState() const override { return mState; }
@@ -96,9 +95,16 @@ class HTMLTextAreaElement final : public TextControlElement,
   MOZ_CAN_RUN_SCRIPT nsresult CreateEditor() override;
   void SetPreviewValue(const nsAString& aValue) override;
   void GetPreviewValue(nsAString& aValue) override;
+  void SetAutofillState(const nsAString& aState) override {
+    SetFormAutofillState(aState);
+  }
+  void GetAutofillState(nsAString& aState) override {
+    GetFormAutofillState(aState);
+  }
   void EnablePreview() override;
   bool IsPreviewEnabled() override;
   void InitializeKeyboardEventListeners() override;
+  void UpdatePlaceholderShownState();
   void OnValueChanged(ValueChangeKind, bool aNewValueEmpty,
                       const nsAString* aKnownNewValue) override;
   void GetValueFromSetRangeText(nsAString& aValue) override;
@@ -108,7 +114,7 @@ class HTMLTextAreaElement final : public TextControlElement,
 
   // nsIContent
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
   bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
                       const nsAString& aValue,
                       nsIPrincipal* aMaybeScriptedPrincipal,
@@ -122,7 +128,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   nsresult PreHandleEvent(EventChainVisitor& aVisitor) override;
   nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
 
-  bool IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
+  bool IsHTMLFocusable(IsFocusableFlags, bool* aIsFocusable,
                        int32_t* aTabIndex) override;
 
   void DoneAddingChildren(bool aHaveNotified) override;
@@ -165,7 +171,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   void SetAutocomplete(const nsAString& aValue, ErrorResult& aRv) {
     SetHTMLAttr(nsGkAtoms::autocomplete, aValue, aRv);
   }
-  uint32_t Cols() { return GetUnsignedIntAttr(nsGkAtoms::cols, DEFAULT_COLS); }
+  uint32_t Cols() { return GetColsOrDefault(); }
   void SetCols(uint32_t aCols, ErrorResult& aError) {
     uint32_t cols = aCols ? aCols : DEFAULT_COLS;
     SetUnsignedIntAttr(nsGkAtoms::cols, cols, DEFAULT_COLS, aError);
@@ -269,7 +275,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   nsresult GetControllers(nsIControllers** aResult);
 
   MOZ_CAN_RUN_SCRIPT nsIEditor* GetEditorForBindings();
-  bool HasEditor() {
+  bool HasEditor() const {
     MOZ_ASSERT(mState);
     return !!mState->GetTextEditorWithoutCreation();
   }
@@ -286,27 +292,30 @@ class HTMLTextAreaElement final : public TextControlElement,
   using nsGenericHTMLFormControlElementWithState::IsSingleLineTextControl;
 
   JSObject* WrapNode(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
+  void ResetIfUnchanged() {
+    if (!mValueChanged) {
+      Reset();
+    }
+  }
 
   nsCOMPtr<nsIControllers> mControllers;
+  /** https://html.spec.whatwg.org/#user-interacted */
+  bool mUserInteracted = false;
   /** Whether or not the value has changed since its default value was given. */
-  bool mValueChanged;
+  bool mValueChanged = false;
   /** Whether or not the last change to the value was made interactively by the
    * user. */
-  bool mLastValueChangeWasInteractive;
+  bool mLastValueChangeWasInteractive = false;
   /** Whether or not we are already handling select event. */
-  bool mHandlingSelect;
+  bool mHandlingSelect = false;
   /** Whether or not we are done adding children (always true if not
       created by a parser */
   bool mDoneAddingChildren;
   /** Whether state restoration should be inhibited in DoneAddingChildren. */
   bool mInhibitStateRestoration;
   /** Whether our disabled state has changed from the default **/
-  bool mDisabledChanged;
-  /** Whether we should make :-moz-ui-invalid apply on the element. **/
-  bool mCanShowInvalidUI;
-  /** Whether we should make :-moz-ui-valid apply on the element. **/
-  bool mCanShowValidUI;
-  bool mIsPreviewEnabled;
+  bool mDisabledChanged = false;
+  bool mIsPreviewEnabled = false;
 
   nsContentUtils::AutocompleteAttrState mAutocompleteAttrState;
 
@@ -317,7 +326,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   /** The state of the text editor (selection controller and the editor) **/
   TextControlState* mState;
 
-  NS_IMETHOD SelectAll(nsPresContext* aPresContext);
+  MOZ_CAN_RUN_SCRIPT void SelectAll();
   /**
    * Get the value, whether it is from the content or the frame.
    * @param aValue the value [out]
@@ -347,30 +356,6 @@ class HTMLTextAreaElement final : public TextControlElement,
                     const nsAttrValue* aValue, const nsAttrValue* aOldValue,
                     nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
 
-  void SetDirectionFromValue(bool aNotify,
-                             const nsAString* aKnownValue = nullptr);
-
-  /**
-   * Return if an element should have a specific validity UI
-   * (with :-moz-ui-invalid and :-moz-ui-valid pseudo-classes).
-   *
-   * @return Whether the element should have a validity UI.
-   */
-  bool ShouldShowValidityUI() const {
-    /**
-     * Always show the validity UI if the form has already tried to be submitted
-     * but was invalid.
-     *
-     * Otherwise, show the validity UI if the element's value has been changed.
-     */
-
-    if (mForm && mForm->HasEverTriedInvalidSubmit()) {
-      return true;
-    }
-
-    return mValueChanged;
-  }
-
   /**
    * Get the mutable state of the element.
    */
@@ -391,6 +376,9 @@ class HTMLTextAreaElement final : public TextControlElement,
    */
   void GetSelectionRange(uint32_t* aSelectionStart, uint32_t* aSelectionEnd,
                          ErrorResult& aRv);
+
+  void SetUserInteracted(bool) final;
+  void UpdateValidityElementStates(bool aNotify);
 
  private:
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);

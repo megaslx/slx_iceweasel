@@ -52,6 +52,11 @@ let login2B = new nsLoginInfo(
 requestLongerTimeout(2);
 
 add_setup(async function () {
+  // We do not want http://example.com etc. to be upgraded to https
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.security.https_first", false]],
+  });
+
   // Load recipes for this test.
   let recipeParent = await LoginManagerParent.recipeParentPromise;
   await recipeParent.load({
@@ -68,7 +73,7 @@ add_setup(async function () {
 add_task(async function test_remember_opens() {
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -90,7 +95,7 @@ add_task(async function test_remember_opens() {
 add_task(async function test_clickNever() {
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -162,7 +167,7 @@ add_task(async function test_clickRemember() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -186,7 +191,7 @@ add_task(async function test_clickRemember() {
       await checkDoorhangerUsernamePassword("notifyu1", "notifyp1");
       let promiseNewSavedPassword = TestUtils.topicObserved(
         "LoginStats:NewSavedPassword",
-        (subject, data) => subject == gBrowser.selectedBrowser
+        (subject, _topic, _data) => subject == gBrowser.selectedBrowser
       );
       clickDoorhangerButton(notif, REMEMBER_BUTTON);
       await promiseNewSavedPassword;
@@ -283,7 +288,7 @@ add_task(async function test_rememberSignonsTrue() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -317,7 +322,7 @@ add_task(async function test_autocompleteOffUsername() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_2.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -349,7 +354,7 @@ add_task(async function test_autocompleteOffPassword() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_3.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -379,7 +384,7 @@ add_task(async function test_autocompleteOffForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_4.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -434,7 +439,7 @@ add_task(async function test_pwOnlyNewLoginMatchesUPForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -501,7 +506,7 @@ add_task(async function test_pwOnlyOldLoginMatchesUPForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -588,7 +593,7 @@ add_task(async function test_pwOnlyFormDoesntMatchExisting() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_6.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -618,7 +623,7 @@ add_task(async function test_changeUPLoginOnUPForm_dont() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_8.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -634,7 +639,7 @@ add_task(async function test_changeUPLoginOnUPForm_dont() {
       Assert.ok(!notif.dismissed, "doorhanger is not dismissed");
       Assert.equal(
         notif.message,
-        "Update login for example.com?",
+        "Update password for example.com?",
         "Check message"
       );
 
@@ -675,7 +680,7 @@ add_task(async function test_changeUPLoginOnUPForm_remove() {
       Assert.ok(!notif.dismissed, "doorhanger is not dismissed");
       Assert.equal(
         notif.message,
-        "Update login for example.com?",
+        "Update password for example.com?",
         "Check message"
       );
 
@@ -686,7 +691,11 @@ add_task(async function test_changeUPLoginOnUPForm_remove() {
       const forceClosePopup = false;
       // Make sure confirmation hint was shown
       info("waiting for verifyConfirmationHint");
-      await verifyConfirmationHint(browser, forceClosePopup, "identity-icon");
+      await verifyConfirmationHint(
+        browser,
+        forceClosePopup,
+        "identity-icon-box"
+      );
     }
   );
 
@@ -700,7 +709,7 @@ add_task(async function test_changeUPLoginOnUPForm_change() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_8.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -716,14 +725,14 @@ add_task(async function test_changeUPLoginOnUPForm_change() {
       Assert.ok(!notif.dismissed, "doorhanger is not dismissed");
       Assert.equal(
         notif.message,
-        "Update login for example.com?",
+        "Update password for example.com?",
         "Check message"
       );
 
       await checkDoorhangerUsernamePassword("notifyu1", "pass2");
       let promiseLoginUpdateSaved = TestUtils.topicObserved(
         "LoginStats:LoginUpdateSaved",
-        (subject, data) => subject == gBrowser.selectedBrowser
+        (subject, _topic, _data) => subject == gBrowser.selectedBrowser
       );
       clickDoorhangerButton(notif, CHANGE_BUTTON);
       await promiseLoginUpdateSaved;
@@ -756,7 +765,7 @@ add_task(async function test_changePLoginOnUPForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_9.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -797,7 +806,7 @@ add_task(async function test_changePLoginOnPForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_10.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -838,7 +847,7 @@ add_task(async function test_checkUPSaveText() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -854,7 +863,7 @@ add_task(async function test_checkUPSaveText() {
       Assert.ok(notif, "got notification popup");
       // Check the text, which comes from the localized saveLoginMsg string.
       let notificationText = notif.message;
-      let expectedText = "Save login for example.com?";
+      let expectedText = "Save password for example.com?";
       Assert.equal(
         notificationText,
         expectedText,
@@ -876,7 +885,7 @@ add_task(async function test_checkPSaveText() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_6.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -913,7 +922,7 @@ add_task(async function test_capture2pw0un() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_2pw_0un.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -944,7 +953,7 @@ add_task(async function test_change2pw0unExistingDifferentUP() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_2pw_0un.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -978,7 +987,7 @@ add_task(async function test_change2pw0unExistingDifferentP() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_2pw_0un.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -1042,7 +1051,7 @@ add_task(async function test_changeUPLoginOnPUpdateForm() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_change_p.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(fieldValues.username, "null", "Checking submitted username");
       Assert.equal(
         fieldValues.password,
@@ -1090,7 +1099,7 @@ add_task(async function test_recipeCaptureFields_NewLogin() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_2pw_1un_1text.html",
-    async function (fieldValues) {
+    async fieldValues => {
       Assert.equal(
         fieldValues.username,
         "notifyu1",
@@ -1171,7 +1180,7 @@ add_task(async function test_saveUsingEnter() {
     info("Waiting for form submit and doorhanger interaction");
     await testSubmittingLoginFormHTTP(
       "subtst_notifications_1.html",
-      async function (fieldValues) {
+      async fieldValues => {
         Assert.equal(
           fieldValues.username,
           "notifyu1",
@@ -1227,7 +1236,7 @@ add_task(async function test_noShowPasswordOnDismissal() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async function (_fieldValues) {
       info("Opening popup");
       let notif = await getCaptureDoorhangerThatMayOpen("password-save");
       Assert.ok(!notif.dismissed, "doorhanger is not dismissed");
@@ -1261,7 +1270,7 @@ add_task(async function test_showPasswordOn1stOpenOfDismissedByDefault() {
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
-    async function (fieldValues) {
+    async function (_fieldValues) {
       info("Opening popup");
       let notif = await getCaptureDoorhangerThatMayOpen("password-save");
       Assert.ok(!notif.dismissed, "doorhanger is not dismissed");

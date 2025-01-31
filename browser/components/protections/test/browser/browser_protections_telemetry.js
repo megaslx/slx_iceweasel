@@ -50,7 +50,7 @@ add_setup(async function () {
       ["browser.contentblocking.report.vpn_regions", "us,ca,nz,sg,my,gb"],
       [
         "browser.vpn_promo.disallowed_regions",
-        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr,ua",
+        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr",
       ],
 
       // Change the endpoints to prevent non-local network connections when landing on the page.
@@ -101,8 +101,6 @@ add_task(async function checkTelemetryLoadEvents() {
     ).content;
     return !events || !events.length;
   });
-
-  Services.telemetry.setEventRecordingEnabled("security.ui.protections", true);
 
   let tab = await BrowserTestUtils.openNewForegroundTab({
     url: "about:protections",
@@ -199,8 +197,6 @@ add_task(async function checkTelemetryClickEvents() {
     return !events || !events.length;
   });
 
-  Services.telemetry.setEventRecordingEnabled("security.ui.protections", true);
-
   let tab = await BrowserTestUtils.openNewForegroundTab({
     url: "about:protections",
     gBrowser,
@@ -217,7 +213,7 @@ add_task(async function checkTelemetryClickEvents() {
       "Manage passwords button exists"
     );
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(managePasswordsButton),
+      () => ContentTaskUtils.isVisible(managePasswordsButton),
       "manage passwords button is visible"
     );
     managePasswordsButton.click();
@@ -251,7 +247,7 @@ add_task(async function checkTelemetryClickEvents() {
       "Manage passwords button exists"
     );
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(managePasswordsButton),
+      () => ContentTaskUtils.isVisible(managePasswordsButton),
       "manage passwords button is visible"
     );
     managePasswordsButton.click();
@@ -537,7 +533,7 @@ add_task(async function checkTelemetryClickEvents() {
     );
 
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(resolveBreachesButton),
+      () => ContentTaskUtils.isVisible(resolveBreachesButton),
       "Resolve breaches button is visible"
     );
 
@@ -615,7 +611,7 @@ add_task(async function checkTelemetryClickEvents() {
     }, "Monitor manage breaches button exists");
 
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(manageBreachesButton),
+      () => ContentTaskUtils.isVisible(manageBreachesButton),
       "Manage breaches button is visible"
     );
 
@@ -646,7 +642,7 @@ add_task(async function checkTelemetryClickEvents() {
       return content.document.getElementById("monitor-breaches-link");
     }, "Monitor view report button exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(viewReportButton),
+      () => ContentTaskUtils.isVisible(viewReportButton),
       "View report button is visible"
     );
 
@@ -677,7 +673,7 @@ add_task(async function checkTelemetryClickEvents() {
       return content.document.getElementById("monitor-breaches-link");
     }, "Monitor view report button exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(viewReportButton),
+      () => ContentTaskUtils.isVisible(viewReportButton),
       "View report button is visible"
     );
 
@@ -804,8 +800,6 @@ add_task(async function checkTelemetryLoadEventForEntrypoint() {
     return !events || !events.length;
   });
 
-  Services.telemetry.setEventRecordingEnabled("security.ui.protections", true);
-
   info("Typo in 'entrypoint' should not be recorded");
   let tab = await BrowserTestUtils.openNewForegroundTab({
     url: "about:protections?entryPoint=newPage",
@@ -888,8 +882,6 @@ add_task(async function checkTelemetryClickEventsVPN() {
     ).content;
     return !events || !events.length;
   });
-  Services.telemetry.setEventRecordingEnabled("security.ui.protections", true);
-
   // user is not subscribed to VPN, and is in the us
   AboutProtectionsParent.setTestOverride(getVPNOverrides(false, "us"));
   await SpecialPowers.pushPrefEnv({
@@ -897,7 +889,7 @@ add_task(async function checkTelemetryClickEventsVPN() {
       ["browser.vpn_promo.enabled", true],
       [
         "browser.vpn_promo.disallowed_regions",
-        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr,ua",
+        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr",
       ],
       ["browser.contentblocking.report.vpn_regions", "us,ca,nz,sg,my,gb"],
       ["browser.contentblocking.database.enabled", false],
@@ -925,7 +917,7 @@ add_task(async function checkTelemetryClickEventsVPN() {
       return content.document.getElementById("get-vpn-link");
     }, "get vpn link exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(getVPNLink),
+      () => ContentTaskUtils.isVisible(getVPNLink),
       "get vpn link is visible"
     );
     EventUtils.sendMouseEvent(
@@ -956,7 +948,7 @@ add_task(async function checkTelemetryClickEventsVPN() {
       return content.document.getElementById("vpn-google-playstore-link");
     }, "android vpn link exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(androidVPNLink),
+      () => ContentTaskUtils.isVisible(androidVPNLink),
       "android vpn link is visible"
     );
     await ContentTaskUtils.waitForCondition(() => {
@@ -986,7 +978,7 @@ add_task(async function checkTelemetryClickEventsVPN() {
       return content.document.getElementById("vpn-app-store-link");
     }, "ios vpn link exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(iosVPNLink),
+      () => ContentTaskUtils.isVisible(iosVPNLink),
       "ios vpn link is visible"
     );
     await ContentTaskUtils.waitForCondition(() => {
@@ -1029,7 +1021,7 @@ add_task(async function checkTelemetryEventsVPNBanner() {
       ["browser.contentblocking.report.vpn_regions", "us,ca,nz,sg,my,gb"],
       [
         "browser.vpn_promo.disallowed_regions",
-        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr,ua",
+        "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr",
       ],
       ["browser.contentblocking.database.enabled", false],
       ["browser.contentblocking.report.monitor.enabled", false],
@@ -1055,7 +1047,6 @@ add_task(async function checkTelemetryEventsVPNBanner() {
     return !events || !events.length;
   });
 
-  Services.telemetry.setEventRecordingEnabled("security.ui.protections", true);
   // User is not subscribed to VPN
   AboutProtectionsParent.setTestOverride(getVPNOverrides(false, "us"));
 
@@ -1069,7 +1060,7 @@ add_task(async function checkTelemetryEventsVPNBanner() {
       return content.document.getElementById("vpn-banner-link");
     }, "vpn banner link exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(bannerVPNLink),
+      () => ContentTaskUtils.isVisible(bannerVPNLink),
       "vpn banner link is visible"
     );
     EventUtils.sendMouseEvent(
@@ -1099,7 +1090,7 @@ add_task(async function checkTelemetryEventsVPNBanner() {
       return content.document.querySelector(".vpn-banner .exit-icon");
     }, "vpn banner exit link exists");
     await ContentTaskUtils.waitForCondition(
-      () => ContentTaskUtils.is_visible(bannerExitLink),
+      () => ContentTaskUtils.isVisible(bannerExitLink),
       "vpn banner exit link is visible"
     );
     EventUtils.sendMouseEvent(

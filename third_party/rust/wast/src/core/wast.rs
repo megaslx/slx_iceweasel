@@ -1,7 +1,7 @@
 use crate::core::{HeapType, V128Const};
 use crate::kw;
 use crate::parser::{Cursor, Parse, Parser, Peek, Result};
-use crate::token::{Float32, Float64, Index};
+use crate::token::{Index, F32, F64};
 
 /// Expression that can be used inside of `invoke` expressions for core wasm
 /// functions.
@@ -10,11 +10,12 @@ use crate::token::{Float32, Float64, Index};
 pub enum WastArgCore<'a> {
     I32(i32),
     I64(i64),
-    F32(Float32),
-    F64(Float64),
+    F32(F32),
+    F64(F64),
     V128(V128Const),
     RefNull(HeapType<'a>),
     RefExtern(u32),
+    RefHost(u32),
 }
 
 static ARGS: &[(&str, fn(Parser<'_>) -> Result<WastArgCore<'_>>)] = {
@@ -27,6 +28,7 @@ static ARGS: &[(&str, fn(Parser<'_>) -> Result<WastArgCore<'_>>)] = {
         ("v128.const", |p| Ok(V128(p.parse()?))),
         ("ref.null", |p| Ok(RefNull(p.parse()?))),
         ("ref.extern", |p| Ok(RefExtern(p.parse()?))),
+        ("ref.host", |p| Ok(RefHost(p.parse()?))),
     ]
 };
 
@@ -65,17 +67,31 @@ impl Peek for WastArgCore<'_> {
 pub enum WastRetCore<'a> {
     I32(i32),
     I64(i64),
-    F32(NanPattern<Float32>),
-    F64(NanPattern<Float64>),
+    F32(NanPattern<F32>),
+    F64(NanPattern<F64>),
     V128(V128Pattern),
 
     /// A null reference is expected, optionally with a specified type.
     RefNull(Option<HeapType<'a>>),
     /// A non-null externref is expected which should contain the specified
     /// value.
-    RefExtern(u32),
+    RefExtern(Option<u32>),
+    /// A non-null anyref is expected which should contain the specified host value.
+    RefHost(u32),
     /// A non-null funcref is expected.
     RefFunc(Option<Index<'a>>),
+    /// A non-null anyref is expected.
+    RefAny,
+    /// A non-null eqref is expected.
+    RefEq,
+    /// A non-null arrayref is expected.
+    RefArray,
+    /// A non-null structref is expected.
+    RefStruct,
+    /// A non-null i31ref is expected.
+    RefI31,
+    /// A non-null, shared i31ref is expected.
+    RefI31Shared,
 
     Either(Vec<WastRetCore<'a>>),
 }
@@ -90,7 +106,14 @@ static RETS: &[(&str, fn(Parser<'_>) -> Result<WastRetCore<'_>>)] = {
         ("v128.const", |p| Ok(V128(p.parse()?))),
         ("ref.null", |p| Ok(RefNull(p.parse()?))),
         ("ref.extern", |p| Ok(RefExtern(p.parse()?))),
+        ("ref.host", |p| Ok(RefHost(p.parse()?))),
         ("ref.func", |p| Ok(RefFunc(p.parse()?))),
+        ("ref.any", |_| Ok(RefAny)),
+        ("ref.eq", |_| Ok(RefEq)),
+        ("ref.array", |_| Ok(RefArray)),
+        ("ref.struct", |_| Ok(RefStruct)),
+        ("ref.i31", |_| Ok(RefI31)),
+        ("ref.i31_shared", |_| Ok(RefI31Shared)),
         ("either", |p| {
             p.depth_check()?;
             let mut cases = Vec::new();
@@ -131,7 +154,7 @@ impl Peek for WastRetCore<'_> {
 }
 
 /// Either a NaN pattern (`nan:canonical`, `nan:arithmetic`) or a value of type `T`.
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[allow(missing_docs)]
 pub enum NanPattern<T> {
     CanonicalNan,
@@ -161,15 +184,15 @@ where
 ///
 /// This implementation is necessary because only float types can include NaN patterns; otherwise
 /// it is largely similar to the implementation of `V128Const`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(missing_docs)]
 pub enum V128Pattern {
     I8x16([i8; 16]),
     I16x8([i16; 8]),
     I32x4([i32; 4]),
     I64x2([i64; 2]),
-    F32x4([NanPattern<Float32>; 4]),
-    F64x2([NanPattern<Float64>; 2]),
+    F32x4([NanPattern<F32>; 4]),
+    F64x2([NanPattern<F64>; 2]),
 }
 
 impl<'a> Parse<'a> for V128Pattern {

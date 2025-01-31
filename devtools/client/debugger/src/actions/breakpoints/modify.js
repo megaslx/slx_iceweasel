@@ -6,7 +6,7 @@ import { createBreakpoint } from "../../client/firefox/create";
 import {
   makeBreakpointServerLocation,
   makeBreakpointId,
-} from "../../utils/breakpoint";
+} from "../../utils/breakpoint/index";
 import {
   getBreakpoint,
   getBreakpointPositionsForLocation,
@@ -18,7 +18,7 @@ import {
   getBlackBoxRanges,
   isSourceMapIgnoreListEnabled,
   isSourceOnSourceMapIgnoreList,
-} from "../../selectors";
+} from "../../selectors/index";
 
 import { setBreakpointPositions } from "./breakpointPositions";
 import { setSkipPausing } from "../pause/skipPausing";
@@ -99,7 +99,9 @@ export function enableBreakpoint(initialBreakpoint) {
       return null;
     }
 
+    // This action is used from various context menus and automatically re-enables breakpoints.
     dispatch(setSkipPausing(false));
+
     return dispatch({
       type: "SET_BREAKPOINT",
       breakpoint: createBreakpoint({ ...breakpoint, disabled: false }),
@@ -165,7 +167,6 @@ export function addBreakpoint(
       return null;
     }
 
-    dispatch(setSkipPausing(false));
     return dispatch({
       type: "SET_BREAKPOINT",
       breakpoint,
@@ -193,7 +194,6 @@ export function removeBreakpoint(initialBreakpoint) {
       return null;
     }
 
-    dispatch(setSkipPausing(false));
     return dispatch({
       type: "REMOVE_BREAKPOINT",
       breakpoint,
@@ -271,7 +271,6 @@ export function disableBreakpoint(initialBreakpoint) {
       return null;
     }
 
-    dispatch(setSkipPausing(false));
     return dispatch({
       type: "SET_BREAKPOINT",
       breakpoint: createBreakpoint({ ...breakpoint, disabled: true }),

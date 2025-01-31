@@ -4,7 +4,7 @@
 
 export const Census = {};
 function dumpn(msg) {
-  dump("DBG-TEST: Census.jsm: " + msg + "\n");
+  dump("DBG-TEST: Census.sys.mjs: " + msg + "\n");
 }
 
 // Census.walkCensus(subject, name, walker)
@@ -148,6 +148,7 @@ function ok(val) {
     throw new Error("Census mismatch: expected truthy, got " + val);
   }
 }
+/* eslint-disable mozilla/no-comparison-or-assignment-inside-ok */
 
 // Return a walker that checks that the subject census has at least as many
 // items of each category as |basis|.

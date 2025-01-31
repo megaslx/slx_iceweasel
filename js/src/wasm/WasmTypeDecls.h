@@ -48,14 +48,14 @@ using WasmGlobalObjectVector =
     GCVector<WasmGlobalObject*, 0, SystemAllocPolicy>;
 using WasmTagObjectVector = GCVector<WasmTagObject*, 0, SystemAllocPolicy>;
 
+struct CodeMetadataForAsmJS;
+
 namespace wasm {
 
-struct ModuleEnvironment;
+struct ModuleMetadata;
+struct CodeMetadata;
 class CodeRange;
-class CodeTier;
-class ModuleSegment;
-struct Metadata;
-struct MetadataTier;
+class CodeBlock;
 class Decoder;
 class GeneratedSourceMap;
 class Instance;
@@ -77,10 +77,8 @@ using MutableDataSegment = RefPtr<DataSegment>;
 using SharedDataSegment = RefPtr<const DataSegment>;
 using DataSegmentVector = Vector<SharedDataSegment, 0, SystemAllocPolicy>;
 
-struct ElemSegment;
-using MutableElemSegment = RefPtr<ElemSegment>;
-using SharedElemSegment = RefPtr<const ElemSegment>;
-using ElemSegmentVector = Vector<SharedElemSegment, 0, SystemAllocPolicy>;
+struct ModuleElemSegment;
+using ModuleElemSegmentVector = Vector<ModuleElemSegment, 0, SystemAllocPolicy>;
 
 class Val;
 using ValVector = GCVector<Val, 0, SystemAllocPolicy>;

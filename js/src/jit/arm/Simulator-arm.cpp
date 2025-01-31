@@ -41,6 +41,7 @@
 #include "js/UniquePtr.h"
 #include "js/Utility.h"
 #include "threading/LockGuard.h"
+#include "vm/Float16.h"
 #include "vm/JSContext.h"
 #include "vm/Runtime.h"
 #include "vm/SharedMem.h"
@@ -136,7 +137,7 @@ const uint32_t kMaxStopCode = kStopCode - 1;
 
 // The class Instruction enables access to individual fields defined in the ARM
 // architecture instruction set encoding as described in figure A3-1.
-// Note that the Assembler uses typedef int32_t Instr.
+// Note that the Assembler uses using Instr = int32_t.
 //
 // Example: Test whether the instruction at ptr does set the condition code
 // bits.
@@ -290,6 +291,9 @@ class SimInstruction {
 
   // Test for a nop instruction, which falls under type 1.
   inline bool isNopType1() const { return bits(24, 0) == 0x0120F000; }
+
+  // Test for a yield instruction, which falls under type 1.
+  inline bool isYieldType1() const { return bits(24, 0) == 0x0120F001; }
 
   // Test for a nop instruction, which falls under type 1.
   inline bool isCsdbType1() const { return bits(24, 0) == 0x0120F014; }
@@ -1402,7 +1406,7 @@ template void Simulator::setVFPRegister<float, 1>(int reg_index,
                                                   const float& value);
 
 void Simulator::getFpArgs(double* x, double* y, int32_t* z) {
-  if (UseHardFpABI()) {
+  if (ARMFlags::UseHardFpABI()) {
     get_double_from_d_register(0, x);
     get_double_from_d_register(1, y);
     *z = get_register(0);
@@ -1422,7 +1426,7 @@ void Simulator::getFpFromStack(int32_t* stack, double* x) {
 
 void Simulator::setCallResultDouble(double result) {
   // The return value is either in r0/r1 or d0.
-  if (UseHardFpABI()) {
+  if (ARMFlags::UseHardFpABI()) {
     char buffer[2 * sizeof(vfp_registers_[0])];
     memcpy(buffer, &result, sizeof(buffer));
     // Copy result to d0.
@@ -1436,7 +1440,7 @@ void Simulator::setCallResultDouble(double result) {
 }
 
 void Simulator::setCallResultFloat(float result) {
-  if (UseHardFpABI()) {
+  if (ARMFlags::UseHardFpABI()) {
     char buffer[sizeof(registers_[0])];
     memcpy(buffer, &result, sizeof(buffer));
     // Copy result to s0.
@@ -1482,13 +1486,15 @@ uint64_t Simulator::readQ(int32_t addr, SimInstruction* instr,
     return UINT64_MAX;
   }
 
-  if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+  if ((addr & 3) == 0 ||
+      (f == AllowUnaligned && !ARMFlags::HasAlignmentFault())) {
     uint64_t* ptr = reinterpret_cast<uint64_t*>(addr);
     return *ptr;
   }
 
   // See the comments below in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     uint64_t value;
     memcpy(&value, ptr, sizeof(value));
@@ -1505,14 +1511,16 @@ void Simulator::writeQ(int32_t addr, uint64_t value, SimInstruction* instr,
     return;
   }
 
-  if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+  if ((addr & 3) == 0 ||
+      (f == AllowUnaligned && !ARMFlags::HasAlignmentFault())) {
     uint64_t* ptr = reinterpret_cast<uint64_t*>(addr);
     *ptr = value;
     return;
   }
 
   // See the comments below in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     memcpy(ptr, &value, sizeof(value));
     return;
@@ -1527,7 +1535,8 @@ int Simulator::readW(int32_t addr, SimInstruction* instr, UnalignedPolicy f) {
     return -1;
   }
 
-  if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+  if ((addr & 3) == 0 ||
+      (f == AllowUnaligned && !ARMFlags::HasAlignmentFault())) {
     intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
     return *ptr;
   }
@@ -1536,7 +1545,8 @@ int Simulator::readW(int32_t addr, SimInstruction* instr, UnalignedPolicy f) {
   // do the right thing. Making this simulator properly emulate the behavior
   // of raising a signal is complex, so as a special-case, when in wasm code,
   // we just do the right thing.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     int value;
     memcpy(&value, ptr, sizeof(value));
@@ -1553,14 +1563,16 @@ void Simulator::writeW(int32_t addr, int value, SimInstruction* instr,
     return;
   }
 
-  if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+  if ((addr & 3) == 0 ||
+      (f == AllowUnaligned && !ARMFlags::HasAlignmentFault())) {
     intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
     *ptr = value;
     return;
   }
 
   // See the comments above in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     memcpy(ptr, &value, sizeof(value));
     return;
@@ -1628,13 +1640,14 @@ uint16_t Simulator::readHU(int32_t addr, SimInstruction* instr) {
 
   // The regexp engine emits unaligned loads, so we don't check for them here
   // like most of the other methods do.
-  if ((addr & 1) == 0 || !HasAlignmentFault()) {
+  if ((addr & 1) == 0 || !ARMFlags::HasAlignmentFault()) {
     uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
     return *ptr;
   }
 
   // See comments above in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     uint16_t value;
     memcpy(&value, ptr, sizeof(value));
@@ -1651,13 +1664,14 @@ int16_t Simulator::readH(int32_t addr, SimInstruction* instr) {
     return -1;
   }
 
-  if ((addr & 1) == 0 || !HasAlignmentFault()) {
+  if ((addr & 1) == 0 || !ARMFlags::HasAlignmentFault()) {
     int16_t* ptr = reinterpret_cast<int16_t*>(addr);
     return *ptr;
   }
 
   // See comments above in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     int16_t value;
     memcpy(&value, ptr, sizeof(value));
@@ -1674,14 +1688,15 @@ void Simulator::writeH(int32_t addr, uint16_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 1) == 0 || !HasAlignmentFault()) {
+  if ((addr & 1) == 0 || !ARMFlags::HasAlignmentFault()) {
     uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
     *ptr = value;
     return;
   }
 
   // See the comments above in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     memcpy(ptr, &value, sizeof(value));
     return;
@@ -1696,14 +1711,15 @@ void Simulator::writeH(int32_t addr, int16_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 1) == 0 || !HasAlignmentFault()) {
+  if ((addr & 1) == 0 || !ARMFlags::HasAlignmentFault()) {
     int16_t* ptr = reinterpret_cast<int16_t*>(addr);
     *ptr = value;
     return;
   }
 
   // See the comments above in readW.
-  if (FixupFault() && wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
+  if (ARMFlags::FixupFault() &&
+      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     char* ptr = reinterpret_cast<char*>(addr);
     memcpy(ptr, &value, sizeof(value));
     return;
@@ -2309,145 +2325,7 @@ void Simulator::handleVList(SimInstruction* instr) {
   }
 }
 
-// Note: With the code below we assume that all runtime calls return a 64 bits
-// result. If they don't, the r1 result register contains a bogus value, which
-// is fine because it is caller-saved.
-typedef int64_t (*Prototype_General0)();
-typedef int64_t (*Prototype_General1)(int32_t arg0);
-typedef int64_t (*Prototype_General2)(int32_t arg0, int32_t arg1);
-typedef int64_t (*Prototype_General3)(int32_t arg0, int32_t arg1, int32_t arg2);
-typedef int64_t (*Prototype_General4)(int32_t arg0, int32_t arg1, int32_t arg2,
-                                      int32_t arg3);
-typedef int64_t (*Prototype_General5)(int32_t arg0, int32_t arg1, int32_t arg2,
-                                      int32_t arg3, int32_t arg4);
-typedef int64_t (*Prototype_General6)(int32_t arg0, int32_t arg1, int32_t arg2,
-                                      int32_t arg3, int32_t arg4, int32_t arg5);
-typedef int64_t (*Prototype_General7)(int32_t arg0, int32_t arg1, int32_t arg2,
-                                      int32_t arg3, int32_t arg4, int32_t arg5,
-                                      int32_t arg6);
-typedef int64_t (*Prototype_General8)(int32_t arg0, int32_t arg1, int32_t arg2,
-                                      int32_t arg3, int32_t arg4, int32_t arg5,
-                                      int32_t arg6, int32_t arg7);
-typedef int64_t (*Prototype_GeneralGeneralGeneralInt64)(int32_t arg0,
-                                                        int32_t arg1,
-                                                        int32_t arg2,
-                                                        int64_t arg3);
-typedef int64_t (*Prototype_GeneralGeneralInt64Int64)(int32_t arg0,
-                                                      int32_t arg1,
-                                                      int64_t arg2,
-                                                      int64_t arg3);
-
-typedef double (*Prototype_Double_None)();
-typedef double (*Prototype_Double_Double)(double arg0);
-typedef double (*Prototype_Double_Int)(int32_t arg0);
-typedef double (*Prototype_Double_IntInt)(int32_t arg0, int32_t arg1);
-typedef int32_t (*Prototype_Int_Double)(double arg0);
-typedef int64_t (*Prototype_Int64_Double)(double arg0);
-typedef int32_t (*Prototype_Int_DoubleIntInt)(double arg0, int32_t arg1,
-                                              int32_t arg2);
-typedef int32_t (*Prototype_Int_IntDoubleIntInt)(int32_t arg0, double arg1,
-                                                 int32_t arg2, int32_t arg3);
-
-typedef int32_t (*Prototype_Int_Float32)(float arg0);
-typedef float (*Prototype_Float32_Float32)(float arg0);
-typedef float (*Prototype_Float32_Float32Float32)(float arg0, float arg1);
-typedef float (*Prototype_Float32_IntInt)(int arg0, int arg1);
-
-typedef double (*Prototype_Double_DoubleInt)(double arg0, int32_t arg1);
-typedef double (*Prototype_Double_IntDouble)(int32_t arg0, double arg1);
-typedef double (*Prototype_Double_DoubleDouble)(double arg0, double arg1);
-typedef int32_t (*Prototype_Int_IntDouble)(int32_t arg0, double arg1);
-typedef int32_t (*Prototype_Int_DoubleInt)(double arg0, int32_t arg1);
-
-typedef double (*Prototype_Double_DoubleDoubleDouble)(double arg0, double arg1,
-                                                      double arg2);
-typedef double (*Prototype_Double_DoubleDoubleDoubleDouble)(double arg0,
-                                                            double arg1,
-                                                            double arg2,
-                                                            double arg3);
-
-typedef int32_t (*Prototype_Int32_General)(int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32)(int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32)(int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32)(int32_t, int32_t,
-                                                          int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32)(int32_t, int32_t,
-                                                               int32_t, int32_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32Int32)(
-    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32General)(
-    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32Int32Int32General)(
-    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (
-    *Prototype_Int32_GeneralInt32Float32Float32Int32Int32Int32General)(
-    int32_t, int32_t, float, float, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (
-    *Prototype_Int32_GeneralInt32Float32Float32Float32Float32Int32Int32Int32Int32General)(
-    int32_t, int32_t, float, float, float, float, int32_t, int32_t, int32_t,
-    int32_t, int32_t);
-typedef int32_t (
-    *Prototype_Int32_GeneralInt32Float32Float32Int32Float32Float32Int32Float32Int32Int32Int32Int32General)(
-    int32_t, int32_t, float, float, int32_t, float, float, int32_t, float,
-    int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32General)(
-    int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32General)(int32_t, int32_t,
-                                                            int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int64Int32)(int32_t, int32_t,
-                                                               int32_t, int64_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32)(int32_t, int32_t,
-                                                            int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32Int32)(
-    int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int64Int64Int32)(int32_t, int32_t,
-                                                               int64_t, int64_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneral)(int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralGeneral)(int32_t, int32_t,
-                                                         int32_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralInt32Int32)(int32_t, int32_t,
-                                                            int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int32)(int32_t, int64_t,
-                                                          int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int32Int32Int32)(
-    int32_t, int64_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int32Int32)(int32_t, int64_t,
-                                                               int32_t, int32_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64Int32)(int32_t, int64_t,
-                                                               int32_t, int64_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64General)(
-    int32_t, int64_t, int32_t, int64_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64)(int32_t, int64_t,
-                                                          int64_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64Int32)(int32_t, int64_t,
-                                                               int64_t, int64_t,
-                                                               int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64General)(int32_t, int64_t,
-                                                            int64_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64General)(
-    int32_t, int64_t, int64_t, int64_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64GeneralGeneral)(
-    int32_t, int64_t, int64_t, int64_t, int32_t, int32_t);
-typedef int32_t (*Prototype_General_GeneralInt32)(int32_t, int32_t);
-typedef int32_t (*Prototype_General_GeneralInt32Int32)(int32_t, int32_t,
-                                                       int32_t);
-typedef int32_t (*Prototype_General_GeneralInt32General)(int32_t, int32_t,
-                                                         int32_t);
-typedef int32_t (*Prototype_General_GeneralInt32Int32GeneralInt32)(
-    int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralInt32General)(int32_t, int32_t,
-                                                              int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralInt32GeneralInt32Int32Int32)(
-    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int64_t (*Prototype_Int64_General)(int32_t);
-typedef int64_t (*Prototype_Int64_GeneralInt32)(int32_t, int32_t);
-typedef int64_t (*Prototype_Int64_GeneralInt64)(int32_t, int64_t);
-typedef int64_t (*Prototype_Int64_GeneralInt64Int32)(int32_t, int64_t, int32_t);
+ABI_FUNCTION_TYPE_SIM_PROTOTYPES
 
 // Fill the volatile registers with scratch values.
 //
@@ -2457,7 +2335,12 @@ typedef int64_t (*Prototype_Int64_GeneralInt64Int32)(int32_t, int64_t, int32_t);
 // so for now the simulator does not scratch any float registers for these
 // calls. Should try to narrow it further in future.
 //
-void Simulator::scratchVolatileRegisters(bool scratchFloat) {
+void Simulator::scratchVolatileRegisters(void* target) {
+  // The ARM backend makes calls to __aeabi_idivmod and
+  // __aeabi_uidivmod assuming that the float registers are
+  // non-volatile as a performance optimization, so the float
+  // registers must not be scratch when calling these.
+  bool scratchFloat = target != __aeabi_idivmod && target != __aeabi_uidivmod;
   int32_t scratch_value = 0xa5a5a5a5 ^ uint32_t(icount_);
   set_register(r0, scratch_value);
   set_register(r1, scratch_value);
@@ -2489,21 +2372,23 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
   switch (svc) {
     case kCallRtRedirected: {
       Redirection* redirection = Redirection::FromSwiInstruction(instr);
-      int32_t arg0 = get_register(r0);
-      int32_t arg1 = get_register(r1);
-      int32_t arg2 = get_register(r2);
-      int32_t arg3 = get_register(r3);
       int32_t* stack_pointer = reinterpret_cast<int32_t*>(get_register(sp));
-      int32_t arg4 = stack_pointer[0];
-      int32_t arg5 = stack_pointer[1];
-      int32_t arg6 = stack_pointer[2];
-      int32_t arg7 = stack_pointer[3];
-      int32_t arg8 = stack_pointer[4];
-      int32_t arg9 = stack_pointer[5];
-      int32_t arg10 = stack_pointer[6];
-      int32_t arg11 = stack_pointer[7];
-      int32_t arg12 = stack_pointer[8];
-      int32_t arg13 = stack_pointer[9];
+      int32_t a0 = get_register(r0);
+      int32_t a1 = get_register(r1);
+      int32_t a2 = get_register(r2);
+      int32_t a3 = get_register(r3);
+      float s0, s1, s2, s3, s4;
+      get_float_from_s_register(0, &s0);
+      get_float_from_s_register(0, &s1);
+      get_float_from_s_register(0, &s2);
+      get_float_from_s_register(0, &s3);
+      get_float_from_s_register(0, &s4);
+      double d0, d1, d2, d3, d4;
+      get_double_from_d_register(0, &d0);
+      get_double_from_d_register(1, &d1);
+      get_double_from_d_register(2, &d2);
+      get_double_from_d_register(3, &d3);
+      get_double_from_d_register(4, &d4);
 
       int32_t saved_lr = get_register(lr);
       intptr_t external =
@@ -2520,741 +2405,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
       }
 
       switch (redirection->type()) {
-        case Args_General0: {
-          Prototype_General0 target =
-              reinterpret_cast<Prototype_General0>(external);
-          int64_t result = target();
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General1: {
-          Prototype_General1 target =
-              reinterpret_cast<Prototype_General1>(external);
-          int64_t result = target(arg0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General2: {
-          Prototype_General2 target =
-              reinterpret_cast<Prototype_General2>(external);
-          int64_t result = target(arg0, arg1);
-          // The ARM backend makes calls to __aeabi_idivmod and
-          // __aeabi_uidivmod assuming that the float registers are
-          // non-volatile as a performance optimization, so the float
-          // registers must not be scratch when calling these.
-          bool scratchFloat =
-              target != __aeabi_idivmod && target != __aeabi_uidivmod;
-          scratchVolatileRegisters(/* scratchFloat = */ scratchFloat);
-          setCallResult(result);
-          break;
-        }
-        case Args_General3: {
-          Prototype_General3 target =
-              reinterpret_cast<Prototype_General3>(external);
-          int64_t result = target(arg0, arg1, arg2);
-          scratchVolatileRegisters(/* scratchFloat = true*/);
-          setCallResult(result);
-          break;
-        }
-        case Args_General4: {
-          Prototype_General4 target =
-              reinterpret_cast<Prototype_General4>(external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true*/);
-          setCallResult(result);
-          break;
-        }
-        case Args_General5: {
-          Prototype_General5 target =
-              reinterpret_cast<Prototype_General5>(external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General6: {
-          Prototype_General6 target =
-              reinterpret_cast<Prototype_General6>(external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General7: {
-          Prototype_General7 target =
-              reinterpret_cast<Prototype_General7>(external);
-          int32_t arg6 = stack_pointer[2];
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General8: {
-          Prototype_General8 target =
-              reinterpret_cast<Prototype_General8>(external);
-          int32_t arg6 = stack_pointer[2];
-          int32_t arg7 = stack_pointer[3];
-          int64_t result =
-              target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int_GeneralGeneralGeneralInt64: {
-          Prototype_GeneralGeneralGeneralInt64 target =
-              reinterpret_cast<Prototype_GeneralGeneralGeneralInt64>(external);
-          // The int64 arg is not split across register and stack
-          int64_t result = target(arg0, arg1, arg2, MakeInt64(arg4, arg5));
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int_GeneralGeneralInt64Int64: {
-          Prototype_GeneralGeneralInt64Int64 target =
-              reinterpret_cast<Prototype_GeneralGeneralInt64Int64>(external);
-          int64_t result =
-              target(arg0, arg1, MakeInt64(arg2, arg3), MakeInt64(arg4, arg5));
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int64_Double: {
-          double dval0, dval1;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          Prototype_Int64_Double target =
-              reinterpret_cast<Prototype_Int64_Double>(external);
-          int64_t result = target(dval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Double_None: {
-          Prototype_Double_None target =
-              reinterpret_cast<Prototype_Double_None>(external);
-          double dresult = target();
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Int_Double: {
-          double dval0, dval1;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          Prototype_Int_Double target =
-              reinterpret_cast<Prototype_Int_Double>(external);
-          int32_t res = target(dval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, res);
-          break;
-        }
-        case Args_Int_Float32: {
-          float fval0;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(0, &fval0);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg0);
-          }
-          auto target = reinterpret_cast<Prototype_Int_Float32>(external);
-          int32_t res = target(fval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, res);
-          break;
-        }
-        case Args_Double_Double: {
-          double dval0, dval1;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          Prototype_Double_Double target =
-              reinterpret_cast<Prototype_Double_Double>(external);
-          double dresult = target(dval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Float32_Float32: {
-          float fval0;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(0, &fval0);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg0);
-          }
-          Prototype_Float32_Float32 target =
-              reinterpret_cast<Prototype_Float32_Float32>(external);
-          float fresult = target(fval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultFloat(fresult);
-          break;
-        }
-        case Args_Float32_Float32Float32: {
-          float fval0, fval1;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(0, &fval0);
-            get_float_from_s_register(1, &fval1);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg0);
-            fval1 = mozilla::BitwiseCast<float>(arg1);
-          }
-          Prototype_Float32_Float32Float32 target =
-              reinterpret_cast<Prototype_Float32_Float32Float32>(external);
-          float fresult = target(fval0, fval1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultFloat(fresult);
-          break;
-        }
-        case Args_Float32_IntInt: {
-          Prototype_Float32_IntInt target =
-              reinterpret_cast<Prototype_Float32_IntInt>(external);
-          float fresult = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultFloat(fresult);
-          break;
-        }
-        case Args_Double_Int: {
-          Prototype_Double_Int target =
-              reinterpret_cast<Prototype_Double_Int>(external);
-          double dresult = target(arg0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Double_IntInt: {
-          Prototype_Double_IntInt target =
-              reinterpret_cast<Prototype_Double_IntInt>(external);
-          double dresult = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Double_DoubleInt: {
-          double dval0, dval1;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          Prototype_Double_DoubleInt target =
-              reinterpret_cast<Prototype_Double_DoubleInt>(external);
-          double dresult = target(dval0, ival);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Double_DoubleDouble: {
-          double dval0, dval1;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          Prototype_Double_DoubleDouble target =
-              reinterpret_cast<Prototype_Double_DoubleDouble>(external);
-          double dresult = target(dval0, dval1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Double_IntDouble: {
-          int32_t ival = get_register(0);
-          double dval0;
-          if (UseHardFpABI()) {
-            get_double_from_d_register(0, &dval0);
-          } else {
-            dval0 = get_double_from_register_pair(2);
-          }
-          Prototype_Double_IntDouble target =
-              reinterpret_cast<Prototype_Double_IntDouble>(external);
-          double dresult = target(ival, dval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Int_IntDouble: {
-          int32_t ival = get_register(0);
-          double dval0;
-          if (UseHardFpABI()) {
-            get_double_from_d_register(0, &dval0);
-          } else {
-            dval0 = get_double_from_register_pair(2);
-          }
-          Prototype_Int_IntDouble target =
-              reinterpret_cast<Prototype_Int_IntDouble>(external);
-          int32_t result = target(ival, dval0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, result);
-          break;
-        }
-        case Args_Int_DoubleInt: {
-          double dval;
-          int32_t result;
-          Prototype_Int_DoubleInt target =
-              reinterpret_cast<Prototype_Int_DoubleInt>(external);
-          if (UseHardFpABI()) {
-            get_double_from_d_register(0, &dval);
-            result = target(dval, arg0);
-          } else {
-            dval = get_double_from_register_pair(0);
-            result = target(dval, arg2);
-          }
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, result);
-          break;
-        }
-        case Args_Int_DoubleIntInt: {
-          double dval;
-          int32_t result;
-          Prototype_Int_DoubleIntInt target =
-              reinterpret_cast<Prototype_Int_DoubleIntInt>(external);
-          if (UseHardFpABI()) {
-            get_double_from_d_register(0, &dval);
-            result = target(dval, arg0, arg1);
-          } else {
-            dval = get_double_from_register_pair(0);
-            result = target(dval, arg2, arg3);
-          }
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, result);
-          break;
-        }
-        case Args_Int_IntDoubleIntInt: {
-          double dval;
-          int32_t result;
-          Prototype_Int_IntDoubleIntInt target =
-              reinterpret_cast<Prototype_Int_IntDoubleIntInt>(external);
-          if (UseHardFpABI()) {
-            get_double_from_d_register(0, &dval);
-            result = target(arg0, dval, arg1, arg2);
-          } else {
-            dval = get_double_from_register_pair(2);
-            result = target(arg0, dval, arg4, arg5);
-          }
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          set_register(r0, result);
-          break;
-        }
-        case Args_Double_DoubleDoubleDouble: {
-          double dval0, dval1, dval2;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          // the last argument is on stack
-          getFpFromStack(stack_pointer, &dval2);
-          Prototype_Double_DoubleDoubleDouble target =
-              reinterpret_cast<Prototype_Double_DoubleDoubleDouble>(external);
-          double dresult = target(dval0, dval1, dval2);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-        case Args_Double_DoubleDoubleDoubleDouble: {
-          double dval0, dval1, dval2, dval3;
-          int32_t ival;
-          getFpArgs(&dval0, &dval1, &ival);
-          // the two last arguments are on stack
-          getFpFromStack(stack_pointer, &dval2);
-          getFpFromStack(stack_pointer + 2, &dval3);
-          Prototype_Double_DoubleDoubleDoubleDouble target =
-              reinterpret_cast<Prototype_Double_DoubleDoubleDoubleDouble>(
-                  external);
-          double dresult = target(dval0, dval1, dval2, dval3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResultDouble(dresult);
-          break;
-        }
-
-        case Args_Int32_General: {
-          Prototype_Int32_General target =
-              reinterpret_cast<Prototype_Int32_General>(external);
-          int64_t result = target(arg0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32: {
-          Prototype_Int32_GeneralInt32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32>(external);
-          int64_t result = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32: {
-          Prototype_Int32_GeneralInt32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32>(external);
-          int64_t result = target(arg0, arg1, arg2);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32: {
-          Prototype_Int32_GeneralInt32Int32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32Int32: {
-          Prototype_Int32_GeneralInt32Int32Int32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32Int32Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32Int32Int32: {
-          Prototype_Int32_GeneralInt32Int32Int32Int32Int32 target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Int32Int32Int32Int32>(external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32Int32General: {
-          Prototype_Int32_GeneralInt32Int32Int32Int32General target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Int32Int32Int32General>(external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32Int32Int32Int32General: {
-          Prototype_Int32_GeneralInt32Int32Int32Int32Int32Int32General target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Int32Int32Int32Int32Int32General>(
-                  external);
-          int64_t result =
-              target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Float32Float32Int32Int32Int32General: {
-          float fval0, fval1;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(2, &fval0);
-            get_float_from_s_register(3, &fval1);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg2);
-            fval1 = mozilla::BitwiseCast<float>(arg3);
-          }
-          Prototype_Int32_GeneralInt32Float32Float32Int32Int32Int32General
-              target = reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Float32Float32Int32Int32Int32General>(
-                  external);
-          int64_t result =
-              target(arg0, arg1, fval0, fval1, arg4, arg5, arg6, arg7);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Float32Float32Float32Float32Int32Int32Int32Int32General: {
-          float fval0, fval1, fval2, fval3;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(2, &fval0);
-            get_float_from_s_register(3, &fval1);
-            get_float_from_s_register(4, &fval2);
-            get_float_from_s_register(5, &fval3);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg2);
-            fval1 = mozilla::BitwiseCast<float>(arg3);
-            fval2 = mozilla::BitwiseCast<float>(arg4);
-            fval3 = mozilla::BitwiseCast<float>(arg5);
-          }
-          Prototype_Int32_GeneralInt32Float32Float32Float32Float32Int32Int32Int32Int32General
-              target = reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Float32Float32Float32Float32Int32Int32Int32Int32General>(
-                  external);
-          int64_t result = target(arg0, arg1, fval0, fval1, fval2, fval3, arg6,
-                                  arg7, arg8, arg9, arg10);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Float32Float32Int32Float32Float32Int32Float32Int32Int32Int32Int32General: {
-          float fval0, fval1, fval2, fval3, fval4;
-          if (UseHardFpABI()) {
-            get_float_from_s_register(2, &fval0);
-            get_float_from_s_register(3, &fval1);
-            get_float_from_s_register(5, &fval2);
-            get_float_from_s_register(6, &fval3);
-            get_float_from_s_register(8, &fval4);
-          } else {
-            fval0 = mozilla::BitwiseCast<float>(arg2);
-            fval1 = mozilla::BitwiseCast<float>(arg3);
-            fval2 = mozilla::BitwiseCast<float>(arg5);
-            fval3 = mozilla::BitwiseCast<float>(arg6);
-            fval4 = mozilla::BitwiseCast<float>(arg8);
-          }
-          Prototype_Int32_GeneralInt32Float32Float32Int32Float32Float32Int32Float32Int32Int32Int32Int32General
-              target = reinterpret_cast<
-                  Prototype_Int32_GeneralInt32Float32Float32Int32Float32Float32Int32Float32Int32Int32Int32Int32General>(
-                  external);
-          int64_t result =
-              target(arg0, arg1, fval0, fval1, arg4, fval2, fval3, arg7, fval4,
-                     arg9, arg10, arg11, arg12, arg13);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int32General: {
-          Prototype_Int32_GeneralInt32Int32Int32General target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32Int32General>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32General: {
-          Prototype_Int32_GeneralInt32Int32General target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32General>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int32Int64Int32: {
-          Prototype_Int32_GeneralInt32Int32Int64Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int32Int64Int32>(
-                  external);
-          int64_t result =
-              target(arg0, arg1, arg2, MakeInt64(arg4, arg5), arg6);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32GeneralInt32: {
-          Prototype_Int32_GeneralInt32GeneralInt32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32GeneralInt32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32GeneralInt32Int32: {
-          Prototype_Int32_GeneralInt32GeneralInt32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32GeneralInt32Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt32Int64Int64Int32: {
-          Prototype_Int32_GeneralInt32Int64Int64Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt32Int64Int64Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, MakeInt64(arg2, arg3),
-                                  MakeInt64(arg4, arg5), arg6);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralGeneral: {
-          Prototype_Int32_GeneralGeneral target =
-              reinterpret_cast<Prototype_Int32_GeneralGeneral>(external);
-          int64_t result = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralGeneralGeneral: {
-          Prototype_Int32_GeneralGeneralGeneral target =
-              reinterpret_cast<Prototype_Int32_GeneralGeneralGeneral>(external);
-          int64_t result = target(arg0, arg1, arg2);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralGeneralInt32Int32: {
-          Prototype_Int32_GeneralGeneralInt32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralGeneralInt32Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int32Int32: {
-          Prototype_Int32_GeneralInt64Int32Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int32Int32>(
-                  external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3), arg4, arg5);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int32Int32Int32Int32: {
-          Prototype_Int32_GeneralInt64Int32Int32Int32Int32 target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralInt64Int32Int32Int32Int32>(external);
-          int64_t result =
-              target(arg0, MakeInt64(arg2, arg3), arg4, arg5, arg6, arg7);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int32Int64Int32: {
-          Prototype_Int32_GeneralInt64Int32Int64Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int32Int64Int32>(
-                  external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3), arg4,
-                                  MakeInt64(arg6, arg7), arg8);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int32Int64General: {
-          Prototype_Int32_GeneralInt64Int32Int64General target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int32Int64General>(
-                  external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3), arg4,
-                                  MakeInt64(arg6, arg7), arg8);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int64Int64: {
-          Prototype_Int32_GeneralInt64Int64Int64 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int64Int64>(
-                  external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3),
-                                  MakeInt64(arg4, arg5), MakeInt64(arg6, arg7));
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int64Int64Int32: {
-          Prototype_Int32_GeneralInt64Int64Int64Int32 target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int64Int64Int32>(
-                  external);
-          int64_t result =
-              target(arg0, MakeInt64(arg2, arg3), MakeInt64(arg4, arg5),
-                     MakeInt64(arg6, arg7), arg8);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int64General: {
-          Prototype_Int32_GeneralInt64Int64General target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int64General>(
-                  external);
-          int64_t result =
-              target(arg0, MakeInt64(arg2, arg3), MakeInt64(arg4, arg5), arg6);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int64Int64General: {
-          Prototype_Int32_GeneralInt64Int64Int64General target =
-              reinterpret_cast<Prototype_Int32_GeneralInt64Int64Int64General>(
-                  external);
-          int64_t result =
-              target(arg0, MakeInt64(arg2, arg3), MakeInt64(arg4, arg5),
-                     MakeInt64(arg6, arg7), arg8);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int32_GeneralInt64Int64Int64GeneralGeneral: {
-          Prototype_Int32_GeneralInt64Int64Int64GeneralGeneral target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralInt64Int64Int64GeneralGeneral>(
-                  external);
-          int64_t result =
-              target(arg0, MakeInt64(arg2, arg3), MakeInt64(arg4, arg5),
-                     MakeInt64(arg6, arg7), arg8, arg9);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General_GeneralInt32: {
-          Prototype_General_GeneralInt32 target =
-              reinterpret_cast<Prototype_General_GeneralInt32>(external);
-          int64_t result = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General_GeneralInt32Int32: {
-          Prototype_General_GeneralInt32Int32 target =
-              reinterpret_cast<Prototype_General_GeneralInt32Int32>(external);
-          int64_t result = target(arg0, arg1, arg2);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_General_GeneralInt32General: {
-          Prototype_General_GeneralInt32General target =
-              reinterpret_cast<Prototype_General_GeneralInt32General>(external);
-          int64_t result = target(arg0, arg1, arg2);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case js::jit::Args_General_GeneralInt32Int32GeneralInt32: {
-          Prototype_General_GeneralInt32Int32GeneralInt32 target =
-              reinterpret_cast<Prototype_General_GeneralInt32Int32GeneralInt32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case js::jit::Args_Int32_GeneralGeneralInt32General: {
-          Prototype_Int32_GeneralGeneralInt32General target =
-              reinterpret_cast<Prototype_Int32_GeneralGeneralInt32General>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case js::jit::Args_Int32_GeneralGeneralInt32GeneralInt32Int32Int32: {
-          Prototype_Int32_GeneralGeneralInt32GeneralInt32Int32Int32 target =
-              reinterpret_cast<
-                  Prototype_Int32_GeneralGeneralInt32GeneralInt32Int32Int32>(
-                  external);
-          int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int64_General: {
-          Prototype_Int64_General target =
-              reinterpret_cast<Prototype_Int64_General>(external);
-          int64_t result = target(arg0);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int64_GeneralInt32: {
-          Prototype_Int64_GeneralInt32 target =
-              reinterpret_cast<Prototype_Int64_GeneralInt32>(external);
-          int64_t result = target(arg0, arg1);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int64_GeneralInt64: {
-          Prototype_Int64_GeneralInt64 target =
-              reinterpret_cast<Prototype_Int64_GeneralInt64>(external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3));
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-        case Args_Int64_GeneralInt64Int32: {
-          Prototype_Int64_GeneralInt64Int32 target =
-              reinterpret_cast<Prototype_Int64_GeneralInt64Int32>(external);
-          int64_t result = target(arg0, MakeInt64(arg2, arg3), arg4);
-          scratchVolatileRegisters(/* scratchFloat = true */);
-          setCallResult(result);
-          break;
-        }
-
+        ABI_FUNCTION_TYPE_ARM32_SIM_DISPATCH
         default:
           MOZ_CRASH("call");
       }
@@ -3297,14 +2448,14 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
 }
 
 void Simulator::canonicalizeNaN(double* value) {
-  if (!wasm::CodeExists && !wasm::LookupCodeSegment(get_pc_as<void*>()) &&
+  if (!wasm::CodeExists && !wasm::LookupCodeBlock(get_pc_as<void*>()) &&
       FPSCR_default_NaN_mode_) {
     *value = JS::CanonicalizeNaN(*value);
   }
 }
 
 void Simulator::canonicalizeNaN(float* value) {
-  if (!wasm::CodeExists && !wasm::LookupCodeSegment(get_pc_as<void*>()) &&
+  if (!wasm::CodeExists && !wasm::LookupCodeBlock(get_pc_as<void*>()) &&
       FPSCR_default_NaN_mode_) {
     *value = JS::CanonicalizeNaN(*value);
   }
@@ -3713,6 +2864,8 @@ void Simulator::decodeType01(SimInstruction* instr) {
     }
   } else if ((type == 1) && instr->isNopType1()) {
     // NOP.
+  } else if ((type == 1) && instr->isYieldType1()) {
+    AtomicOperations::pause();
   } else if ((type == 1) && instr->isCsdbType1()) {
     // Speculation barrier. (No-op for the simulator)
   } else {
@@ -4407,6 +3560,9 @@ void Simulator::decodeTypeVFP(SimInstruction* instr) {
           // vmov.f32 immediate.
           set_s_register_from_float(vd, instr->float32ImmedVmov());
         }
+      } else if ((instr->opc2Value() & ~0x1) == 0x2 &&
+                 (instr->opc3Value() & 0x1)) {
+        decodeVCVTBetweenFloatingPointAndHalf(instr);
       } else {
         decodeVCVTBetweenFloatingPointAndIntegerFrac(instr);
       }
@@ -4902,6 +4058,71 @@ void Simulator::decodeVCVTBetweenFloatingPointAndIntegerFrac(
     }
   } else {
     MOZ_CRASH();  // Not implemented, fixed to float.
+  }
+}
+
+void Simulator::decodeVCVTBetweenFloatingPointAndHalf(SimInstruction* instr) {
+  MOZ_ASSERT(instr->bit(4) == 0 && instr->opc1Value() == 0x7);
+  MOZ_ASSERT((instr->opc2Value() & ~0x1) == 0x2 && (instr->opc3Value() & 0x1));
+
+  bool top_half = (instr->bit(7) == 1);
+  bool to_half = (instr->bit(16) == 1);
+
+  VFPRegPrecision dst_precision = kSinglePrecision;
+  VFPRegPrecision src_precision = kSinglePrecision;
+  if (instr->szValue() == 1) {
+    if (to_half) {
+      src_precision = kDoublePrecision;
+    } else {
+      dst_precision = kDoublePrecision;
+    }
+  }
+
+  int dst = instr->VFPDRegValue(dst_precision);
+  int src = instr->VFPMRegValue(src_precision);
+
+  if (to_half) {
+    uint32_t f16bits;
+    if (src_precision == kSinglePrecision) {
+      float val;
+      get_float_from_s_register(src, &val);
+      f16bits = js::float16{val}.toRawBits();
+    } else {
+      double val;
+      get_double_from_d_register(src, &val);
+      f16bits = js::float16{val}.toRawBits();
+    }
+
+    float val;
+    get_float_from_s_register(dst, &val);
+    uint32_t f32bits = mozilla::BitwiseCast<uint32_t>(val);
+
+    if (top_half) {
+      f32bits = (f16bits << 16) | (f32bits & 0xffff);
+    } else {
+      f32bits = (f32bits & 0xffff'0000) | f16bits;
+    }
+
+    float rval;
+    mozilla::BitwiseCast(f32bits, &rval);
+
+    set_s_register_from_float(dst, rval);
+  } else {
+    float val;
+    get_float_from_s_register(src, &val);
+    uint32_t f32bits = mozilla::BitwiseCast<uint32_t>(val);
+
+    if (top_half) {
+      f32bits >>= 16;
+    }
+
+    auto rval = js::float16::fromRawBits(uint16_t(f32bits));
+
+    if (dst_precision == kSinglePrecision) {
+      set_s_register_from_float(dst, static_cast<float>(rval));
+    } else {
+      set_d_register_from_double(dst, static_cast<double>(rval));
+    }
   }
 }
 

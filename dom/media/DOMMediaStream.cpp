@@ -99,6 +99,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(DOMMediaStream,
   tmp->Destroy();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTracks)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsumersToKeepAlive)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mTrackListeners)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -106,14 +107,22 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(DOMMediaStream,
                                                   DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTracks)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsumersToKeepAlive)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTrackListeners)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_ADDREF_INHERITED(DOMMediaStream, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(DOMMediaStream, DOMEventTargetHelper)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream)
-  NS_INTERFACE_MAP_ENTRY(DOMMediaStream)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(DOMMediaStream)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
+
+NS_IMPL_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMMediaStream::TrackListener)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMMediaStream::TrackListener)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
 
 DOMMediaStream::DOMMediaStream(nsPIDOMWindowInner* aWindow)
     : DOMEventTargetHelper(aWindow),
@@ -334,8 +343,16 @@ void DOMMediaStream::AddTrack(MediaStreamTrack& aTrack) {
 }
 
 void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
-  LOG(LogLevel::Info, ("DOMMediaStream %p Removing track %p (from track %p)",
-                       this, &aTrack, aTrack.GetTrack()));
+  if (static_cast<LogModule*>(gMediaStreamLog)->ShouldLog(LogLevel::Info)) {
+    if (aTrack.Ended()) {
+      LOG(LogLevel::Info,
+          ("DOMMediaStream %p Removing (ended) track %p", this, &aTrack));
+    } else {
+      LOG(LogLevel::Info,
+          ("DOMMediaStream %p Removing track %p (from track %p)", this, &aTrack,
+           aTrack.GetTrack()));
+    }
+  }
 
   if (!mTracks.RemoveElement(&aTrack)) {
     LOG(LogLevel::Debug,
@@ -349,7 +366,7 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
 }
 
 already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
-  auto newStream = MakeRefPtr<DOMMediaStream>(GetOwner());
+  auto newStream = MakeRefPtr<DOMMediaStream>(GetOwnerWindow());
 
   LOG(LogLevel::Info,
       ("DOMMediaStream %p created clone %p", this, newStream.get()));
@@ -401,11 +418,11 @@ void DOMMediaStream::RemoveTrackInternal(MediaStreamTrack* aTrack) {
 }
 
 already_AddRefed<nsIPrincipal> DOMMediaStream::GetPrincipal() {
-  if (!GetOwner()) {
+  nsGlobalWindowInner* win = GetOwnerWindow();
+  if (!win) {
     return nullptr;
   }
-  nsCOMPtr<nsIPrincipal> principal =
-      nsGlobalWindowInner::Cast(GetOwner())->GetPrincipal();
+  nsCOMPtr<nsIPrincipal> principal = win->GetPrincipal();
   for (const auto& t : mTracks) {
     if (t->Ended()) {
       continue;

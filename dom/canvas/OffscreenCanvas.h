@@ -15,6 +15,7 @@
 #include "mozilla/layers/LayersTypes.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCycleCollectionParticipant.h"
 
 struct JSContext;
@@ -47,15 +48,14 @@ struct OffscreenCanvasCloneData final {
   OffscreenCanvasCloneData(OffscreenCanvasDisplayHelper* aDisplay,
                            uint32_t aWidth, uint32_t aHeight,
                            layers::LayersBackend aCompositorBackend,
-                           layers::TextureType aTextureType, bool aNeutered,
-                           bool aIsWriteOnly, nsIPrincipal* aExpandedReader);
+                           bool aNeutered, bool aIsWriteOnly,
+                           nsIPrincipal* aExpandedReader);
   ~OffscreenCanvasCloneData();
 
   RefPtr<OffscreenCanvasDisplayHelper> mDisplay;
   uint32_t mWidth;
   uint32_t mHeight;
   layers::LayersBackend mCompositorBackendType;
-  layers::TextureType mTextureType;
   bool mNeutered;
   bool mIsWriteOnly;
   RefPtr<nsIPrincipal> mExpandedReader;
@@ -75,8 +75,9 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
 
   OffscreenCanvas(nsIGlobalObject* aGlobal, uint32_t aWidth, uint32_t aHeight,
                   layers::LayersBackend aCompositorBackend,
-                  layers::TextureType aTextureType,
                   already_AddRefed<OffscreenCanvasDisplayHelper> aDisplay);
+
+  void Destroy();
 
   nsIGlobalObject* GetParentObject() const { return GetOwnerGlobal(); }
 
@@ -108,6 +109,8 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
                                    JS::Handle<JS::Value> aParams,
                                    ErrorResult& aRv);
 
+  Maybe<uint64_t> GetWindowID();
+
   nsICanvasRenderingContextInternal* GetContext() const {
     return mCurrentContext;
   }
@@ -120,11 +123,7 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
   static already_AddRefed<OffscreenCanvas> CreateFromCloneData(
       nsIGlobalObject* aGlobal, OffscreenCanvasCloneData* aData);
 
-  // Return true on main-thread, and return gfx.offscreencanvas.enabled
-  // on worker thread.
-  static bool PrefEnabledOnWorkerThread(JSContext* aCx, JSObject* aObj);
-
-  OffscreenCanvasCloneData* ToCloneData();
+  UniquePtr<OffscreenCanvasCloneData> ToCloneData(JSContext* aCx);
 
   void UpdateDisplayData(const OffscreenCanvasDisplayData& aData);
 
@@ -134,9 +133,7 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
 
   virtual bool GetOpaqueAttr() override { return false; }
 
-  virtual nsIntSize GetWidthHeight() override {
-    return nsIntSize(mWidth, mHeight);
-  }
+  CSSIntSize GetWidthHeight() override { return CSSIntSize(mWidth, mHeight); }
 
   virtual already_AddRefed<nsICanvasRenderingContextInternal> CreateContext(
       CanvasContextType aContextType) override;
@@ -148,6 +145,8 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
   }
 
   bool MayNeuter() const { return !mNeutered && !mCurrentContext; }
+
+  void SetSize(const nsIntSize& aSize, ErrorResult& aRv);
 
   nsIPrincipal* GetExpandedReader() const { return mExpandedReader; }
 
@@ -190,7 +189,6 @@ class OffscreenCanvas final : public DOMEventTargetHelper,
 
   layers::LayersBackend mCompositorBackendType =
       layers::LayersBackend::LAYERS_NONE;
-  layers::TextureType mTextureType = layers::TextureType::Unknown;
 
   RefPtr<OffscreenCanvasDisplayHelper> mDisplay;
   RefPtr<CancelableRunnable> mPendingCommit;

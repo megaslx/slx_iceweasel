@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2021 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -14,10 +14,11 @@ const md = Temporal.PlainMonthDay.from("01-15");
 TemporalHelpers.assertPlainMonthDay(md.with({ day: 22 }),
   "M01", 22, "with({day})");
 
+TemporalHelpers.assertPlainMonthDay(md.with({ month: 12 }),
+  "M12", 15, "with({month})");
+
 TemporalHelpers.assertPlainMonthDay(md.with({ monthCode: "M12" }),
   "M12", 15, "with({monthCode})");
-
-assert.throws(TypeError, () => md.with({ month: 12 }), "with({month})");
 
 TemporalHelpers.assertPlainMonthDay(md.with({ month: 12, monthCode: "M12" }),
   "M12", 15, "with({month, monthCode}) agree");

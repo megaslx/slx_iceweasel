@@ -216,10 +216,6 @@ urlbar.tips
     Incremented when the user picks the onboarding search tip.
   - ``searchTip_onboard-shown``
     Incremented when the onboarding search tip is shown.
-  - ``searchTip_persist-picked``
-    Incremented when the user picks the urlbar persisted search tip.
-  - ``searchTip_persist-shown``
-    Incremented when the url persisted search tip is shown.
   - ``searchTip_redirect-picked``
     Incremented when the user picks the redirect search tip.
   - ``searchTip_redirect-shown``
@@ -277,13 +273,47 @@ urlbar.searchmode.*
   a remote search mode with a built-in engine, we record the engine name. If the
   user enters a remote search mode with an engine they installed (e.g. via
   OpenSearch or a WebExtension), we record ``other`` (not to be confused with
-  the ``urlbar.searchmode.other`` scalar above). If they enter a local search
-  mode, we record the English name of the result source (e.g. "bookmarks",
-  "history", "tabs"). Note that we slightly modify the engine name for some
-  built-in engines: we flatten all localized Amazon sites (Amazon.com,
-  Amazon.ca, Amazon.de, etc.) to "Amazon" and we flatten all localized
-  Wikipedia sites (Wikipedia (en), Wikipedia (fr), etc.) to "Wikipedia". This
-  is done to reduce the number of keys used by these scalars.
+  the ``urlbar.searchmode.other`` scalar above).
+
+  When a user enters local search mode, we record the English name of the
+  result source (e.g., "bookmarks," "history," "tabs"). If they enter local
+  search mode via ``typed``, we record the result source name with the suffix
+  "keyword" or "symbol," depending on whether the user used a symbol
+  (``^, %, *, >``) or a keyword (``@tabs, @bookmarks, @history, @actions``).
+  If they enter local search mode through ``keywordoffer``, we record the
+  result source name with the suffix "keyword" when they select a restrict
+  keyword.
+
+  Note that we slightly modify the engine name for some built-in engines: we
+  flatten all localized Amazon sites (Amazon.com, Amazon.ca, Amazon.de, etc.)
+  to "Amazon" and we flatten all localized Wikipedia sites (Wikipedia (en),
+  Wikipedia (fr), etc.) to "Wikipedia". This is done to reduce the number of
+  keys used by these scalars.
+
+  Changelog
+    Firefox 132
+      The scalar keys for ``urlbar.searchmode.typed`` and
+      ``urlbar.searchmode.keywordoffer`` have been updated.
+
+      For ``urlbar.searchmode.typed``:
+       - If the user enters local search mode using a restrict keyword (@tabs,
+         @history, @bookmarks, @actions) the scalar key is prefixed with
+         "keyword".
+       - If the user enters via a symbol (``%, ^, *, >``) the key is prefixed
+         with "symbol".
+
+      For example, in history search mode:
+       - If entered via a restrict keyword, the scalar key recorded is
+         ``history_keyword``.
+       - If entered via a symbol, the scalar key recorded is ``history_symbol``.
+
+      For ``urlbar.searchmode.keywordoffer``:
+       - If the user uses a restrict keyword through the keywordoffer method,
+         the scalar key is prefixed with "keyword".
+
+      Please note that symbols cannot trigger the ``urlbar.searchmode.keywordoffer``
+      telemetry, as symbols are only valid for typed. [Bug `1919180`_]
+
 
 urlbar.picked.*
 ~~~~~~~~~~~~~~~
@@ -349,6 +379,8 @@ urlbar.picked.*
     A bookmarked URL.
   - ``bookmark_adaptive``
     A bookmarked URL retrieved from adaptive history.
+  - ``clipboard``
+    A URL retrieved from the system clipboard.
   - ``dynamic``
     A specially crafted result, often used in experiments when basic types are
     not flexible enough for a rich layout.
@@ -372,6 +404,14 @@ urlbar.picked.*
     A Firefox Suggest (a.k.a. quick suggest) suggestion.
   - ``remotetab``
     A tab synced from another device.
+  - ``restrict_keyword_actions``
+    A restrict keyword result to enter search mode for actions.
+  - ``restrict_keyword_bookmarks``
+    A restrict keyword result to enter search mode for bookmarks.
+  - ``restrict_keyword_history``
+    A restrict keyword result to enter search mode for history.
+  - ``restrict_keyword_tabs``
+    A restrict keyword result to enter search mode for tabs.
   - ``searchengine``
     A search result, but not a suggestion. May be the default search action
     or a search alias.
@@ -466,19 +506,25 @@ urlbar.zeroprefix.exposure
   the "top sites" view since normally it shows the user's top sites. This scalar
   was introduced in Firefox 110.0 in bug 1806765.
 
-urlbar.quickaction.impression
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-  A uint recording the number of times the user was shown a quickaction, the
-  key is in the form $key-$n where $n is the number of characters the user typed
-  in order for the suggestion to show. See bug 1806024.
-
 urlbar.quickaction.picked
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
   A uint recording the number of times the user selected a quickaction, the
   key is in the form $key-$n where $n is the number of characters the user typed
   in order for the suggestion to show. See bug 1783155.
+
+urlbar.unifiedsearchbutton.opened
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  A uint recording the number of times the user opens search mode popup via
+  Unified Search Button.
+  See bug 1936673.
+
+urlbar.unifiedsearchbutton.picked
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  A uint recording the number of times the user selected a search mode via
+  Unified Search Button. See bug 1936673.
 
 places.*
 ~~~~~~~~
@@ -513,98 +559,40 @@ following documents for the details.
     complete an engagement action, usually unfocusing the urlbar. This also
     happens when the user switches to another window, if the results popup was
     opening.
-  - `Impression`_ :
-    It is defined as an action where the results had been shown to the user for
-    a while. In default, it will be recorded when the same results have been
-    shown and 1 sec has elapsed. The interval value can be modified through the
-    `browser.urlbar.searchEngagementTelemetry.pauseImpressionIntervalMs`
-    preference.
 
 .. _Engagement: https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/metrics/urlbar_engagement
 .. _Abandonment: https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/metrics/urlbar_abandonment
-.. _Impression: https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/metrics/urlbar_impression
+
+Changelog
+  Firefox 128
+    The "actions" key was added to the engagement event. [Bug `1893067`_]
+
+  Firefox 125
+    The "impression" engagement event has been removed. [Bug `1878983`_]
+
+.. _1893067: https://bugzilla.mozilla.org/show_bug.cgi?id=1893067
+.. _1878983: https://bugzilla.mozilla.org/show_bug.cgi?id=1878983
 
 
 Custom pings for Contextual Services
 ------------------------------------
 
 Contextual Services currently has two features involving the address bar, top
-sites and Firefox Suggest. Top sites telemetry is described below. For Firefox
+sites and Firefox Suggest. Top sites telemetry is sent in the `"top-sites" ping`_,
+which is described in the linked Glean Dictionary page. For Firefox
 Suggest, see the :doc:`firefox-suggest-telemetry` document.
 
-Firefox sends the following `custom pings`_ to record impressions and clicks of
-the top sites feature.
-
-    .. _custom pings: https://docs.telemetry.mozilla.org/cookbooks/new_ping.html#sending-a-custom-ping
-
-Top Sites Impression
-~~~~~~~~~~~~~~~~~~~~
-
-  This records an impression when a sponsored top site is shown.
-
-  - ``context_id``
-    A UUID representing this user. Note that it's not client_id, nor can it be
-    used to link to a client_id.
-  - ``tile_id``
-    A unique identifier for the sponsored top site.
-  - ``source``
-    The browser location where the impression was displayed.
-  - ``position``
-    The placement of the top site (1-based).
-  - ``advertiser``
-    The Name of the advertiser.
-  - ``reporting_url``
-    The reporting URL of the sponsored top site, normally pointing to the ad
-    partner's reporting endpoint.
-  - ``version``
-    Firefox version.
-  - ``release_channel``
-    Firefox release channel.
-  - ``locale``
-    User's current locale.
+    .. _"top-sites" ping: https://mozilla.github.io/glean/book/user/pings/custom.html
 
 Changelog
-  Firefox 108.0
-    The impression ping is sent for Pocket sponsored tiles as well. Pocket sponsored tiles have different values for ``advertiser`` and ``reporting_url`` is null. [Bug 1794022_]
+  Firefox 122.0
+    PingCentre-sent custom pings removed. [Bug `1868580`_]
 
-  Firefox 87.0
-    Introduced. [Non_public_doc_]
+  Firefox 116.0
+    The "top-sites" ping is implemented. [Bug `1836283`_]
 
-.. _Non_public_doc: https://docs.google.com/document/d/1qLb4hUwR8YQj5QnjJtwxQIoDCPLQ6XuAmJPQ6_WmS4E/edit
-.. _1794022: https://bugzilla.mozilla.org/show_bug.cgi?id=1794022
-
-Top Sites Click
-~~~~~~~~~~~~~~~
-
-  This records a click ping when a sponsored top site is clicked by the user.
-
-  - ``context_id``
-    A UUID representing this user. Note that it's not client_id, nor can it be
-    used to link to a client_id.
-  - ``tile_id``
-    A unique identifier for the sponsored top site.
-  - ``source``
-    The browser location where the click was tirggered.
-  - ``position``
-    The placement of the top site (1-based).
-  - ``advertiser``
-    The Name of the advertiser.
-  - ``reporting_url``
-    The reporting URL of the sponsored top site, normally pointing to the ad
-    partner's reporting endpoint.
-  - ``version``
-    Firefox version.
-  - ``release_channel``
-    Firefox release channel.
-  - ``locale``
-    User's current locale.
-
-Changelog
-  Firefox 108.0
-    The click ping is sent for Pocket sponsored tiles as well. Pocket sponsored tiles have different values for ``advertiser`` and ``reporting_url`` is null. [Bug 1794022_]
-
-  Firefox 87.0
-    Introduced. [Non_public_doc_]
+.. _1868580: https://bugzilla.mozilla.org/show_bug.cgi?id=1868580
+.. _1836283: https://bugzilla.mozilla.org/show_bug.cgi?id=1836283
 
 
 Other telemetry relevant to the Address Bar
@@ -613,7 +601,7 @@ Other telemetry relevant to the Address Bar
 Search Telemetry
 ~~~~~~~~~~~~~~~~
 
-  Some of the `search telemetry`_ is also relevant to the address bar.
+  Some of `the search telemetry`_ is also relevant to the address bar.
 
 contextual.services.topsites.*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -647,121 +635,5 @@ Firefox Suggest
   Telemetry specific to Firefox Suggest is described in the
   :doc:`firefox-suggest-telemetry` document.
 
-.. _search telemetry: /browser/search/telemetry.html
-
-Event Telemetry
----------------
-
-  .. note::
-    This is a legacy event telemetry. For the current telemetry, please see
-    `Search Engagement Telemetry`_. These legacy events were disabled by default
-    and required enabling through a preference or a Urlbar WebExtension
-    experimental API.
-
-.. _Search Engagement Telemetry: #search-engagement-telemetry
-
-The event telemetry is grouped under the ``urlbar`` category.
-
-Event Method
-~~~~~~~~~~~~
-
-  There are two methods to describe the interaction with the urlbar:
-
-  - ``engagement``
-    It is defined as a completed action in urlbar, where a user inserts text
-    and executes one of the actions described in the Event Object.
-  - ``abandonment``
-    It is defined as an action where the user inserts text but does not
-    complete an engagement action, usually unfocusing the urlbar. This also
-    happens when the user switches to another window, regardless of urlbar
-    focus.
-
-Event Value
-~~~~~~~~~~~
-
-  This is how the user interaction started
-
-  - ``typed``: The text was typed into the urlbar.
-  - ``dropped``: The text was drag and dropped into the urlbar.
-  - ``pasted``: The text was pasted into the urlbar.
-  - ``topsites``: The user opened the urlbar view without typing, dropping,
-    or pasting.
-    In these cases, if the urlbar input is showing the URL of the loaded page
-    and the user has not modified the input’s content, the urlbar views shows
-    the user’s top sites. Otherwise, if the user had modified the input’s
-    content, the urlbar view shows results based on what the user has typed.
-    To tell whether top sites were shown, it's enough to check whether value is
-    ``topsites``. To know whether the user actually picked a top site, check
-    check that ``numChars`` == 0. If ``numChars`` > 0, the user initially opened
-    top sites, but then they started typing and confirmed a different result.
-  - ``returned``: The user abandoned a search, for example by switching to
-    another tab/window, or focusing something else, then came back to it
-    and continued. We consider a search continued if the user kept at least the
-    first char of the original search string.
-  - ``restarted``: The user abandoned a search, for example by switching to
-    another tab/window, or focusing something else, then came back to it,
-    cleared it and then typed a new string.
-
-Event Object
-~~~~~~~~~~~~
-
-  These describe actions in the urlbar:
-
-  - ``click``
-    The user clicked on a result.
-  - ``enter``
-    The user confirmed a result with Enter.
-  - ``drop_go``
-    The user dropped text on the input field.
-  - ``paste_go``
-    The user used Paste and Go feature. It is not the same as paste and Enter.
-  - ``blur``
-    The user unfocused the urlbar. This is only valid for ``abandonment``.
-
-Event Extra
-~~~~~~~~~~~
-
-  This object contains additional information about the interaction.
-  Extra is a key-value store, where all the keys and values are strings.
-
-  - ``elapsed``
-    Time in milliseconds from the initial interaction to an action.
-  - ``numChars``
-    Number of input characters the user typed or pasted at the time of
-    submission.
-  - ``numWords``
-    Number of words in the input. The measurement is taken from a trimmed input
-    split up by its spaces. This is not a perfect measurement, since it will
-    return an incorrect value for languages that do not use spaces or URLs
-    containing spaces in its query parameters, for example.
-  - ``selType``
-    The type of the selected result at the time of submission.
-    This is only present for ``engagement`` events.
-    It can be one of: ``none``, ``autofill``, ``visiturl``, ``bookmark``,
-     ``bookmark_adaptive`` ``history``, ``history_adaptive``, ``keyword``,
-     ``searchengine``, ``searchsuggestion``, ``switchtab``, ``remotetab``,
-     ``extension``, ``oneoff``, ``keywordoffer``, ``canonized``, ``tip``,
-     ``tiphelp``, ``formhistory``, ``tabtosearch``, ``help``, ``block``,
-     ``quicksuggest``, ``unknown``
-    In practice, ``tabtosearch`` should not appear in real event telemetry.
-    Opening a tab-to-search result enters search mode and entering search mode
-    does not currently mark the end of an engagement. It is noted here for
-    completeness. Similarly, ``block`` indicates a result was blocked or deleted
-    but should not appear because blocking a result does not end the engagement.
-  - ``selIndex``
-    Index of the selected result in the urlbar panel, or -1 for no selection.
-    There won't be a selection when a one-off button is the only selection, and
-    for the ``paste_go`` or ``drop_go`` objects. There may also not be a
-    selection if the system was busy and results arrived too late, then we
-    directly decide whether to search or visit the given string without having
-    a fully built result.
-    This is only present for ``engagement`` events.
-  - ``provider``
-    The name of the result provider for the selected result. Existing values
-    are: ``HeuristicFallback``, ``Autofill``, ``Places``,
-    ``TokenAliasEngines``, ``SearchSuggestions``, ``UrlbarProviderTopSites``.
-    Data from before Firefox 91 will also list ``UnifiedComplete`` as a
-    provider. This is equivalent to ``Places``.
-    Values can also be defined by `URLBar provider experiments`_.
-
-    .. _URLBar provider experiments: experiments.html#developing-address-bar-extensions
+.. _the search telemetry: /browser/search/telemetry.html
+.. _1919180: https://bugzilla.mozilla.org/show_bug.cgi?id=1919180

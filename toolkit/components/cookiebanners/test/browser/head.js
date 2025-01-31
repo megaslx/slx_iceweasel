@@ -40,6 +40,7 @@ async function testSetup() {
   });
 
   // Reset GLEAN (FOG) telemetry to avoid data bleeding over from other tests.
+  await Services.fog.testFlushAllChildren();
   Services.fog.testResetFOG();
 
   registerCleanupFunction(() => {
@@ -48,6 +49,10 @@ async function testSetup() {
     if (Services.cookieBanners.isEnabled) {
       // Restore original rules.
       Services.cookieBanners.resetRules(true);
+
+      // Clear executed records.
+      Services.cookieBanners.removeAllExecutedRecords(false);
+      Services.cookieBanners.removeAllExecutedRecords(true);
     }
   });
 }
@@ -63,7 +68,7 @@ async function clickTestSetup() {
       // Enable debug logging.
       ["cookiebanners.bannerClicking.logLevel", "Debug"],
       ["cookiebanners.bannerClicking.testing", true],
-      ["cookiebanners.bannerClicking.timeout", 500],
+      ["cookiebanners.bannerClicking.timeoutAfterLoad", 500],
       ["cookiebanners.bannerClicking.enabled", true],
       ["cookiebanners.cookieInjector.enabled", false],
     ],
@@ -160,10 +165,14 @@ async function openPageAndVerify({
   expected,
   bannerId = "banner",
   keepTabOpen = false,
+  expectActorEnabled = true,
 }) {
   info(`Opening ${testURL}`);
 
-  let promise = promiseBannerClickingFinish(domain);
+  // If the actor isn't enabled there won't be a "finished" observer message.
+  let promise = expectActorEnabled
+    ? promiseBannerClickingFinish(domain)
+    : new Promise(resolve => setTimeout(resolve, 0));
 
   let tab = await BrowserTestUtils.openNewForegroundTab(win.gBrowser, testURL);
 
@@ -363,75 +372,6 @@ function insertTestCookieRules() {
 }
 
 /**
- * Test the Glean.cookieBannersClick.result metric.
- * @param {*} expected - Object mapping labels to counters. Omitted labels are
- * asserted to be in initial state (undefined =^ 0)
- * @param {boolean} [resetFOG] - Whether to reset all FOG telemetry after the
- * method has finished.
- */
-async function testClickResultTelemetry(expected, resetFOG = true) {
-  // TODO: Bug 1805653: Enable tests for Linux.
-  if (AppConstants.platform == "linux") {
-    ok(true, "Skip click telemetry tests on linux.");
-    return;
-  }
-
-  // Ensure we have all data from the content process.
-  await Services.fog.testFlushAllChildren();
-
-  let labels = [
-    "success",
-    "success_cookie_injected",
-    "success_dom_content_loaded",
-    "success_mutation_pre_load",
-    "success_mutation_post_load",
-    "fail",
-    "fail_banner_not_found",
-    "fail_banner_not_visible",
-    "fail_button_not_found",
-    "fail_no_rule_for_mode",
-    "fail_actor_destroyed",
-  ];
-
-  let testMetricState = doAssert => {
-    for (let label of labels) {
-      if (doAssert) {
-        is(
-          Glean.cookieBannersClick.result[label].testGetValue(),
-          expected[label],
-          `Counter for label '${label}' has correct state.`
-        );
-      } else if (
-        Glean.cookieBannersClick.result[label].testGetValue() !==
-        expected[label]
-      ) {
-        return false;
-      }
-    }
-
-    return true;
-  };
-
-  // Wait for the labeled counter to match the expected state. Returns greedy on
-  // mismatch.
-  try {
-    await TestUtils.waitForCondition(
-      testMetricState,
-      "Waiting for cookieBannersClick.result metric to match."
-    );
-  } finally {
-    // Test again but this time with assertions and test all labels.
-    testMetricState(true);
-
-    // Reset telemetry, even if the test condition above throws. This is to
-    // avoid failing subsequent tests in case of a test failure.
-    if (resetFOG) {
-      Services.fog.testResetFOG();
-    }
-  }
-}
-
-/**
  * Triggers a cookie banner handling feature and tests the events dispatched.
  * @param {*} options - Test options.
  * @param {nsICookieBannerService::Modes} options.mode - The cookie banner
@@ -450,6 +390,10 @@ async function runEventTest({ mode, detectOnly, initFn, triggerFn, testURL }) {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["cookiebanners.service.mode", mode],
+      [
+        "cookiebanners.service.mode.privateBrowsing",
+        Ci.nsICookieBannerService.MODE_DISABLED,
+      ],
       ["cookiebanners.service.detectOnly", detectOnly],
     ],
   });

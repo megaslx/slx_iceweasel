@@ -123,8 +123,8 @@ void CSSAnimation::PauseFromStyle() {
   }
 }
 
-void CSSAnimation::Tick() {
-  Animation::Tick();
+void CSSAnimation::Tick(TickState& aState) {
+  Animation::Tick(aState);
   QueueEvents();
 }
 
@@ -230,9 +230,9 @@ void CSSAnimation::QueueEvents(const StickyTimeDuration& aActiveTime) {
       elapsedTime = nsRFPService::ReduceTimePrecisionAsSecsRFPOnly(
           elapsedTime, 0, mRTPCallerType);
     }
-    events.AppendElement(
-        AnimationEventInfo(mAnimationName, mOwningElement.Target(), aMessage,
-                           elapsedTime, aScheduledEventTimeStamp, this));
+    events.AppendElement(AnimationEventInfo(
+        mAnimationName, mOwningElement.Target(), aMessage, elapsedTime,
+        mAnimationIndex, aScheduledEventTimeStamp, this));
   };
 
   // Handle cancel event first

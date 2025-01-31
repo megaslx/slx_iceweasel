@@ -337,6 +337,7 @@ class MochiRemote(MochitestDesktop):
         detectShutdownLeaks=False,
         screenshotOnFail=False,
         bisectChunk=None,
+        restartAfterFailure=False,
         marionette_args=None,
         e10s=True,
         runFailures=False,
@@ -364,7 +365,7 @@ class MochiRemote(MochitestDesktop):
         profileDirectory = self.remoteProfile + "/"
         args = []
         args.extend(extraArgs)
-        args.extend(("-no-remote", "-profile", profileDirectory))
+        args.extend(("-profile", profileDirectory))
 
         pid = rpm.launch(
             app,

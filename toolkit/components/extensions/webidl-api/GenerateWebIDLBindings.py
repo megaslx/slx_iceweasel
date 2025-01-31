@@ -79,6 +79,10 @@ WEBEXT_SCHEMADIRS_MAPPING = glbl["WEBEXT_SCHEMADIRS_MAPPING"]
 # android builds.
 WEBEXT_ANDROID_EXCLUDED = glbl["WEBEXT_ANDROID_EXCLUDED"]
 
+# List of schema files that should be ignored and not loaded. Paths are relative
+# to the root of the topsrcdir and use / separators.
+WEBEXT_IGNORED_SCHEMA_FILES = glbl["WEBEXT_IGNORED_SCHEMA_FILES"]
+
 # Define a custom jsonschema validation class
 WebExtAPIValidator = jsonschema.validators.extend(
     jsonschema.validators.Draft4Validator,
@@ -139,8 +143,8 @@ def read_json(json_file_path):
     """
     Helper function used to read the WebExtensions API schema JSON files
     by ignoring the license comment on the top of some of those files.
-    Same helper as the one available in Schemas.jsm:
-    https://searchfox.org/mozilla-central/rev/3434a9df60373a997263107e6f124fb164ddebf2/toolkit/components/extensions/Schemas.jsm#70
+    Same helper as the one available in Schemas.sys.mjs:
+    https://searchfox.org/mozilla-central/rev/b60cb73160843adb5a5a3ec8058e75a69b46acf7/toolkit/components/extensions/Schemas.sys.mjs#53
     """
     with open(json_file_path) as json_file:
         txt = json_file.read()
@@ -1403,6 +1407,11 @@ class Schemas:
             if file_name.endswith(".json"):
                 full_path = os.path.join(schema_dir_path, file_name)
                 rel_path = os.path.relpath(full_path, buildconfig.topsrcdir)
+
+                normalized_rel_path = mozpath.normsep(rel_path)
+                if normalized_rel_path in WEBEXT_IGNORED_SCHEMA_FILES:
+                    logging.debug("Ignoring schema file %s", rel_path)
+                    continue
 
                 logging.debug("Loading schema file %s", rel_path)
 

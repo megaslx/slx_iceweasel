@@ -44,27 +44,27 @@ add_task(async function test_no_logins_class() {
       let loginListList = loginList.shadowRoot.querySelector("ol");
 
       Assert.ok(
-        !ContentTaskUtils.is_hidden(loginIntro),
+        !ContentTaskUtils.isHidden(loginIntro),
         "login-intro should be shown in no logins view"
       );
       Assert.ok(
-        !ContentTaskUtils.is_hidden(loginListIntro),
+        !ContentTaskUtils.isHidden(loginListIntro),
         "login-list intro should be shown in no logins view"
       );
 
       Assert.ok(
-        ContentTaskUtils.is_hidden(loginItem),
+        ContentTaskUtils.isHidden(loginItem),
         "login-item should be hidden in no logins view"
       );
       Assert.ok(
-        ContentTaskUtils.is_hidden(loginListList),
+        ContentTaskUtils.isHidden(loginListList),
         "login-list logins list should be hidden in no logins view"
       );
       Assert.equal(
         content.document.l10n.getAttributes(
           loginIntro.shadowRoot.querySelector(".heading")
         ).id,
-        "about-logins-login-intro-heading-logged-out2",
+        "about-logins-login-intro-heading-message",
         "The default message should be the non-logged-in message"
       );
       Assert.ok(
@@ -80,17 +80,13 @@ add_task(async function test_no_logins_class() {
         content.document.l10n.getAttributes(
           loginIntro.shadowRoot.querySelector(".heading")
         ).id,
-        "about-logins-login-intro-heading-logged-in",
+        "about-logins-login-intro-heading-message",
         "When logged in the message should update"
       );
 
-      let importClass = Services.prefs.getBoolPref(
-        "signon.management.page.fileImport.enabled"
-      )
-        ? ".intro-import-text.file-import"
-        : ".intro-import-text.no-file-import";
+      const importClass = ".intro-import-text.file-import";
       Assert.equal(
-        ContentTaskUtils.is_hidden(
+        ContentTaskUtils.isHidden(
           loginIntro.shadowRoot.querySelector(importClass)
         ),
         aPlatform == "linux",
@@ -108,9 +104,9 @@ add_task(async function test_no_logins_class() {
     // End the test now for Linux since the link is hidden.
     return;
   }
-  let wizard = await wizardPromise;
-  Assert.ok(wizard, "Migrator window opened");
-  await BrowserTestUtils.closeMigrationWizard(wizard);
+  let wizardTab = await wizardPromise;
+  Assert.ok(wizardTab, "Migrator wizard tab opened");
+  await BrowserTestUtils.removeTab(wizardTab);
 });
 
 add_task(
@@ -136,11 +132,11 @@ add_task(
         "login-item should be marked as having no-logins"
       );
       Assert.ok(
-        ContentTaskUtils.is_hidden(loginItem),
+        ContentTaskUtils.isHidden(loginItem),
         "login-item should be hidden"
       );
       Assert.ok(
-        !ContentTaskUtils.is_hidden(loginIntro),
+        !ContentTaskUtils.isHidden(loginIntro),
         "login-intro should be visible"
       );
     });
@@ -171,7 +167,7 @@ add_task(
         );
         Assert.equal(
           loginList.shadowRoot.querySelector(
-            ".login-list-item.selected[data-guid]"
+            "login-list-item.selected[data-guid]"
           ).dataset.guid,
           testLogin1Guid,
           "the login that was just added should be selected"
@@ -186,11 +182,11 @@ add_task(
           "the login-item should have the newly added login selected"
         );
         Assert.ok(
-          !ContentTaskUtils.is_hidden(loginItem),
+          !ContentTaskUtils.isHidden(loginItem),
           "login-item should be visible"
         );
         Assert.ok(
-          ContentTaskUtils.is_hidden(loginIntro),
+          ContentTaskUtils.isHidden(loginIntro),
           "login-intro should be hidden"
         );
       }

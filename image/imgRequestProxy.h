@@ -66,8 +66,7 @@ class imgRequestProxy : public mozilla::PreloaderBase,
 
   // Callers to Init or ChangeOwner are required to call NotifyListener after
   // (although not immediately after) doing so.
-  nsresult Init(imgRequest* aOwner, nsILoadGroup* aLoadGroup,
-                Document* aLoadingDocument, nsIURI* aURI,
+  nsresult Init(imgRequest* aOwner, nsILoadGroup* aLoadGroup, nsIURI* aURI,
                 imgINotificationObserver* aObserver);
 
   nsresult ChangeOwner(imgRequest* aNewOwner);  // this will change mOwner.
@@ -115,8 +114,6 @@ class imgRequestProxy : public mozilla::PreloaderBase,
   // stylesheets can be shared across documents properly, see bug 1800979.
   void SetCancelable(bool);
 
-  already_AddRefed<nsIEventTarget> GetEventTarget() const override;
-
   // Removes all animation consumers that were created with
   // IncrementAnimationConsumers. This is necessary since we need
   // to do it before the proxy itself is destroyed. See
@@ -132,9 +129,27 @@ class imgRequestProxy : public mozilla::PreloaderBase,
 
   imgRequest* GetOwner() const;
 
-  // PreloaderBase
-  // We are using the default image loader prioritization for preloads.
-  virtual void PrioritizeAsPreload() override {}
+  struct LCPTimings {
+    bool AreSet() const { return mLoadTime.isSome() && mRenderTime.isSome(); }
+
+    void Reset() {
+      mLoadTime = mozilla::Nothing();
+      mRenderTime = mozilla::Nothing();
+    }
+
+    mozilla::Maybe<mozilla::TimeStamp> mLoadTime;
+    mozilla::Maybe<mozilla::TimeStamp> mRenderTime;
+
+    void Set(const mozilla::TimeStamp& aLoadTime,
+             const mozilla::TimeStamp& aRenderTime) {
+      mLoadTime = Some(aLoadTime);
+      mRenderTime = Some(aRenderTime);
+    }
+  };
+
+  LCPTimings& GetLCPTimings() { return mLCPTimings; }
+
+  const LCPTimings& GetLCPTimings() const { return mLCPTimings; }
 
  protected:
   friend class mozilla::image::ProgressTracker;
@@ -197,7 +212,7 @@ class imgRequestProxy : public mozilla::PreloaderBase,
  private:
   friend class imgCacheValidator;
 
-  void AddToOwner(Document* aLoadingDocument);
+  void AddToOwner();
   void RemoveFromOwner(nsresult aStatus);
 
   nsresult DispatchWithTargetIfAvailable(already_AddRefed<nsIRunnable> aEvent);
@@ -205,6 +220,7 @@ class imgRequestProxy : public mozilla::PreloaderBase,
   // The URI of our request.
   nsCOMPtr<nsIURI> mURI;
 
+  LCPTimings mLCPTimings;
   // mListener is only promised to be a weak ref (see imgILoader.idl),
   // but we actually keep a strong ref to it until we've seen our
   // first OnStopRequest.
@@ -214,7 +230,6 @@ class imgRequestProxy : public mozilla::PreloaderBase,
       "they are destroyed") mListener;
 
   nsCOMPtr<nsILoadGroup> mLoadGroup;
-  nsCOMPtr<nsIEventTarget> mEventTarget;
 
   nsLoadFlags mLoadFlags;
   uint32_t mLockCount;
@@ -231,8 +246,11 @@ class imgRequestProxy : public mozilla::PreloaderBase,
   bool mPendingNotify : 1;
   bool mValidating : 1;
   bool mHadListener : 1;
-  bool mHadDispatch : 1;
 };
+
+inline nsISupports* ToSupports(imgRequestProxy* p) {
+  return NS_ISUPPORTS_CAST(imgIRequest*, p);
+}
 
 NS_DEFINE_STATIC_IID_ACCESSOR(imgRequestProxy, NS_IMGREQUESTPROXY_CID)
 

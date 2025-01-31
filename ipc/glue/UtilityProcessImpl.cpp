@@ -5,8 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "UtilityProcessImpl.h"
 
-#include "mozilla/ipc/IOThreadChild.h"
 #include "mozilla/GeckoArgs.h"
+#include "mozilla/ProcInfo.h"
 
 #if defined(XP_WIN)
 #  include "nsExceptionHandler.h"
@@ -20,6 +20,10 @@
 
 #if defined(XP_OPENBSD) && defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxSettings.h"
+#endif
+
+#if defined(MOZ_WMF_CDM) && defined(MOZ_SANDBOX)
+#  include "mozilla/MFCDMParent.h"
 #endif
 
 namespace mozilla::ipc {
@@ -86,6 +90,10 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
   // lower the sandbox in processes where the policy will prevent loading.
   LoadLibraryOrCrash(L"winmm.dll");
 
+  // Call this once before enabling the sandbox, it will cache its result
+  // in a static variable.
+  GetCpuFrequencyMHz();
+
   if (*sandboxingKind == SandboxingKind::GENERIC_UTILITY) {
     // Preload audio generic libraries required for ffmpeg only
     UtilityAudioDecoderParent::GenericPreloadForSandbox();
@@ -108,6 +116,17 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
   }
 #endif
 
+#if defined(MOZ_WMF_CDM) && defined(MOZ_SANDBOX)
+  if (*sandboxingKind == MF_MEDIA_ENGINE_CDM) {
+    Maybe<const char*> pluginPath = geckoargs::sPluginPath.Get(aArgc, aArgv);
+    if (pluginPath) {
+      MFCDMParent::SetWidevineL1Path(*pluginPath);
+    } else {
+      NS_WARNING("No Widevine L1 plugin for the utility process!");
+    }
+  }
+#endif
+
   Maybe<const char*> parentBuildID =
       geckoargs::sParentBuildID.Get(aArgc, aArgv);
   if (parentBuildID.isNothing()) {
@@ -117,6 +136,13 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
   if (!ProcessChild::InitPrefs(aArgc, aArgv)) {
     return false;
   }
+
+#if defined(MOZ_MEMORY) && defined(DEBUG)
+  jemalloc_stats_t stats;
+  jemalloc_stats(&stats);
+  MOZ_ASSERT(stats.opt_randomize_small,
+             "Utility process should randomize small allocations");
+#endif
 
   return mUtility->Init(TakeInitialEndpoint(), nsCString(*parentBuildID),
                         *sandboxingKind);

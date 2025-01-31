@@ -18,9 +18,11 @@
 
 #include "wasm/WasmRealm.h"
 
+#include "vm/GlobalObject.h"
 #include "vm/Realm.h"
 #include "wasm/WasmDebug.h"
 #include "wasm/WasmInstance.h"
+#include "wasm/WasmProcess.h"
 
 #include "debugger/DebugAPI-inl.h"
 #include "wasm/WasmInstance-inl.h"
@@ -40,22 +42,7 @@ struct InstanceComparator {
     if (instance == &target) {
       return 0;
     }
-
-    // Instances can share code, so the segments can be equal (though they
-    // can't partially overlap).  If the codeBases are equal, we sort by
-    // Instance address.  Thus a Code may map to many instances.
-
-    // Compare by the first tier, always.
-
-    Tier instanceTier = instance->code().stableTier();
-    Tier targetTier = target.code().stableTier();
-
-    if (instance->codeBase(instanceTier) == target.codeBase(targetTier)) {
-      return instance < &target ? -1 : 1;
-    }
-
-    return target.codeBase(targetTier) < instance->codeBase(instanceTier) ? -1
-                                                                          : 1;
+    return instance < &target ? -1 : 1;
   }
 };
 
@@ -130,7 +117,7 @@ void wasm::Realm::ensureProfilingLabels(bool profilingEnabled) {
   }
 }
 
-void wasm::Realm::addSizeOfExcludingThis(MallocSizeOf mallocSizeOf,
+void wasm::Realm::addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                          size_t* realmTables) {
   *realmTables += instances_.sizeOfExcludingThis(mallocSizeOf);
 }
@@ -148,3 +135,22 @@ void wasm::ResetInterruptState(JSContext* cx) {
     instance->resetInterrupt(cx);
   }
 }
+
+#ifdef ENABLE_WASM_JSPI
+void wasm::UpdateInstanceStackLimitsForSuspendableStack(
+    JSContext* cx, JS::NativeStackLimit limit) {
+  auto runtimeInstances = cx->runtime()->wasmInstances.lock();
+  cx->wasm().suspendableStackLimit = limit;
+  for (Instance* instance : runtimeInstances.get()) {
+    instance->setTemporaryStackLimit(limit);
+  }
+}
+
+void wasm::ResetInstanceStackLimits(JSContext* cx) {
+  auto runtimeInstances = cx->runtime()->wasmInstances.lock();
+  cx->wasm().suspendableStackLimit = JS::NativeStackLimitMin;
+  for (Instance* instance : runtimeInstances.get()) {
+    instance->resetTemporaryStackLimit(cx);
+  }
+}
+#endif  // ENABLE_WASM_JSPI

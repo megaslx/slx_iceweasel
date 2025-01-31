@@ -8,56 +8,82 @@
 #include "BounceTrackingState.h"
 #include "BounceTrackingRecord.h"
 
+#include "BounceTrackingStorageObserver.h"
 #include "ErrorList.h"
+#include "mozilla/OriginAttributes.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/BrowsingContextWebProgress.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
+#include "nsError.h"
+#include "nsIBrowser.h"
 #include "nsIChannel.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIRedirectHistoryEntry.h"
+#include "nsICookieManager.h"
+#include "nsICookieService.h"
 #include "nsIURI.h"
 #include "nsIWebProgressListener.h"
 #include "nsIPrincipal.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "nsTHashMap.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/WindowContext.h"
 
 namespace mozilla {
 
 // Global map: browserId -> BounceTrackingState
-static StaticAutoPtr<nsTHashMap<uint64_t, RefPtr<BounceTrackingState>>>
+static StaticAutoPtr<nsTHashMap<uint64_t, WeakPtr<BounceTrackingState>>>
     sBounceTrackingStates;
 
 NS_IMPL_ISUPPORTS(BounceTrackingState, nsIWebProgressListener,
                   nsISupportsWeakReference);
 
 BounceTrackingState::BounceTrackingState() {
-  MOZ_ASSERT(StaticPrefs::privacy_bounceTrackingProtection_enabled_AtStartup());
+  MOZ_ASSERT(StaticPrefs::privacy_bounceTrackingProtection_mode() ==
+                 nsIBounceTrackingProtection::MODE_ENABLED ||
+             StaticPrefs::privacy_bounceTrackingProtection_mode() ==
+                 nsIBounceTrackingProtection::MODE_ENABLED_DRY_RUN);
   mBounceTrackingProtection = BounceTrackingProtection::GetSingleton();
 };
 
 BounceTrackingState::~BounceTrackingState() {
+  MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Verbose,
+          ("BounceTrackingState destructor"));
+
   if (sBounceTrackingStates) {
     sBounceTrackingStates->Remove(mBrowserId);
+  }
+  if (mClientBounceDetectionTimeout) {
+    mClientBounceDetectionTimeout->Cancel();
+    mClientBounceDetectionTimeout = nullptr;
   }
 }
 
 // static
 already_AddRefed<BounceTrackingState> BounceTrackingState::GetOrCreate(
-    dom::BrowsingContextWebProgress* aWebProgress) {
-  MOZ_ASSERT(aWebProgress);
+    dom::BrowsingContextWebProgress* aWebProgress, nsresult& aRv) {
+  aRv = NS_OK;
 
-  if (!ShouldCreateBounceTrackingStateForWebProgress(aWebProgress)) {
+  if (!aWebProgress) {
+    aRv = NS_ERROR_INVALID_ARG;
     return nullptr;
   }
 
-  // Create BounceTrackingState instance and populate the global
-  // BounceTrackingState map.
-  if (!sBounceTrackingStates) {
-    sBounceTrackingStates =
-        new nsTHashMap<nsUint64HashKey, RefPtr<BounceTrackingState>>();
-    ClearOnShutdown(&sBounceTrackingStates);
+  // Check if we should even apply BTP for this environment. This depends on the
+  // feature prefs and the web progress itself.
+  if (!ShouldCreateBounceTrackingStateForWebProgress(aWebProgress)) {
+    // The call below ensures we record the disabled state in telemetry. In
+    // MODE_DISABLED we may never hit BounceTrackingProtection::GetSingleton and
+    // thus would skip on recording telemetry.
+    if (StaticPrefs::privacy_bounceTrackingProtection_mode() ==
+        nsIBounceTrackingProtection::MODE_DISABLED) {
+      BounceTrackingProtection::RecordModePrefTelemetry();
+    }
+    return nullptr;
   }
 
   dom::BrowsingContext* browsingContext = aWebProgress->GetBrowsingContext();
@@ -65,29 +91,112 @@ already_AddRefed<BounceTrackingState> BounceTrackingState::GetOrCreate(
     return nullptr;
   }
   uint64_t browserId = browsingContext->BrowserId();
-  bool createdNew;
-  RefPtr<BounceTrackingState> bounceTrackingState =
-      do_AddRef(sBounceTrackingStates->LookupOrInsertWith(browserId, [&] {
-        createdNew = true;
-        return do_AddRef(new BounceTrackingState());
-      }));
 
-  if (createdNew) {
-    nsresult rv = bounceTrackingState->Init(aWebProgress);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return nullptr;
+  // Check if there is already a BounceTrackingState for the given browser.
+  if (sBounceTrackingStates) {
+    WeakPtr<BounceTrackingState> existingBTS =
+        sBounceTrackingStates->Get(browserId);
+    if (existingBTS) {
+      // Return a strong reference.
+      return do_AddRef(existingBTS.get());
     }
   }
 
-  return bounceTrackingState.forget();
+  // Create a new BounceTracking state, initialize it and insert it into the
+  // map, then return it to the caller.
+  RefPtr<BounceTrackingState> newBTS = new BounceTrackingState();
+
+  aRv = newBTS->Init(aWebProgress);
+  if (NS_FAILED(aRv)) {
+    NS_WARNING("Failed to initialize BounceTrackingState.");
+    return nullptr;
+  }
+
+  // Now that we know that we'll keep this BounceTrackingState lazily initialize
+  // the global map
+  if (!sBounceTrackingStates) {
+    sBounceTrackingStates =
+        new nsTHashMap<nsUint64HashKey, WeakPtr<BounceTrackingState>>();
+    ClearOnShutdown(&sBounceTrackingStates);
+  }
+  sBounceTrackingStates->InsertOrUpdate(browserId, newBTS);
+
+  return newBTS.forget();
 };
+
+// static
+void BounceTrackingState::ResetAll() { Reset(nullptr, nullptr); }
+
+// static
+void BounceTrackingState::DestroyAll() {
+  MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug, ("%s", __FUNCTION__));
+  if (!sBounceTrackingStates) {
+    return;
+  }
+
+  // Fully reset all BounceTrackingStates, so even if some don't get destroyed
+  // straight away things like running timers are stopped.
+  BounceTrackingState::Reset(nullptr, nullptr);
+
+  // Destroy all BounceTrackingState objects.
+  for (auto iter = sBounceTrackingStates->Iter(); !iter.Done(); iter.Next()) {
+    WeakPtr<BounceTrackingState> bts = iter.Data();
+    // Need to remove the element from the map prior to calling Destroy()
+    // because the destructor also updates the map and we can't iterate and
+    // externally modify the map at the same time. This way the Remove() call of
+    // the destructor is a no-op.
+    iter.Remove();
+    if (!bts) {
+      continue;
+    }
+    // Destroy the BounceTrackingState by dropping references to it. This is
+    // best effort. If something still holds a reference it still stay alive
+    // longer.
+    // Tell the web progress to drop the BTS reference.
+    RefPtr<dom::BrowsingContext> browsingContext =
+        bts->CurrentBrowsingContext();
+    if (!browsingContext) {
+      continue;
+    }
+    dom::BrowsingContextWebProgress* webProgress =
+        browsingContext->Canonical()->GetWebProgress();
+    if (!webProgress) {
+      continue;
+    }
+    webProgress->DropBounceTrackingState();
+  }
+
+  // Clean up the map.
+  sBounceTrackingStates = nullptr;
+}
+
+// static
+void BounceTrackingState::ResetAllForOriginAttributes(
+    const OriginAttributes& aOriginAttributes) {
+  Reset(&aOriginAttributes, nullptr);
+}
+
+// static
+void BounceTrackingState::ResetAllForOriginAttributesPattern(
+    const OriginAttributesPattern& aPattern) {
+  Reset(nullptr, &aPattern);
+}
 
 nsresult BounceTrackingState::Init(
     dom::BrowsingContextWebProgress* aWebProgress) {
+  MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
+          ("BounceTrackingState::%s", __FUNCTION__));
+
+  MOZ_ASSERT(!mIsInitialized,
+             "BounceTrackingState must not be initialized twice.");
+  mIsInitialized = true;
+
   NS_ENSURE_ARG_POINTER(aWebProgress);
-  NS_ENSURE_TRUE(
-      StaticPrefs::privacy_bounceTrackingProtection_enabled_AtStartup(),
-      NS_ERROR_NOT_AVAILABLE);
+  NS_ENSURE_TRUE(StaticPrefs::privacy_bounceTrackingProtection_mode() ==
+                         nsIBounceTrackingProtection::MODE_ENABLED ||
+                     StaticPrefs::privacy_bounceTrackingProtection_mode() ==
+                         nsIBounceTrackingProtection::MODE_ENABLED_DRY_RUN,
+                 NS_ERROR_NOT_AVAILABLE);
   NS_ENSURE_TRUE(mBounceTrackingProtection, NS_ERROR_FAILURE);
 
   // Store the browser ID so we can get the associated BC later without having
@@ -95,28 +204,87 @@ nsresult BounceTrackingState::Init(
   dom::BrowsingContext* browsingContext = aWebProgress->GetBrowsingContext();
   NS_ENSURE_TRUE(browsingContext, NS_ERROR_FAILURE);
   mBrowserId = browsingContext->BrowserId();
+  // Create a copy of the BC's OriginAttributes so we can use it later without
+  // having to hold a reference to the BC.
+  mOriginAttributes = browsingContext->OriginAttributesRef();
+  MOZ_ASSERT(mOriginAttributes.mPartitionKey.IsEmpty(),
+             "Top level BCs mus not have a partition key.");
 
   // Add a listener for window load. See BounceTrackingState::OnStateChange for
   // the listener code.
-  nsresult rv = aWebProgress->AddProgressListener(
-      this, nsIWebProgress::NOTIFY_STATE_WINDOW);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return NS_OK;
+  return aWebProgress->AddProgressListener(this,
+                                           nsIWebProgress::NOTIFY_STATE_WINDOW);
 }
 
 void BounceTrackingState::ResetBounceTrackingRecord() {
-  mBounceTrackingRecord = nullptr;
+  mBounceTrackingRecord = Nothing();
 }
 
-BounceTrackingRecord* BounceTrackingState::GetBounceTrackingRecord() {
+void BounceTrackingState::OnBrowsingContextDiscarded() {
+  MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug, ("%s", __FUNCTION__));
+  // We are about to be destroyed because the tab closed. This marks the end of
+  // the extended navigation (if any). Record stateful bounces.
+
+  // No ongoing extended navigation, nothing to record.
+  if (!mBounceTrackingRecord) {
+    return;
+  }
+
+  MOZ_ASSERT(mBounceTrackingProtection);
+  nsresult rv = mBounceTrackingProtection->RecordStatefulBounces(this);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to record stateful bounces on BrowsingContext discard.");
+  }
+}
+
+const Maybe<BounceTrackingRecord>&
+BounceTrackingState::GetBounceTrackingRecord() {
   return mBounceTrackingRecord;
 }
 
 nsCString BounceTrackingState::Describe() {
+  nsAutoCString oaSuffix;
+  OriginAttributesRef().CreateSuffix(oaSuffix);
+
   return nsPrintfCString(
-      "{ mBounceTrackingRecord: %s }",
-      mBounceTrackingRecord ? mBounceTrackingRecord->Describe().get() : "null");
+      "{ mBounceTrackingRecord: %s, mOriginAttributes: %s, mBrowserId: %" PRIu64
+      " }",
+      mBounceTrackingRecord ? mBounceTrackingRecord->Describe().get() : "null",
+      oaSuffix.get(), mBrowserId);
+}
+
+// static
+void BounceTrackingState::Reset(const OriginAttributes* aOriginAttributes,
+                                const OriginAttributesPattern* aPattern) {
+  if (aOriginAttributes || aPattern) {
+    MOZ_ASSERT((aOriginAttributes != nullptr) != (aPattern != nullptr),
+               "Must not pass both aOriginAttributes and aPattern.");
+  }
+
+  if (!sBounceTrackingStates) {
+    return;
+  }
+  for (const WeakPtr<BounceTrackingState>& btsWeak :
+       sBounceTrackingStates->Values()) {
+    if (!btsWeak) {
+      continue;
+    }
+    RefPtr<BounceTrackingState> bounceTrackingState(btsWeak);
+
+    if ((aOriginAttributes &&
+         *aOriginAttributes != bounceTrackingState->OriginAttributesRef()) ||
+        (aPattern &&
+         !aPattern->Matches(bounceTrackingState->OriginAttributesRef()))) {
+      continue;
+    }
+    if (bounceTrackingState->mClientBounceDetectionTimeout) {
+      MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
+              ("%s: mClientBounceDetectionTimeout->Cancel()", __FUNCTION__));
+      bounceTrackingState->mClientBounceDetectionTimeout->Cancel();
+      bounceTrackingState->mClientBounceDetectionTimeout = nullptr;
+    }
+    bounceTrackingState->ResetBounceTrackingRecord();
+  }
 }
 
 // static
@@ -124,8 +292,10 @@ bool BounceTrackingState::ShouldCreateBounceTrackingStateForWebProgress(
     dom::BrowsingContextWebProgress* aWebProgress) {
   NS_ENSURE_TRUE(aWebProgress, false);
 
-  // Feature is globally disabled.
-  if (!StaticPrefs::privacy_bounceTrackingProtection_enabled_AtStartup()) {
+  uint8_t mode = StaticPrefs::privacy_bounceTrackingProtection_mode();
+  // Classification / purging is disabled.
+  if (mode != nsIBounceTrackingProtection::MODE_ENABLED &&
+      mode != nsIBounceTrackingProtection::MODE_ENABLED_DRY_RUN) {
     return false;
   }
 
@@ -137,13 +307,106 @@ bool BounceTrackingState::ShouldCreateBounceTrackingStateForWebProgress(
     return false;
   }
 
+  bool isPrivate = browsingContext->UsePrivateBrowsing();
+  uint32_t cookieBehavior = nsICookieManager::GetCookieBehavior(isPrivate);
+  if (cookieBehavior == nsICookieService::BEHAVIOR_ACCEPT ||
+      cookieBehavior == nsICookieService::BEHAVIOR_REJECT) {
+    MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Verbose,
+            ("%s: Skip on cookie behavior %i", __FUNCTION__, cookieBehavior));
+    return false;
+  }
+
   return true;
+}
+
+// static
+bool BounceTrackingState::ShouldTrackPrincipal(nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(aPrincipal);
+
+  // Only track content principals.
+  if (!aPrincipal->GetIsContentPrincipal()) {
+    return false;
+  }
+
+  // Skip non http schemes.
+  if (!aPrincipal->SchemeIs("http") && !aPrincipal->SchemeIs("https")) {
+    return false;
+  }
+
+  return true;
+}
+
+// static
+nsresult BounceTrackingState::HasBounceTrackingStateForSite(
+    const nsACString& aSiteHost, const OriginAttributes& aOriginAttributes,
+    bool& aResult) {
+  aResult = false;
+  NS_ENSURE_TRUE(aSiteHost.Length(), NS_ERROR_FAILURE);
+
+  if (!sBounceTrackingStates) {
+    return NS_OK;
+  }
+
+  // Iterate over all browsing contexts which have a bounce tracking state. Use
+  // the content principal base domain field to determine whether a BC has an
+  // active site that matches aSiteHost.
+  for (const WeakPtr<BounceTrackingState>& btsWeak :
+       sBounceTrackingStates->Values()) {
+    if (!btsWeak) {
+      continue;
+    }
+    RefPtr<BounceTrackingState> state(btsWeak);
+
+    // Skip BTS of unrelated OA. These are not relevant for the caller as their
+    // state is isolated.
+    if (state->mOriginAttributes != aOriginAttributes) {
+      continue;
+    }
+
+    // For each active BTS get the current window's document principal.
+    RefPtr<dom::BrowsingContext> browsingContext =
+        state->CurrentBrowsingContext();
+
+    if (!browsingContext || browsingContext->IsDiscarded() ||
+        browsingContext->IsInBFCache()) {
+      continue;
+    }
+
+    RefPtr<dom::WindowGlobalParent> currentWindow =
+        browsingContext->Canonical()->GetCurrentWindowGlobal();
+    if (!currentWindow) {
+      continue;
+    }
+
+    nsCOMPtr<nsIPrincipal> principal = currentWindow->DocumentPrincipal();
+    if (NS_WARN_IF(!principal)) {
+      continue;
+    }
+
+    // Lastly, check if the site matches.
+    nsAutoCString baseDomain;
+    nsresult rv = principal->GetBaseDomain(baseDomain);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      continue;
+    }
+
+    if (aSiteHost.Equals(baseDomain)) {
+      aResult = true;
+      return NS_OK;
+    }
+  }
+
+  return NS_OK;
 }
 
 already_AddRefed<dom::BrowsingContext>
 BounceTrackingState::CurrentBrowsingContext() {
   MOZ_ASSERT(mBrowserId != 0);
   return dom::BrowsingContext::GetCurrentTopByBrowserId(mBrowserId);
+}
+
+const OriginAttributes& BounceTrackingState::OriginAttributesRef() {
+  return mOriginAttributes;
 }
 
 nsresult BounceTrackingState::OnDocumentStartRequest(nsIChannel* aChannel) {
@@ -154,6 +417,10 @@ nsresult BounceTrackingState::OnDocumentStartRequest(nsIChannel* aChannel) {
   nsresult rv = aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // Used to keep track of whether we added entries to the site list that are
+  // not "null".
+  bool siteListIsEmpty = true;
+
   // Collect uri list including any redirects.
   nsTArray<nsCString> siteList;
 
@@ -163,8 +430,8 @@ nsresult BounceTrackingState::OnDocumentStartRequest(nsIChannel* aChannel) {
     rv = redirectHistoryEntry->GetPrincipal(getter_AddRefs(principal));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    // Filter out non-content principals.
-    if (!principal->GetIsContentPrincipal()) {
+    if (!BounceTrackingState::ShouldTrackPrincipal(principal)) {
+      siteList.AppendElement("null"_ns);
       continue;
     }
 
@@ -172,7 +439,12 @@ nsresult BounceTrackingState::OnDocumentStartRequest(nsIChannel* aChannel) {
     rv = principal->GetBaseDomain(baseDomain);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    siteList.AppendElement(baseDomain);
+    if (NS_WARN_IF(baseDomain.IsEmpty())) {
+      siteList.AppendElement("null");
+    } else {
+      siteList.AppendElement(baseDomain);
+      siteListIsEmpty = false;
+    }
   }
 
   // Add site via the current URI which is the end of the chain.
@@ -180,18 +452,35 @@ nsresult BounceTrackingState::OnDocumentStartRequest(nsIChannel* aChannel) {
   rv = aChannel->GetURI(getter_AddRefs(channelURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsCOMPtr<nsIEffectiveTLDService> tldService =
-      do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
+  if (channelURI->SchemeIs("http") || channelURI->SchemeIs("https")) {
+    nsCOMPtr<nsIEffectiveTLDService> tldService =
+        do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID, &rv);
+    NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString siteHost;
-  rv = tldService->GetSchemelessSite(channelURI, siteHost);
+    nsAutoCString siteHost;
+    rv = tldService->GetSchemelessSite(channelURI, siteHost);
 
-  if (NS_FAILED(rv)) {
-    NS_WARNING("Failed to retrieve site for final channel URI.");
+    // Skip URIs where we can't get a site host.
+    if (NS_FAILED(rv)) {
+      MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
+              ("%s: Failed to get site host from channelURI: %s", __FUNCTION__,
+               channelURI->GetSpecOrDefault().get()));
+      siteList.AppendElement("null"_ns);
+    } else {
+      MOZ_ASSERT(!siteHost.IsEmpty(), "siteHost should not be empty.");
+      siteList.AppendElement(siteHost);
+      siteListIsEmpty = false;
+    }
   }
 
-  siteList.AppendElement(siteHost);
+  // Do not record empty site lists. This can happen if none of the principals
+  // are suitable for tracking. It includes when OnDocumentStartRequest is
+  // called for the initial about:blank.
+  if (siteListIsEmpty) {
+    MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
+            ("%s: skip empty site list.", __FUNCTION__));
+    return NS_OK;
+  }
 
   return OnResponseReceived(siteList);
 }
@@ -306,23 +595,23 @@ nsresult BounceTrackingState::OnStartNavigation(
 
   // If origin is an opaque origin, set initialHost to empty host. Strictly
   // speaking we only need to check IsNullPrincipal, but we're generally only
-  // interested in content principals. Other principal types are not considered
-  // to be trackers.
-  if (!aTriggeringPrincipal->GetIsContentPrincipal()) {
+  // interested in content principals with http/s scheme. Other principal types
+  // or schemes are not considered to be trackers.
+  if (!BounceTrackingState::ShouldTrackPrincipal(aTriggeringPrincipal)) {
     siteHost = "";
-  }
-
-  // obtain site
-  nsresult rv = aTriggeringPrincipal->GetBaseDomain(siteHost);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    siteHost = "";
+  } else {
+    // obtain site
+    nsresult rv = aTriggeringPrincipal->GetBaseDomain(siteHost);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      siteHost = "";
+    }
   }
 
   // If navigable’s bounce tracking record is null: Set navigable’s bounce
   // tracking record to a new bounce tracking record with initial host set to
   // initialHost.
   if (!mBounceTrackingRecord) {
-    mBounceTrackingRecord = new BounceTrackingRecord();
+    mBounceTrackingRecord = Some(BounceTrackingRecord());
     mBounceTrackingRecord->SetInitialHost(siteHost);
 
     MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
@@ -343,18 +632,22 @@ nsresult BounceTrackingState::OnStartNavigation(
           ("%s: site: %s, hasUserActivation? %d", __FUNCTION__, siteHost.get(),
            hasUserActivation));
   if (hasUserActivation) {
-    rv = mBounceTrackingProtection->RecordStatefulBounces(this);
+    nsresult rv = mBounceTrackingProtection->RecordStatefulBounces(this);
     NS_ENSURE_SUCCESS(rv, rv);
 
     MOZ_ASSERT(!mBounceTrackingRecord);
-    mBounceTrackingRecord = new BounceTrackingRecord();
+    mBounceTrackingRecord = Some(BounceTrackingRecord());
     mBounceTrackingRecord->SetInitialHost(siteHost);
 
     return NS_OK;
   }
 
   // There is no transient user activation. Add host as a bounce candidate.
-  mBounceTrackingRecord->AddBounceHost(siteHost);
+  if (siteHost.IsEmpty()) {
+    mBounceTrackingRecord->AddBounceHost("null"_ns);
+  } else {
+    mBounceTrackingRecord->AddBounceHost(siteHost);
+  }
 
   return NS_OK;
 }
@@ -363,7 +656,12 @@ nsresult BounceTrackingState::OnStartNavigation(
 
 nsresult BounceTrackingState::OnResponseReceived(
     const nsTArray<nsCString>& aSiteList) {
-  NS_ENSURE_TRUE(mBounceTrackingRecord, NS_ERROR_FAILURE);
+#ifdef DEBUG
+  MOZ_ASSERT(!aSiteList.IsEmpty(), "siteList should not be empty.");
+  for (const nsCString& site : aSiteList) {
+    MOZ_ASSERT(!site.IsEmpty(), "site should not be an empty string.");
+  }
+#endif
 
   // Logging
   if (MOZ_LOG_TEST(gBounceTrackingProtectionLog, LogLevel::Debug)) {
@@ -379,9 +677,16 @@ nsresult BounceTrackingState::OnResponseReceived(
              siteListStr.get()));
   }
 
+  // Record should exist by now. It gets created in OnStartNavigation.
+  // TODO: Bug 1894936
+  if (!mBounceTrackingRecord) {
+    return NS_ERROR_FAILURE;
+  }
+
   // Check if there is still an active timeout. This shouldn't happen since
   // OnStartNavigation already cancels it.
-  if (NS_WARN_IF(mClientBounceDetectionTimeout)) {
+  // TODO: Bug 1894936
+  if (mClientBounceDetectionTimeout) {
     MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
             ("%s: mClientBounceDetectionTimeout->Cancel()", __FUNCTION__));
     mClientBounceDetectionTimeout->Cancel();
@@ -409,8 +714,12 @@ nsresult BounceTrackingState::OnResponseReceived(
             ("%s: Calling RecordStatefulBounces after timeout.", __FUNCTION__));
 
         BounceTrackingState* bounceTrackingState = thisWeak;
-        bounceTrackingState->mBounceTrackingProtection->RecordStatefulBounces(
-            bounceTrackingState);
+        DebugOnly<nsresult> rv =
+            bounceTrackingState->mBounceTrackingProtection
+                ->RecordStatefulBounces(bounceTrackingState);
+        NS_WARNING_ASSERTION(
+            NS_SUCCEEDED(rv),
+            "Running RecordStatefulBounces after a timeout failed.");
 
         bounceTrackingState->mClientBounceDetectionTimeout = nullptr;
       },
@@ -432,13 +741,73 @@ nsresult BounceTrackingState::OnDocumentLoaded(
     nsIPrincipal* aDocumentPrincipal) {
   NS_ENSURE_ARG_POINTER(aDocumentPrincipal);
 
-  // Assert: navigable’s bounce tracking record is not null.
-  NS_ENSURE_TRUE(mBounceTrackingRecord, NS_ERROR_FAILURE);
-
   // Logging
   if (MOZ_LOG_TEST(gBounceTrackingProtectionLog, LogLevel::Debug)) {
     nsAutoCString origin;
     nsresult rv = aDocumentPrincipal->GetOrigin(origin);
+    if (NS_FAILED(rv)) {
+      origin = "err";
+    }
+    MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Debug,
+            ("%s: origin: %s, this: %s", __FUNCTION__, origin.get(),
+             Describe().get()));
+  }
+
+  bool shouldTrackPrincipal =
+      BounceTrackingState::ShouldTrackPrincipal(aDocumentPrincipal);
+
+  // Check if we need to log a warning to the DevTools console because we have
+  // previously purged this site. This is only relevant to check if we actually
+  // monitor this principal for bounce tracking.
+  if (shouldTrackPrincipal) {
+    mBounceTrackingProtection->MaybeLogPurgedWarningForSite(aDocumentPrincipal,
+                                                            this);
+  }
+
+  // Assert: navigable’s bounce tracking record is not null.
+  // TODO: Bug 1894936
+  if (!mBounceTrackingRecord) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsAutoCString siteHost;
+  if (!shouldTrackPrincipal) {
+    siteHost = "";
+  } else {
+    nsresult rv = aDocumentPrincipal->GetBaseDomain(siteHost);
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
+
+  // Set the navigable’s bounce tracking record's final host to the host of
+  // finalSite.
+  mBounceTrackingRecord->SetFinalHost(siteHost);
+
+  return NS_OK;
+}
+
+nsresult BounceTrackingState::OnCookieWrite(const nsACString& aSiteHost) {
+  NS_ENSURE_TRUE(!aSiteHost.IsEmpty(), NS_ERROR_FAILURE);
+
+  MOZ_LOG(gBounceTrackingProtectionLog, LogLevel::Verbose,
+          ("%s: OnCookieWrite: %s.", __FUNCTION__,
+           PromiseFlatCString(aSiteHost).get()));
+
+  if (!mBounceTrackingRecord) {
+    return NS_OK;
+  }
+
+  mBounceTrackingRecord->AddStorageAccessHost(aSiteHost);
+  return NS_OK;
+}
+
+nsresult BounceTrackingState::OnStorageAccess(nsIPrincipal* aPrincipal) {
+  NS_ENSURE_ARG_POINTER(aPrincipal);
+  // The caller should already filter out principals for us.
+  MOZ_ASSERT(BounceTrackingState::ShouldTrackPrincipal(aPrincipal));
+
+  if (MOZ_LOG_TEST(gBounceTrackingProtectionLog, LogLevel::Debug)) {
+    nsAutoCString origin;
+    nsresult rv = aPrincipal->GetOrigin(origin);
     if (NS_FAILED(rv)) {
       origin = "err";
     }
@@ -449,17 +818,16 @@ nsresult BounceTrackingState::OnDocumentLoaded(
                                    : "null"));
   }
 
-  nsAutoCString siteHost;
-  if (!aDocumentPrincipal->GetIsContentPrincipal()) {
-    siteHost = "";
-  } else {
-    nsresult rv = aDocumentPrincipal->GetBaseDomain(siteHost);
-    NS_ENSURE_SUCCESS(rv, rv);
+  if (!mBounceTrackingRecord) {
+    return NS_OK;
   }
 
-  // Set the navigable’s bounce tracking record's final host to the host of
-  // finalSite.
-  mBounceTrackingRecord->SetFinalHost(siteHost);
+  nsAutoCString siteHost;
+  nsresult rv = aPrincipal->GetBaseDomain(siteHost);
+  NS_ENSURE_SUCCESS(rv, rv);
+  NS_ENSURE_TRUE(!siteHost.IsEmpty(), NS_ERROR_FAILURE);
+
+  mBounceTrackingRecord->AddStorageAccessHost(siteHost);
 
   return NS_OK;
 }

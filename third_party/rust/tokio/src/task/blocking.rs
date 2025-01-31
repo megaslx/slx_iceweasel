@@ -70,11 +70,12 @@ cfg_rt_multi_thread! {
     /// This function panics if called from a [`current_thread`] runtime.
     ///
     /// [`current_thread`]: fn@crate::runtime::Builder::new_current_thread
+    #[track_caller]
     pub fn block_in_place<F, R>(f: F) -> R
     where
         F: FnOnce() -> R,
     {
-        crate::runtime::thread_pool::block_in_place(f)
+        crate::runtime::scheduler::block_in_place(f)
     }
 }
 
@@ -102,14 +103,21 @@ cfg_rt! {
     /// their own. If you want to spawn an ordinary thread, you should use
     /// [`thread::spawn`] instead.
     ///
-    /// Closures spawned using `spawn_blocking` cannot be cancelled. When you shut
-    /// down the executor, it will wait indefinitely for all blocking operations to
+    /// Be aware that tasks spawned using `spawn_blocking` cannot be aborted
+    /// because they are not async. If you call [`abort`] on a `spawn_blocking`
+    /// task, then this *will not have any effect*, and the task will continue
+    /// running normally. The exception is if the task has not started running
+    /// yet; in that case, calling `abort` may prevent the task from starting.
+    ///
+    /// When you shut down the executor, it will wait indefinitely for all blocking operations to
     /// finish. You can use [`shutdown_timeout`] to stop waiting for them after a
     /// certain timeout. Be aware that this will still not cancel the tasks — they
-    /// are simply allowed to keep running after the method returns.
+    /// are simply allowed to keep running after the method returns.  It is possible
+    /// for a blocking task to be cancelled if it has not yet started running, but this
+    /// is not guaranteed.
     ///
     /// Note that if you are using the single threaded runtime, this function will
-    /// still spawn additional threads for blocking operations. The basic
+    /// still spawn additional threads for blocking operations. The current-thread
     /// scheduler's single thread is only used for asynchronous code.
     ///
     /// # Related APIs and patterns for bridging asynchronous and blocking code
@@ -135,11 +143,13 @@ cfg_rt! {
     /// [blocking]: ../index.html#cpu-bound-tasks-and-blocking-code
     /// [rayon]: https://docs.rs/rayon
     /// [`mpsc channel`]: crate::sync::mpsc
-    /// [`SyncIoBridge`]: https://docs.rs/tokio-util/0.6/tokio_util/io/struct.SyncIoBridge.html
+    /// [`SyncIoBridge`]: https://docs.rs/tokio-util/latest/tokio_util/io/struct.SyncIoBridge.html
     /// [hyper]: https://docs.rs/hyper
     /// [`thread::spawn`]: fn@std::thread::spawn
     /// [`shutdown_timeout`]: fn@crate::runtime::Runtime::shutdown_timeout
     /// [bridgesync]: https://tokio.rs/tokio/topics/bridging
+    /// [`AtomicBool`]: struct@std::sync::atomic::AtomicBool
+    /// [`abort`]: crate::task::JoinHandle::abort
     ///
     /// # Examples
     ///

@@ -47,7 +47,7 @@ nsresult SVGFEMergeElement::BindToTree(BindContext& aCtx, nsINode& aParent) {
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feMerge);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEMergeElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -55,7 +55,7 @@ nsresult SVGFEMergeElement::BindToTree(BindContext& aCtx, nsINode& aParent) {
 
 SVGElement::StringAttributesInfo SVGFEMergeElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

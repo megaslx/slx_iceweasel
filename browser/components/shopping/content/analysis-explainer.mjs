@@ -23,18 +23,20 @@ const VALID_EXPLAINER_L10N_IDS = new Map([
  * Class for displaying details about letter grades, adjusted rating, and highlights.
  */
 class AnalysisExplainer extends MozLitElement {
+  static properties = {
+    productUrl: { type: String, reflect: true },
+  };
+
+  static get queries() {
+    return {
+      reviewQualityExplainerLink: "#review-quality-url",
+    };
+  }
+
   getGradesDescriptionTemplate() {
     return html`
       <section id="analysis-explainer-grades-wrapper">
         <p data-l10n-id="shopping-analysis-explainer-grades-intro"></p>
-        <ul id="analysis-explainer-grades-list">
-          <li
-            data-l10n-id="shopping-analysis-explainer-higher-grade-description"
-          ></li>
-          <li
-            data-l10n-id="shopping-analysis-explainer-lower-grade-description"
-          ></li>
-        </ul>
       </section>
     `;
   }
@@ -64,10 +66,6 @@ class AnalysisExplainer extends MozLitElement {
   getGradingScaleListTemplate() {
     return html`
       <section id="analysis-explainer-grading-scale-wrapper">
-        <p
-          id="analysis-explainer-grading-scale-header"
-          data-l10n-id="shopping-analysis-explainer-review-grading-scale"
-        ></p>
         <dl id="analysis-explainer-grading-scale-list">
           ${this.createGradingScaleEntry(
             ["A", "B"],
@@ -86,6 +84,51 @@ class AnalysisExplainer extends MozLitElement {
     `;
   }
 
+  getRetailerDisplayName() {
+    if (!this.productUrl) {
+      return null;
+    }
+    let url = new URL(this.productUrl);
+    let hostname = url.hostname;
+    let displayNames = {
+      "www.amazon.com": "Amazon",
+      "www.amazon.de": "Amazon",
+      "www.amazon.fr": "Amazon",
+      // only other regional domain is bestbuy.ca
+      "www.bestbuy.com": "Best Buy",
+      // regional urls redirect to walmart.com
+      "www.walmart.com": "Walmart",
+    };
+    return displayNames[hostname];
+  }
+
+  handleReviewQualityUrlClicked(e) {
+    if (e.target.localName == "a" && e.button == 0) {
+      Glean.shopping.surfaceShowQualityExplainerUrlClicked.record();
+    }
+  }
+
+  createReviewsExplainer() {
+    const retailer = this.getRetailerDisplayName();
+
+    if (retailer) {
+      return html`
+        <p
+          data-l10n-id="shopping-analysis-explainer-highlights-description"
+          data-l10n-args="${JSON.stringify({ retailer })}"
+        ></p>
+      `;
+    }
+
+    return html`
+      <p
+        data-l10n-id="shopping-analysis-explainer-highlights-description-unknown-retailer"
+      ></p>
+    `;
+  }
+
+  // Bug 1857620: rather than manually set the utm parameters on the SUMO link,
+  // we should instead update moz-support-link to allow arbitrary utm parameters.
   render() {
     return html`
       <link
@@ -99,22 +142,26 @@ class AnalysisExplainer extends MozLitElement {
       >
         <div slot="content">
           <div id="analysis-explainer-wrapper">
-            <p data-l10n-id="shopping-analysis-explainer-intro"></p>
+            <p data-l10n-id="shopping-analysis-explainer-intro2"></p>
             ${this.getGradesDescriptionTemplate()}
+            ${this.getGradingScaleListTemplate()}
             <p
               data-l10n-id="shopping-analysis-explainer-adjusted-rating-description"
             ></p>
+            ${this.createReviewsExplainer()}
             <p
-              data-l10n-id="shopping-analysis-explainer-highlights-description"
-            ></p>
-            <p data-l10n-id="shopping-analysis-explainer-learn-more">
+              data-l10n-id="shopping-analysis-explainer-learn-more2"
+              @click=${this.handleReviewQualityUrlClicked}
+            >
               <a
-                is="moz-support-link"
-                support-page="todo"
+                id="review-quality-url"
                 data-l10n-name="review-quality-url"
+                target="_blank"
+                href="${window.RPMGetFormatURLPref(
+                  "app.support.baseURL"
+                )}review-checker-review-quality?as=u&utm_source=inproduct&utm_campaign=learn-more&utm_term=core-sidebar"
               ></a>
             </p>
-            ${this.getGradingScaleListTemplate()}
           </div>
         </div>
       </shopping-card>

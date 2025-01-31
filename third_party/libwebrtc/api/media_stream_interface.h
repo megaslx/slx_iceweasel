@@ -17,20 +17,22 @@
 #define API_MEDIA_STREAM_INTERFACE_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "absl/types/optional.h"
+#include "api/audio/audio_processing_statistics.h"
 #include "api/audio_options.h"
+#include "api/ref_count.h"
 #include "api/scoped_refptr.h"
 #include "api/video/recordable_encoded_frame.h"
 #include "api/video/video_frame.h"
 #include "api/video/video_sink_interface.h"
 #include "api/video/video_source_interface.h"
 #include "api/video_track_source_constraints.h"
-#include "modules/audio_processing/include/audio_processing_statistics.h"
-#include "rtc_base/ref_count.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/system/rtc_export.h"
 
 namespace webrtc {
@@ -54,7 +56,7 @@ class NotifierInterface {
 
 // Base class for sources. A MediaStreamTrack has an underlying source that
 // provides media. A source can be shared by multiple tracks.
-class RTC_EXPORT MediaSourceInterface : public rtc::RefCountInterface,
+class RTC_EXPORT MediaSourceInterface : public webrtc::RefCountInterface,
                                         public NotifierInterface {
  public:
   enum SourceState { kInitializing, kLive, kEnded, kMuted };
@@ -69,7 +71,7 @@ class RTC_EXPORT MediaSourceInterface : public rtc::RefCountInterface,
 
 // C++ version of MediaStreamTrack.
 // See: https://www.w3.org/TR/mediacapture-streams/#mediastreamtrack
-class RTC_EXPORT MediaStreamTrackInterface : public rtc::RefCountInterface,
+class RTC_EXPORT MediaStreamTrackInterface : public webrtc::RefCountInterface,
                                              public NotifierInterface {
  public:
   enum TrackState {
@@ -129,7 +131,7 @@ class VideoTrackSourceInterface : public MediaSourceInterface,
   // depending on video codec.
   // TODO(perkj): Remove this once denoising is done by the source, and not by
   // the encoder.
-  virtual absl::optional<bool> needs_denoising() const = 0;
+  virtual std::optional<bool> needs_denoising() const = 0;
 
   // Returns false if no stats are available, e.g, for a remote source, or a
   // source which has not seen its first frame yet.
@@ -215,7 +217,7 @@ class AudioTrackSinkInterface {
                       int sample_rate,
                       size_t number_of_channels,
                       size_t number_of_frames,
-                      absl::optional<int64_t> absolute_capture_timestamp_ms) {
+                      std::optional<int64_t> absolute_capture_timestamp_ms) {
     // TODO(bugs.webrtc.org/10739): Deprecate the old OnData and make this one
     // pure virtual.
     return OnData(audio_data, bits_per_sample, sample_rate, number_of_channels,
@@ -267,7 +269,7 @@ class RTC_EXPORT AudioSourceInterface : public MediaSourceInterface {
 
 // Interface of the audio processor used by the audio track to collect
 // statistics.
-class AudioProcessorInterface : public rtc::RefCountInterface {
+class AudioProcessorInterface : public webrtc::RefCountInterface {
  public:
   struct AudioProcessorStatistics {
     bool typing_noise_detected = false;
@@ -321,7 +323,7 @@ typedef std::vector<rtc::scoped_refptr<VideoTrackInterface> > VideoTrackVector;
 // must be pushed down.
 //
 // Thus, this interface acts as simply a container for tracks.
-class MediaStreamInterface : public rtc::RefCountInterface,
+class MediaStreamInterface : public webrtc::RefCountInterface,
                              public NotifierInterface {
  public:
   virtual std::string id() const = 0;
@@ -348,23 +350,6 @@ class MediaStreamInterface : public rtc::RefCountInterface,
   }
   virtual bool RemoveTrack(rtc::scoped_refptr<VideoTrackInterface> track) {
     RTC_CHECK_NOTREACHED();
-  }
-  // Deprecated: Should use scoped_refptr versions rather than pointers.
-  [[deprecated("Pass a scoped_refptr")]] virtual bool AddTrack(
-      AudioTrackInterface* track) {
-    return AddTrack(rtc::scoped_refptr<AudioTrackInterface>(track));
-  }
-  [[deprecated("Pass a scoped_refptr")]] virtual bool AddTrack(
-      VideoTrackInterface* track) {
-    return AddTrack(rtc::scoped_refptr<VideoTrackInterface>(track));
-  }
-  [[deprecated("Pass a scoped_refptr")]] virtual bool RemoveTrack(
-      AudioTrackInterface* track) {
-    return RemoveTrack(rtc::scoped_refptr<AudioTrackInterface>(track));
-  }
-  [[deprecated("Pass a scoped_refptr")]] virtual bool RemoveTrack(
-      VideoTrackInterface* track) {
-    return RemoveTrack(rtc::scoped_refptr<VideoTrackInterface>(track));
   }
 
  protected:

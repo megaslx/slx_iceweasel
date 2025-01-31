@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-/* global EVENTS, gTelemetry */
+/* global EVENTS */
 
 // React & Redux
 const {
@@ -43,7 +43,7 @@ const {
   unhighlight,
 } = require("resource://devtools/client/accessibility/actions/accessibles.js");
 
-const Tree = createFactory(
+const VirtualizedTree = createFactory(
   require("resource://devtools/client/shared/components/VirtualizedTree.js")
 );
 // Reps
@@ -63,9 +63,6 @@ loader.lazyRequireGetter(
   "resource://devtools/client/shared/link.js",
   true
 );
-
-const TELEMETRY_NODE_INSPECTED_COUNT =
-  "devtools.accessibility.node_inspected_count";
 
 const TREE_DEPTH_PADDING_INCREMENT = 20;
 
@@ -147,17 +144,24 @@ class Accessible extends Component {
     this.update = this.update.bind(this);
   }
 
-  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
-  UNSAFE_componentWillMount() {
+  componentDidMount() {
     window.on(
       EVENTS.NEW_ACCESSIBLE_FRONT_INSPECTED,
       this.onAccessibleInspected
     );
   }
 
-  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
-  UNSAFE_componentWillReceiveProps({ accessibleFront }) {
-    const oldAccessibleFront = this.props.accessibleFront;
+  componentDidUpdate(prevProps) {
+    const oldAccessibleFront = prevProps.accessibleFront;
+    const { accessibleFront } = this.props;
+
+    if (
+      accessibleFront &&
+      !accessibleFront.isDestroyed() &&
+      accessibleFront !== oldAccessibleFront
+    ) {
+      window.emit(EVENTS.PROPERTIES_UPDATED);
+    }
 
     if (oldAccessibleFront) {
       if (
@@ -175,16 +179,6 @@ class Accessible extends Component {
       ACCESSIBLE_EVENTS.forEach(event =>
         accessibleFront.on(event, this.update)
       );
-    }
-  }
-
-  componentDidUpdate(prevProps) {
-    if (
-      this.props.accessibleFront &&
-      !this.props.accessibleFront.isDestroyed() &&
-      this.props.accessibleFront !== prevProps.accessibleFront
-    ) {
-      window.emit(EVENTS.PROPERTIES_UPDATED);
     }
   }
 
@@ -257,9 +251,7 @@ class Accessible extends Component {
   }
 
   async selectNode(nodeFront, reason = "accessibility") {
-    if (gTelemetry) {
-      gTelemetry.scalarAdd(TELEMETRY_NODE_INSPECTED_COUNT, 1);
-    }
+    Glean.devtoolsAccessibility.nodeInspectedCount.add(1);
 
     if (!this.props.toolbox) {
       return;
@@ -285,7 +277,7 @@ class Accessible extends Component {
     window.emit(EVENTS.NEW_ACCESSIBLE_FRONT_INSPECTED);
   }
 
-  openLink(link, e) {
+  openLink(link) {
     openContentLink(link);
   }
 
@@ -370,7 +362,7 @@ class Accessible extends Component {
     const { items, parents, accessibleFront, labelledby } = this.props;
 
     if (accessibleFront) {
-      return Tree({
+      return VirtualizedTree({
         ref: "props",
         key: "accessible-properties",
         itemHeight: TREE_ROW_HEIGHT,
@@ -490,7 +482,7 @@ const translateNodeFrontToGripWrapper = nodeFront => ({
 });
 
 /**
- * Build props ingestible by Tree component.
+ * Build props ingestible by VirtualizedTree component.
  * @param  {Object} props      Component properties to be processed.
  * @param  {String} parentPath Unique path that is used to identify a Tree Node.
  * @return {Object}            Processed properties.

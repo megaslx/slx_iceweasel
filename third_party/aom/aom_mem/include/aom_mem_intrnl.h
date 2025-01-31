@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -25,9 +25,5 @@
 #define DEFAULT_ALIGNMENT (2 * sizeof(void *)) /* NOLINT */
 #endif
 #endif
-
-/*returns an addr aligned to the byte boundary specified by align*/
-#define align_addr(addr, align) \
-  (void *)(((size_t)(addr) + ((align)-1)) & ~(size_t)((align)-1))
 
 #endif  // AOM_AOM_MEM_INCLUDE_AOM_MEM_INTRNL_H_

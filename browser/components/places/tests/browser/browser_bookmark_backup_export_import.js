@@ -7,7 +7,7 @@
  * Tests bookmarks backup export/import as JSON file.
  */
 
-const BASE_URL = "http://example.com/";
+const BASE_URL = "https://example.com/";
 
 const PLACES = [
   {
@@ -94,7 +94,7 @@ async function validateImportedBookmarks(fromPlaces) {
   }
 }
 
-async function promiseImportExport(aWindow) {
+async function promiseImportExport() {
   saveDir = Services.dirsvc.get("TmpD", Ci.nsIFile);
   saveDir.append("temp-bookmarks-export");
   if (!saveDir.exists()) {

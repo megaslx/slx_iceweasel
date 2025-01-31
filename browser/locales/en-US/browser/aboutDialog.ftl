@@ -31,7 +31,7 @@ update-failed = Update failed. <label data-l10n-name="failed-link">Download the 
 update-failed-main =
     Update failed. <a data-l10n-name="failed-link-main">Download the latest version</a>
 
-update-adminDisabled = Updates disabled by your system administrator
+update-policy-disabled = Updates disabled by your organization
 update-noUpdatesFound = { -brand-short-name } is up to date
 aboutdialog-update-checking-failed = Failed to check for updates.
 update-otherInstanceHandlingUpdates = { -brand-short-name } is being updated by another instance
@@ -81,3 +81,16 @@ aboutDialog-version = { $version } ({ $bits }-bit)
 #   $isodate (String): date in ISO format, e.g. 2019-01-16
 #   $bits (Number): bits of the architecture (32 or 64)
 aboutDialog-version-nightly = { $version } ({ $isodate }) ({ $bits }-bit)
+
+# Example of resulting string: 131.0a1 (aarch64)
+# Variables:
+#   $version (String): version of Firefox, e.g. 66.0.1
+#   $arch (String): name of the architecture (arm, aarch64, etc.)
+aboutdialog-version-arch = { $version } ({ $arch })
+
+# Example of resulting string: 131.0a1 (2024-08-27) (aarch64)
+# Variables:
+#   $version (String): version of Firefox for Nightly builds, e.g. 66.0a1
+#   $isodate (String): date in ISO format, e.g. 2019-01-16
+#   $arch (String): name of the architecture (arm, aarch64, etc.)
+aboutdialog-version-arch-nightly = { $version } ({ $isodate }) ({ $arch })

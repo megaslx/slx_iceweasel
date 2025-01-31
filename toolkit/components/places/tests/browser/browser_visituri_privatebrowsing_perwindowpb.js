@@ -3,9 +3,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const initialURL =
-  "http://example.com/tests/toolkit/components/places/tests/browser/begin.html";
+  "https://example.com/tests/toolkit/components/places/tests/browser/begin.html";
 const finalURL =
-  "http://test1.example.com/tests/toolkit/components/places/tests/browser/final.html";
+  "https://test1.example.com/tests/toolkit/components/places/tests/browser/final.html";
 
 var observer;
 var visitSavedPromise;
@@ -13,7 +13,7 @@ var visitSavedPromise;
 add_setup(async function () {
   visitSavedPromise = new Promise(resolve => {
     observer = {
-      observe(subject, topic, data) {
+      observe(subject, topic) {
         // The uri-visit-saved topic should only work when on normal mode.
         if (topic == "uri-visit-saved") {
           Services.obs.removeObserver(observer, "uri-visit-saved");
@@ -58,6 +58,6 @@ async function testLoadInWindow(options, url) {
   let loadedPromise = BrowserTestUtils.browserLoaded(
     win.gBrowser.selectedBrowser
   );
-  BrowserTestUtils.loadURIString(win.gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(win.gBrowser.selectedBrowser, url);
   await loadedPromise;
 }

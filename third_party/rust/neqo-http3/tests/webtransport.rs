@@ -4,6 +4,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::{cell::RefCell, rc::Rc};
+
 use neqo_common::{event::Provider, Header};
 use neqo_crypto::AuthenticationStatus;
 use neqo_http3::{
@@ -12,10 +14,8 @@ use neqo_http3::{
     WebTransportSessionAcceptAction,
 };
 use neqo_transport::{StreamId, StreamType};
-use std::cell::RefCell;
-use std::rc::Rc;
 use test_fixture::{
-    addr, anti_replay, fixture_init, now, CountingConnectionIdGenerator, DEFAULT_ALPN_H3,
+    anti_replay, fixture_init, now, CountingConnectionIdGenerator, DEFAULT_ADDR, DEFAULT_ALPN_H3,
     DEFAULT_KEYS, DEFAULT_SERVER_NAME,
 };
 
@@ -24,8 +24,8 @@ fn connect() -> (Http3Client, Http3Server) {
     let mut client = Http3Client::new(
         DEFAULT_SERVER_NAME,
         Rc::new(RefCell::new(CountingConnectionIdGenerator::default())),
-        addr(),
-        addr(),
+        DEFAULT_ADDR,
+        DEFAULT_ADDR,
         Http3Parameters::default().webtransport(true),
         now(),
     )
@@ -41,7 +41,7 @@ fn connect() -> (Http3Client, Http3Server) {
     )
     .expect("create a server");
     assert_eq!(client.state(), Http3State::Initializing);
-    let out = client.process(None, now());
+    let out = client.process_output(now());
     assert_eq!(client.state(), Http3State::Initializing);
 
     let out = server.process(out.dgram(), now());
@@ -92,7 +92,7 @@ fn create_wt_session(client: &mut Http3Client, server: &mut Http3Server) -> WebT
     while let Some(event) = server.next_event() {
         match event {
             Http3ServerEvent::WebTransport(WebTransportServerEvent::NewSession {
-                mut session,
+                session,
                 headers,
             }) => {
                 assert!(
@@ -151,7 +151,7 @@ fn send_data_client(
 fn send_data_server(
     client: &mut Http3Client,
     server: &mut Http3Server,
-    wt_stream: &mut Http3OrWebTransportStream,
+    wt_stream: &Http3OrWebTransportStream,
     data: &[u8],
 ) {
     assert_eq!(wt_stream.send_data(data).unwrap(), data.len());
@@ -254,7 +254,7 @@ fn wt_client_stream_bidi() {
         .webtransport_create_stream(wt_session.stream_id(), StreamType::BiDi)
         .unwrap();
     send_data_client(&mut client, &mut server, wt_client_stream, BUF_CLIENT);
-    let mut wt_server_stream = receive_data_server(
+    let wt_server_stream = receive_data_server(
         &mut client,
         &mut server,
         wt_client_stream,
@@ -262,7 +262,7 @@ fn wt_client_stream_bidi() {
         BUF_CLIENT,
         false,
     );
-    send_data_server(&mut client, &mut server, &mut wt_server_stream, BUF_SERVER);
+    send_data_server(&mut client, &mut server, &wt_server_stream, BUF_SERVER);
     receive_data_client(&mut client, wt_client_stream, false, BUF_SERVER, false);
 }
 
@@ -271,9 +271,9 @@ fn wt_server_stream_uni() {
     const BUF_SERVER: &[u8] = &[2; 30];
 
     let (mut client, mut server) = connect();
-    let mut wt_session = create_wt_session(&mut client, &mut server);
-    let mut wt_server_stream = wt_session.create_stream(StreamType::UniDi).unwrap();
-    send_data_server(&mut client, &mut server, &mut wt_server_stream, BUF_SERVER);
+    let wt_session = create_wt_session(&mut client, &mut server);
+    let wt_server_stream = wt_session.create_stream(StreamType::UniDi).unwrap();
+    send_data_server(&mut client, &mut server, &wt_server_stream, BUF_SERVER);
     receive_data_client(
         &mut client,
         wt_server_stream.stream_id(),
@@ -289,9 +289,9 @@ fn wt_server_stream_bidi() {
     const BUF_SERVER: &[u8] = &[1; 20];
 
     let (mut client, mut server) = connect();
-    let mut wt_session = create_wt_session(&mut client, &mut server);
-    let mut wt_server_stream = wt_session.create_stream(StreamType::BiDi).unwrap();
-    send_data_server(&mut client, &mut server, &mut wt_server_stream, BUF_SERVER);
+    let wt_session = create_wt_session(&mut client, &mut server);
+    let wt_server_stream = wt_session.create_stream(StreamType::BiDi).unwrap();
+    send_data_server(&mut client, &mut server, &wt_server_stream, BUF_SERVER);
     receive_data_client(
         &mut client,
         wt_server_stream.stream_id(),

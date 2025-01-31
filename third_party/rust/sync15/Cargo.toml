@@ -13,31 +13,39 @@
 edition = "2021"
 name = "sync15"
 version = "0.1.0"
-authors = ["application-services@mozilla.com"]
+authors = ["Sync Team <sync-team@mozilla.com>"]
+build = "build.rs"
 exclude = [
     "/android",
     "/ios",
 ]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 readme = "README.md"
 license = "MPL-2.0"
 
+[lib]
+name = "sync15"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0"
-ffi-support = "0.4"
 lazy_static = "1.4"
 log = "0.4"
 serde_derive = "1"
 serde_json = "1"
 serde_path_to_error = "0.1"
 thiserror = "1.0"
-uniffi = "0.24.1"
 
 [dependencies.base16]
 version = "0.2"
 optional = true
 
 [dependencies.base64]
-version = "0.13"
+version = "0.21"
 optional = true
 
 [dependencies.error-support]
@@ -45,6 +53,9 @@ path = "../support/error"
 
 [dependencies.interrupt-support]
 path = "../support/interrupt"
+
+[dependencies.payload-support]
+path = "../support/payload"
 
 [dependencies.rc_crypto]
 path = "../support/rc_crypto"
@@ -59,8 +70,11 @@ features = ["derive"]
 path = "../support/guid"
 features = ["random"]
 
+[dependencies.uniffi]
+version = "0.28.2"
+
 [dependencies.url]
-version = "2.1"
+version = "2"
 optional = true
 
 [dependencies.viaduct]
@@ -68,11 +82,11 @@ path = "../viaduct"
 optional = true
 
 [dev-dependencies.env_logger]
-version = "0.7"
+version = "0.10"
 default-features = false
 
 [build-dependencies.uniffi]
-version = "0.24.1"
+version = "0.28.2"
 features = ["build"]
 
 [features]
@@ -91,3 +105,6 @@ sync-client = [
     "url",
 ]
 sync-engine = ["random-guid"]
+
+[lints.clippy]
+empty-line-after-doc-comments = "allow"

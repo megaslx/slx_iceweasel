@@ -70,7 +70,7 @@ class MOZ_RAII DefaultTextureClientAllocationHelper
 YCbCrTextureClientAllocationHelper::YCbCrTextureClientAllocationHelper(
     const PlanarYCbCrData& aData, const gfx::IntSize& aYSize,
     const gfx::IntSize& aCbCrSize, TextureFlags aTextureFlags)
-    : ITextureClientAllocationHelper(gfx::SurfaceFormat::YUV, aYSize,
+    : ITextureClientAllocationHelper(gfx::SurfaceFormat::YUV420, aYSize,
                                      BackendSelector::Content, aTextureFlags,
                                      ALLOC_DEFAULT),
       mData(aData),
@@ -84,7 +84,7 @@ YCbCrTextureClientAllocationHelper::YCbCrTextureClientAllocationHelper(
 
 bool YCbCrTextureClientAllocationHelper::IsCompatible(
     TextureClient* aTextureClient) {
-  MOZ_ASSERT(aTextureClient->GetFormat() == gfx::SurfaceFormat::YUV);
+  MOZ_ASSERT(aTextureClient->GetFormat() == gfx::SurfaceFormat::YUV420);
 
   BufferTextureData* bufferData =
       aTextureClient->GetInternalData()->AsBufferTextureData();
@@ -146,10 +146,11 @@ already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
   MOZ_ASSERT(!(aTextureFlags & TextureFlags::RECYCLE));
   DefaultTextureClientAllocationHelper helper(this, aFormat, aSize, aSelector,
                                               aTextureFlags, aAllocFlags);
-  return CreateOrRecycle(helper);
+  return CreateOrRecycle(helper).unwrapOr(nullptr);
 }
 
-already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
+Result<already_AddRefed<TextureClient>, nsresult>
+TextureClientRecycleAllocator::CreateOrRecycle(
     ITextureClientAllocationHelper& aHelper) {
   MOZ_ASSERT(aHelper.mTextureFlags & TextureFlags::RECYCLE);
 
@@ -158,7 +159,7 @@ already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
   {
     MutexAutoLock lock(mLock);
     if (mIsDestroyed || !mKnowsCompositor->GetTextureForwarder()) {
-      return nullptr;
+      return Err(NS_ERROR_NOT_AVAILABLE);
     }
     if (!mPooledClients.empty()) {
       textureHolder = mPooledClients.top();
@@ -185,7 +186,7 @@ already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
     // Allocate new TextureClient
     RefPtr<TextureClient> texture = aHelper.Allocate(mKnowsCompositor);
     if (!texture) {
-      return nullptr;
+      return Err(NS_ERROR_OUT_OF_MEMORY);
     }
     textureHolder = new TextureClientHolder(texture);
   }

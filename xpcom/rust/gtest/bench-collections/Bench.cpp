@@ -242,7 +242,7 @@ class BenchCollections : public ::testing::Test {
     }
 
     printf("\n");
-    for (size_t i = 0; i < ArrayLength(gParamsList); i++) {
+    for (size_t i = 0; i < std::size(gParamsList); i++) {
       const Params* params = &gParamsList[i];
       printf("%14s", params->mConfigName);
     }
@@ -254,7 +254,7 @@ class BenchCollections : public ::testing::Test {
     StaticMutexAutoLock lock(sValsMutex);
 
     double total = 0;
-    for (size_t i = 0; i < ArrayLength(gParamsList); i++) {
+    for (size_t i = 0; i < std::size(gParamsList); i++) {
       const Params* params = &gParamsList[i];
       TimeStamp t1 = TimeStamp::Now();
       aBench(params, sVals, VALS_LEN);
@@ -268,11 +268,11 @@ class BenchCollections : public ::testing::Test {
 
  private:
   // Random values used in the benchmarks.
-  static void** sVals;
+  static void** sVals MOZ_GUARDED_BY(sValsMutex);
 
   // A mutex that protects all benchmark operations, ensuring that two
   // benchmarks never run concurrently.
-  static StaticMutex sValsMutex MOZ_UNANNOTATED;
+  static StaticMutex sValsMutex;
 };
 
 void** BenchCollections::sVals;

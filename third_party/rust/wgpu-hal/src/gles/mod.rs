@@ -34,7 +34,7 @@ will be minimal, if any.
 
 Generally, vertex buffers are marked as dirty and lazily bound on draw.
 
-GLES3 doesn't support "base instance" semantics. However, it's easy to support,
+GLES3 doesn't support `first_instance` semantics. However, it's easy to support,
 since we are forced to do late binding anyway. We just adjust the offsets
 into the vertex data.
 
@@ -51,18 +51,45 @@ from the vertex data itself. This mostly matches WebGPU, however there is a catc
 `stride` needs to be specified with the data, not as a part of the layout.
 
 To address this, we invalidate the vertex buffers based on:
-  - whether or not `start_instance` is used
+  - whether or not `first_instance` is used
   - stride has changed
+
+## Handling of `base_vertex`, `first_instance`, and `first_vertex`
+
+Between indirect, the lack of `first_instance` semantics, and the availability of `gl_BaseInstance`
+in shaders, getting buffers and builtins to work correctly is a bit tricky.
+
+We never emulate `base_vertex` and gl_VertexID behaves as `@builtin(vertex_index)` does, so we
+never need to do anything about that.
+
+We always advertise support for `VERTEX_AND_INSTANCE_INDEX_RESPECTS_RESPECTIVE_FIRST_VALUE_IN_INDIRECT_DRAW`.
+
+### GL 4.2+ with ARB_shader_draw_parameters
+
+- `@builtin(instance_index)` translates to `gl_InstanceID + gl_BaseInstance`
+- We bind instance buffers without any offset emulation.
+- We advertise support for the `INDIRECT_FIRST_INSTANCE` feature.
+
+While we can theoretically have a card with 4.2+ support but without ARB_shader_draw_parameters,
+we don't bother with that combination.
+
+### GLES & GL 4.1
+
+- `@builtin(instance_index)` translates to `gl_InstanceID + naga_vs_first_instance`
+- We bind instance buffers with offset emulation.
+- We _do not_ advertise support for `INDIRECT_FIRST_INSTANCE` and cpu-side pretend the `first_instance` is 0 on indirect calls.
 
 */
 
 ///cbindgen:ignore
-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
+#[cfg(not(any(windows, webgl)))]
 mod egl;
-#[cfg(target_os = "emscripten")]
+#[cfg(Emscripten)]
 mod emscripten;
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(webgl)]
 mod web;
+#[cfg(windows)]
+mod wgl;
 
 mod adapter;
 mod command;
@@ -72,15 +99,20 @@ mod queue;
 
 use crate::{CopyExtent, TextureDescriptor};
 
-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
+#[cfg(not(any(windows, webgl)))]
 pub use self::egl::{AdapterContext, AdapterContextLock};
-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
+#[cfg(not(any(windows, webgl)))]
 use self::egl::{Instance, Surface};
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(webgl)]
 pub use self::web::AdapterContext;
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(webgl)]
 use self::web::{Instance, Surface};
+
+#[cfg(windows)]
+use self::wgl::AdapterContext;
+#[cfg(windows)]
+use self::wgl::{Instance, Surface};
 
 use arrayvec::ArrayVec;
 
@@ -88,10 +120,10 @@ use glow::HasContext;
 
 use naga::FastHashMap;
 use parking_lot::Mutex;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::{fmt, ops::Range, sync::Arc};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Api;
 
 //Note: we can support more samplers if not every one of them is used at a time,
@@ -101,6 +133,8 @@ const MAX_SAMPLERS: usize = 16;
 const MAX_VERTEX_ATTRIBUTES: usize = 16;
 const ZERO_BUFFER_SIZE: usize = 256 << 10;
 const MAX_PUSH_CONSTANTS: usize = 64;
+// We have to account for each push constant may need to be set for every shader.
+const MAX_PUSH_CONSTANT_COMMANDS: usize = MAX_PUSH_CONSTANTS * crate::MAX_CONCURRENT_SHADER_STAGES;
 
 impl crate::Api for Api {
     type Instance = Instance;
@@ -119,6 +153,8 @@ impl crate::Api for Api {
     type Sampler = Sampler;
     type QuerySet = QuerySet;
     type Fence = Fence;
+    type AccelerationStructure = AccelerationStructure;
+    type PipelineCache = PipelineCache;
 
     type BindGroupLayout = BindGroupLayout;
     type BindGroup = BindGroup;
@@ -127,6 +163,30 @@ impl crate::Api for Api {
     type RenderPipeline = RenderPipeline;
     type ComputePipeline = ComputePipeline;
 }
+
+crate::impl_dyn_resource!(
+    Adapter,
+    AccelerationStructure,
+    BindGroup,
+    BindGroupLayout,
+    Buffer,
+    CommandBuffer,
+    CommandEncoder,
+    ComputePipeline,
+    Device,
+    Fence,
+    Instance,
+    PipelineCache,
+    PipelineLayout,
+    QuerySet,
+    Queue,
+    RenderPipeline,
+    Sampler,
+    ShaderModule,
+    Surface,
+    Texture,
+    TextureView
+);
 
 bitflags::bitflags! {
     /// Flags that affect internal code paths but do not
@@ -146,16 +206,26 @@ bitflags::bitflags! {
         /// Indicates that buffers used as `GL_ELEMENT_ARRAY_BUFFER` may be created / initialized / used
         /// as other targets, if not present they must not be mixed with other targets.
         const INDEX_BUFFER_ROLE_CHANGE = 1 << 5;
-        /// Indicates that the device supports disabling draw buffers
-        const CAN_DISABLE_DRAW_BUFFER = 1 << 6;
         /// Supports `glGetBufferSubData`
         const GET_BUFFER_SUB_DATA = 1 << 7;
         /// Supports `f16` color buffers
         const COLOR_BUFFER_HALF_FLOAT = 1 << 8;
         /// Supports `f11/f10` and `f32` color buffers
         const COLOR_BUFFER_FLOAT = 1 << 9;
-        /// Supports linear flitering `f32` textures.
-        const TEXTURE_FLOAT_LINEAR = 1 << 10;
+        /// Supports query buffer objects.
+        const QUERY_BUFFERS = 1 << 11;
+        /// Supports 64 bit queries via `glGetQueryObjectui64v`
+        const QUERY_64BIT = 1 << 12;
+        /// Supports `glTexStorage2D`, etc.
+        const TEXTURE_STORAGE = 1 << 13;
+        /// Supports `push_debug_group`, `pop_debug_group` and `debug_message_insert`.
+        const DEBUG_FNS = 1 << 14;
+        /// Supports framebuffer invalidation.
+        const INVALIDATE_FRAMEBUFFER = 1 << 15;
+        /// Indicates support for `glDrawElementsInstancedBaseVertexBaseInstance` and `ARB_shader_draw_parameters`
+        ///
+        /// When this is true, instance offset emulation via vertex buffer rebinding and a shader uniform will be disabled.
+        const FULLY_FEATURED_INSTANCING = 1 << 16;
     }
 }
 
@@ -170,7 +240,7 @@ bitflags::bitflags! {
         // (https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/4972/diffs?diff_id=75888#22f5d1004713c9bbf857988c7efb81631ab88f99_323_327)
         // seems to indicate all skylake models are effected.
         const MESA_I915_SRGB_SHADER_CLEAR = 1 << 0;
-        /// Buffer map must emulated becuase it is not supported natively
+        /// Buffer map must emulated because it is not supported natively
         const EMULATE_BUFFER_MAP = 1 << 1;
     }
 }
@@ -203,9 +273,14 @@ struct AdapterShared {
     features: wgt::Features,
     workarounds: Workarounds,
     shading_language_version: naga::back::glsl::Version,
-    max_texture_size: u32,
     next_shader_id: AtomicU32,
     program_cache: Mutex<ProgramCache>,
+    es: bool,
+
+    /// Result of `gl.get_parameter_i32(glow::MAX_SAMPLES)`.
+    /// Cached here so it doesn't need to be queried every time texture format capabilities are requested.
+    /// (this has been shown to be a significant enough overhead)
+    max_msaa_samples: i32,
 }
 
 pub struct Adapter {
@@ -215,8 +290,21 @@ pub struct Adapter {
 pub struct Device {
     shared: Arc<AdapterShared>,
     main_vao: glow::VertexArray,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "renderdoc"))]
+    #[cfg(all(native, feature = "renderdoc"))]
     render_doc: crate::auxil::renderdoc::RenderDoc,
+    counters: Arc<wgt::HalCounters>,
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        let gl = &self.shared.context.lock();
+        unsafe { gl.delete_vertex_array(self.main_vao) };
+    }
+}
+
+pub struct ShaderClearProgram {
+    pub program: glow::Program,
+    pub color_uniform_location: glow::UniformLocation,
 }
 
 pub struct Queue {
@@ -226,15 +314,22 @@ pub struct Queue {
     copy_fbo: glow::Framebuffer,
     /// Shader program used to clear the screen for [`Workarounds::MESA_I915_SRGB_SHADER_CLEAR`]
     /// devices.
-    shader_clear_program: glow::Program,
-    /// The uniform location of the color uniform in the shader clear program
-    shader_clear_program_color_uniform_location: glow::UniformLocation,
+    shader_clear_program: Option<ShaderClearProgram>,
     /// Keep a reasonably large buffer filled with zeroes, so that we can implement `ClearBuffer` of
     /// zeroes by copying from it.
     zero_buffer: glow::Buffer,
-    temp_query_results: Vec<u64>,
-    draw_buffer_count: u8,
-    current_index_buffer: Option<glow::Buffer>,
+    temp_query_results: Mutex<Vec<u64>>,
+    draw_buffer_count: AtomicU8,
+    current_index_buffer: Mutex<Option<glow::Buffer>>,
+}
+
+impl Drop for Queue {
+    fn drop(&mut self) {
+        let gl = &self.shared.context.lock();
+        unsafe { gl.delete_framebuffer(self.draw_fbo) };
+        unsafe { gl.delete_framebuffer(self.copy_fbo) };
+        unsafe { gl.delete_buffer(self.zero_buffer) };
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -244,20 +339,15 @@ pub struct Buffer {
     size: wgt::BufferAddress,
     map_flags: u32,
     data: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
+    offset_of_current_mapping: Arc<std::sync::Mutex<wgt::BufferAddress>>,
 }
 
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Sync for Buffer {}
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Send for Buffer {}
+
+impl crate::DynBuffer for Buffer {}
 
 #[derive(Clone, Debug)]
 pub enum TextureInner {
@@ -269,23 +359,15 @@ pub enum TextureInner {
         raw: glow::Texture,
         target: BindTarget,
     },
-    #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+    #[cfg(webgl)]
     ExternalFramebuffer {
         inner: web_sys::WebGlFramebuffer,
     },
 }
 
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Sync for TextureInner {}
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Send for TextureInner {}
 
 impl TextureInner {
@@ -295,7 +377,7 @@ impl TextureInner {
                 panic!("Unexpected renderbuffer");
             }
             Self::Texture { raw, target } => (raw, target),
-            #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+            #[cfg(webgl)]
             Self::ExternalFramebuffer { .. } => panic!("Unexpected external framebuffer"),
         }
     }
@@ -311,7 +393,15 @@ pub struct Texture {
     #[allow(unused)]
     pub format_desc: TextureFormatDesc,
     pub copy_size: CopyExtent,
-    pub is_cubemap: bool,
+}
+
+impl crate::DynTexture for Texture {}
+impl crate::DynSurfaceTexture for Texture {}
+
+impl std::borrow::Borrow<dyn crate::DynTexture> for Texture {
+    fn borrow(&self) -> &dyn crate::DynTexture {
+        self
+    }
 }
 
 impl Texture {
@@ -332,25 +422,76 @@ impl Texture {
                 height: 0,
                 depth: 0,
             },
-            is_cubemap: false,
         }
     }
 
     /// Returns the `target`, whether the image is 3d and whether the image is a cubemap.
-    fn get_info_from_desc(desc: &TextureDescriptor) -> (u32, bool, bool) {
+    fn get_info_from_desc(desc: &TextureDescriptor) -> u32 {
         match desc.dimension {
-            wgt::TextureDimension::D1 => (glow::TEXTURE_2D, false, false),
+            // WebGL (1 and 2) as well as some GLES versions do not have 1D textures, so we are
+            // doing `TEXTURE_2D` instead
+            wgt::TextureDimension::D1 => glow::TEXTURE_2D,
             wgt::TextureDimension::D2 => {
                 // HACK: detect a cube map; forces cube compatible textures to be cube textures
                 match (desc.is_cube_compatible(), desc.size.depth_or_array_layers) {
-                    (false, 1) => (glow::TEXTURE_2D, false, false),
-                    (false, _) => (glow::TEXTURE_2D_ARRAY, true, false),
-                    (true, 6) => (glow::TEXTURE_CUBE_MAP, false, true),
-                    (true, _) => (glow::TEXTURE_CUBE_MAP_ARRAY, true, true),
+                    (false, 1) => glow::TEXTURE_2D,
+                    (false, _) => glow::TEXTURE_2D_ARRAY,
+                    (true, 6) => glow::TEXTURE_CUBE_MAP,
+                    (true, _) => glow::TEXTURE_CUBE_MAP_ARRAY,
                 }
             }
-            wgt::TextureDimension::D3 => (glow::TEXTURE_3D, true, false),
+            wgt::TextureDimension::D3 => glow::TEXTURE_3D,
         }
+    }
+
+    /// More information can be found in issues #1614 and #1574
+    fn log_failing_target_heuristics(view_dimension: wgt::TextureViewDimension, target: u32) {
+        let expected_target = match view_dimension {
+            wgt::TextureViewDimension::D1 => glow::TEXTURE_2D,
+            wgt::TextureViewDimension::D2 => glow::TEXTURE_2D,
+            wgt::TextureViewDimension::D2Array => glow::TEXTURE_2D_ARRAY,
+            wgt::TextureViewDimension::Cube => glow::TEXTURE_CUBE_MAP,
+            wgt::TextureViewDimension::CubeArray => glow::TEXTURE_CUBE_MAP_ARRAY,
+            wgt::TextureViewDimension::D3 => glow::TEXTURE_3D,
+        };
+
+        if expected_target == target {
+            return;
+        }
+
+        let buffer;
+        let got = match target {
+            glow::TEXTURE_2D => "D2",
+            glow::TEXTURE_2D_ARRAY => "D2Array",
+            glow::TEXTURE_CUBE_MAP => "Cube",
+            glow::TEXTURE_CUBE_MAP_ARRAY => "CubeArray",
+            glow::TEXTURE_3D => "D3",
+            target => {
+                buffer = target.to_string();
+                &buffer
+            }
+        };
+
+        log::error!(
+            concat!(
+                "wgpu-hal heuristics assumed that ",
+                "the view dimension will be equal to `{}` rather than `{:?}`.\n",
+                "`D2` textures with ",
+                "`depth_or_array_layers == 1` ",
+                "are assumed to have view dimension `D2`\n",
+                "`D2` textures with ",
+                "`depth_or_array_layers > 1` ",
+                "are assumed to have view dimension `D2Array`\n",
+                "`D2` textures with ",
+                "`depth_or_array_layers == 6` ",
+                "are assumed to have view dimension `Cube`\n",
+                "`D2` textures with ",
+                "`depth_or_array_layers > 6 && depth_or_array_layers % 6 == 0` ",
+                "are assumed to have view dimension `CubeArray`\n",
+            ),
+            got,
+            view_dimension,
+        );
     }
 }
 
@@ -363,15 +504,23 @@ pub struct TextureView {
     format: wgt::TextureFormat,
 }
 
+impl crate::DynTextureView for TextureView {}
+
 #[derive(Debug)]
 pub struct Sampler {
     raw: glow::Sampler,
 }
 
+impl crate::DynSampler for Sampler {}
+
+#[derive(Debug)]
 pub struct BindGroupLayout {
     entries: Arc<[wgt::BindGroupLayoutEntry]>,
 }
 
+impl crate::DynBindGroupLayout for BindGroupLayout {}
+
+#[derive(Debug)]
 struct BindGroupLayoutInfo {
     entries: Arc<[wgt::BindGroupLayoutEntry]>,
     /// Mapping of resources, indexed by `binding`, into the whole layout space.
@@ -382,10 +531,13 @@ struct BindGroupLayoutInfo {
     binding_to_slot: Box<[u8]>,
 }
 
+#[derive(Debug)]
 pub struct PipelineLayout {
     group_infos: Box<[BindGroupLayoutInfo]>,
     naga_options: naga::back::glsl::Options,
 }
+
+impl crate::DynPipelineLayout for PipelineLayout {}
 
 impl PipelineLayout {
     fn get_slot(&self, br: &naga::ResourceBinding) -> u8 {
@@ -413,7 +565,8 @@ enum RawBinding {
         raw: glow::Texture,
         target: BindTarget,
         aspects: crate::FormatAspects,
-        //TODO: mip levels, array layers
+        mip_levels: Range<u32>,
+        //TODO: array layers
     },
     Image(ImageBinding),
     Sampler(glow::Sampler),
@@ -424,6 +577,8 @@ pub struct BindGroup {
     contents: Box<[RawBinding]>,
 }
 
+impl crate::DynBindGroup for BindGroup {}
+
 type ShaderId = u32;
 
 #[derive(Debug)]
@@ -432,6 +587,8 @@ pub struct ShaderModule {
     label: Option<String>,
     id: ShaderId,
 }
+
+impl crate::DynShaderModule for ShaderModule {}
 
 #[derive(Clone, Debug, Default)]
 struct VertexFormatDesc {
@@ -469,34 +626,29 @@ struct VertexBufferDesc {
     stride: u32,
 }
 
-#[derive(Clone, Debug, Default)]
-struct UniformDesc {
-    location: Option<glow::UniformLocation>,
-    size: u32,
-    utype: u32,
+#[derive(Clone, Debug)]
+struct PushConstantDesc {
+    location: glow::UniformLocation,
+    ty: naga::TypeInner,
+    offset: u32,
+    size_bytes: u32,
 }
 
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
-unsafe impl Sync for UniformDesc {}
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
-unsafe impl Send for UniformDesc {}
+#[cfg(send_sync)]
+unsafe impl Sync for PushConstantDesc {}
+#[cfg(send_sync)]
+unsafe impl Send for PushConstantDesc {}
 
 /// For each texture in the pipeline layout, store the index of the only
 /// sampler (in this layout) that the texture is used with.
 type SamplerBindMap = [Option<u8>; MAX_TEXTURE_SLOTS];
 
+#[derive(Debug)]
 struct PipelineInner {
     program: glow::Program,
     sampler_map: SamplerBindMap,
-    uniforms: [UniformDesc; MAX_PUSH_CONSTANTS],
+    first_instance_location: Option<glow::UniformLocation>,
+    push_constant_descs: ArrayVec<PushConstantDesc, MAX_PUSH_CONSTANT_COMMANDS>,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +681,7 @@ struct ProgramStage {
     naga_stage: naga::ShaderStage,
     shader_id: ShaderId,
     entry_point: String,
+    zero_initialize_workgroup_memory: bool,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -539,6 +692,7 @@ struct ProgramCacheKey {
 
 type ProgramCache = FastHashMap<ProgramCacheKey, Result<Arc<PipelineInner>, crate::PipelineError>>;
 
+#[derive(Debug)]
 pub struct RenderPipeline {
     inner: Arc<PipelineInner>,
     primitive: wgt::PrimitiveState,
@@ -551,34 +705,23 @@ pub struct RenderPipeline {
     alpha_to_coverage_enabled: bool,
 }
 
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+impl crate::DynRenderPipeline for RenderPipeline {}
+
+#[cfg(send_sync)]
 unsafe impl Sync for RenderPipeline {}
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Send for RenderPipeline {}
 
+#[derive(Debug)]
 pub struct ComputePipeline {
     inner: Arc<PipelineInner>,
 }
 
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+impl crate::DynComputePipeline for ComputePipeline {}
+
+#[cfg(send_sync)]
 unsafe impl Sync for ComputePipeline {}
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "fragile-send-sync-non-atomic-wasm",
-    not(target_feature = "atomics")
-))]
+#[cfg(send_sync)]
 unsafe impl Send for ComputePipeline {}
 
 #[derive(Debug)]
@@ -587,11 +730,15 @@ pub struct QuerySet {
     target: BindTarget,
 }
 
+impl crate::DynQuerySet for QuerySet {}
+
 #[derive(Debug)]
 pub struct Fence {
-    last_completed: crate::FenceValue,
+    last_completed: crate::AtomicFenceValue,
     pending: Vec<(crate::FenceValue, glow::Fence)>,
 }
+
+impl crate::DynFence for Fence {}
 
 #[cfg(any(
     not(target_arch = "wasm32"),
@@ -612,13 +759,24 @@ unsafe impl Sync for Fence {}
 
 impl Fence {
     fn get_latest(&self, gl: &glow::Context) -> crate::FenceValue {
-        let mut max_value = self.last_completed;
+        let mut max_value = self.last_completed.load(Ordering::Relaxed);
         for &(value, sync) in self.pending.iter() {
+            if value <= max_value {
+                // We already know this was good, no need to check again
+                continue;
+            }
             let status = unsafe { gl.get_sync_status(sync) };
             if status == glow::SIGNALED {
                 max_value = value;
+            } else {
+                // Anything after the first unsignalled is guaranteed to also be unsignalled
+                break;
             }
         }
+
+        // Track the latest value, to save ourselves some querying later
+        self.last_completed.fetch_max(max_value, Ordering::Relaxed);
+
         max_value
     }
 
@@ -632,9 +790,18 @@ impl Fence {
             }
         }
         self.pending.retain(|&(value, _)| value > latest);
-        self.last_completed = latest;
     }
 }
+
+#[derive(Debug)]
+pub struct AccelerationStructure;
+
+impl crate::DynAccelerationStructure for AccelerationStructure {}
+
+#[derive(Debug)]
+pub struct PipelineCache;
+
+impl crate::DynPipelineCache for PipelineCache {}
 
 #[derive(Clone, Debug, PartialEq)]
 struct StencilOps {
@@ -674,7 +841,7 @@ impl Default for StencilSide {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 struct StencilState {
     front: StencilSide,
     back: StencilSide,
@@ -685,6 +852,7 @@ struct PrimitiveState {
     front_face: u32,
     cull_face: u32,
     unclipped_depth: bool,
+    polygon_mode: u32,
 }
 
 type InvalidatedAttachments = ArrayVec<u32, { crate::MAX_COLOR_ATTACHMENTS + 2 }>;
@@ -693,9 +861,11 @@ type InvalidatedAttachments = ArrayVec<u32, { crate::MAX_COLOR_ATTACHMENTS + 2 }
 enum Command {
     Draw {
         topology: u32,
-        start_vertex: u32,
+        first_vertex: u32,
         vertex_count: u32,
+        first_instance: u32,
         instance_count: u32,
+        first_instance_location: Option<glow::UniformLocation>,
     },
     DrawIndexed {
         topology: u32,
@@ -703,18 +873,22 @@ enum Command {
         index_count: u32,
         index_offset: wgt::BufferAddress,
         base_vertex: i32,
+        first_instance: u32,
         instance_count: u32,
+        first_instance_location: Option<glow::UniformLocation>,
     },
     DrawIndirect {
         topology: u32,
         indirect_buf: glow::Buffer,
         indirect_offset: wgt::BufferAddress,
+        first_instance_location: Option<glow::UniformLocation>,
     },
     DrawIndexedIndirect {
         topology: u32,
         index_type: u32,
         indirect_buf: glow::Buffer,
         indirect_offset: wgt::BufferAddress,
+        first_instance_location: Option<glow::UniformLocation>,
     },
     Dispatch([u32; 3]),
     DispatchIndirect {
@@ -733,9 +907,9 @@ enum Command {
         dst_target: BindTarget,
         copy: crate::BufferCopy,
     },
-    #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+    #[cfg(webgl)]
     CopyExternalImageToTexture {
-        src: wgt::ImageCopyExternalImage,
+        src: wgt::CopyExternalImageSourceInfo,
         dst: glow::Texture,
         dst_target: BindTarget,
         dst_format: wgt::TextureFormat,
@@ -748,7 +922,6 @@ enum Command {
         dst: glow::Texture,
         dst_target: BindTarget,
         copy: crate::TextureCopy,
-        dst_is_cubemap: bool,
     },
     CopyBufferToTexture {
         src: Buffer,
@@ -771,6 +944,7 @@ enum Command {
     SetIndexBuffer(glow::Buffer),
     BeginQuery(glow::Query, BindTarget),
     EndQuery(BindTarget),
+    TimestampQuery(glow::Query),
     CopyQueryResults {
         query_range: Range<u32>,
         dst: Buffer,
@@ -858,6 +1032,7 @@ enum Command {
         texture: glow::Texture,
         target: BindTarget,
         aspects: crate::FormatAspects,
+        mip_levels: Range<u32>,
     },
     BindImage {
         slot: u32,
@@ -867,7 +1042,7 @@ enum Command {
     PushDebugGroup(Range<u32>),
     PopDebugGroup,
     SetPushConstants {
-        uniform: UniformDesc,
+        uniform: PushConstantDesc,
         /// Offset from the start of the `data_bytes`
         offset: u32,
     },
@@ -881,6 +1056,8 @@ pub struct CommandBuffer {
     queries: Vec<glow::Query>,
 }
 
+impl crate::DynCommandBuffer for CommandBuffer {}
+
 impl fmt::Debug for CommandBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("CommandBuffer");
@@ -891,6 +1068,11 @@ impl fmt::Debug for CommandBuffer {
     }
 }
 
+#[cfg(send_sync)]
+unsafe impl Sync for CommandBuffer {}
+#[cfg(send_sync)]
+unsafe impl Send for CommandBuffer {}
+
 //TODO: we would have something like `Arc<typed_arena::Arena>`
 // here and in the command buffers. So that everything grows
 // inside the encoder and stays there until `reset_all`.
@@ -899,6 +1081,7 @@ pub struct CommandEncoder {
     cmd_buffer: CommandBuffer,
     state: command::State,
     private_caps: PrivateCapabilities,
+    counters: Arc<wgt::HalCounters>,
 }
 
 impl fmt::Debug for CommandEncoder {
@@ -906,5 +1089,60 @@ impl fmt::Debug for CommandEncoder {
         f.debug_struct("CommandEncoder")
             .field("cmd_buffer", &self.cmd_buffer)
             .finish()
+    }
+}
+
+#[cfg(send_sync)]
+unsafe impl Sync for CommandEncoder {}
+#[cfg(send_sync)]
+unsafe impl Send for CommandEncoder {}
+
+#[cfg(not(webgl))]
+fn gl_debug_message_callback(source: u32, gltype: u32, id: u32, severity: u32, message: &str) {
+    let source_str = match source {
+        glow::DEBUG_SOURCE_API => "API",
+        glow::DEBUG_SOURCE_WINDOW_SYSTEM => "Window System",
+        glow::DEBUG_SOURCE_SHADER_COMPILER => "ShaderCompiler",
+        glow::DEBUG_SOURCE_THIRD_PARTY => "Third Party",
+        glow::DEBUG_SOURCE_APPLICATION => "Application",
+        glow::DEBUG_SOURCE_OTHER => "Other",
+        _ => unreachable!(),
+    };
+
+    let log_severity = match severity {
+        glow::DEBUG_SEVERITY_HIGH => log::Level::Error,
+        glow::DEBUG_SEVERITY_MEDIUM => log::Level::Warn,
+        glow::DEBUG_SEVERITY_LOW => log::Level::Info,
+        glow::DEBUG_SEVERITY_NOTIFICATION => log::Level::Trace,
+        _ => unreachable!(),
+    };
+
+    let type_str = match gltype {
+        glow::DEBUG_TYPE_DEPRECATED_BEHAVIOR => "Deprecated Behavior",
+        glow::DEBUG_TYPE_ERROR => "Error",
+        glow::DEBUG_TYPE_MARKER => "Marker",
+        glow::DEBUG_TYPE_OTHER => "Other",
+        glow::DEBUG_TYPE_PERFORMANCE => "Performance",
+        glow::DEBUG_TYPE_POP_GROUP => "Pop Group",
+        glow::DEBUG_TYPE_PORTABILITY => "Portability",
+        glow::DEBUG_TYPE_PUSH_GROUP => "Push Group",
+        glow::DEBUG_TYPE_UNDEFINED_BEHAVIOR => "Undefined Behavior",
+        _ => unreachable!(),
+    };
+
+    let _ = std::panic::catch_unwind(|| {
+        log::log!(
+            log_severity,
+            "GLES: [{}/{}] ID {} : {}",
+            source_str,
+            type_str,
+            id,
+            message
+        );
+    });
+
+    if cfg!(debug_assertions) && log_severity == log::Level::Error {
+        // Set canary and continue
+        crate::VALIDATION_CANARY.add(message.to_string());
     }
 }

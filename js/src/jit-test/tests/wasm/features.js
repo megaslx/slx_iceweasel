@@ -1,5 +1,3 @@
-// |jit-test| test-also=--wasm-extended-const; test-also=--wasm-exceptions;
-
 // Test that if a feature is 'experimental' then we must be in a nightly build,
 // and if a feature is 'released' then it must be enabled on release and beta.
 //
@@ -22,19 +20,17 @@
 // NOTE2: Keep this file in sync with:
 //        `dom/worklet/tests/worklet_audioWorklet_WASM_features.js`.
 
-let { release_or_beta } = getBuildConfiguration();
+let release_or_beta = getBuildConfiguration("release_or_beta");
 let nightly = !release_or_beta;
 
 let nightlyOnlyFeatures = [
   [
-    'function-references',
-    wasmFunctionReferencesEnabled(),
-    `(module (func (param (ref extern))))`
-  ],
-  [
-    'gc',
-    wasmGcEnabled(),
-    `(module (type $s (struct)) (func (param (ref null $s))))`
+    'relaxed-simd',
+    wasmRelaxedSimdEnabled(),
+    `(module (func (result v128)
+      unreachable
+      i16x8.relaxed_laneselect
+    ))`
   ],
 ];
 
@@ -70,26 +66,37 @@ for (let [name, enabled, test] of releasedFeaturesMaybeDisabledAnyway) {
 let releasedFeatures = [
   ['threads', wasmThreadsEnabled(), `(module (memory 1 1 shared))`],
   [
-    'exceptions',
-    wasmExceptionsEnabled(),
-    `(module (type (func)) (tag (type 0)))`
+    'multi-memory',
+    wasmMultiMemoryEnabled(),
+    `(module (memory 0) (memory 0))`,
   ],
   [
-    'extended-const',
-    wasmExtendedConstEnabled(),
-    `(module
-      (global i32
-        i32.const 0
-        i32.const 0
-        i32.add
-      )
-    )`
+    'exnref',
+    wasmExnRefEnabled(),
+    `(module (func try_table end))`
   ],
+  [
+    'memory64',
+    wasmMemory64Enabled(),
+    `(module (memory i64 0))`,
+  ],
+  [
+    'js-string-builtins',
+    wasmJSStringBuiltinsEnabled(),
+    `(module
+      (import "wasm:js-string" "concat"
+        (func
+          (param externref externref)
+          (result (ref extern)))
+      )
+    )`,
+    {builtins: ['js-string']}
+  ]
 ];
 
-for (let [name, enabled, test] of releasedFeatures) {
+for (let [name, enabled, test, options] of releasedFeatures) {
   if (release_or_beta) {
     assertEq(enabled, true, `${name} must be enabled on release and beta`);
-    wasmEvalText(test);
+    wasmEvalText(test, {}, options);
   }
 }

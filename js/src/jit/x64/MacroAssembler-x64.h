@@ -77,6 +77,10 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
                            X86Encoding::XMMRegisterID srcId,
                            X86Encoding::XMMRegisterID destId));
 
+ protected:
+  void flexibleDivMod64(Register rhs, Register lhsOutput, bool isUnsigned,
+                        bool isDiv);
+
  public:
   using MacroAssemblerX86Shared::load32;
   using MacroAssemblerX86Shared::store16;
@@ -533,6 +537,7 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
   void cmpPtr(Register lhs, Register rhs) { cmpq(rhs, lhs); }
   void testPtr(Register lhs, Register rhs) { testq(rhs, lhs); }
   void testPtr(Register lhs, Imm32 rhs) { testq(rhs, lhs); }
+  void testPtr(Register lhs, ImmWord rhs) { test64(lhs, Imm64(rhs.value)); }
   void testPtr(const Operand& lhs, Imm32 rhs) { testq(rhs, lhs); }
   void test64(Register lhs, Register rhs) { testq(rhs, lhs); }
   void test64(Register lhs, const Imm64 rhs) {
@@ -581,15 +586,19 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
       loadPtr(Address(scratch, 0x0), dest);
     }
   }
-  void loadPtr(const Address& address, Register dest) {
+  FaultingCodeOffset loadPtr(const Address& address, Register dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(Operand(address), dest);
+    return fco;
   }
   void load64(const Address& address, Register dest) {
     movq(Operand(address), dest);
   }
   void loadPtr(const Operand& src, Register dest) { movq(src, dest); }
-  void loadPtr(const BaseIndex& src, Register dest) {
+  FaultingCodeOffset loadPtr(const BaseIndex& src, Register dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(Operand(src), dest);
+    return fco;
   }
   void loadPrivate(const Address& src, Register dest) { loadPtr(src, dest); }
   void load32(AbsoluteAddress address, Register dest) {
@@ -604,11 +613,15 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
   void load64(const Operand& address, Register64 dest) {
     movq(address, dest.reg);
   }
-  void load64(const Address& address, Register64 dest) {
+  FaultingCodeOffset load64(const Address& address, Register64 dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(Operand(address), dest.reg);
+    return fco;
   }
-  void load64(const BaseIndex& address, Register64 dest) {
+  FaultingCodeOffset load64(const BaseIndex& address, Register64 dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(Operand(address), dest.reg);
+    return fco;
   }
   template <typename S>
   void load64Unaligned(const S& src, Register64 dest) {
@@ -634,8 +647,10 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
     movq(imm, scratch);
     movq(scratch, Operand(address));
   }
-  void storePtr(Register src, const Address& address) {
+  FaultingCodeOffset storePtr(Register src, const Address& address) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(src, Operand(address));
+    return fco;
   }
   void store64(Register src, const Address& address) {
     movq(src, Operand(address));
@@ -643,8 +658,10 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
   void store64(Register64 src, const Operand& address) {
     movq(src.reg, address);
   }
-  void storePtr(Register src, const BaseIndex& address) {
+  FaultingCodeOffset storePtr(Register src, const BaseIndex& address) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movq(src, Operand(address));
+    return fco;
   }
   void storePtr(Register src, const Operand& dest) { movq(src, dest); }
   void storePtr(Register src, AbsoluteAddress address) {
@@ -674,9 +691,13 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
       store16(src, Address(scratch, 0x0));
     }
   }
-  void store64(Register64 src, Address address) { storePtr(src.reg, address); }
-  void store64(Register64 src, const BaseIndex& address) {
+  FaultingCodeOffset store64(Register64 src, Address address) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     storePtr(src.reg, address);
+    return fco;
+  }
+  FaultingCodeOffset store64(Register64 src, const BaseIndex& address) {
+    return storePtr(src.reg, address);
   }
   void store64(Imm64 imm, Address address) {
     storePtr(ImmWord(imm.value), address);
@@ -729,19 +750,22 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
   }
 
   void testNullSet(Condition cond, const ValueOperand& value, Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testNull(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
   void testObjectSet(Condition cond, const ValueOperand& value, Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testObject(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
   void testUndefinedSet(Condition cond, const ValueOperand& value,
                         Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testUndefined(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
   void boxDouble(FloatRegister src, const ValueOperand& dest, FloatRegister) {
@@ -907,6 +931,11 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
     andq(src.valueReg(), dest);
   }
 
+  void unboxWasmAnyRefGCThingForGCBarrier(const Address& src, Register dest) {
+    movq(ImmWord(wasm::AnyRef::GCThingMask), dest);
+    andq(Operand(src), dest);
+  }
+
   // Like unboxGCThingForGCBarrier, but loads the GC thing's chunk base.
   void getGCThingValueChunk(const Address& src, Register dest) {
     movq(ImmWord(JS::detail::ValueGCThingPayloadChunkMask), dest);
@@ -916,6 +945,12 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
     MOZ_ASSERT(src.valueReg() != dest);
     movq(ImmWord(JS::detail::ValueGCThingPayloadChunkMask), dest);
     andq(src.valueReg(), dest);
+  }
+
+  void getWasmAnyRefGCThingChunk(Register src, Register dest) {
+    MOZ_ASSERT(src != dest);
+    movq(ImmWord(wasm::AnyRef::GCThingChunkMask), dest);
+    andq(src, dest);
   }
 
   inline void fallibleUnboxPtrImpl(const Operand& src, Register dest,
@@ -969,21 +1004,6 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
 
   inline void unboxValue(const ValueOperand& src, AnyRegister dest,
                          JSValueType type);
-
-  // These two functions use the low 32-bits of the full value register.
-  void boolValueToDouble(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToDouble(operand.valueReg(), dest);
-  }
-  void int32ValueToDouble(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToDouble(operand.valueReg(), dest);
-  }
-
-  void boolValueToFloat32(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToFloat32(operand.valueReg(), dest);
-  }
-  void int32ValueToFloat32(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToFloat32(operand.valueReg(), dest);
-  }
 
   void loadConstantDouble(double d, FloatRegister dest);
   void loadConstantFloat32(float f, FloatRegister dest);
@@ -1198,12 +1218,9 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared {
 
   inline void incrementInt32Value(const Address& addr);
 
-  inline void ensureDouble(const ValueOperand& source, FloatRegister dest,
-                           Label* failure);
-
  public:
-  void handleFailureWithHandlerTail(Label* profilerExitTail,
-                                    Label* bailoutTail);
+  void handleFailureWithHandlerTail(Label* profilerExitTail, Label* bailoutTail,
+                                    uint32_t* returnValueCheckOffset);
 
   // Instrumentation for entering and leaving the profiler.
   void profilerEnterFrame(Register framePtr, Register scratch);

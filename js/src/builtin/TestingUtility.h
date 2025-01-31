@@ -7,8 +7,9 @@
 #ifndef builtin_TestingUtility_h
 #define builtin_TestingUtility_h
 
-#include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
-#include "js/Utility.h"     // JS::UniqueChars
+#include "js/experimental/JSStencil.h"  // JS::Stencil
+#include "js/RootingAPI.h"              // JS::Handle, JS::MutableHandle
+#include "js/Utility.h"                 // JS::UniqueChars
 
 struct JSContext;
 class JSObject;
@@ -22,6 +23,10 @@ namespace js {
 
 class FrontendContext;
 class ScriptSource;
+
+namespace frontend {
+struct CompilationStencil;
+}  // namespace frontend
 
 // Populate `options` fields from `opt` object.
 //
@@ -58,6 +63,17 @@ JSObject* CreateScriptPrivate(JSContext* cx,
     JSContext* cx, JS::Handle<JSObject*> opts,
     JS::MutableHandle<JS::Value> privateValue,
     JS::MutableHandle<JSString*> elementAttributeName);
+
+[[nodiscard]] JS::UniqueChars StringToLocale(JSContext* cx,
+                                             JS::Handle<JSObject*> callee,
+                                             JS::Handle<JSString*> str_);
+
+// Validate the option for lazy-parsing agrees between the current global and
+// the stencil.
+bool ValidateLazinessOfStencilAndGlobal(JSContext* cx,
+                                        const JS::Stencil* stencil);
+
+bool ValidateModuleCompileOptions(JSContext* cx, JS::CompileOptions& options);
 
 } /* namespace js */
 

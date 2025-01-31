@@ -27,7 +27,8 @@ ABIArg ABIArgGenerator::next(MIRType type) {
   switch (type) {
     case MIRType::Int32:
     case MIRType::Pointer:
-    case MIRType::RefOrNull:
+    case MIRType::WasmAnyRef:
+    case MIRType::WasmArrayData:
     case MIRType::StackResults:
       if (GetIntArgReg(usedArgSlots_, &destReg)) {
         current_ = ABIArg(destReg);

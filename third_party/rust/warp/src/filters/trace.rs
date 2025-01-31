@@ -12,7 +12,7 @@ use tracing::Span;
 
 use std::net::SocketAddr;
 
-use http::{self, header};
+use http::header;
 
 use crate::filter::{Filter, WrapSealed};
 use crate::reject::IsReject;
@@ -123,7 +123,7 @@ pub fn named(name: &'static str) -> Trace<impl Fn(Info<'_>) -> Span + Copy> {
     trace(move |_| tracing::debug_span!("context", "{}", name,))
 }
 
-/// Decorates a [`Filter`](crate::Filter) to create a [`tracing`] [span] for
+/// Decorates a [`Filter`] to create a [`tracing`] [span] for
 /// requests and responses.
 ///
 /// [`tracing`]: https://crates.io/crates/tracing

@@ -28,7 +28,7 @@ JSObject* SVGFETurbulenceElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFETurbulenceElement::sNumberInfo[1] = {
-    {nsGkAtoms::seed, 0, false}};
+    {nsGkAtoms::seed, 0}};
 
 SVGElement::NumberPairInfo SVGFETurbulenceElement::sNumberPairInfo[1] = {
     {nsGkAtoms::baseFrequency, 0, 0}};
@@ -99,7 +99,7 @@ FilterPrimitiveDescription SVGFETurbulenceElement::GetPrimitiveDescription(
       SVGAnimatedNumberPair::eSecond);
   float seed = mNumberAttributes[OCTAVES].GetAnimValue();
   uint32_t octaves =
-      clamped(mIntegerAttributes[OCTAVES].GetAnimValue(), 0, MAX_OCTAVES);
+      std::clamp(mIntegerAttributes[OCTAVES].GetAnimValue(), 0, MAX_OCTAVES);
   uint32_t type = mEnumAttributes[TYPE].GetAnimValue();
   uint16_t stitch = mEnumAttributes[STITCHTILES].GetAnimValue();
 
@@ -160,7 +160,7 @@ nsresult SVGFETurbulenceElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feTurbulence);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFETurbulenceElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -168,27 +168,27 @@ nsresult SVGFETurbulenceElement::BindToTree(BindContext& aCtx,
 
 SVGElement::NumberAttributesInfo SVGFETurbulenceElement::GetNumberInfo() {
   return NumberAttributesInfo(mNumberAttributes, sNumberInfo,
-                              ArrayLength(sNumberInfo));
+                              std::size(sNumberInfo));
 }
 
 SVGElement::NumberPairAttributesInfo
 SVGFETurbulenceElement::GetNumberPairInfo() {
   return NumberPairAttributesInfo(mNumberPairAttributes, sNumberPairInfo,
-                                  ArrayLength(sNumberPairInfo));
+                                  std::size(sNumberPairInfo));
 }
 
 SVGElement::IntegerAttributesInfo SVGFETurbulenceElement::GetIntegerInfo() {
   return IntegerAttributesInfo(mIntegerAttributes, sIntegerInfo,
-                               ArrayLength(sIntegerInfo));
+                               std::size(sIntegerInfo));
 }
 
 SVGElement::EnumAttributesInfo SVGFETurbulenceElement::GetEnumInfo() {
-  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, ArrayLength(sEnumInfo));
+  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, std::size(sEnumInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFETurbulenceElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

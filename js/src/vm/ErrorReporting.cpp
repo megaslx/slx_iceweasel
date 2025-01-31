@@ -14,9 +14,11 @@
 
 #include "frontend/FrontendContext.h"  // AutoReportFrontendContext
 #include "js/CharacterEncoding.h"      // JS::ConstUTF8CharsZ
-#include "js/friend/ErrorMessages.h"   // js::GetErrorMessage, JSMSG_*
-#include "js/Printf.h"                 // JS_vsmprintf
-#include "js/Warnings.h"               // JS::WarningReporter
+#include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::TaggedColumnNumberOneOrigin
+#include "js/ErrorReport.h"           // JSErrorBase
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/Printf.h"                // JS_vsmprintf
+#include "js/Warnings.h"              // JS::WarningReporter
 #include "vm/FrameIter.h"
 #include "vm/GlobalObject.h"
 #include "vm/JSContext.h"
@@ -194,9 +196,9 @@ static void PopulateReportBlame(JSContext* cx, JSErrorReport* report) {
   if (iter.hasScript()) {
     report->sourceId = iter.script()->scriptSource()->id();
   }
-  uint32_t column;
+  JS::TaggedColumnNumberOneOrigin column;
   report->lineno = iter.computeLine(&column);
-  report->column = FixupColumnForDisplay(column);
+  report->column = JS::ColumnNumberOneOrigin(column.oneOriginValue());
   report->isMuted = iter.mutedErrors();
 }
 

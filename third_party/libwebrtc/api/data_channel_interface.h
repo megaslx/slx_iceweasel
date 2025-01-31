@@ -17,20 +17,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 
-#include "absl/types/optional.h"
+#include "absl/functional/any_invocable.h"
 #include "api/priority.h"
+#include "api/ref_count.h"
 #include "api/rtc_error.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/copy_on_write_buffer.h"
-#include "rtc_base/ref_count.h"
 #include "rtc_base/system/rtc_export.h"
 
 namespace webrtc {
 
 // C++ version of: https://www.w3.org/TR/webrtc/#idl-def-rtcdatachannelinit
-// TODO(deadbeef): Use absl::optional for the "-1 if unset" things.
+// TODO(deadbeef): Use std::optional for the "-1 if unset" things.
 struct DataChannelInit {
   // Deprecated. Reliability is assumed, and channel will be unreliable if
   // maxRetransmitTime or MaxRetransmits is set.
@@ -45,13 +46,13 @@ struct DataChannelInit {
   // Cannot be set along with `maxRetransmits`.
   // This is called `maxPacketLifeTime` in the WebRTC JS API.
   // Negative values are ignored, and positive values are clamped to [0-65535]
-  absl::optional<int> maxRetransmitTime;
+  std::optional<int> maxRetransmitTime;
 
   // The max number of retransmissions.
   //
   // Cannot be set along with `maxRetransmitTime`.
   // Negative values are ignored, and positive values are clamped to [0-65535]
-  absl::optional<int> maxRetransmits;
+  std::optional<int> maxRetransmits;
 
   // This is set by the application and opaque to the WebRTC implementation.
   std::string protocol;
@@ -66,7 +67,7 @@ struct DataChannelInit {
   int id = -1;
 
   // https://w3c.github.io/webrtc-priority/#new-rtcdatachannelinit-member
-  absl::optional<Priority> priority;
+  std::optional<PriorityValue> priority;
 };
 
 // At the JavaScript level, data can be passed in as a string or a blob, so
@@ -100,11 +101,22 @@ class DataChannelObserver {
   // The data channel's buffered_amount has changed.
   virtual void OnBufferedAmountChange(uint64_t sent_data_size) {}
 
+  // Override this to get callbacks directly on the network thread.
+  // An implementation that does that must not block the network thread
+  // but rather only use the callback to trigger asynchronous processing
+  // elsewhere as a result of the notification.
+  // The default return value, `false`, means that notifications will be
+  // delivered on the signaling thread associated with the peerconnection
+  // instance.
+  // TODO(webrtc:11547): Eventually all DataChannelObserver implementations
+  // should be called on the network thread and this method removed.
+  virtual bool IsOkToCallOnTheNetworkThread() { return false; }
+
  protected:
   virtual ~DataChannelObserver() = default;
 };
 
-class RTC_EXPORT DataChannelInterface : public rtc::RefCountInterface {
+class RTC_EXPORT DataChannelInterface : public RefCountInterface {
  public:
   // C++ version of: https://www.w3.org/TR/webrtc/#idl-def-rtcdatachannelstate
   // Unlikely to change, but keep in sync with DataChannel.java:State and
@@ -151,8 +163,8 @@ class RTC_EXPORT DataChannelInterface : public rtc::RefCountInterface {
   // TODO(hta): Deprecate and remove the following two functions.
   virtual uint16_t maxRetransmitTime() const;
   virtual uint16_t maxRetransmits() const;
-  virtual absl::optional<int> maxRetransmitsOpt() const;
-  virtual absl::optional<int> maxPacketLifeTime() const;
+  virtual std::optional<int> maxRetransmitsOpt() const;
+  virtual std::optional<int> maxPacketLifeTime() const;
   virtual std::string protocol() const;
   virtual bool negotiated() const;
 
@@ -160,7 +172,7 @@ class RTC_EXPORT DataChannelInterface : public rtc::RefCountInterface {
   // If negotiated in-band, this ID will be populated once the DTLS role is
   // determined, and until then this will return -1.
   virtual int id() const = 0;
-  virtual Priority priority() const { return Priority::kLow; }
+  virtual PriorityValue priority() const;
   virtual DataState state() const = 0;
   // When state is kClosed, and the DataChannel was not closed using
   // the closing procedure, returns the error information about the closing.
@@ -187,7 +199,20 @@ class RTC_EXPORT DataChannelInterface : public rtc::RefCountInterface {
   // Returns false if the data channel is not in open state or if the send
   // buffer is full.
   // TODO(webrtc:13289): Return an RTCError with information about the failure.
-  virtual bool Send(const DataBuffer& buffer) = 0;
+  // TODO(tommi): Remove this method once downstream implementations don't refer
+  // to it.
+  virtual bool Send(const DataBuffer& buffer);
+
+  // Queues up an asynchronus send operation to run on a network thread.
+  // Once the operation has completed the `on_complete` callback is invoked,
+  // on the thread the send operation was done on. It's important that
+  // `on_complete` implementations do not block the current thread but rather
+  // post any expensive operations to other worker threads.
+  // TODO(tommi): Make pure virtual after updating mock class in Chromium.
+  // Deprecate `Send` in favor of this variant since the return value of `Send`
+  // is limiting for a fully async implementation (yet in practice is ignored).
+  virtual void SendAsync(DataBuffer buffer,
+                         absl::AnyInvocable<void(RTCError) &&> on_complete);
 
   // Amount of bytes that can be queued for sending on the data channel.
   // Those are bytes that have not yet been processed at the SCTP level.

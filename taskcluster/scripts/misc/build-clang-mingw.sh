@@ -37,23 +37,21 @@ default_win32_winnt=0x601
 
 cd $GECKO_PATH
 
-patch_file2="$(pwd)/taskcluster/scripts/misc/mingw-dwrite_3.patch"
-patch_file3="$(pwd)/taskcluster/scripts/misc/mingw-unknown.patch"
-patch_file4="$(pwd)/taskcluster/scripts/misc/mingw-enum.patch"
-patch_file5="$(pwd)/taskcluster/scripts/misc/mingw-widl.patch"
-patch_file6="$(pwd)/taskcluster/scripts/misc/mingw-dispatchqueue.patch"
-patch_file10="$(pwd)/taskcluster/scripts/misc/mingw-ts_sd.patch"
-patch_file11="$(pwd)/taskcluster/scripts/misc/mingw-composition.patch"
+patch_file1="$(pwd)/taskcluster/scripts/misc/mingw-dwrite_3.patch"
+patch_file2="$(pwd)/taskcluster/scripts/misc/mingw-enum.patch"
+patch_file3="$(pwd)/taskcluster/scripts/misc/mingw-widl.patch"
+patch_file4="$(pwd)/taskcluster/scripts/misc/mingw-dispatchqueue.patch"
+patch_file5="$(pwd)/taskcluster/scripts/misc/mingw-ts_sd.patch"
+patch_file6="$(pwd)/taskcluster/scripts/misc/mingw-foundation_redef.patch"
 
 prepare() {
   pushd $MOZ_FETCHES_DIR/mingw-w64
+  patch -p1 <$patch_file1
   patch -p1 <$patch_file2
   patch -p1 <$patch_file3
   patch -p1 <$patch_file4
   patch -p1 <$patch_file5
   patch -p1 <$patch_file6
-  patch -p1 <$patch_file10
-  patch -p1 <$patch_file11
   popd
 }
 
@@ -183,6 +181,7 @@ build_runtimes() {
       -DLIBUNWIND_ENABLE_CROSS_UNWINDING=FALSE \
       -DLIBUNWIND_CXX_FLAGS="${DEBUG_FLAGS} -Wno-dll-attribute-on-redeclaration -nostdinc++ -DPSAPI_VERSION=2" \
       -DLIBUNWIND_C_FLAGS="-Wno-dll-attribute-on-redeclaration" \
+      -DLIBUNWIND_ENABLE_FRAME_APIS=ON \
       -DLIBCXXABI_USE_COMPILER_RT=ON \
       -DLIBCXXABI_ENABLE_EXCEPTIONS=ON \
       -DLIBCXXABI_ENABLE_THREADS=ON \

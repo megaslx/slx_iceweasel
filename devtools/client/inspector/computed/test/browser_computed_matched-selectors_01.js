@@ -24,13 +24,12 @@ async function testMatchedSelectors(view, inspector) {
   const nodeFront = await getNodeFront("#test", inspector);
   is(
     nodeFront,
-    view._viewedElement,
+    view.viewedElement,
     "style inspector node matches the selected node"
   );
 
   const propertyView = new PropertyView(view, "color");
-  propertyView.buildMain();
-  propertyView.buildSelectorContainer();
+  propertyView.createListItemElement();
   propertyView.matchedExpanded = true;
 
   await propertyView.refreshMatchedSelectors();

@@ -29,7 +29,7 @@ Requirements
 1.1 Install Python
 ~~~~~~~~~~~~~~~~~~
 
-To build Firefox, it's necessary to have a Python of version 3.6 or later
+To build Firefox, it's necessary to have a Python of version 3.8 or later
 installed. Python 2 is no longer required to build Firefox, although it is still
 required for running some kinds of tests. Additionally, you will probably need
 Python development files as well to install some pip packages.
@@ -94,13 +94,17 @@ the interactive setup process.
 .. code-block:: shell
 
     curl https://hg.mozilla.org/mozilla-central/raw-file/default/python/mozboot/bin/bootstrap.py -O
+
+    # To use Git as your VCS
+    python3 bootstrap.py --vcs=git
+
+    # To use Mercurial as your VCS
     python3 bootstrap.py
 
 .. note::
 
-    In general, the Firefox workflow works best with Mercurial. However,
-    if you'd prefer to use ``git``, you can grab the source code in
-    "git" form by running the bootstrap script with the ``vcs`` parameter:
+    To use ``git``, you can grab the source code in "git" form by running the
+    bootstrap script with the ``vcs`` parameter:
 
     .. code-block:: shell
 
@@ -125,9 +129,19 @@ Now that your system is bootstrapped, you should be able to build!
     cd mozilla-unified
     hg up -C central
     ./mach build
-    ./mach run
 
 🎉 Congratulations! You've built your own home-grown Firefox!
+You should see the following message in your terminal after a successful build:
+
+.. code-block:: console
+
+    Your build was successful!
+    To take your build for a test drive, run: |mach run|
+    For more information on what to do now, see https://firefox-source-docs.mozilla.org/setup/contributing_code.html
+
+You can now use the ``./mach run`` command to run your locally built Firefox!
+
+If your build fails, please reference the steps in the `Troubleshooting section <#troubleshooting>`_.
 
 Now the fun starts
 ------------------
@@ -141,6 +155,23 @@ send patches to Mozilla, update your source code locally, and more.
 
 Troubleshooting
 ---------------
+
+Build errors
+~~~~~~~~~~~~
+
+If you encounter a build error when trying to setup your development environment, please follow these steps:
+   1. Copy the entire build error to your clipboard
+   2. Paste this error to `paste.mozilla.org <https://paste.mozilla.org>`_ in the text area and change the "Expire in one hour" option to "Expire in one week". Note: it won't take a week to get help but it's better to have the snippet be around for a bit longer than expected.
+   3. Go to the `introduction channel <https://chat.mozilla.org/#/room/#introduction:mozilla.org>`__ and ask for help with your build error. Make sure to post the link to the paste.mozilla.org snippet you created!
+
+The CLOBBER file has been updated
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is a normal error to encounter and tends to appear when working on a bug for a long period of time.
+If you encounter this error, you need to run ``./mach clobber`` before running ``./mach build``.
+Running ``./mach clobber`` will remove previous build artifacts to restart a build from scratch.
+If you are using an artifact build, this will mean that the next build will take slightly longer than usual.
+However, if you are using a non-artifact/full build, the next build will take significantly longer to complete.
 
 Using a non-native file system (NTFS, network drive, etc)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

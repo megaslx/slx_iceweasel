@@ -241,10 +241,14 @@ export class ErrorSanitizer {
     NotAllowedError: this.E_PERMISSION_DENIED,
   };
 
+  // IOUtils error messages include the specific nsresult error code that caused them.
+  static NS_ERROR_RE = new RegExp(/ \(NS_ERROR_.*\)$/);
+
   static #cleanOSErrorMessage(message, error = undefined) {
     if (DOMException.isInstance(error)) {
       const sub = this.DOMErrorSubstitutions[error.name];
       message = message.replaceAll("\\", "/");
+      message = message.replace(this.NS_ERROR_RE, "");
       if (sub) {
         return `${sub} ${message}`;
       }
@@ -926,10 +930,7 @@ class SyncTelemetryImpl {
           // The first 32 chars are sufficient to uniquely identify the device, so just send those.
           // It's hard to change the sync ping itself to only send 32 chars, to b/w compat reasons.
           sanitizedDeviceId = sanitizedDeviceId.substr(0, 32);
-          Services.telemetry.scalarSet(
-            "deletion.request.sync_device_id",
-            sanitizedDeviceId
-          );
+          Glean.deletionRequest.syncDeviceId.set(sanitizedDeviceId);
         }
       })
       .catch(err => {
@@ -942,7 +943,7 @@ class SyncTelemetryImpl {
   // This keeps the `deletion-request` ping up-to-date when the user signs out,
   // clearing the now-nonexistent sync device id.
   onAccountLogout() {
-    Services.telemetry.scalarSet("deletion.request.sync_device_id", "");
+    Glean.deletionRequest.syncDeviceId.set("");
   }
 
   _checkCurrent(topic) {

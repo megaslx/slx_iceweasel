@@ -16,6 +16,7 @@
 #include <hwy/highway.h>
 
 #include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/rect.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/color_encoding_internal.h"
 HWY_BEFORE_NAMESPACE();
@@ -42,7 +43,7 @@ double ComputeDistanceP(const ImageF& distmap, const ButteraugliParams& params,
     using T = float;
 #endif
     const HWY_FULL(T) d;
-    constexpr size_t N = MaxLanes(HWY_FULL(T)());
+    constexpr size_t N = MaxLanes(d);
     // Manually aligned storage to avoid asan crash on clang-7 due to
     // unaligned spill.
     HWY_ALIGN T sum_totals0[N] = {0};
@@ -125,23 +126,27 @@ double ComputeDistanceP(const ImageF& distmap, const ButteraugliParams& params,
 
 void ComputeSumOfSquares(const ImageBundle& ib1, const ImageBundle& ib2,
                          const JxlCmsInterface& cms, double sum_of_squares[3]) {
+  sum_of_squares[0] = sum_of_squares[1] = sum_of_squares[2] =
+      std::numeric_limits<double>::max();
   // Convert to sRGB - closer to perception than linear.
   const Image3F* srgb1 = &ib1.color();
   Image3F copy1;
   if (!ib1.IsSRGB()) {
-    JXL_CHECK(
-        ib1.CopyTo(Rect(ib1), ColorEncoding::SRGB(ib1.IsGray()), cms, &copy1));
+    if (!ib1.CopyTo(Rect(ib1), ColorEncoding::SRGB(ib1.IsGray()), cms, &copy1))
+      return;
     srgb1 = &copy1;
   }
   const Image3F* srgb2 = &ib2.color();
   Image3F copy2;
   if (!ib2.IsSRGB()) {
-    JXL_CHECK(
-        ib2.CopyTo(Rect(ib2), ColorEncoding::SRGB(ib2.IsGray()), cms, &copy2));
+    if (!ib2.CopyTo(Rect(ib2), ColorEncoding::SRGB(ib2.IsGray()), cms, &copy2))
+      return;
     srgb2 = &copy2;
   }
 
-  JXL_CHECK(SameSize(*srgb1, *srgb2));
+  if (!SameSize(*srgb1, *srgb2)) return;
+
+  sum_of_squares[0] = sum_of_squares[1] = sum_of_squares[2] = 0.0;
 
   // TODO(veluca): SIMD.
   float yuvmatrix[3][3] = {{0.299, 0.587, 0.114},

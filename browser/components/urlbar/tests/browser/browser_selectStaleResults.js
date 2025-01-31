@@ -13,7 +13,7 @@ ChromeUtils.defineESModuleGetters(this, {
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.suggest.quickactions", false]],
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
   });
 
   // We'll later replace this, so ensure it's restored.
@@ -122,7 +122,7 @@ add_task(async function viewContainsStaleRows() {
   // But there should be maxResults visible rows in the view.
   let items = Array.from(
     UrlbarTestUtils.getResultsContainer(window).children
-  ).filter(r => BrowserTestUtils.is_visible(r));
+  ).filter(r => BrowserTestUtils.isVisible(r));
   Assert.equal(items.length, maxResults);
 
   // Arrow down through all the results.  After arrowing down from the last "xx"
@@ -183,7 +183,7 @@ add_task(async function staleReplacedWithFresh() {
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.suggest.searches", true]],
   });
-  let engine = await SearchTestUtils.promiseNewSearchEngine({
+  let engine = await SearchTestUtils.installOpenSearchEngine({
     url: getRootDirectory(gTestPath) + "searchSuggestionEngineSlow.xml",
   });
   let oldDefaultEngine = await Services.search.getDefault();
@@ -258,7 +258,7 @@ add_task(async function staleReplacedWithFresh() {
   //   test2
   //   test1
   let mutationPromise = new Promise(resolve => {
-    let observer = new MutationObserver(mutations => {
+    let observer = new MutationObserver(() => {
       let row = UrlbarTestUtils.getRowAt(window, maxResults - 2);
       if (row && row._elements.get("title").textContent == "test2") {
         observer.disconnect();

@@ -42,14 +42,14 @@ partial interface HTMLCanvasElement {
 
            attribute PrintCallback? mozPrintCallback;
 
-  [Throws, Pref="canvas.capturestream.enabled", NeedsSubjectPrincipal]
+  [Throws, NeedsSubjectPrincipal]
   CanvasCaptureMediaStream captureStream(optional double frameRate);
 };
 
 // For OffscreenCanvas
 // Reference: https://wiki.whatwg.org/wiki/OffscreenCanvas
 partial interface HTMLCanvasElement {
-  [Pref="gfx.offscreencanvas.enabled", Throws]
+  [Throws]
   OffscreenCanvas transferControlToOffscreen();
 };
 

@@ -70,9 +70,9 @@ EXPORTS.mozilla += [
     "SpinEventLoopUntil.h",
     "StateMirroring.h",
     "StateWatching.h",
+    "StaticString.h",
     "SynchronizedEventQueue.h",
     "SyncRunnable.h",
-    "TaskCategory.h",
     "TaskController.h",
     "TaskDispatcher.h",
     "TaskQueue.h",
@@ -83,6 +83,7 @@ EXPORTS.mozilla += [
 ]
 
 SOURCES += [
+    "IdlePeriodState.cpp",
     "IdleTaskRunner.cpp",
     "ThreadDelay.cpp",
 ]
@@ -93,7 +94,6 @@ UNIFIED_SOURCES += [
     "CPUUsageWatcher.cpp",
     "DelayedRunnable.cpp",
     "EventQueue.cpp",
-    "IdlePeriodState.cpp",
     "InputTaskManager.cpp",
     "LazyIdleThread.cpp",
     "MainThreadIdlePeriod.cpp",

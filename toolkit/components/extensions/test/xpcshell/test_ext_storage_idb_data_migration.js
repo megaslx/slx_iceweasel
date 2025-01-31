@@ -30,25 +30,19 @@ const { ExtensionStorageIDB } = ChromeUtils.importESModule(
 const { TelemetryController } = ChromeUtils.importESModule(
   "resource://gre/modules/TelemetryController.sys.mjs"
 );
-const { TelemetryTestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
-);
 
 const { promiseShutdownManager, promiseStartupManager } = AddonTestUtils;
 
 const { IDB_MIGRATED_PREF_BRANCH, IDB_MIGRATE_RESULT_HISTOGRAM } =
   ExtensionStorageIDB;
 const CATEGORIES = ["success", "failure"];
-const EVENT_CATEGORY = "extensions.data";
-const EVENT_OBJECT = "storageLocal";
-const EVENT_METHOD = "migrateResult";
 const LEAVE_STORAGE_PREF = "extensions.webextensions.keepStorageOnUninstall";
 const LEAVE_UUID_PREF = "extensions.webextensions.keepUuidOnUninstall";
-const TELEMETRY_EVENTS_FILTER = {
-  category: "extensions.data",
-  method: "migrateResult",
-  object: "storageLocal",
-};
+
+add_setup(async function setup() {
+  do_get_profile();
+  Services.fog.initializeFOG();
+});
 
 async function createExtensionJSONFileWithData(extensionId, data) {
   await ExtensionStorage.set(extensionId, data);
@@ -88,12 +82,20 @@ function assertMigrationHistogramCount(category, expectedCount) {
   );
 }
 
-function assertTelemetryEvents(expectedEvents) {
-  TelemetryTestUtils.assertEvents(expectedEvents, {
-    category: EVENT_CATEGORY,
-    method: EVENT_METHOD,
-    object: EVENT_OBJECT,
-  });
+// Note: for consistency with telemetry event format, this function also
+// expects the addon_id to be passed in the event.value property.
+function assertMigrateResultGleanEvents(expectedEvents) {
+  let glean = Glean.extensionsData.migrateResult.testGetValue() ?? [];
+  equal(glean.length, expectedEvents.length, "Correct number of events.");
+
+  expectedEvents.forEach((expected, i) =>
+    Assert.deepEqual(
+      glean[i].extra,
+      { addon_id: expected.value, ...expected.extra },
+      "Correct addon_id and event extra properties."
+    )
+  );
+  Services.fog.testResetFOG();
 }
 
 add_setup(async function setup() {
@@ -155,7 +157,7 @@ add_task(async function test_no_migration_for_newly_installed_extensions() {
 
   // Verify that no data migration have been needed on the newly installed
   // extension, by asserting that no telemetry events has been collected.
-  await TelemetryTestUtils.assertEvents([], TELEMETRY_EVENTS_FILTER);
+  assertMigrateResultGleanEvents([]);
 });
 
 // Test that the data migration is still running for a newly installed extension
@@ -196,21 +198,18 @@ add_task(async function test_data_migration_on_keep_storage_on_uninstall() {
   await extension.unload();
 
   // Verify that the expected telemetry has been recorded.
-  await TelemetryTestUtils.assertEvents(
-    [
-      {
-        method: "migrateResult",
-        value: EXTENSION_ID,
-        extra: {
-          backend: "IndexedDB",
-          data_migrated: "y",
-          has_jsonfile: "y",
-          has_olddata: "y",
-        },
-      },
-    ],
-    TELEMETRY_EVENTS_FILTER
-  );
+  let expected = {
+    method: "migrateResult",
+    value: EXTENSION_ID,
+    extra: {
+      backend: "IndexedDB",
+      data_migrated: "y",
+      has_jsonfile: "y",
+      has_olddata: "y",
+    },
+  };
+
+  assertMigrateResultGleanEvents([expected]);
 
   Services.prefs.clearUserPref(LEAVE_STORAGE_PREF);
 });
@@ -336,7 +335,7 @@ add_task(async function test_storage_local_data_migration() {
   assertMigrationHistogramCount("success", 1);
   assertMigrationHistogramCount("failure", 0);
 
-  assertTelemetryEvents([
+  assertMigrateResultGleanEvents([
     {
       method: "migrateResult",
       value: EXTENSION_ID,
@@ -372,17 +371,7 @@ add_task(async function test_storage_local_data_migration() {
   assertMigrationHistogramCount("failure", 0);
 
   // No new telemetry events recorded for the extension.
-  const snapshot = Services.telemetry.snapshotEvents(
-    Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
-    true
-  );
-  const filterByCategory = ([timestamp, category]) =>
-    category === EVENT_CATEGORY;
-
-  ok(
-    !snapshot.parent || snapshot.parent.filter(filterByCategory).length === 0,
-    "No telemetry events should be recorded for an already migrated extension"
-  );
+  assertMigrateResultGleanEvents([]);
 
   Services.prefs.setBoolPref(LEAVE_STORAGE_PREF, false);
   Services.prefs.setBoolPref(LEAVE_UUID_PREF, false);
@@ -446,7 +435,7 @@ add_task(async function test_extensionId_trimmed_in_telemetry_event() {
     "The trimmed version of the extensionId should be 80 chars long"
   );
 
-  assertTelemetryEvents([
+  assertMigrateResultGleanEvents([
     {
       method: "migrateResult",
       value: expectedTrimmedExtensionId,
@@ -556,7 +545,7 @@ add_task(async function test_storage_local_corrupted_data_migration() {
   assertMigrationHistogramCount("success", 1);
   assertMigrationHistogramCount("failure", 0);
 
-  assertTelemetryEvents([
+  assertMigrateResultGleanEvents([
     {
       method: "migrateResult",
       value: EXTENSION_ID,
@@ -633,7 +622,7 @@ add_task(async function test_storage_local_data_migration_failure() {
 
   await extension.unload();
 
-  assertTelemetryEvents([
+  assertMigrateResultGleanEvents([
     {
       method: "migrateResult",
       value: EXTENSION_ID,
@@ -687,18 +676,15 @@ add_task(async function test_migration_aborted_on_shutdown() {
     { backendEnabled: false },
     "Expect migration to have been aborted"
   );
-  TelemetryTestUtils.assertEvents(
-    [
-      {
-        value: EXTENSION_ID,
-        extra: {
-          backend: "JSONFile",
-          error_name: "DataMigrationAbortedError",
-        },
-      },
-    ],
-    TELEMETRY_EVENTS_FILTER
-  );
+  let expected = {
+    value: EXTENSION_ID,
+    extra: {
+      backend: "JSONFile",
+      error_name: "DataMigrationAbortedError",
+    },
+  };
+
+  assertMigrateResultGleanEvents([expected]);
 });
 
 add_task(async function test_storage_local_data_migration_clear_pref() {
@@ -771,18 +757,14 @@ async function test_quota_exceeded_while_migrating_data() {
   );
   await extension.unload();
 
-  TelemetryTestUtils.assertEvents(
-    [
-      {
-        value: EXT_ID,
-        extra: {
-          backend: "JSONFile",
-          error_name: "QuotaExceededError",
-        },
-      },
-    ],
-    TELEMETRY_EVENTS_FILTER
-  );
+  let expected = {
+    value: EXT_ID,
+    extra: {
+      backend: "JSONFile",
+      error_name: "QuotaExceededError",
+    },
+  };
+  assertMigrateResultGleanEvents([expected]);
 
   Services.prefs.clearUserPref("dom.quotaManager.temporaryStorage.fixedLimit");
   await promiseQuotaManagerServiceClear();

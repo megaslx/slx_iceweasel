@@ -47,6 +47,7 @@ enum class ProcType {
   PrivilegedMozilla,
   WebCOOPCOEP,
   WebServiceWorker,
+  Inference,
 // the rest matches GeckoProcessTypes.h
 #define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
                            process_bin_type, procinfo_typename,               \
@@ -72,6 +73,10 @@ using UtilityActorName = mozilla::dom::WebIDLUtilityActorName;
 
 // String that will be used e.g. to annotate crash reports
 nsCString GetUtilityActorName(const UtilityActorName aActorName);
+
+#ifdef XP_WIN
+int GetCpuFrequencyMHz();
+#endif
 
 /* Get the CPU frequency to use to convert cycle time values to actual time.
  * @returns the TSC (Time Stamp Counter) frequency in MHz, or 0 if converting
@@ -167,10 +172,10 @@ struct ProcInfoRequest {
   ProcInfoRequest(base::ProcessId aPid, ProcType aProcessType,
                   const nsACString& aOrigin, nsTArray<WindowInfo>&& aWindowInfo,
                   nsTArray<UtilityInfo>&& aUtilityInfo, uint32_t aChildId = 0
-#ifdef XP_MACOSX
+#ifdef XP_DARWIN
                   ,
                   mach_port_t aChildTask = 0
-#endif  // XP_MACOSX
+#endif  // XP_DARWIN
                   )
       : pid(aPid),
         processType(aProcessType),
@@ -178,10 +183,10 @@ struct ProcInfoRequest {
         windowInfo(std::move(aWindowInfo)),
         utilityInfo(std::move(aUtilityInfo)),
         childId(aChildId)
-#ifdef XP_MACOSX
+#ifdef XP_DARWIN
         ,
         childTask(aChildTask)
-#endif  // XP_MACOSX
+#endif  // XP_DARWIN
   {
   }
   const base::ProcessId pid;
@@ -191,9 +196,9 @@ struct ProcInfoRequest {
   const nsTArray<UtilityInfo> utilityInfo;
   // If the process is a child, its child id, otherwise `0`.
   const int32_t childId;
-#ifdef XP_MACOSX
+#ifdef XP_DARWIN
   const mach_port_t childTask;
-#endif  // XP_MACOSX
+#endif  // XP_DARWIN
 };
 
 /**

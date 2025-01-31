@@ -165,7 +165,9 @@ nsresult AttrArray::RemoveAttrAt(uint32_t aPos, nsAttrValue& aValue) {
   mImpl->mBuffer[aPos].mValue.SwapValueWith(aValue);
   mImpl->mBuffer[aPos].~InternalAttr();
 
-  memmove(mImpl->mBuffer + aPos, mImpl->mBuffer + aPos + 1,
+  // InternalAttr are not trivially copyable *but* we manually called the
+  // destructor so the memmove should be ok.
+  memmove((void*)(mImpl->mBuffer + aPos), mImpl->mBuffer + aPos + 1,
           (mImpl->mAttrCount - aPos - 1) * sizeof(InternalAttr));
 
   --mImpl->mAttrCount;
@@ -302,7 +304,16 @@ bool AttrArray::GrowBy(uint32_t aGrowSize) {
     capacity = 1u << shift;
   }
 
-  CheckedUint32 sizeInBytes = capacity.value();
+  return GrowTo(capacity.value());
+}
+
+bool AttrArray::GrowTo(uint32_t aCapacity) {
+  uint32_t oldCapacity = mImpl ? mImpl->mCapacity : 0;
+  if (aCapacity <= oldCapacity) {
+    return true;
+  }
+
+  CheckedUint32 sizeInBytes = aCapacity;
   sizeInBytes *= sizeof(InternalAttr);
   if (!sizeInBytes.isValid()) {
     return false;
@@ -314,7 +325,7 @@ bool AttrArray::GrowBy(uint32_t aGrowSize) {
   }
 
   MOZ_ASSERT(sizeInBytes.value() ==
-             Impl::AllocationSizeForAttributes(capacity.value()));
+             Impl::AllocationSizeForAttributes(aCapacity));
 
   const bool needToInitialize = !mImpl;
   Impl* oldImpl = mImpl.release();
@@ -332,7 +343,7 @@ bool AttrArray::GrowBy(uint32_t aGrowSize) {
     mImpl->mAttrCount = 0;
   }
 
-  mImpl->mCapacity = capacity.value();
+  mImpl->mCapacity = aCapacity;
   return true;
 }
 

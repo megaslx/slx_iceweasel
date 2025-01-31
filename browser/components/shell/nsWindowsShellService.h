@@ -15,8 +15,7 @@
 #include <windows.h>
 #include <ole2.h>
 
-class nsWindowsShellService : public nsIShellService,
-                              public nsToolkitShellService,
+class nsWindowsShellService : public nsToolkitShellService,
                               public nsIWindowsShellService {
   virtual ~nsWindowsShellService();
 
@@ -29,9 +28,7 @@ class nsWindowsShellService : public nsIShellService,
 
  protected:
   nsresult LaunchControlPanelDefaultsSelectionUI();
-  nsresult LaunchControlPanelDefaultPrograms();
   nsresult LaunchModernSettingsDialogDefaultApps();
-  nsresult InvokeHTTPOpenAsVerb();
 };
 
 #endif  // nswindowsshellservice_h____

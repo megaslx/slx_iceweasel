@@ -16,6 +16,7 @@ struct JSContext;
 class JSObject;
 
 namespace mozilla {
+struct AnimatedPropertyID;
 struct AnimationProperty;
 class ComputedStyle;
 
@@ -90,7 +91,7 @@ class KeyframeUtils {
    */
   static nsTArray<AnimationProperty> GetAnimationPropertiesFromKeyframes(
       const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
-      PseudoStyleType aPseudoType, const ComputedStyle* aStyle,
+      const PseudoStyleRequest& aPseudoRequest, const ComputedStyle* aStyle,
       dom::CompositeOperation aEffectComposite);
 
   /**
@@ -102,7 +103,7 @@ class KeyframeUtils {
    *                  if the property is animatable or not.
    * @return true if |aProperty| is animatable.
    */
-  static bool IsAnimatableProperty(nsCSSPropertyID aProperty);
+  static bool IsAnimatableProperty(const AnimatedPropertyID& aProperty);
 };
 
 }  // namespace mozilla

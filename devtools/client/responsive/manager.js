@@ -124,8 +124,6 @@ class ResponsiveUIManager {
    */
   async openIfNeeded(window, tab, options = {}) {
     if (!this.isActiveForTab(tab)) {
-      await gDevToolsBrowser.loadBrowserStyleSheet(window);
-
       this.initMenuCheckListenerFor(window);
 
       const ui = new ResponsiveUI(this, window, tab);
@@ -134,8 +132,9 @@ class ResponsiveUIManager {
       // Explicitly not await on telemetry to avoid delaying RDM opening
       this.recordTelemetryOpen(window, tab, options);
 
+      await gDevToolsBrowser.loadBrowserStyleSheet(window);
       await this.setMenuCheckFor(tab, window);
-      await ui.inited;
+      await ui.initialize();
       this.emit("on", { tab });
     }
 
@@ -145,17 +144,14 @@ class ResponsiveUIManager {
   /**
    * Record all telemetry probes related to RDM opening.
    */
-  async recordTelemetryOpen(window, tab, options) {
+  recordTelemetryOpen(window, tab, options) {
     // Track whether a toolbox was opened before RDM was opened.
-    let toolbox;
-    if (gDevTools.hasToolboxForTab(tab)) {
-      toolbox = await gDevTools.getToolboxForTab(tab);
-    }
+    const toolbox = gDevTools.getToolboxForTab(tab);
     const hostType = toolbox ? toolbox.hostType : "none";
     const hasToolbox = !!toolbox;
 
     if (hasToolbox) {
-      this.telemetry.scalarAdd("devtools.responsive.toolbox_opened_first", 1);
+      Glean.devtoolsResponsive.toolboxOpenedFirst.add(1);
     }
 
     this.telemetry.recordEvent("activate", "responsive_design", null, {
@@ -168,11 +164,7 @@ class ResponsiveUIManager {
     if (!trigger) {
       trigger = "unknown";
     }
-    this.telemetry.keyedScalarAdd(
-      "devtools.responsive.open_trigger",
-      trigger,
-      1
-    );
+    Glean.devtoolsResponsive.openTrigger[trigger].add(1);
   }
 
   /**
@@ -214,11 +206,8 @@ class ResponsiveUIManager {
     }
   }
 
-  async recordTelemetryClose(window, tab) {
-    let toolbox;
-    if (gDevTools.hasToolboxForTab(tab)) {
-      toolbox = await gDevTools.getToolboxForTab(tab);
-    }
+  recordTelemetryClose(window, tab) {
+    const toolbox = gDevTools.getToolboxForTab(tab);
 
     const hostType = toolbox ? toolbox.hostType : "none";
 

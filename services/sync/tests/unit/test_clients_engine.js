@@ -125,7 +125,7 @@ add_task(async function test_bad_hmac() {
     check_clients_count(0);
     await syncClientsEngine(server);
     check_clients_count(1);
-    ok(engine.lastRecordUpload > 0);
+    Assert.greater(engine.lastRecordUpload, 0);
     ok(!engine.isFirstSync);
 
     // Our uploaded record has a version.
@@ -275,7 +275,7 @@ add_task(async function test_full_sync() {
     strictEqual(engine.lastRecordUpload, 0);
     ok(engine.isFirstSync);
     await syncClientsEngine(server);
-    ok(engine.lastRecordUpload > 0);
+    Assert.greater(engine.lastRecordUpload, 0);
     ok(!engine.isFirstSync);
     deepEqual(
       user.collection("clients").keys().sort(),
@@ -333,7 +333,7 @@ add_task(async function test_sync() {
     ok(engine.isFirstSync);
     await syncClientsEngine(server);
     ok(!!clientWBO().payload);
-    ok(engine.lastRecordUpload > 0);
+    Assert.greater(engine.lastRecordUpload, 0);
     ok(!engine.isFirstSync);
 
     _(
@@ -344,7 +344,7 @@ add_task(async function test_sync() {
     clientWBO().payload = undefined;
     await syncClientsEngine(server);
     ok(!!clientWBO().payload);
-    ok(engine.lastRecordUpload > lastweek);
+    Assert.greater(engine.lastRecordUpload, lastweek);
     ok(!engine.isFirstSync);
 
     _("Remove client record.");
@@ -394,8 +394,8 @@ add_task(async function test_client_name_change() {
   changedIDs = await tracker.getChangedIDs();
   equal(Object.keys(changedIDs).length, 1);
   ok(engine.localID in changedIDs);
-  ok(tracker.score > initialScore);
-  ok(tracker.score >= SCORE_INCREMENT_XLARGE);
+  Assert.greater(tracker.score, initialScore);
+  Assert.greaterOrEqual(tracker.score, SCORE_INCREMENT_XLARGE);
 
   await tracker.stop();
 
@@ -425,8 +425,8 @@ add_task(async function test_fxa_device_id_change() {
   changedIDs = await tracker.getChangedIDs();
   equal(Object.keys(changedIDs).length, 1);
   ok(engine.localID in changedIDs);
-  ok(tracker.score > initialScore);
-  ok(tracker.score >= SINGLE_USER_THRESHOLD);
+  Assert.greater(tracker.score, initialScore);
+  Assert.greaterOrEqual(tracker.score, SINGLE_USER_THRESHOLD);
 
   await tracker.stop();
 
@@ -477,7 +477,10 @@ add_task(async function test_last_modified() {
     await engine._uploadOutgoing();
 
     _("Local record should have updated timestamp");
-    ok(engine._store._remoteClients[activeID].serverLastModified >= now);
+    Assert.greaterOrEqual(
+      engine._store._remoteClients[activeID].serverLastModified,
+      now
+    );
 
     _("Record on the server should have new name but not serverLastModified");
     let payload = collection.cleartext(activeID);
@@ -697,6 +700,20 @@ add_task(async function test_filter_duplicate_names() {
     now - 10
   );
 
+  // synced recently, but not as recent as the phone.
+  let tabletID = Utils.makeGUID();
+  user.collection("clients").insertRecord(
+    {
+      id: tabletID,
+      name: "My Tablet",
+      type: "tablet",
+      commands: [],
+      version: "48",
+      protocols: ["1.5"],
+    },
+    now - 100
+  );
+
   // Dupe of our client, synced more than 1 week ago.
   let dupeID = Utils.makeGUID();
   user.collection("clients").insertRecord(
@@ -732,18 +749,18 @@ add_task(async function test_filter_duplicate_names() {
     strictEqual(engine.lastRecordUpload, 0);
     ok(engine.isFirstSync);
     await syncClientsEngine(server);
-    ok(engine.lastRecordUpload > 0);
+    Assert.greater(engine.lastRecordUpload, 0);
     ok(!engine.isFirstSync);
     deepEqual(
       user.collection("clients").keys().sort(),
-      [recentID, dupeID, oldID, engine.localID].sort(),
+      [recentID, tabletID, dupeID, oldID, engine.localID].sort(),
       "Our record should be uploaded on first sync"
     );
 
     let ids = await store.getAllIDs();
     deepEqual(
       Object.keys(ids).sort(),
-      [recentID, dupeID, oldID, engine.localID].sort(),
+      [recentID, tabletID, dupeID, oldID, engine.localID].sort(),
       "Duplicate ID should remain in getAllIDs"
     );
     ok(
@@ -757,33 +774,33 @@ add_task(async function test_filter_duplicate_names() {
 
     // dupe desktop should not appear in .deviceTypes.
     equal(engine.deviceTypes.get("desktop"), 2);
-    equal(engine.deviceTypes.get("mobile"), 1);
+    equal(engine.deviceTypes.get("mobile"), 2);
 
     // dupe desktop should not appear in stats
     deepEqual(engine.stats, {
       hasMobile: 1,
-      names: [engine.localName, "My Phone", "My old desktop"],
-      numClients: 3,
+      names: [engine.localName, "My Phone", "My Tablet", "My old desktop"],
+      numClients: 4,
     });
 
     ok(engine.remoteClientExists(oldID), "non-dupe ID should exist.");
     ok(!engine.remoteClientExists(dupeID), "dupe ID should not exist");
     equal(
       engine.remoteClients.length,
-      2,
+      3,
       "dupe should not be in remoteClients"
     );
 
     // Check that a subsequent Sync doesn't report anything as being processed.
     let counts;
-    Svc.Obs.add("weave:engine:sync:applied", function observe(subject, data) {
+    Svc.Obs.add("weave:engine:sync:applied", function observe(subject) {
       Svc.Obs.remove("weave:engine:sync:applied", observe);
       counts = subject;
     });
 
     await syncClientsEngine(server);
     equal(counts.applied, 0); // We didn't report applying any records.
-    equal(counts.reconciled, 4); // We reported reconcilliation for all records
+    equal(counts.reconciled, 5); // We reported reconcilliation for all records
     equal(counts.succeeded, 0);
     equal(counts.failed, 0);
     equal(counts.newFailed, 0);
@@ -833,7 +850,7 @@ add_task(async function test_filter_duplicate_names() {
     ids = await store.getAllIDs();
     deepEqual(
       Object.keys(ids).sort(),
-      [recentID, oldID, dupeID, engine.localID].sort(),
+      [recentID, tabletID, oldID, dupeID, engine.localID].sort(),
       "Stale client synced, so it should no longer be marked as a dupe"
     );
 
@@ -848,8 +865,14 @@ add_task(async function test_filter_duplicate_names() {
     // Recently synced dupe desktop should now appear in stats
     deepEqual(engine.stats, {
       hasMobile: 1,
-      names: [engine.localName, "My Phone", engine.localName, "My old desktop"],
-      numClients: 4,
+      names: [
+        engine.localName,
+        "My Phone",
+        "My Tablet",
+        engine.localName,
+        "My old desktop",
+      ],
+      numClients: 5,
     });
 
     ok(
@@ -858,7 +881,7 @@ add_task(async function test_filter_duplicate_names() {
     );
     equal(
       engine.remoteClients.length,
-      3,
+      4,
       "recently synced dupe should now be in remoteClients"
     );
   } finally {
@@ -915,12 +938,12 @@ add_task(async function test_command_sync() {
 
     _("Checking record was uploaded.");
     notEqual(clientWBO(engine.localID).payload, undefined);
-    ok(engine.lastRecordUpload > 0);
+    Assert.greater(engine.lastRecordUpload, 0);
     ok(!engine.isFirstSync);
 
     notEqual(clientWBO(remoteId).payload, undefined);
 
-    Svc.PrefBranch.setCharPref("client.GUID", remoteId);
+    Svc.PrefBranch.setStringPref("client.GUID", remoteId);
     await engine._resetClient();
     equal(engine.localID, remoteId);
     _("Performing sync on resetted client.");

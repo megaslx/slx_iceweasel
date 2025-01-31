@@ -45,7 +45,7 @@ async function promiseNewTab(expectUrl = AboutNewTab.newTabURL, win = window) {
     `Should open correct new tab url ${expectUrl}.`
   );
 
-  win.BrowserOpenTab();
+  win.BrowserCommands.openTab();
   const newTabCreatedPromise = newTabStartPromise;
   const browser = await newTabCreatedPromise;
   await newtabShown;
@@ -144,8 +144,9 @@ add_task(async function test_new_tab_ignore_settings() {
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
 
@@ -180,8 +181,9 @@ add_task(async function test_new_tab_ignore_settings() {
   await popupHidden;
 
   // Ensure panel is closed and the setting still isn't set.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed"
   );
   is(
@@ -195,8 +197,9 @@ add_task(async function test_new_tab_ignore_settings() {
   tab = await promiseNewTab();
 
   // Verify the doorhanger is not shown a second time.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel doesn't open after ignoring the doorhanger"
   );
   is(gURLBar.focused, true, "The URL bar is focused with no doorhanger");
@@ -222,8 +225,9 @@ add_task(async function test_new_tab_keep_settings() {
     useAddonManager: "permanent",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
 
@@ -248,14 +252,29 @@ add_task(async function test_new_tab_keep_settings() {
   );
   is(
     panel.anchorNode.closest("toolbarbutton").id,
-    "PanelUI-menu-button",
-    "The doorhanger is anchored to the menu icon"
+    "unified-extensions-button",
+    "The doorhanger is anchored to the extensions button"
   );
   is(
     panel.querySelector("#extension-new-tab-notification-description")
       .textContent,
-    "An extension,  New Tab Add-on, changed the page you see when you open a new tab.Learn more",
+    "An extension,  New Tab Add-on, changed the page you see when you open a new tab.",
     "The description includes the add-on name"
+  );
+
+  const learnMoreEl = panel.querySelector(
+    "#extension-new-tab-notification .popup-notification-learnmore-link"
+  );
+  ok(
+    BrowserTestUtils.isVisible(learnMoreEl),
+    "Expect the popupnotification learnmore link to be visible"
+  );
+
+  is(
+    learnMoreEl.getAttribute("href"),
+    Services.urlFormatter.formatURLPref("app.support.baseURL") +
+      "extension-home",
+    "learnmore link should have the expected url set"
   );
 
   // Click the Keep Changes button.
@@ -270,8 +289,9 @@ add_task(async function test_new_tab_keep_settings() {
   await confirmationSaved;
 
   // Ensure panel is closed and setting is updated.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
   is(
@@ -285,8 +305,9 @@ add_task(async function test_new_tab_keep_settings() {
   tab = await promiseNewTab(extensionNewTabUrl);
 
   // Verify the doorhanger is not shown a second time.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
 
@@ -304,8 +325,9 @@ add_task(async function test_new_tab_keep_settings() {
   tab = await promiseNewTab(extensionNewTabUrl);
 
   // Ensure panel is closed and setting is still set.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
   is(
@@ -340,8 +362,9 @@ add_task(async function test_new_tab_restore_settings() {
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
   is(
@@ -383,8 +406,9 @@ add_task(async function test_new_tab_restore_settings() {
   await preferencesShown;
 
   // Ensure panel is closed, settings haven't changed and add-on is disabled.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
 
@@ -398,8 +422,9 @@ add_task(async function test_new_tab_restore_settings() {
   BrowserTestUtils.removeTab(tab);
   tab = await promiseNewTab();
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
 
@@ -434,8 +459,9 @@ add_task(async function test_new_tab_restore_settings_multiple() {
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
   is(
@@ -539,8 +565,9 @@ add_task(async function test_new_tab_restore_settings_multiple() {
   await addonDisabled;
   tab2 = await promiseNewTab();
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after restoring the second time"
   );
   is(
@@ -558,8 +585,9 @@ add_task(async function test_new_tab_restore_settings_multiple() {
   BrowserTestUtils.removeTab(tab2);
   tab2 = await promiseNewTab();
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
 

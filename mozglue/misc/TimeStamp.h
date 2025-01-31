@@ -387,6 +387,7 @@ static_assert(sizeof(TimeStampValue) > 8);
  */
 class TimeStamp {
  public:
+  using DurationType = TimeDuration;
   /**
    * Initialize to the "null" moment
    */
@@ -469,17 +470,18 @@ class TimeStamp {
   static MFBT_API void RecordProcessRestart();
 
 #ifdef XP_LINUX
-  uint64_t RawClockMonotonicNanosecondsSinceBoot() {
+  uint64_t RawClockMonotonicNanosecondsSinceBoot() const {
     return static_cast<uint64_t>(mValue);
   }
 #endif
 
-#ifdef XP_MACOSX
-  uint64_t RawMachAbsoluteTimeValue() { return static_cast<uint64_t>(mValue); }
+#ifdef XP_DARWIN
+  // Returns the number of nanoseconds since the mach_absolute_time origin.
+  MFBT_API uint64_t RawMachAbsoluteTimeNanoseconds() const;
 #endif
 
 #ifdef XP_WIN
-  Maybe<uint64_t> RawQueryPerformanceCounterValue() {
+  Maybe<uint64_t> RawQueryPerformanceCounterValue() const {
     // mQPC is stored in `mt` i.e. QueryPerformanceCounter * 1000
     // so divide out the 1000
     return mValue.mHasQPC ? Some(mValue.mQPC / 1000ULL) : Nothing();

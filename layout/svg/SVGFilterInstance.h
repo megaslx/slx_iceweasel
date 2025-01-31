@@ -67,7 +67,7 @@ class SVGFilterInstance {
   using IntRect = gfx::IntRect;
   using SourceSurface = gfx::SourceSurface;
   using FilterPrimitiveDescription = gfx::FilterPrimitiveDescription;
-  using SVGFE = dom::SVGFE;
+  using SVGFilterPrimitiveElement = dom::SVGFilterPrimitiveElement;
   using UserSpaceMetrics = dom::UserSpaceMetrics;
 
  public:
@@ -79,11 +79,12 @@ class SVGFilterInstance {
    * @param aTargetBBox The SVG bbox to use for the target frame, computed by
    *   the caller. The caller may decide to override the actual SVG bbox.
    */
-  SVGFilterInstance(
-      const StyleFilter& aFilter, nsIFrame* aTargetFrame,
-      nsIContent* aTargetContent, const UserSpaceMetrics& aMetrics,
-      const gfxRect& aTargetBBox,
-      const gfx::MatrixScalesDouble& aUserSpaceToFilterSpaceScale);
+  SVGFilterInstance(const StyleFilter& aFilter, SVGFilterFrame* aFilterFrame,
+                    nsIContent* aTargetContent,
+                    const UserSpaceMetrics& aMetrics,
+                    const gfxRect& aTargetBBox,
+                    const gfx::MatrixScalesDouble& aUserSpaceToFilterSpaceScale,
+                    gfxRect& aFilterSpaceBoundsNotSnapped);
 
   /**
    * Returns true if the filter instance was created successfully.
@@ -131,15 +132,10 @@ class SVGFilterInstance {
 
  private:
   /**
-   * Finds the filter frame associated with this SVG filter.
-   */
-  SVGFilterFrame* GetFilterFrame(nsIFrame* aTargetFrame);
-
-  /**
    * Computes the filter primitive subregion for the given primitive.
    */
   IntRect ComputeFilterPrimitiveSubregion(
-      SVGFE* aFilterElement,
+      SVGFilterPrimitiveElement* aFilterElement,
       const nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs,
       const nsTArray<int32_t>& aInputIndices);
 
@@ -184,7 +180,7 @@ class SVGFilterInstance {
    * FilterPrimitiveDescription representing "another-primitive".
    */
   nsresult GetSourceIndices(
-      SVGFE* aPrimitiveElement,
+      SVGFilterPrimitiveElement* aPrimitiveElement,
       nsTArray<FilterPrimitiveDescription>& aPrimitiveDescrs,
       const nsTHashMap<nsStringHashKey, int32_t>& aImageTable,
       nsTArray<int32_t>& aSourceIndices);
@@ -229,6 +225,11 @@ class SVGFilterInstance {
    * The "filter region" in various spaces.
    */
   nsIntRect mFilterSpaceBounds;
+
+  /**
+   * The bounds of the filter element itself, which may be non-integer.
+   */
+  gfxRect mFilterSpaceBoundsNotSnapped;
 
   /**
    * The scale factors between user space and filter space.

@@ -12,11 +12,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/types/optional.h"
 #include "api/array_view.h"
 #include "net/dcsctp/packet/bounded_byte_reader.h"
 #include "net/dcsctp/packet/bounded_byte_writer.h"
@@ -48,11 +48,11 @@ namespace dcsctp {
 //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 constexpr int IForwardTsnChunk::kType;
 
-absl::optional<IForwardTsnChunk> IForwardTsnChunk::Parse(
+std::optional<IForwardTsnChunk> IForwardTsnChunk::Parse(
     rtc::ArrayView<const uint8_t> data) {
-  absl::optional<BoundedByteReader<kHeaderSize>> reader = ParseTLV(data);
+  std::optional<BoundedByteReader<kHeaderSize>> reader = ParseTLV(data);
   if (!reader.has_value()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   TSN new_cumulative_tsn(reader->Load32<4>());
@@ -68,8 +68,8 @@ absl::optional<IForwardTsnChunk> IForwardTsnChunk::Parse(
 
     StreamID stream_id(sub_reader.Load16<0>());
     IsUnordered unordered(sub_reader.Load8<3>() & 0x01);
-    MID message_id(sub_reader.Load32<4>());
-    skipped_streams.emplace_back(unordered, stream_id, message_id);
+    MID mid(sub_reader.Load32<4>());
+    skipped_streams.emplace_back(unordered, stream_id, mid);
     offset += kSkippedStreamBufferSize;
   }
   RTC_DCHECK(offset == reader->variable_data_size());
@@ -89,7 +89,7 @@ void IForwardTsnChunk::SerializeTo(std::vector<uint8_t>& out) const {
 
     sub_writer.Store16<0>(*skipped[i].stream_id);
     sub_writer.Store8<3>(skipped[i].unordered ? 1 : 0);
-    sub_writer.Store32<4>(*skipped[i].message_id);
+    sub_writer.Store32<4>(*skipped[i].mid);
     offset += kSkippedStreamBufferSize;
   }
   RTC_DCHECK(offset == variable_size);

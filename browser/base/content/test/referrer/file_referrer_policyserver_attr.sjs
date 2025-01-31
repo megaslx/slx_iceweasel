@@ -4,7 +4,6 @@
  * Arguments: ?scheme=http://&policy=origin&rel=noreferrer
  */
 function handleRequest(request, response) {
-  Cu.importGlobalProperties(["URLSearchParams"]);
   let query = new URLSearchParams(request.queryString);
 
   let scheme = query.get("scheme");
@@ -29,8 +28,8 @@ function handleRequest(request, response) {
               </head>
               <body>
               <a id='testlink' href='${linkUrl}' ${referrerPolicy} ${
-    rel ? ` rel='${rel}'` : ""
-  }>
+                rel ? ` rel='${rel}'` : ""
+              }>
               referrer test link</a>
               </body>
               </html>`;

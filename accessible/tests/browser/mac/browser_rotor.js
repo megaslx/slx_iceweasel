@@ -269,7 +269,7 @@ addAccessibleTask(
       "AXUIElementCountForSearchPredicate",
       NSDictionary(searchPred)
     );
-    is(4, tableCount, "Found four tables");
+    is(tableCount, 3, "Found three tables");
 
     const tables = webArea.getParameterizedAttributeValue(
       "AXUIElementsForSearchPredicate",
@@ -278,7 +278,6 @@ addAccessibleTask(
     const shapes = getNativeInterface(accDoc, "shapes");
     const food = getNativeInterface(accDoc, "food");
     const ariaTable = getNativeInterface(accDoc, "ariaTable");
-    const grid = getNativeInterface(accDoc, "grid");
 
     is(
       shapes.getAttributeValue("AXColumnCount"),
@@ -294,11 +293,6 @@ addAccessibleTask(
       ariaTable.getAttributeValue("AXColumnCount"),
       tables[2].getAttributeValue("AXColumnCount"),
       "Found correct third table"
-    );
-    is(
-      grid.getAttributeValue("AXColumnCount"),
-      tables[3].getAttributeValue("AXColumnCount"),
-      "Found correct fourth table"
     );
   }
 );
@@ -1746,6 +1740,40 @@ addAccessibleTask(
         "I could hang out, you could show me around.",
       ],
       "Correct text search results"
+    );
+  },
+  { topLevel: false, iframe: true, remoteIframe: true }
+);
+
+/**
+ * Test keyboard focusable search predicate
+ */
+addAccessibleTask(
+  `
+  <p>Hello, <a href="http://www.example.com/" id="href">Example link</a> <a id="noHref">link without href</a></p>
+  <input id="input">
+  <button id="button">Click me</button>
+  <div id="container" style="height: 10px; overflow: auto;"><div style="height: 100px;"></div></div>
+  `,
+  async (browser, f, accDoc) => {
+    const searchPred = {
+      AXSearchKey: "AXKeyboardFocusableSearchKey",
+      AXResultsLimit: -1,
+      AXDirection: "AXDirectionNext",
+    };
+    const webArea = accDoc.nativeInterface.QueryInterface(
+      Ci.nsIAccessibleMacInterface
+    );
+
+    const results = webArea.getParameterizedAttributeValue(
+      "AXUIElementsForSearchPredicate",
+      NSDictionary(searchPred)
+    );
+
+    Assert.deepEqual(
+      results.map(r => r.getAttributeValue("AXDOMIdentifier")),
+      ["href", "input", "button"],
+      "Correct keyboard focusable search results"
     );
   },
   { topLevel: false, iframe: true, remoteIframe: true }

@@ -12,7 +12,6 @@
 #include "mozilla/TimeStamp.h"
 
 #include "MediaConduitInterface.h"
-#include "common/MediaEngineWrapper.h"
 
 /**
  * This file hosts several structures identifying different aspects of a RTP
@@ -34,7 +33,6 @@ class WebrtcAudioConduit : public AudioSessionConduit,
 
   void OnRtpReceived(webrtc::RtpPacketReceived&& aPacket,
                      webrtc::RTPHeader&& aHeader);
-  void OnRtcpReceived(MediaPacket&& aPacket);
 
   void OnRtcpBye() override;
   void OnRtcpTimeout() override;
@@ -55,16 +53,6 @@ class WebrtcAudioConduit : public AudioSessionConduit,
       override {
     mReceiverRtpEventListener =
         aEvent.Connect(mCallThread, this, &WebrtcAudioConduit::OnRtpReceived);
-  }
-  void ConnectReceiverRtcpEvent(
-      MediaEventSourceExc<MediaPacket>& aEvent) override {
-    mReceiverRtcpEventListener =
-        aEvent.Connect(mCallThread, this, &WebrtcAudioConduit::OnRtcpReceived);
-  }
-  void ConnectSenderRtcpEvent(
-      MediaEventSourceExc<MediaPacket>& aEvent) override {
-    mSenderRtcpEventListener =
-        aEvent.Connect(mCallThread, this, &WebrtcAudioConduit::OnRtcpReceived);
   }
 
   Maybe<uint16_t> RtpSendBaseSeqFor(uint32_t aSsrc) const override;
@@ -289,6 +277,10 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   // To track changes needed to mRtpSendBaseSeqs.
   std::map<uint32_t, uint16_t> mRtpSendBaseSeqs_n;
 
+  // Written only on the main thread.  Guarded by mLock, except for
+  // reads on the main thread.
+  std::vector<webrtc::RtpSource> mRtpSources;
+
   // Thread safe
   Atomic<bool> mTransportActive = Atomic<bool>(false);
   MediaEventProducer<void> mRtcpByeEvent;
@@ -299,9 +291,7 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   MediaEventProducerExc<MediaPacket> mReceiverRtcpSendEvent;
 
   // Assigned and revoked on mStsThread. Listeners for receiving packets.
-  MediaEventListener mSenderRtcpEventListener;    // Rtp-transmitting pipeline
-  MediaEventListener mReceiverRtcpEventListener;  // Rtp-receiving pipeline
-  MediaEventListener mReceiverRtpEventListener;   // Rtp-receiving pipeline
+  MediaEventListener mReceiverRtpEventListener;  // Rtp-receiving pipeline
 };
 
 }  // namespace mozilla

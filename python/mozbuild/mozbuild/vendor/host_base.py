@@ -3,9 +3,13 @@
 # file, # You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import os
+import shutil
 import subprocess
 import tempfile
 import urllib
+
+import mozfile
+import requests
 
 
 class BaseHost:
@@ -33,25 +37,24 @@ class BaseHost:
                 check=True,
             )
             os.chdir("/".join([temp_repo_clone, self.manifest["origin"]["name"]]))
-            if revision == "HEAD":
+            revision_arg = []
+            if revision and revision != "HEAD":
+                revision_arg = [revision]
+
+            try:
                 tag = subprocess.run(
-                    ["git", "--no-pager", "tag", "--sort=creatordate"],
+                    ["git", "--no-pager", "tag", "-l", "--sort=creatordate"]
+                    + revision_arg,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     universal_newlines=True,
                     check=True,
                 ).stdout.splitlines()[-1]
-            else:
-                try:
-                    tag = subprocess.run(
-                        ["git", "--no-pager", "tag", "-l", revision],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        universal_newlines=True,
-                        check=True,
-                    ).stdout.splitlines()[-1]
-                except IndexError:  # 0 lines of output, the tag does not exist
+            except IndexError:  # 0 lines of output, the tag does not exist
+                if revision:
                     raise Exception(f"Requested tag {revision} not found in source.")
+                else:
+                    raise Exception("No tags found in source.")
 
             tag_timestamp = subprocess.run(
                 [
@@ -59,7 +62,7 @@ class BaseHost:
                     "log",
                     "-1",
                     "--date=iso8601-strict",
-                    "--format=%ad",
+                    "--format=%cd",
                     tag,
                 ],
                 stdout=subprocess.PIPE,
@@ -78,3 +81,16 @@ class BaseHost:
 
     def upstream_release_artifact(self, revision, release_artifact):
         raise Exception("Unimplemented for this subclass...")
+
+    def _transform_single_file_to_destination(self, from_file, destination):
+        shutil.copy2(from_file.name, destination)
+
+    def download_single_file(self, url, destination):
+        with mozfile.NamedTemporaryFile() as tmpfile:
+            req = requests.get(url, stream=True)
+            for data in req.iter_content(4096):
+                tmpfile.write(data)
+
+            tmpfile.seek(0)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            self._transform_single_file_to_destination(tmpfile, destination)

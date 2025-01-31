@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -41,8 +41,10 @@ AvxVideoWriter *aom_video_writer_open(const char *filename,
     if (!file) return NULL;
 
     writer = malloc(sizeof(*writer));
-    if (!writer) return NULL;
-
+    if (!writer) {
+      fclose(file);
+      return NULL;
+    }
     writer->frame_count = 0;
     writer->info = *info;
     writer->file = file;
@@ -74,4 +76,8 @@ int aom_video_writer_write_frame(AvxVideoWriter *writer, const uint8_t *buffer,
   ++writer->frame_count;
 
   return 1;
+}
+
+void aom_video_writer_set_fourcc(AvxVideoWriter *writer, uint32_t fourcc) {
+  writer->info.codec_fourcc = fourcc;
 }

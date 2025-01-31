@@ -11,7 +11,6 @@
 #include "nsGenericHTMLElement.h"
 #include "nsAttrValue.h"
 #include "nsAttrValueInlines.h"
-#include "nsAlgorithm.h"
 #include <algorithm>
 
 namespace mozilla::dom {
@@ -21,14 +20,15 @@ class HTMLMeterElement final : public nsGenericHTMLElement {
   explicit HTMLMeterElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-  virtual ElementState IntrinsicState() const override;
-
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
-                              const nsAString& aValue,
-                              nsIPrincipal* aMaybeScriptedPrincipal,
-                              nsAttrValue& aResult) override;
+  bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                      const nsAString& aValue,
+                      nsIPrincipal* aMaybeScriptedPrincipal,
+                      nsAttrValue& aResult) override;
+  void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
 
   // WebIDL
 
@@ -76,14 +76,9 @@ class HTMLMeterElement final : public nsGenericHTMLElement {
  protected:
   virtual ~HTMLMeterElement();
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
 
  private:
-  static const double kDefaultValue;
-  static const double kDefaultMin;
-  static const double kDefaultMax;
-
   /**
    * Returns the optimum state of the element.
    * ElementState::OPTIMUM if the actual value is in the optimum region.
@@ -95,6 +90,7 @@ class HTMLMeterElement final : public nsGenericHTMLElement {
    * @return the optimum state of the element.
    */
   ElementState GetOptimumState() const;
+  void UpdateOptimumState(bool aNotify);
 };
 
 }  // namespace mozilla::dom

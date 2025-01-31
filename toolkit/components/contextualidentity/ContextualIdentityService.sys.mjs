@@ -4,16 +4,14 @@
 
 // The maximum valid numeric value for the userContextId.
 const MAX_USER_CONTEXT_ID = -1 >>> 0;
-const LAST_CONTAINERS_JSON_VERSION = 4;
+const LAST_CONTAINERS_JSON_VERSION = 5;
 const SAVE_DELAY_MS = 1500;
 const CONTEXTUAL_IDENTITY_ENABLED_PREF = "privacy.userContext.enabled";
 
 const lazy = {};
 
-ChromeUtils.defineLazyGetter(lazy, "gBrowserBundle", function () {
-  return Services.strings.createBundle(
-    "chrome://browser/locale/browser.properties"
-  );
+ChromeUtils.defineLazyGetter(lazy, "l10n", function () {
+  return new Localization(["toolkit/global/contextual-identity.ftl"], true);
 });
 
 ChromeUtils.defineLazyGetter(lazy, "gTextDecoder", function () {
@@ -43,7 +41,7 @@ _TabRemovalObserver.prototype = {
 
   QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
-  observe(subject, topic, data) {
+  observe(subject) {
     let remoteTab = subject.QueryInterface(Ci.nsIRemoteTab);
     if (this._remoteTabIds.has(remoteTab.tabId)) {
       this._remoteTabIds.delete(remoteTab.tabId);
@@ -66,26 +64,22 @@ _ContextualIdentityService.prototype = {
     {
       icon: "fingerprint",
       color: "blue",
-      l10nID: "userContextPersonal.label",
-      accessKey: "userContextPersonal.accesskey",
+      l10nId: "user-context-personal",
     },
     {
       icon: "briefcase",
       color: "orange",
-      l10nID: "userContextWork.label",
-      accessKey: "userContextWork.accesskey",
+      l10nId: "user-context-work",
     },
     {
       icon: "dollar",
       color: "green",
-      l10nID: "userContextBanking.label",
-      accessKey: "userContextBanking.accesskey",
+      l10nId: "user-context-banking",
     },
     {
       icon: "cart",
       color: "pink",
-      l10nID: "userContextShopping.label",
-      accessKey: "userContextShopping.accesskey",
+      l10nId: "user-context-shopping",
     },
   ],
   _systemIdentities: [
@@ -96,7 +90,7 @@ _ContextualIdentityService.prototype = {
       name: "userContextIdInternal.thumbnail",
       accessKey: "",
     },
-    // This userContextId is used by ExtensionStorageIDB.jsm to create an IndexedDB database
+    // This userContextId is used by ExtensionStorageIDB.sys.mjs to create an IndexedDB database
     // opened with the extension principal but not directly accessible to the extension code
     // (do not change the userContextId assigned here, otherwise the installed extensions will
     // not be able to access the data previously stored with the browser.storage.local API).
@@ -168,8 +162,8 @@ _ContextualIdentityService.prototype = {
     }
   },
 
-  load() {
-    return IOUtils.read(this._path).then(
+  async load() {
+    await IOUtils.read(this._path).then(
       bytes => {
         // If synchronous loading happened in the meantime, exit now.
         if (this._dataReady) {
@@ -185,6 +179,10 @@ _ContextualIdentityService.prototype = {
       error => {
         this.loadError(error);
       }
+    );
+    Services.obs.notifyObservers(
+      null,
+      "contextual-identity-service-load-finished"
     );
   },
 
@@ -319,8 +317,7 @@ _ContextualIdentityService.prototype = {
       identity.name = name;
       identity.color = color;
       identity.icon = icon;
-      delete identity.l10nID;
-      delete identity.accessKey;
+      delete identity.l10nId;
 
       this.saveSoon();
       Services.obs.notifyObservers(
@@ -330,6 +327,38 @@ _ContextualIdentityService.prototype = {
     }
 
     return !!identity;
+  },
+
+  move(userContextIds, position) {
+    this.ensureDataReady();
+
+    if (position < -1) {
+      return false;
+    }
+    let movedIdentities = this._identities.filter(
+      identity =>
+        identity.public && userContextIds.includes(identity.userContextId)
+    );
+
+    if (movedIdentities.length) {
+      if (position === -1) {
+        position = this._identities.length;
+      }
+      // Shift position by preceding non-public identities
+      position = this._identities.reduce(
+        (dest, identity, idx) =>
+          dest + (!identity.public && dest >= idx ? 1 : 0),
+        position
+      );
+      this._identities = this._identities.filter(
+        identity =>
+          !identity.public || !userContextIds.includes(identity.userContextId)
+      );
+      this._identities.splice(position, 0, ...movedIdentities);
+      this.saveSoon();
+    }
+
+    return !!movedIdentities.length;
   },
 
   remove(userContextId) {
@@ -385,6 +414,11 @@ _ContextualIdentityService.prototype = {
       saveNeeded = true;
     }
 
+    if (data.version == 4) {
+      data = this.migrate4to5(data);
+      saveNeeded = true;
+    }
+
     if (data.version != LAST_CONTAINERS_JSON_VERSION) {
       dump(
         "ERROR - ContextualIdentityService - Unknown version found in " +
@@ -412,12 +446,20 @@ _ContextualIdentityService.prototype = {
     }
 
     try {
+      // Check if the containers.json file exists before attempting to read
+      // from it (to avoid a warning in the console). If the file is missing,
+      // reset the service to its default state and return early.
+      let file = new lazy.FileUtils.File(this._path);
+      if (!file.exists()) {
+        this.resetDefault();
+        return;
+      }
       // This reads the file and automatically detects the UTF-8 encoding.
       let inputStream = Cc[
         "@mozilla.org/network/file-input-stream;1"
       ].createInstance(Ci.nsIFileInputStream);
       inputStream.init(
-        new lazy.FileUtils.File(this._path),
+        file,
         lazy.FileUtils.MODE_RDONLY,
         lazy.FileUtils.PERMS_FILE,
         0
@@ -484,18 +526,29 @@ _ContextualIdentityService.prototype = {
     );
   },
 
+  formatContextLabel(l10nId) {
+    const [msg] = lazy.l10n.formatMessagesSync([l10nId]);
+    for (let attr of msg.attributes) {
+      if (attr.name === "label") {
+        return attr.value;
+      }
+    }
+    return "";
+  },
+
   getUserContextLabel(userContextId) {
     let identity = this.getPublicIdentityFromId(userContextId);
-    if (!identity) {
-      return "";
-    }
 
     // We cannot localize the user-created identity names.
-    if (identity.name) {
+    if (identity?.name) {
       return identity.name;
     }
 
-    return lazy.gBrowserBundle.GetStringFromName(identity.l10nID);
+    if (identity?.l10nId) {
+      return this.formatContextLabel(identity.l10nId);
+    }
+
+    return "";
   },
 
   setTabStyle(tab) {
@@ -526,7 +579,7 @@ _ContextualIdentityService.prototype = {
     return count;
   },
 
-  closeContainerTabs(userContextId = 0) {
+  closeContainerTabs(userContextId = 0, removeTabOptions = {}) {
     return new Promise(resolve => {
       let remoteTabIds = new Set();
       this._forEachContainerTab((tab, tabbrowser) => {
@@ -537,7 +590,7 @@ _ContextualIdentityService.prototype = {
           remoteTabIds.add(frameLoader.remoteTab.tabId);
         }
 
-        tabbrowser.removeTab(tab);
+        tabbrowser.removeTab(tab, removeTabOptions);
       }, userContextId);
 
       if (remoteTabIds.size == 0) {
@@ -637,6 +690,38 @@ _ContextualIdentityService.prototype = {
     data.identities.push(webextStorageLocalIdentity);
 
     data.version = 4;
+
+    return data;
+  },
+
+  migrate4to5(data) {
+    // Migrating from 4 to 5 is:
+    // - replacing the StringBundle l10nID with a Fluent l10nId for default identities
+    // - dropping the accessKey property
+    // - increasing the version id.
+    //
+    // This migration was needed for Bug 1814969. See bug 1814969 for rationale.
+
+    for (let identity of data.identities) {
+      switch (identity.l10nID) {
+        case "userContextPersonal.label":
+          identity.l10nId = "user-context-personal";
+          break;
+        case "userContextWork.label":
+          identity.l10nId = "user-context-work";
+          break;
+        case "userContextBanking.label":
+          identity.l10nId = "user-context-banking";
+          break;
+        case "userContextShopping.label":
+          identity.l10nId = "user-context-shopping";
+          break;
+      }
+      delete identity.l10nID;
+      delete identity.accessKey;
+    }
+
+    data.version = 5;
 
     return data;
   },

@@ -28,7 +28,7 @@ def dependentlibs_win32_objdump(lib):
     )
     deps = []
     for line in proc.stdout:
-        match = re.match("\s+DLL Name: (\S+)", line)
+        match = re.match(r"\s+DLL Name: (\S+)", line)
         if match:
             # The DLL Name found might be mixed-case or upper-case. When cross-compiling,
             # the actual DLLs in dist/bin are all lowercase, whether they are produced
@@ -61,7 +61,7 @@ def dependentlibs_readelf(lib):
             # 0x00000001 (NEEDED)             Shared library: [libname]
             # or with BSD readelf:
             # 0x00000001 NEEDED               Shared library: [libname]
-            match = re.search("\[(.*)\]", tmp[3])
+            match = re.search(r"\[(.*)\]", tmp[3])
             if match:
                 deps.append(match.group(1))
     proc.wait()
@@ -90,9 +90,30 @@ def dependentlibs_mac_objdump(lib):
         if tmp[0] == "cmd":
             cmd = tmp[1]
         elif cmd == "LC_LOAD_DYLIB" and tmp[0] == "name":
-            deps.append(re.sub("^@executable_path/", "", tmp[1]))
+            deps.append(re.sub("@(?:rpath|executable_path)/", "", tmp[1]))
     proc.wait()
     return deps
+
+
+def is_skiplisted(dep):
+    # Skip the ICU data DLL because preloading it at startup
+    # leads to startup performance problems because of its excessive
+    # size (around 10MB).
+    if dep.startswith("icu"):
+        return True
+    # dxcompiler.dll is also large and we dynamically load it.
+    if dep.startswith(("dxcompiler", " dxil")):
+        return True
+    # Skip the MSVC Runtimes. See bug #1921713.
+    if substs.get("WIN32_REDIST_DIR"):
+        for runtime in [
+            "MSVC_C_RUNTIME_DLL",
+            "MSVC_C_RUNTIME_1_DLL",
+            "MSVC_CXX_RUNTIME_DLL",
+        ]:
+            dll = substs.get(runtime)
+            if dll and dep == dll:
+                return True
 
 
 def dependentlibs(lib, libpaths, func):
@@ -108,10 +129,7 @@ def dependentlibs(lib, libpaths, func):
             deppath = os.path.join(dir, dep)
             if os.path.exists(deppath):
                 deps.update(dependentlibs(deppath, libpaths, func))
-                # Black list the ICU data DLL because preloading it at startup
-                # leads to startup performance problems because of its excessive
-                # size (around 10MB).
-                if not dep.startswith(("icu")):
+                if not is_skiplisted(dep):
                     deps[dep] = deppath
                 break
 
@@ -132,6 +150,8 @@ def gen_list(output, lib):
 
     deps = dependentlibs(lib, libpaths, func)
     base_lib = mozpath.basename(lib)
+    if not deps:
+        raise RuntimeError(f"Couldn't find any dependencies of {base_lib}")
     deps[base_lib] = mozpath.join(libpaths[0], base_lib)
     output.write("\n".join(deps.keys()) + "\n")
 

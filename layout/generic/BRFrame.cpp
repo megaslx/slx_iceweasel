@@ -6,6 +6,7 @@
 
 /* rendering object for HTML <br> elements */
 
+#include "mozilla/CaretAssociationHint.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/HTMLBRElement.h"
 #include "gfxContext.h"
@@ -52,21 +53,14 @@ class BRFrame final : public nsIFrame {
   void Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
               const ReflowInput& aReflowInput,
               nsReflowStatus& aStatus) override;
-  void AddInlineMinISize(gfxContext* aRenderingContext,
+  void AddInlineMinISize(const IntrinsicSizeInput& aInput,
                          InlineMinISizeData* aData) override;
-  void AddInlinePrefISize(gfxContext* aRenderingContext,
+  void AddInlinePrefISize(const IntrinsicSizeInput& aInput,
                           InlinePrefISizeData* aData) override;
-  nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  nscoord GetPrefISize(gfxContext* aRenderingContext) override;
 
   Maybe<nscoord> GetNaturalBaselineBOffset(
       WritingMode aWM, BaselineSharingGroup aBaselineGroup,
       BaselineExportContext) const override;
-
-  bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsIFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eLineParticipant));
-  }
 
 #ifdef ACCESSIBILITY
   mozilla::a11y::AccType AccessibleType() override;
@@ -102,7 +96,6 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
                      const ReflowInput& aReflowInput, nsReflowStatus& aStatus) {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("BRFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aMetrics, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
   WritingMode wm = aReflowInput.GetWritingMode();
@@ -161,7 +154,8 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
     }
 
     // Return our reflow status
-    aStatus.SetInlineLineBreakAfter(aReflowInput.mStyleDisplay->mClear);
+    aStatus.SetInlineLineBreakAfter(
+        aReflowInput.mStyleDisplay->UsedClear(aReflowInput.GetCBWritingMode()));
     ll->SetLineEndsInBR(true);
   }
 
@@ -172,35 +166,21 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
 }
 
 /* virtual */
-void BRFrame::AddInlineMinISize(gfxContext* aRenderingContext,
-                                nsIFrame::InlineMinISizeData* aData) {
+void BRFrame::AddInlineMinISize(const IntrinsicSizeInput& aInput,
+                                InlineMinISizeData* aData) {
   if (!GetParent()->Style()->ShouldSuppressLineBreak()) {
     aData->ForceBreak();
   }
 }
 
 /* virtual */
-void BRFrame::AddInlinePrefISize(gfxContext* aRenderingContext,
-                                 nsIFrame::InlinePrefISizeData* aData) {
+void BRFrame::AddInlinePrefISize(const IntrinsicSizeInput& aInput,
+                                 InlinePrefISizeData* aData) {
   if (!GetParent()->Style()->ShouldSuppressLineBreak()) {
     // Match the 1 appunit width assigned in the Reflow method above
     aData->mCurrentLine += 1;
     aData->ForceBreak();
   }
-}
-
-/* virtual */
-nscoord BRFrame::GetMinISize(gfxContext* aRenderingContext) {
-  nscoord result = 0;
-  DISPLAY_MIN_INLINE_SIZE(this, result);
-  return result;
-}
-
-/* virtual */
-nscoord BRFrame::GetPrefISize(gfxContext* aRenderingContext) {
-  nscoord result = 0;
-  DISPLAY_PREF_INLINE_SIZE(this, result);
-  return result;
 }
 
 Maybe<nscoord> BRFrame::GetNaturalBaselineBOffset(
@@ -219,7 +199,7 @@ nsIFrame::ContentOffsets BRFrame::CalcContentOffsetsFromFramePoint(
   if (offsets.content) {
     offsets.offset = offsets.content->ComputeIndexOf_Deprecated(mContent);
     offsets.secondaryOffset = offsets.offset;
-    offsets.associate = CARET_ASSOCIATE_AFTER;
+    offsets.associate = CaretAssociationHint::After;
   }
   return offsets;
 }

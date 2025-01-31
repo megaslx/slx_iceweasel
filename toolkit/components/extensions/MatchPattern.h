@@ -108,6 +108,13 @@ class URLInfo final {
   const nsCString& CSpec() const;
 
   bool InheritsPrincipal() const;
+  // Whether the URL is a meaningful representation of a document URL, even if
+  // that document were to have an opaque origin (null principal).
+  // These URLs are more verbose than the precursor (origin) of a null
+  // principal, and therefore preferred for matching purposes.
+  //
+  // NOTE: This method is main-thread only
+  bool IsNonOpaqueURL() const;
 
  private:
   nsIURI* URINoRef() const;
@@ -125,6 +132,7 @@ class URLInfo final {
   mutable nsCString mCSpec;
 
   mutable Maybe<bool> mInheritsPrincipal;
+  mutable Maybe<bool> mIsNonOpaqueURL;
 };
 
 // Similar to URLInfo, but for cookies.
@@ -159,6 +167,10 @@ class MatchPatternCore final {
   bool Matches(const nsAString& aURL, bool aExplicit, ErrorResult& aRv) const;
 
   bool Matches(const URLInfo& aURL, bool aExplicit = false) const;
+
+  bool MatchesAllWebUrls() const;
+  // Helper for MatchPatternSetCore::MatchesAllWebUrls:
+  bool MatchesAllUrlsWithScheme(const nsAtom* aScheme) const;
 
   bool MatchesCookie(const CookieInfo& aCookie) const;
 
@@ -211,6 +223,8 @@ class MatchPattern final : public nsISupports, public nsWrapperCache {
   bool Matches(const nsAString& aURL, bool aExplicit, ErrorResult& aRv) const {
     return Core()->Matches(aURL, aExplicit, aRv);
   }
+
+  bool MatchesAllWebUrls() const { return Core()->MatchesAllWebUrls(); }
 
   bool Matches(const URLInfo& aURL, bool aExplicit = false) const {
     return Core()->Matches(aURL, aExplicit);
@@ -292,6 +306,8 @@ class MatchPatternSetCore final {
 
   bool Matches(const URLInfo& aURL, bool aExplicit = false) const;
 
+  bool MatchesAllWebUrls() const;
+
   bool MatchesCookie(const CookieInfo& aCookie) const;
 
   bool Subsumes(const MatchPatternCore& aPattern) const;
@@ -338,6 +354,8 @@ class MatchPatternSet final : public nsISupports, public nsWrapperCache {
   bool Matches(const URLInfo& aURL, bool aExplicit, ErrorResult& aRv) const {
     return Matches(aURL, aExplicit);
   }
+
+  bool MatchesAllWebUrls() const { return Core()->MatchesAllWebUrls(); }
 
   bool MatchesCookie(const CookieInfo& aCookie) const {
     return Core()->MatchesCookie(aCookie);

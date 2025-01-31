@@ -38,8 +38,7 @@ class APZCTreeManagerTester : public APZCTesterBase {
   }
 
   virtual void TearDown() {
-    while (mcc->RunThroughDelayedTasks())
-      ;
+    while (mcc->RunThroughDelayedTasks());
     manager->ClearTree();
     manager->ClearContentController();
 
@@ -82,14 +81,13 @@ class APZCTreeManagerTester : public APZCTesterBase {
   // A convenience wrapper for manager->UpdateHitTestingTree().
   void UpdateHitTestingTree(uint32_t aPaintSequenceNumber = 0) {
     manager->UpdateHitTestingTree(WebRenderScrollDataWrapper{*updater, &layers},
-                                  /* is first paint = */ false, LayersId{0},
-                                  aPaintSequenceNumber);
+                                  LayersId{0}, aPaintSequenceNumber);
   }
 
   void CreateScrollData(const char* aTreeShape,
-                        const LayerIntRegion* aVisibleRegions = nullptr,
+                        const LayerIntRect* aVisibleRects = nullptr,
                         const gfx::Matrix4x4* aTransforms = nullptr) {
-    layers = TestWRScrollData::Create(aTreeShape, *updater, aVisibleRegions,
+    layers = TestWRScrollData::Create(aTreeShape, *updater, aVisibleRects,
                                       aTransforms);
     root = layers[0];
   }
@@ -103,8 +101,16 @@ class APZCTreeManagerTester : public APZCTesterBase {
   void QueueMockHitResult(ScrollableLayerGuid::ViewID aScrollId,
                           gfx::CompositorHitTestInfo aHitInfo =
                               gfx::CompositorHitTestFlags::eVisibleToHitTest) {
+    QueueMockHitResult(ScrollableLayerGuid(LayersId{0}, 0, aScrollId),
+                       aHitInfo);
+  }
+
+  // This overload allows customizing the LayersId as well.
+  void QueueMockHitResult(ScrollableLayerGuid aGuid,
+                          gfx::CompositorHitTestInfo aHitInfo =
+                              gfx::CompositorHitTestFlags::eVisibleToHitTest) {
     MOZ_ASSERT(mMockHitTester);
-    mMockHitTester->QueueHitResult(aScrollId, aHitInfo);
+    mMockHitTester->QueueHitResult(aGuid, aHitInfo);
   }
 
   RefPtr<TestAPZCTreeManager> manager;
@@ -168,9 +174,8 @@ class APZCTreeManagerTester : public APZCTesterBase {
                                  CSSRect aScrollableRect = CSSRect(-1, -1, -1,
                                                                    -1)) {
     auto localTransform = aLayer->GetTransformTyped() * AsyncTransformMatrix();
-    ParentLayerIntRect compositionBounds =
-        RoundedToInt(localTransform.TransformBounds(
-            LayerRect(aLayer->GetVisibleRegion().GetBounds())));
+    ParentLayerIntRect compositionBounds = RoundedToInt(
+        localTransform.TransformBounds(LayerRect(aLayer->GetVisibleRect())));
     ScrollMetadata metadata = BuildScrollMetadata(
         aScrollId, aScrollableRect, ParentLayerRect(compositionBounds));
     SetScrollMetadata(aLayer, metadata);
@@ -211,10 +216,10 @@ class APZCTreeManagerTester : public APZCTesterBase {
 
   void CreateSimpleScrollingLayer() {
     const char* treeShape = "x";
-    LayerIntRegion layerVisibleRegion[] = {
+    LayerIntRect layerVisibleRect[] = {
         LayerIntRect(0, 0, 200, 200),
     };
-    CreateScrollData(treeShape, layerVisibleRegion);
+    CreateScrollData(treeShape, layerVisibleRect);
     SetScrollableFrameMetrics(layers[0], ScrollableLayerGuid::START_SCROLL_ID,
                               CSSRect(0, 0, 500, 500));
   }

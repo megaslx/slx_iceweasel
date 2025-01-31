@@ -34,6 +34,9 @@ you're going to want to write some automated tests.
 * You may see values from previous tests persist across tests because the profile directory was shared between test cases.
     * You can reset Glean before your test by calling
       `Services.fog.testResetFOG()` (in JS).
+        * If your instrumentation isn't on the parent process,
+          you should call `await Services.fog.testFlushAllChildren()` before `testResetFOG`.
+          That will ensure all pending data makes it to the parent process to be cleared.
     * You shouldn't have to do this in C++ or Rust since there you should use the
       `FOGFixture` test fixture.
 * If your metric is based on timing (`timespan`, `timing_distribution`),
@@ -42,7 +45,10 @@ you're going to want to write some automated tests.
   do not expect the values to be predictable.
     * Instead, check that a value is `> 0` or that the number of samples is expected.
     * You might be able to assert that the value is at least as much as a known, timed value,
-    but beware of rounding.
+      but beware of rounding.
+    * If your metric is a `timing_distribution` mirroring to a Telemetry probe via [GIFFT](./gifft.md),
+      there may be [small observed differences between systems](./gifft.md#timing_distribution-mirrors-samples-and-sums-might-be-different)
+      that can cause equality assertions to fail.
 * Errors in instrumentation APIs do not panic, throw, or crash.
   But Glean remembers that the errors happened.
     * Test APIs, on the other hand, are permitted

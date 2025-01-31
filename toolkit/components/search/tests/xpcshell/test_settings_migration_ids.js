@@ -51,15 +51,17 @@ async function loadSettingsFile(settingsFile) {
 /**
  * Test reading from search.json.mozlz4
  */
-add_task(async function setup() {
+add_setup(async function () {
   // This initializes the policy engine for xpcshell tests
   let policies = Cc["@mozilla.org/enterprisepolicies;1"].getService(
     Ci.nsIObserver
   );
   policies.observe(null, "policies-startup", null);
 
-  await SearchTestUtils.useTestEngines("data1");
-  await AddonTestUtils.promiseStartupManager();
+  SearchTestUtils.setRemoteSettingsConfig([
+    { identifier: "engine1" },
+    { identifier: "engine2" },
+  ]);
   await EnterprisePolicyTesting.setupPolicyEngineWithJson(enterprisePolicy);
   // Setting the enterprise policy starts the search service initialising,
   // so we wait for that to complete before starting the test.
@@ -88,7 +90,7 @@ async function assertInstalledEngineMatches(expectedData) {
 }
 
 add_task(async function test_migration_from_pre_ids() {
-  await loadSettingsFile("data/search-legacy-no-ids.json");
+  await loadSettingsFile("settings/v6-ids-upgrade.json");
 
   const settingsFileWritten = promiseAfterSettings();
 

@@ -39,7 +39,7 @@ export let RemotePageAccessManager = {
         "Browser:ResetEnterpriseRootsPref",
         "DisplayOfflineSupportPage",
       ],
-      RPMRecordTelemetryEvent: ["*"],
+      RPMRecordGleanEvent: ["*"],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
       RPMGetFormatURLPref: ["app.support.baseURL"],
@@ -49,6 +49,7 @@ export let RemotePageAccessManager = {
         "security.enterprise_roots.auto-enabled",
         "security.certerror.hideAddException",
         "network.trr.display_fallback_warning",
+        "security.certerrors.felt-privacy-v1",
       ],
       RPMGetIntPref: [
         "security.dialog_enable_delay",
@@ -66,6 +67,7 @@ export let RemotePageAccessManager = {
     },
     "about:httpsonlyerror": {
       RPMGetFormatURLPref: ["app.support.baseURL"],
+      RPMGetIntPref: ["security.dialog_enable_delay"],
       RPMSendAsyncMessage: ["goBack", "openInsecure"],
       RPMAddMessageListener: ["WWWReachable"],
       RPMTryPingSecureWWWLink: ["*"],
@@ -88,7 +90,7 @@ export let RemotePageAccessManager = {
         "OpenTRRPreferences",
       ],
       RPMCheckAlternateHostAvailable: ["*"],
-      RPMRecordTelemetryEvent: ["security.doh.neterror"],
+      RPMRecordGleanEvent: ["securityDohNeterror", "securityUiTlserror"],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
       RPMGetFormatURLPref: [
@@ -99,7 +101,9 @@ export let RemotePageAccessManager = {
         "security.certerror.hideAddException",
         "security.xfocsp.errorReporting.automatic",
         "security.xfocsp.errorReporting.enabled",
+        "security.xfocsp.hideOpenInNewWindow",
         "network.trr.display_fallback_warning",
+        "security.certerrors.felt-privacy-v1",
       ],
       RPMSetPref: [
         "security.xfocsp.errorReporting.automatic",
@@ -115,15 +119,13 @@ export let RemotePageAccessManager = {
       RPMGetTRRDomain: ["*"],
       RPMIsSiteSpecificTRRError: ["*"],
       RPMSetTRRDisabledLoadFlags: ["*"],
+      RPMShowOSXLocalNetworkPermissionWarning: ["*"],
       RPMSendQuery: ["Browser:AddTRRExcludedDomain"],
       RPMGetIntPref: ["network.trr.mode"],
     },
     "about:newtab": {
       RPMSendAsyncMessage: ["ActivityStream:ContentToMain"],
       RPMAddMessageListener: ["ActivityStream:MainToContent"],
-    },
-    "about:plugins": {
-      RPMSendQuery: ["RequestPlugins"],
     },
     "about:pocket-saved": {
       RPMSendAsyncMessage: ["*"],
@@ -157,7 +159,6 @@ export let RemotePageAccessManager = {
       ],
       RPMSendQuery: [
         "IsPromoBlocked",
-        "ShouldShowSearch",
         "ShouldShowSearchBanner",
         "ShouldShowPromo",
         "SpecialMessageActionDispatch",
@@ -169,6 +170,37 @@ export let RemotePageAccessManager = {
         "browser.privatebrowsing.vpnpromourl",
       ],
       RPMIsWindowPrivate: ["*"],
+      RPMGetBoolPref: ["browser.privatebrowsing.felt-privacy-v1"],
+    },
+    "about:deleteprofile": {
+      RPMSendQuery: ["Profiles:GetDeleteProfileContent"],
+      RPMSendAsyncMessage: ["Profiles:CancelDelete", "Profiles:DeleteProfile"],
+    },
+    "about:editprofile": {
+      RPMSendQuery: [
+        "Profiles:GetEditProfileContent",
+        "Profiles:UpdateProfileTheme",
+      ],
+      RPMSendAsyncMessage: [
+        "Profiles:UpdateProfileName",
+        "Profiles:UpdateProfileAvatar",
+        "Profiles:OpenDeletePage",
+        "Profiles:CloseProfileTab",
+      ],
+    },
+    "about:newprofile": {
+      RPMSendQuery: [
+        "Profiles:GetNewProfileContent",
+        "Profiles:UpdateProfileTheme",
+      ],
+      RPMSendAsyncMessage: [
+        "Profiles:UpdateProfileName",
+        "Profiles:UpdateProfileAvatar",
+        "Profiles:DeleteNewProfile",
+        "Profiles:CloseProfileTab",
+      ],
+      RPMGetBoolPref: ["browser.profiles.profile-name.updated"],
+      RPMGetFormatURLPref: ["app.support.baseURL"],
     },
     "about:protections": {
       RPMSendAsyncMessage: [
@@ -197,6 +229,7 @@ export let RemotePageAccessManager = {
       RPMGetBoolPref: [
         "browser.contentblocking.report.lockwise.enabled",
         "browser.contentblocking.report.monitor.enabled",
+        "privacy.fingerprintingProtection",
         "privacy.socialtracking.block_cookies.enabled",
         "browser.contentblocking.report.proxy.enabled",
         "privacy.trackingprotection.cryptomining.enabled",
@@ -234,11 +267,22 @@ export let RemotePageAccessManager = {
         "browser.contentblocking.report.fingerprinter.url",
         "browser.contentblocking.report.cryptominer.url",
       ],
-      RPMRecordTelemetryEvent: ["*"],
+      RPMRecordGleanEvent: ["securityUiProtections"],
     },
     "about:shoppingsidebar": {
-      RPMSetPref: ["browser.shopping.experience2023.optedIn"],
+      RPMSetPref: [
+        "browser.shopping.experience2023.optedIn",
+        "browser.shopping.experience2023.active",
+        "browser.shopping.experience2023.ads.userEnabled",
+        "browser.shopping.experience2023.sidebarClosedCount",
+        "browser.shopping.experience2023.showKeepSidebarClosedMessage",
+        "browser.shopping.experience2023.autoOpen.userEnabled",
+      ],
       RPMGetFormatURLPref: ["app.support.baseURL"],
+      RPMGetIntPref: ["browser.shopping.experience2023.sidebarClosedCount"],
+      RPMGetBoolPref: [
+        "browser.shopping.experience2023.showKeepSidebarClosedMessage",
+      ],
     },
     "about:tabcrashed": {
       RPMSendAsyncMessage: ["Load", "closeTab", "restoreTab", "restoreAll"],

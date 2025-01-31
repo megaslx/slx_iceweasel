@@ -26,6 +26,7 @@ class Runnable;
 
 namespace layers {
 
+struct DoubleTapToZoomMetrics;
 struct RepaintRequest;
 
 class GeckoContentController {
@@ -58,9 +59,10 @@ class GeckoContentController {
    * current scroll offset.
    */
   MOZ_CAN_RUN_SCRIPT
-  virtual void HandleTap(TapType aType, const LayoutDevicePoint& aPoint,
-                         Modifiers aModifiers, const ScrollableLayerGuid& aGuid,
-                         uint64_t aInputBlockId) = 0;
+  virtual void HandleTap(
+      TapType aType, const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+      const ScrollableLayerGuid& aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapTooZoomMetrics) = 0;
 
   /**
    * When the apz.allow_zooming pref is set to false, the APZ will not
@@ -155,12 +157,20 @@ class GeckoContentController {
   virtual void NotifyScaleGestureComplete(const ScrollableLayerGuid& aGuid,
                                           float aScale) = 0;
 
+  /**
+   * Following functions with empty implementations are Android-specific
+   * and handled in the parent process. They are overridden by
+   * AndroidContentController in the parent process,
+   * and by RemoteContentController for the purpose of routing them from
+   * the compositor process to the parent process.
+   */
   virtual void UpdateOverscrollVelocity(const ScrollableLayerGuid& aGuid,
                                         float aX, float aY,
                                         bool aIsRootContent) {}
   virtual void UpdateOverscrollOffset(const ScrollableLayerGuid& aGuid,
                                       float aX, float aY, bool aIsRootContent) {
   }
+  virtual void HideDynamicToolbar(const ScrollableLayerGuid& aGuid) {}
 
   GeckoContentController() = default;
 

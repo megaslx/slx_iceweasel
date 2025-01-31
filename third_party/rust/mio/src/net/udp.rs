@@ -7,17 +7,19 @@
 //!
 //! [portability guidelines]: ../struct.Poll.html#portability
 
-use crate::io_source::IoSource;
-use crate::{event, sys, Interest, Registry, Token};
-
-use std::fmt;
-use std::io;
-use std::net;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(any(unix, target_os = "wasi"))]
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
+// TODO: once <https://github.com/rust-lang/rust/issues/126198> is fixed this
+// can use `std::os::fd` and be merged with the above.
+#[cfg(target_os = "hermit")]
+use std::os::hermit::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
+use std::{fmt, io, net};
+
+use crate::io_source::IoSource;
+use crate::{event, sys, Interest, Registry, Token};
 
 /// A User Datagram Protocol socket.
 ///
@@ -79,7 +81,7 @@ use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket}
 ///                 let num_recv = echoer_socket.recv(&mut buffer)?;
 ///                 println!("echo {:?} -> {:?}", buffer, num_recv);
 ///                 buffer = [0; 9];
-///                 # drop(buffer); // Silence unused assignment warning.
+///                 # _ = buffer; // Silence unused assignment warning.
 ///                 # return Ok(());
 ///             }
 ///             _ => unreachable!()
@@ -320,6 +322,10 @@ impl UdpSocket {
     /// Connects the UDP socket setting the default destination for `send()`
     /// and limiting packets that are read via `recv` from the address specified
     /// in `addr`.
+    ///
+    /// This may return a `WouldBlock` in which case the socket connection
+    /// cannot be completed immediately, it usually means there are insufficient
+    /// entries in the routing cache.
     pub fn connect(&self, addr: SocketAddr) -> io::Result<()> {
         self.inner.connect(addr)
     }
@@ -548,6 +554,64 @@ impl UdpSocket {
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.inner.take_error()
     }
+
+    /// Execute an I/O operation ensuring that the socket receives more events
+    /// if it hits a [`WouldBlock`] error.
+    ///
+    /// # Notes
+    ///
+    /// This method is required to be called for **all** I/O operations to
+    /// ensure the user will receive events once the socket is ready again after
+    /// returning a [`WouldBlock`] error.
+    ///
+    /// [`WouldBlock`]: io::ErrorKind::WouldBlock
+    ///
+    /// # Examples
+    ///
+    #[cfg_attr(unix, doc = "```no_run")]
+    #[cfg_attr(windows, doc = "```ignore")]
+    /// # use std::error::Error;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// use std::io;
+    /// #[cfg(any(unix, target_os = "wasi"))]
+    /// use std::os::fd::AsRawFd;
+    /// #[cfg(windows)]
+    /// use std::os::windows::io::AsRawSocket;
+    /// use mio::net::UdpSocket;
+    ///
+    /// let address = "127.0.0.1:8080".parse().unwrap();
+    /// let dgram = UdpSocket::bind(address)?;
+    ///
+    /// // Wait until the dgram is readable...
+    ///
+    /// // Read from the dgram using a direct libc call, of course the
+    /// // `io::Read` implementation would be easier to use.
+    /// let mut buf = [0; 512];
+    /// let n = dgram.try_io(|| {
+    ///     let buf_ptr = &mut buf as *mut _ as *mut _;
+    ///     #[cfg(unix)]
+    ///     let res = unsafe { libc::recv(dgram.as_raw_fd(), buf_ptr, buf.len(), 0) };
+    ///     #[cfg(windows)]
+    ///     let res = unsafe { libc::recvfrom(dgram.as_raw_socket() as usize, buf_ptr, buf.len() as i32, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
+    ///     if res != -1 {
+    ///         Ok(res as usize)
+    ///     } else {
+    ///         // If EAGAIN or EWOULDBLOCK is set by libc::recv, the closure
+    ///         // should return `WouldBlock` error.
+    ///         Err(io::Error::last_os_error())
+    ///     }
+    /// })?;
+    /// eprintln!("read {} bytes", n);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_io<F, T>(&self, f: F) -> io::Result<T>
+    where
+        F: FnOnce() -> io::Result<T>,
+    {
+        self.inner.do_io(|_| f())
+    }
 }
 
 impl event::Source for UdpSocket {
@@ -580,21 +644,21 @@ impl fmt::Debug for UdpSocket {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "hermit", target_os = "wasi"))]
 impl IntoRawFd for UdpSocket {
     fn into_raw_fd(self) -> RawFd {
         self.inner.into_inner().into_raw_fd()
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "hermit", target_os = "wasi"))]
 impl AsRawFd for UdpSocket {
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "hermit", target_os = "wasi"))]
 impl FromRawFd for UdpSocket {
     /// Converts a `RawFd` to a `UdpSocket`.
     ///
@@ -604,6 +668,13 @@ impl FromRawFd for UdpSocket {
     /// non-blocking mode.
     unsafe fn from_raw_fd(fd: RawFd) -> UdpSocket {
         UdpSocket::from_std(FromRawFd::from_raw_fd(fd))
+    }
+}
+
+#[cfg(any(unix, target_os = "hermit", target_os = "wasi"))]
+impl AsFd for UdpSocket {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.inner.as_fd()
     }
 }
 
@@ -631,5 +702,23 @@ impl FromRawSocket for UdpSocket {
     /// non-blocking mode.
     unsafe fn from_raw_socket(socket: RawSocket) -> UdpSocket {
         UdpSocket::from_std(FromRawSocket::from_raw_socket(socket))
+    }
+}
+
+impl From<UdpSocket> for net::UdpSocket {
+    fn from(socket: UdpSocket) -> Self {
+        // Safety: This is safe since we are extracting the raw fd from a well-constructed
+        // mio::net::UdpSocket which ensures that we actually pass in a valid file
+        // descriptor/socket
+        unsafe {
+            #[cfg(any(unix, target_os = "hermit", target_os = "wasi"))]
+            {
+                net::UdpSocket::from_raw_fd(socket.into_raw_fd())
+            }
+            #[cfg(windows)]
+            {
+                net::UdpSocket::from_raw_socket(socket.into_raw_socket())
+            }
+        }
     }
 }

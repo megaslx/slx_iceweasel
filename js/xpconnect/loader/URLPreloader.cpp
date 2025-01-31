@@ -15,6 +15,7 @@
 #include "mozilla/Logging.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
+#include "mozilla/Try.h"
 #include "mozilla/Unused.h"
 #include "mozilla/Vector.h"
 #include "mozilla/scache/StartupCache.h"
@@ -221,9 +222,10 @@ Result<Ok, nsresult> URLPreloader::WriteCache() {
   }
 
   {
-    AutoFDClose fd;
+    AutoFDClose raiiFd;
     MOZ_TRY(cacheFile->OpenNSPRFileDesc(PR_WRONLY | PR_CREATE_FILE, 0644,
-                                        &fd.rwget()));
+                                        getter_Transfers(raiiFd)));
+    const auto fd = raiiFd.get();
 
     nsTArray<URLEntry*> entries;
     for (const auto& entry : mCachedURLs.Values()) {
@@ -336,7 +338,7 @@ Result<Ok, nsresult> URLPreloader::ReadCache(
                               "Entry should be in pendingURLs");
         MOZ_DIAGNOSTIC_ASSERT(key.mPath.Length() > 0,
                               "Path should be non-empty");
-        MOZ_DIAGNOSTIC_ASSERT(false, "Entry should be new and not in any list");
+        MOZ_DIAGNOSTIC_CRASH("Entry should be new and not in any list");
 #endif
         return Err(NS_ERROR_UNEXPECTED);
       }
@@ -628,8 +630,8 @@ size_t URLPreloader::ShallowSizeOfIncludingThis(
 Result<FileLocation, nsresult> URLPreloader::CacheKey::ToFileLocation() {
   if (mType == TypeFile) {
     nsCOMPtr<nsIFile> file;
-    MOZ_TRY(NS_NewLocalFile(NS_ConvertUTF8toUTF16(mPath), false,
-                            getter_AddRefs(file)));
+    MOZ_TRY(
+        NS_NewLocalFile(NS_ConvertUTF8toUTF16(mPath), getter_AddRefs(file)));
     return FileLocation(file);
   }
 

@@ -60,9 +60,7 @@ add_task(async function test_showLoginItemErrors() {
       );
 
       await ContentTaskUtils.waitForCondition(() => {
-        return (
-          loginList.shadowRoot.querySelectorAll(".login-list-item").length === 3
-        );
+        return loginList.shadowRoot.querySelectorAll(".list-item").length === 3;
       }, "Waiting for login item to be created.");
 
       Assert.ok(
@@ -94,7 +92,7 @@ add_task(async function test_showLoginItemErrors() {
 
       let loginListItem = Cu.waiveXrays(
         loginList.shadowRoot.querySelector(
-          `.login-list-item[data-guid='${loginToUpdate.guid}']`
+          `login-list-item[data-guid='${loginToUpdate.guid}']`
         )
       );
       loginListItem.click();
@@ -109,7 +107,10 @@ add_task(async function test_showLoginItemErrors() {
     // The rest of the test uses Edit mode which causes an OS prompt in official builds.
     return;
   }
-  let reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
+  let reauthObserved = Promise.resolve();
+  if (OSKeyStore.canReauth()) {
+    reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
+  }
   await SpecialPowers.spawn(
     browser,
     [[LoginHelper.loginToVanillaObject(LOGIN_TO_UPDATE), LOGIN_UPDATES]],
@@ -118,7 +119,7 @@ add_task(async function test_showLoginItemErrors() {
         content.document.querySelector("login-item")
       );
       const editButton = loginItem.shadowRoot
-        .querySelector(".edit-button")
+        .querySelector("edit-button")
         .shadowRoot.querySelector("button");
       editButton.click();
 

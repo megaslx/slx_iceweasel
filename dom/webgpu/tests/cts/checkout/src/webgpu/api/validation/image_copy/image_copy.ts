@@ -1,17 +1,18 @@
 import {
-  kTextureFormatInfo,
-  SizedTextureFormat,
-  DepthStencilFormat,
   depthStencilFormatCopyableAspects,
-} from '../../../capability_info.js';
+  DepthStencilFormat,
+  SizedTextureFormat,
+  kTextureFormatInfo,
+  isCompressedTextureFormat,
+} from '../../../format_info.js';
 import { align } from '../../../util/math.js';
 import { ImageCopyType } from '../../../util/texture/layout.js';
 import { ValidationTest } from '../validation_test.js';
 
 export class ImageCopyTest extends ValidationTest {
   testRun(
-    textureCopyView: GPUImageCopyTexture,
-    textureDataLayout: GPUImageDataLayout,
+    textureCopyView: GPUTexelCopyTextureInfo,
+    textureDataLayout: GPUTexelCopyBufferLayout,
     size: GPUExtent3D,
     {
       method,
@@ -38,11 +39,10 @@ export class ImageCopyTest extends ValidationTest {
         break;
       }
       case 'CopyB2T': {
-        const buffer = this.device.createBuffer({
+        const buffer = this.createBufferTracked({
           size: dataSize,
           usage: GPUBufferUsage.COPY_SRC,
         });
-        this.trackForCleanup(buffer);
 
         const encoder = this.device.createCommandEncoder();
         encoder.copyBufferToTexture({ buffer, ...textureDataLayout }, textureCopyView, size);
@@ -61,11 +61,15 @@ export class ImageCopyTest extends ValidationTest {
         break;
       }
       case 'CopyT2B': {
-        const buffer = this.device.createBuffer({
+        if (this.isCompatibility && isCompressedTextureFormat(textureCopyView.texture.format)) {
+          this.skip(
+            'copyTextureToBuffer is not supported for compressed texture formats in compatibility mode.'
+          );
+        }
+        const buffer = this.createBufferTracked({
           size: dataSize,
           usage: GPUBufferUsage.COPY_DST,
         });
-        this.trackForCleanup(buffer);
 
         const encoder = this.device.createCommandEncoder();
         encoder.copyTextureToBuffer(textureCopyView, { buffer, ...textureDataLayout }, size);
@@ -107,7 +111,7 @@ export class ImageCopyTest extends ValidationTest {
       height: align(Math.max(1, size.height + origin.y), info.blockHeight),
       depthOrArrayLayers: Math.max(1, size.depthOrArrayLayers + origin.z),
     };
-    return this.device.createTexture({
+    return this.createTextureTracked({
       size: alignedSize,
       dimension,
       format,
@@ -118,7 +122,7 @@ export class ImageCopyTest extends ValidationTest {
   testBuffer(
     buffer: GPUBuffer,
     texture: GPUTexture,
-    textureDataLayout: GPUImageDataLayout,
+    textureDataLayout: GPUTexelCopyBufferLayout,
     size: GPUExtent3D,
     {
       method,
@@ -159,6 +163,11 @@ export class ImageCopyTest extends ValidationTest {
         break;
       }
       case 'CopyT2B': {
+        if (this.isCompatibility && isCompressedTextureFormat(texture.format)) {
+          this.skip(
+            'copyTextureToBuffer is not supported for compressed texture formats in compatibility mode.'
+          );
+        }
         const { encoder, validateFinish, validateFinishAndSubmit } = this.createEncoder('non-pass');
         encoder.copyTextureToBuffer({ texture }, { buffer, ...textureDataLayout }, size);
 
@@ -244,9 +253,9 @@ export function formatCopyableWithMethod({ format, method }: WithFormatAndMethod
     return supportedAspects.length > 0;
   }
   if (method === 'CopyT2B') {
-    return info.copySrc;
+    return info.color.copySrc;
   } else {
-    return info.copyDst;
+    return info.color.copyDst;
   }
 }
 

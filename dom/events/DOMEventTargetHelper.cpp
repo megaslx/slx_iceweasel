@@ -12,6 +12,7 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/Likely.h"
+#include "nsGlobalWindowInner.h"
 #include "MainThreadUtils.h"
 
 namespace mozilla {
@@ -24,8 +25,8 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(DOMEventTargetHelper)
   if (MOZ_UNLIKELY(cb.WantDebugInfo())) {
     char name[512];
     nsAutoString uri;
-    if (tmp->mOwnerWindow && tmp->mOwnerWindow->GetExtantDoc()) {
-      Unused << tmp->mOwnerWindow->GetExtantDoc()->GetDocumentURI(uri);
+    if (tmp->GetOwnerWindow() && tmp->GetOwnerWindow()->GetExtantDoc()) {
+      Unused << tmp->GetOwnerWindow()->GetExtantDoc()->GetDocumentURI(uri);
     }
 
     nsXPCOMCycleCollectionParticipant* participant = nullptr;
@@ -64,7 +65,8 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(DOMEventTargetHelper)
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_END
 
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_IN_CC_BEGIN(DOMEventTargetHelper)
-  return tmp->HasKnownLiveWrapperAndDoesNotNeedTracing(tmp);
+  return tmp->HasKnownLiveWrapperAndDoesNotNeedTracing(
+      static_cast<dom::EventTarget*>(tmp));
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_IN_CC_END
 
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_BEGIN(DOMEventTargetHelper)
@@ -73,55 +75,29 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMEventTargetHelper)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, EventTarget)
   NS_INTERFACE_MAP_ENTRY(dom::EventTarget)
-  NS_INTERFACE_MAP_ENTRY(DOMEventTargetHelper)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(DOMEventTargetHelper)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMEventTargetHelper)
 NS_IMPL_CYCLE_COLLECTING_RELEASE_WITH_LAST_RELEASE(DOMEventTargetHelper,
                                                    LastRelease())
 
-DOMEventTargetHelper::DOMEventTargetHelper()
-    : mParentObject(nullptr),
-      mOwnerWindow(nullptr),
-      mHasOrHasHadOwnerWindow(false),
-      mIsKeptAlive(false) {}
+DOMEventTargetHelper::DOMEventTargetHelper() = default;
 
 DOMEventTargetHelper::DOMEventTargetHelper(nsPIDOMWindowInner* aWindow)
-    : mParentObject(nullptr),
-      mOwnerWindow(nullptr),
-      mHasOrHasHadOwnerWindow(false),
-      mIsKeptAlive(false) {
-  nsIGlobalObject* global = aWindow ? aWindow->AsGlobal() : nullptr;
-  BindToOwner(global);
-}
+    : GlobalTeardownObserver(aWindow ? aWindow->AsGlobal() : nullptr) {}
 
 DOMEventTargetHelper::DOMEventTargetHelper(nsIGlobalObject* aGlobalObject)
-    : mParentObject(nullptr),
-      mOwnerWindow(nullptr),
-      mHasOrHasHadOwnerWindow(false),
-      mIsKeptAlive(false) {
-  BindToOwner(aGlobalObject);
-}
+    : GlobalTeardownObserver(aGlobalObject) {}
 
 DOMEventTargetHelper::DOMEventTargetHelper(DOMEventTargetHelper* aOther)
-    : mParentObject(nullptr),
-      mOwnerWindow(nullptr),
-      mHasOrHasHadOwnerWindow(false),
-      mIsKeptAlive(false) {
-  if (!aOther) {
-    BindToOwner(static_cast<nsIGlobalObject*>(nullptr));
-    return;
-  }
-  BindToOwner(aOther->GetParentObject());
-  mHasOrHasHadOwnerWindow = aOther->HasOrHasHadOwner();
-}
+    : GlobalTeardownObserver(
+          aOther ? aOther->GetParentObject() : nullptr,
+          aOther ? aOther->HasOrHasHadOwnerWindow() : false) {}
 
 DOMEventTargetHelper::~DOMEventTargetHelper() {
-  if (mParentObject) {
-    mParentObject->RemoveEventTargetObject(this);
-  }
   if (mListenerManager) {
     mListenerManager->Disconnect();
   }
@@ -129,11 +105,8 @@ DOMEventTargetHelper::~DOMEventTargetHelper() {
 }
 
 void DOMEventTargetHelper::DisconnectFromOwner() {
-  if (mParentObject) {
-    mParentObject->RemoveEventTargetObject(this);
-  }
-  mOwnerWindow = nullptr;
-  mParentObject = nullptr;
+  GlobalTeardownObserver::DisconnectFromOwner();
+
   // Event listeners can't be handled anymore, so we can release them here.
   if (mListenerManager) {
     mListenerManager->Disconnect();
@@ -143,12 +116,15 @@ void DOMEventTargetHelper::DisconnectFromOwner() {
   MaybeDontKeepAlive();
 }
 
+nsPIDOMWindowOuter* DOMEventTargetHelper::GetOwnerGlobalForBindingsInternal() {
+  return nsPIDOMWindowOuter::GetFromCurrentInner(GetOwnerWindow());
+}
+
 nsPIDOMWindowInner* DOMEventTargetHelper::GetWindowIfCurrent() const {
   if (NS_FAILED(CheckCurrentGlobalCorrectness())) {
     return nullptr;
   }
-
-  return GetOwner();
+  return GetOwnerWindow();
 }
 
 Document* DOMEventTargetHelper::GetDocumentIfCurrent() const {
@@ -280,45 +256,6 @@ void DOMEventTargetHelper::MaybeDontKeepAlive() {
     mIsKeptAlive = false;
     Release();
   }
-}
-
-void DOMEventTargetHelper::BindToOwner(nsIGlobalObject* aOwner) {
-  MOZ_ASSERT(!mParentObject);
-
-  if (aOwner) {
-    mParentObject = aOwner;
-    aOwner->AddEventTargetObject(this);
-    // Let's cache the result of this QI for fast access and off main thread
-    // usage
-    mOwnerWindow =
-        nsCOMPtr<nsPIDOMWindowInner>(do_QueryInterface(aOwner)).get();
-    if (mOwnerWindow) {
-      mHasOrHasHadOwnerWindow = true;
-    }
-  }
-}
-
-nsresult DOMEventTargetHelper::CheckCurrentGlobalCorrectness() const {
-  NS_ENSURE_STATE(!mHasOrHasHadOwnerWindow || mOwnerWindow);
-
-  // Main-thread.
-  if (mOwnerWindow && !mOwnerWindow->IsCurrentInnerWindow()) {
-    return NS_ERROR_FAILURE;
-  }
-
-  if (NS_IsMainThread()) {
-    return NS_OK;
-  }
-
-  if (!mParentObject) {
-    return NS_ERROR_FAILURE;
-  }
-
-  if (mParentObject->IsDying()) {
-    return NS_ERROR_FAILURE;
-  }
-
-  return NS_OK;
 }
 
 bool DOMEventTargetHelper::HasListenersFor(const nsAString& aType) const {

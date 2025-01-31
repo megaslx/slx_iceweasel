@@ -14,29 +14,50 @@
 #include "debugger/DebugAPI.h"
 #include "ds/LifoAlloc.h"
 #include "frontend/BytecodeEmitter.h"
-#include "frontend/CompilationStencil.h"
+#include "frontend/CompilationStencil.h"  // ExtensibleCompilationStencil, ExtraBindingInfoVector, CompilationInput, CompilationGCOutput
 #include "frontend/EitherParser.h"
 #ifdef JS_ENABLE_SMOOSH
 #  include "frontend/Frontend2.h"  // Smoosh
 #endif
 #include "frontend/FrontendContext.h"  // AutoReportFrontendContext
 #include "frontend/ModuleSharedContext.h"
+#include "frontend/ParserAtom.h"     // ParserAtomsTable, TaggedParserAtomIndex
+#include "frontend/SharedContext.h"  // SharedContext, GlobalSharedContext
+#include "frontend/Stencil.h"        // ParserBindingIter
+#include "frontend/UsedNameTracker.h"  // UsedNameTracker, UsedNameMap
+#include "js/AllocPolicy.h"        // js::SystemAllocPolicy, ReportOutOfMemory
+#include "js/CharacterEncoding.h"  // JS_EncodeStringToUTF8
+#include "js/ColumnNumber.h"       // JS::ColumnNumberOneOrigin
+#include "js/EnvironmentChain.h"   // JS::SupportUnscopables
+#include "js/ErrorReport.h"        // JS_ReportErrorASCII
+#include "js/experimental/CompileScript.h"  // JS::CompileGlobalScriptToStencil, JS::CompileModuleScriptToStencil
 #include "js/experimental/JSStencil.h"
-#include "js/Modules.h"  // JS::ImportAssertionVector
-#include "js/SourceText.h"
+#include "js/GCVector.h"    // JS::StackGCVector
+#include "js/Id.h"          // JS::PropertyKey
+#include "js/Modules.h"     // JS::ImportAssertionVector
+#include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
+#include "js/SourceText.h"  // JS::SourceText
 #include "js/UniquePtr.h"
+#include "js/Utility.h"                // UniqueChars
+#include "js/Value.h"                  // JS::Value
+#include "vm/EnvironmentObject.h"      // WithEnvironmentObject
 #include "vm/FunctionFlags.h"          // FunctionFlags
 #include "vm/GeneratorAndAsyncKind.h"  // js::GeneratorKind, js::FunctionAsyncKind
 #include "vm/HelperThreads.h"  // StartOffThreadDelazification, WaitForAllDelazifyTasks
-#include "vm/JSContext.h"
+#include "vm/JSContext.h"      // JSContext
+#include "vm/JSObject.h"       // SetIntegrityLevel, IntegrityLevel
 #include "vm/JSScript.h"       // ScriptSource, UncompressedSourceCache
 #include "vm/ModuleBuilder.h"  // js::ModuleBuilder
-#include "vm/StencilCache.h"   // DelazificationCache
+#include "vm/NativeObject.h"   // NativeDefineDataProperty
+#include "vm/PlainObject.h"    // NewPlainObjectWithProto
 #include "vm/Time.h"           // AutoIncrementalTimer
 #include "wasm/AsmJS.h"
 
+#include "vm/Compartment-inl.h"  // JS::Compartment::wrap
 #include "vm/GeckoProfiler-inl.h"
 #include "vm/JSContext-inl.h"
+#include "vm/JSObject-inl.h"  // JSObject::maybeHasInterestingSymbolProperty for ObjectOperations-inl.h
+#include "vm/ObjectOperations-inl.h"  // HasProperty
 
 using namespace js;
 using namespace js::frontend;
@@ -176,6 +197,9 @@ class MOZ_STACK_CLASS ScriptCompiler : public SourceAwareCompiler<Unit> {
   using Base::stencil;
 
   [[nodiscard]] bool compile(JSContext* cx, SharedContext* sc);
+
+ private:
+  [[nodiscard]] bool popupateExtraBindingsFields(GlobalSharedContext* globalsc);
 };
 
 #ifdef JS_ENABLE_SMOOSH
@@ -220,9 +244,101 @@ class MOZ_STACK_CLASS ScriptCompiler : public SourceAwareCompiler<Unit> {
 }
 #endif  // JS_ENABLE_SMOOSH
 
+static already_AddRefed<JS::Stencil> CreateInitialStencilAndDelazifications(
+    FrontendContext* fc, CompilationStencil* initial) {
+  RefPtr stencils =
+      fc->getAllocator()->new_<frontend::InitialStencilAndDelazifications>();
+  if (!stencils) {
+    return nullptr;
+  }
+  if (!stencils->init(fc, initial)) {
+    return nullptr;
+  }
+  return stencils.forget();
+}
+
 using BytecodeCompilerOutput =
-    mozilla::Variant<UniquePtr<ExtensibleCompilationStencil>,
-                     RefPtr<CompilationStencil>, CompilationGCOutput*>;
+    mozilla::Variant<RefPtr<CompilationStencil>, CompilationGCOutput*>;
+
+static bool ConvertGlobalScriptStencilMaybeInstantiate(
+    JSContext* maybeCx, FrontendContext* fc, CompilationInput& input,
+    ExtensibleCompilationStencil&& extensibleStencil,
+    CompilationStencil** initialStencilOut,
+    InitialStencilAndDelazifications** stencilsOut,
+    CompilationGCOutput* gcOutput) {
+  RefPtr<CompilationStencil> initialStencil;
+  if (input.options.populateDelazificationCache() || initialStencilOut ||
+      stencilsOut) {
+    auto extensibleStencilOnHeap =
+        fc->getAllocator()->make_unique<frontend::ExtensibleCompilationStencil>(
+            std::move(extensibleStencil));
+    if (!extensibleStencilOnHeap) {
+      return false;
+    }
+
+    initialStencil = fc->getAllocator()->new_<CompilationStencil>(
+        std::move(extensibleStencilOnHeap));
+    if (!initialStencil) {
+      return false;
+    }
+
+    if (initialStencilOut) {
+      *initialStencilOut = initialStencil.get();
+      (*initialStencilOut)->AddRef();
+    }
+  }
+
+  RefPtr<InitialStencilAndDelazifications> stencils;
+  if (input.options.populateDelazificationCache() || stencilsOut) {
+    stencils = CreateInitialStencilAndDelazifications(fc, initialStencil.get());
+    if (!stencils) {
+      return false;
+    }
+
+    if (stencilsOut) {
+      *stencilsOut = stencils.get();
+      (*stencilsOut)->AddRef();
+    }
+  }
+
+  if (input.options.populateDelazificationCache()) {
+    // NOTE: Delazification can be triggered from off-thread compilation.
+    StartOffThreadDelazification(maybeCx, input.options, stencils.get());
+
+    // When we are trying to validate whether on-demand delazification
+    // generate the same stencil as concurrent delazification, we want to
+    // parse everything eagerly off-thread ahead of re-parsing everything on
+    // demand, to compare the outcome.
+    //
+    // This option works only from main-thread compilation, to avoid
+    // dead-lock.
+    if (input.options.waitForDelazificationCache() && maybeCx) {
+      WaitForAllDelazifyTasks(maybeCx->runtime());
+    }
+  }
+
+  if (gcOutput) {
+    MOZ_ASSERT(maybeCx);
+    if (stencils) {
+      if (!InstantiateStencils(maybeCx, input, *stencils.get(), *gcOutput)) {
+        return false;
+      }
+    } else {
+      MOZ_ASSERT(!initialStencilOut);
+      BorrowingCompilationStencil borrowingStencil(extensibleStencil);
+      if (!InstantiateStencils(maybeCx, input, borrowingStencil, *gcOutput)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+static constexpr ExtraBindingInfoVector* NoExtraBindings = nullptr;
+static constexpr CompilationStencil** NoInitialStencilOut = nullptr;
+static constexpr InitialStencilAndDelazifications** NoStencilsOut = nullptr;
+static constexpr CompilationGCOutput* NoGCOutput = nullptr;
 
 // Compile global script, and return it as one of:
 //   * ExtensibleCompilationStencil (without instantiation)
@@ -233,7 +349,10 @@ template <typename Unit>
     JSContext* maybeCx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     CompilationInput& input, ScopeBindingCache* scopeCache,
     JS::SourceText<Unit>& srcBuf, ScopeKind scopeKind,
-    BytecodeCompilerOutput& output) {
+    ExtraBindingInfoVector* maybeExtraBindings,
+    CompilationStencil** initialStencilOut,
+    InitialStencilAndDelazifications** stencilsOut,
+    CompilationGCOutput* gcOutput) {
 #ifdef JS_ENABLE_SMOOSH
   if (maybeCx) {
     UniquePtr<ExtensibleCompilationStencil> extensibleStencil;
@@ -241,44 +360,19 @@ template <typename Unit>
       return false;
     }
     if (extensibleStencil) {
-      if (input.options.populateDelazificationCache()) {
-        BorrowingCompilationStencil borrowingStencil(*extensibleStencil);
-        StartOffThreadDelazification(maybeCx, input.options, borrowingStencil);
-
-        // When we are trying to validate whether on-demand delazification
-        // generate the same stencil as concurrent delazification, we want to
-        // parse everything eagerly off-thread ahead of re-parsing everything on
-        // demand, to compare the outcome.
-        if (input.options.waitForDelazificationCache()) {
-          WaitForAllDelazifyTasks(maybeCx->runtime());
-        }
-      }
-      if (output.is<UniquePtr<ExtensibleCompilationStencil>>()) {
-        output.as<UniquePtr<ExtensibleCompilationStencil>>() =
-            std::move(extensibleStencil);
-      } else if (output.is<RefPtr<CompilationStencil>>()) {
-        RefPtr<CompilationStencil> stencil =
-            fc->getAllocator()->new_<frontend::CompilationStencil>(
-                std::move(extensibleStencil));
-        if (!stencil) {
-          return false;
-        }
-
-        output.as<RefPtr<CompilationStencil>>() = std::move(stencil);
-      } else {
-        BorrowingCompilationStencil borrowingStencil(*extensibleStencil);
-        if (!InstantiateStencils(maybeCx, input, borrowingStencil,
-                                 *(output.as<CompilationGCOutput*>()))) {
-          return false;
-        }
-      }
-      return true;
+      return ConvertGlobalScriptStencilMaybeInstantiate(
+          maybeCx, fc, input, std::move(*extensibleStencil), initialStencilOut,
+          stencilsOut, gcOutput);
     }
   }
 #endif  // JS_ENABLE_SMOOSH
 
   if (input.options.selfHostingMode) {
     if (!input.initForSelfHostingGlobal(fc)) {
+      return false;
+    }
+  } else if (maybeExtraBindings) {
+    if (!input.initForGlobalWithExtraBindings(fc, maybeExtraBindings)) {
       return false;
     }
   } else {
@@ -296,7 +390,9 @@ template <typename Unit>
   }
 
   SourceExtent extent = SourceExtent::makeGlobalExtent(
-      srcBuf.length(), input.options.lineno, input.options.column);
+      srcBuf.length(), input.options.lineno,
+      JS::LimitedColumnNumberOneOrigin::fromUnlimited(
+          JS::ColumnNumberOneOrigin(input.options.column)));
 
   GlobalSharedContext globalsc(fc, scopeKind, input.options,
                                compiler.compilationState().directives, extent);
@@ -305,56 +401,10 @@ template <typename Unit>
     return false;
   }
 
-  if (input.options.populateDelazificationCache() && maybeCx) {
-    BorrowingCompilationStencil borrowingStencil(compiler.stencil());
-    StartOffThreadDelazification(maybeCx, input.options, borrowingStencil);
-
-    // When we are trying to validate whether on-demand delazification
-    // generate the same stencil as concurrent delazification, we want to
-    // parse everything eagerly off-thread ahead of re-parsing everything on
-    // demand, to compare the outcome.
-    if (input.options.waitForDelazificationCache()) {
-      WaitForAllDelazifyTasks(maybeCx->runtime());
-    }
-  }
-
-  if (output.is<UniquePtr<ExtensibleCompilationStencil>>()) {
-    auto stencil =
-        fc->getAllocator()->make_unique<ExtensibleCompilationStencil>(
-            std::move(compiler.stencil()));
-    if (!stencil) {
-      return false;
-    }
-    output.as<UniquePtr<ExtensibleCompilationStencil>>() = std::move(stencil);
-  } else if (output.is<RefPtr<CompilationStencil>>()) {
-    Maybe<AutoGeckoProfilerEntry> pseudoFrame;
-    if (maybeCx) {
-      pseudoFrame.emplace(maybeCx, "script emit",
-                          JS::ProfilingCategoryPair::JS_Parsing);
-    }
-
-    auto extensibleStencil =
-        fc->getAllocator()->make_unique<frontend::ExtensibleCompilationStencil>(
-            std::move(compiler.stencil()));
-    if (!extensibleStencil) {
-      return false;
-    }
-
-    RefPtr<CompilationStencil> stencil =
-        fc->getAllocator()->new_<CompilationStencil>(
-            std::move(extensibleStencil));
-    if (!stencil) {
-      return false;
-    }
-
-    output.as<RefPtr<CompilationStencil>>() = std::move(stencil);
-  } else {
-    MOZ_ASSERT(maybeCx);
-    BorrowingCompilationStencil borrowingStencil(compiler.stencil());
-    if (!InstantiateStencils(maybeCx, input, borrowingStencil,
-                             *(output.as<CompilationGCOutput*>()))) {
-      return false;
-    }
+  if (!ConvertGlobalScriptStencilMaybeInstantiate(
+          maybeCx, fc, input, std::move(compiler.stencil()), initialStencilOut,
+          stencilsOut, gcOutput)) {
+    return false;
   }
 
   assertException.reset();
@@ -362,70 +412,110 @@ template <typename Unit>
 }
 
 template <typename Unit>
-static already_AddRefed<CompilationStencil> CompileGlobalScriptToStencilImpl(
+static already_AddRefed<CompilationStencil>
+CompileGlobalScriptToStencilWithInputImpl(
     JSContext* maybeCx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     CompilationInput& input, ScopeBindingCache* scopeCache,
     JS::SourceText<Unit>& srcBuf, ScopeKind scopeKind) {
-  using OutputType = RefPtr<CompilationStencil>;
-  BytecodeCompilerOutput output((OutputType()));
+  RefPtr<CompilationStencil> stencil;
   if (!CompileGlobalScriptToStencilAndMaybeInstantiate(
           maybeCx, fc, tempLifoAlloc, input, scopeCache, srcBuf, scopeKind,
-          output)) {
+          NoExtraBindings, getter_AddRefs(stencil), NoGCOutput)) {
     return nullptr;
   }
-  return output.as<OutputType>().forget();
+  return stencil.forget();
 }
 
-already_AddRefed<CompilationStencil> frontend::CompileGlobalScriptToStencil(
-    JSContext* cx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
-    CompilationInput& input, ScopeBindingCache* scopeCache,
-    JS::SourceText<char16_t>& srcBuf, ScopeKind scopeKind) {
-  return CompileGlobalScriptToStencilImpl(cx, fc, tempLifoAlloc, input,
-                                          scopeCache, srcBuf, scopeKind);
-}
-
-already_AddRefed<CompilationStencil> frontend::CompileGlobalScriptToStencil(
+already_AddRefed<CompilationStencil>
+frontend::CompileGlobalScriptToStencilWithInput(
     JSContext* cx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     CompilationInput& input, ScopeBindingCache* scopeCache,
     JS::SourceText<Utf8Unit>& srcBuf, ScopeKind scopeKind) {
-  return CompileGlobalScriptToStencilImpl(cx, fc, tempLifoAlloc, input,
-                                          scopeCache, srcBuf, scopeKind);
-}
-
-template <typename Unit>
-static UniquePtr<ExtensibleCompilationStencil>
-CompileGlobalScriptToExtensibleStencilImpl(JSContext* maybeCx,
-                                           FrontendContext* fc,
-                                           CompilationInput& input,
-                                           ScopeBindingCache* scopeCache,
-                                           JS::SourceText<Unit>& srcBuf,
-                                           ScopeKind scopeKind) {
-  using OutputType = UniquePtr<ExtensibleCompilationStencil>;
-  BytecodeCompilerOutput output((OutputType()));
+  RefPtr<CompilationStencil> stencil;
   if (!CompileGlobalScriptToStencilAndMaybeInstantiate(
-          maybeCx, fc, maybeCx->tempLifoAlloc(), input, scopeCache, srcBuf,
-          scopeKind, output)) {
+          cx, fc, tempLifoAlloc, input, scopeCache, srcBuf, scopeKind,
+          NoExtraBindings, getter_AddRefs(stencil), NoStencilsOut,
+          NoGCOutput)) {
     return nullptr;
   }
-  return std::move(output.as<OutputType>());
+  return stencil.forget();
 }
 
-UniquePtr<ExtensibleCompilationStencil>
-frontend::CompileGlobalScriptToExtensibleStencil(
-    JSContext* maybeCx, FrontendContext* fc, CompilationInput& input,
-    ScopeBindingCache* scopeCache, JS::SourceText<char16_t>& srcBuf,
-    ScopeKind scopeKind) {
-  return CompileGlobalScriptToExtensibleStencilImpl(
-      maybeCx, fc, input, scopeCache, srcBuf, scopeKind);
+template <typename CharT>
+static already_AddRefed<JS::Stencil> CompileGlobalScriptToStencilImpl(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<CharT>& srcBuf) {
+  ScopeKind scopeKind =
+      options.nonSyntacticScope ? ScopeKind::NonSyntactic : ScopeKind::Global;
+
+  AutoReportFrontendContext fc(cx);
+
+  NoScopeBindingCache scopeCache;
+  Rooted<CompilationInput> input(cx, CompilationInput(options));
+  RefPtr<InitialStencilAndDelazifications> stencils;
+  if (!CompileGlobalScriptToStencilAndMaybeInstantiate(
+          cx, &fc, cx->tempLifoAlloc(), input.get(), &scopeCache, srcBuf,
+          scopeKind, NoExtraBindings, NoInitialStencilOut,
+          getter_AddRefs(stencils), NoGCOutput)) {
+    return nullptr;
+  }
+  return stencils.forget();
 }
 
-UniquePtr<ExtensibleCompilationStencil>
-frontend::CompileGlobalScriptToExtensibleStencil(
-    JSContext* cx, FrontendContext* fc, CompilationInput& input,
-    ScopeBindingCache* scopeCache, JS::SourceText<Utf8Unit>& srcBuf,
-    ScopeKind scopeKind) {
-  return CompileGlobalScriptToExtensibleStencilImpl(cx, fc, input, scopeCache,
-                                                    srcBuf, scopeKind);
+already_AddRefed<JS::Stencil> JS::CompileGlobalScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+  return CompileGlobalScriptToStencilImpl(cx, options, srcBuf);
+}
+
+already_AddRefed<JS::Stencil> JS::CompileGlobalScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<char16_t>& srcBuf) {
+  return CompileGlobalScriptToStencilImpl(cx, options, srcBuf);
+}
+
+template <typename CharT>
+static already_AddRefed<JS::Stencil> CompileGlobalScriptToStencilImpl(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<CharT>& srcBuf) {
+  ScopeKind scopeKind =
+      options.nonSyntacticScope ? ScopeKind::NonSyntactic : ScopeKind::Global;
+
+  NoScopeBindingCache scopeCache;
+  js::LifoAlloc tempLifoAlloc(JSContext::TEMP_LIFO_ALLOC_PRIMARY_CHUNK_SIZE,
+                              js::BackgroundMallocArena);
+  CompilationInput compilationInput(options);
+  RefPtr<InitialStencilAndDelazifications> stencils;
+  if (!CompileGlobalScriptToStencilAndMaybeInstantiate(
+          nullptr, fc, tempLifoAlloc, compilationInput, &scopeCache, srcBuf,
+          scopeKind, NoExtraBindings, NoInitialStencilOut,
+          getter_AddRefs(stencils), NoGCOutput)) {
+    JS_HAZ_VALUE_IS_GC_SAFE(compilationInput);
+    return nullptr;
+  }
+  // CompilationInput initialized with CompileGlobalScriptToStencil only
+  // references information from the JS::Stencil context and the
+  // ref-counted ScriptSource, which are both GC-free.
+  JS_HAZ_VALUE_IS_GC_SAFE(compilationInput);
+  return stencils.forget();
+}
+
+already_AddRefed<JS::Stencil> JS::CompileGlobalScriptToStencil(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+#ifdef DEBUG
+  fc->assertNativeStackLimitThread();
+#endif
+  return CompileGlobalScriptToStencilImpl(fc, options, srcBuf);
+}
+
+already_AddRefed<JS::Stencil> JS::CompileGlobalScriptToStencil(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<char16_t>& srcBuf) {
+#ifdef DEBUG
+  fc->assertNativeStackLimitThread();
+#endif
+  return CompileGlobalScriptToStencilImpl(fc, options, srcBuf);
 }
 
 static void FireOnNewScript(JSContext* cx,
@@ -436,21 +526,29 @@ static void FireOnNewScript(JSContext* cx,
   }
 }
 
-bool frontend::InstantiateStencils(JSContext* cx, CompilationInput& input,
-                                   const CompilationStencil& stencil,
-                                   CompilationGCOutput& gcOutput) {
+static inline ScriptSource* getSource(const CompilationStencil& stencil) {
+  return stencil.source;
+}
+
+static inline ScriptSource* getSource(
+    const InitialStencilAndDelazifications& stencils) {
+  return stencils.getInitial()->source;
+}
+
+template <typename T>
+bool InstantiateStencilsImpl(JSContext* cx, CompilationInput& input, T& stencil,
+                             CompilationGCOutput& gcOutput) {
   {
     AutoGeckoProfilerEntry pseudoFrame(cx, "stencil instantiate",
                                        JS::ProfilingCategoryPair::JS_Parsing);
 
-    if (!CompilationStencil::instantiateStencils(cx, input, stencil,
-                                                 gcOutput)) {
+    if (!T::instantiateStencils(cx, input, stencil, gcOutput)) {
       return false;
     }
   }
 
   // Enqueue an off-thread source compression task after finishing parsing.
-  if (!stencil.source->tryCompressOffThread(cx)) {
+  if (!getSource(stencil)->tryCompressOffThread(cx)) {
     return false;
   }
 
@@ -461,18 +559,30 @@ bool frontend::InstantiateStencils(JSContext* cx, CompilationInput& input,
   return true;
 }
 
+bool frontend::InstantiateStencils(JSContext* cx, CompilationInput& input,
+                                   const CompilationStencil& stencil,
+                                   CompilationGCOutput& gcOutput) {
+  return InstantiateStencilsImpl(cx, input, stencil, gcOutput);
+}
+
+bool frontend::InstantiateStencils(JSContext* cx, CompilationInput& input,
+                                   InitialStencilAndDelazifications& stencils,
+                                   CompilationGCOutput& gcOutput) {
+  return InstantiateStencilsImpl(cx, input, stencils, gcOutput);
+}
+
 template <typename Unit>
 static JSScript* CompileGlobalScriptImpl(
     JSContext* cx, FrontendContext* fc,
     const JS::ReadOnlyCompileOptions& options, JS::SourceText<Unit>& srcBuf,
-    ScopeKind scopeKind) {
+    ScopeKind scopeKind, ExtraBindingInfoVector* maybeExtraBindings) {
   Rooted<CompilationInput> input(cx, CompilationInput(options));
   Rooted<CompilationGCOutput> gcOutput(cx);
-  BytecodeCompilerOutput output(gcOutput.address());
   NoScopeBindingCache scopeCache;
   if (!CompileGlobalScriptToStencilAndMaybeInstantiate(
           cx, fc, cx->tempLifoAlloc(), input.get(), &scopeCache, srcBuf,
-          scopeKind, output)) {
+          scopeKind, maybeExtraBindings, NoInitialStencilOut, NoStencilsOut,
+          gcOutput.address())) {
     return nullptr;
   }
   return gcOutput.get().script;
@@ -482,14 +592,161 @@ JSScript* frontend::CompileGlobalScript(
     JSContext* cx, FrontendContext* fc,
     const JS::ReadOnlyCompileOptions& options, JS::SourceText<char16_t>& srcBuf,
     ScopeKind scopeKind) {
-  return CompileGlobalScriptImpl(cx, fc, options, srcBuf, scopeKind);
+  return CompileGlobalScriptImpl(cx, fc, options, srcBuf, scopeKind,
+                                 NoExtraBindings);
+}
+
+static bool CreateExtraBindingInfoVector(
+    JSContext* cx,
+    JS::Handle<JS::StackGCVector<JS::PropertyKey>> unwrappedBindingKeys,
+    JS::Handle<JS::StackGCVector<JS::Value>> unwrappedBindingValues,
+    ExtraBindingInfoVector& extraBindings) {
+  MOZ_ASSERT(unwrappedBindingKeys.length() == unwrappedBindingValues.length());
+
+  if (!extraBindings.reserve(unwrappedBindingKeys.length())) {
+    ReportOutOfMemory(cx);
+    return false;
+  }
+
+  JS::Rooted<JSObject*> globalLexical(cx, &cx->global()->lexicalEnvironment());
+  JS::Rooted<JS::PropertyKey> id(cx);
+  for (size_t i = 0; i < unwrappedBindingKeys.length(); i++) {
+    if (!unwrappedBindingKeys[i].isString()) {
+      JS_ReportErrorASCII(cx, "The bindings key should be a string.");
+      return false;
+    }
+
+    JS::Rooted<JSString*> str(cx, unwrappedBindingKeys[i].toString());
+
+    UniqueChars utf8chars = JS_EncodeStringToUTF8(cx, str);
+    if (!utf8chars) {
+      return false;
+    }
+
+    bool isShadowed = false;
+
+    id = unwrappedBindingKeys[i];
+    cx->markId(id);
+
+    bool found;
+    if (!HasProperty(cx, cx->global(), id, &found)) {
+      return false;
+    }
+    if (found) {
+      isShadowed = true;
+    } else {
+      if (!HasProperty(cx, globalLexical, id, &found)) {
+        return false;
+      }
+      if (found) {
+        isShadowed = true;
+      }
+    }
+
+    extraBindings.infallibleEmplaceBack(std::move(utf8chars), isShadowed);
+  }
+
+  return true;
+}
+
+static WithEnvironmentObject* CreateExtraBindingsEnvironment(
+    JSContext* cx,
+    JS::Handle<JS::StackGCVector<JS::PropertyKey>> unwrappedBindingKeys,
+    JS::Handle<JS::StackGCVector<JS::Value>> unwrappedBindingValues,
+    const ExtraBindingInfoVector& extraBindings) {
+  JS::Rooted<PlainObject*> extraBindingsObj(
+      cx, NewPlainObjectWithProto(cx, nullptr));
+  if (!extraBindingsObj) {
+    return nullptr;
+  }
+
+  MOZ_ASSERT(unwrappedBindingKeys.length() == extraBindings.length());
+
+  JS::Rooted<JS::PropertyKey> id(cx);
+  size_t i = 0;
+  for (const auto& bindingInfo : extraBindings) {
+    if (bindingInfo.isShadowed) {
+      i++;
+      continue;
+    }
+
+    id = unwrappedBindingKeys[i];
+    cx->markId(id);
+    JS::Rooted<JS::Value> val(cx, unwrappedBindingValues[i]);
+    if (!cx->compartment()->wrap(cx, &val) ||
+        !NativeDefineDataProperty(cx, extraBindingsObj, id, val, 0)) {
+      return nullptr;
+    }
+    i++;
+  }
+
+  // The list of bindings shouldn't be modified.
+  if (!SetIntegrityLevel(cx, extraBindingsObj, IntegrityLevel::Sealed)) {
+    return nullptr;
+  }
+
+  JS::Rooted<JSObject*> globalLexical(cx, &cx->global()->lexicalEnvironment());
+  return WithEnvironmentObject::createNonSyntactic(
+      cx, extraBindingsObj, globalLexical, JS::SupportUnscopables::No);
+}
+
+JSScript* frontend::CompileGlobalScriptWithExtraBindings(
+    JSContext* cx, FrontendContext* fc,
+    const JS::ReadOnlyCompileOptions& options, JS::SourceText<char16_t>& srcBuf,
+    JS::Handle<JS::StackGCVector<JS::PropertyKey>> unwrappedBindingKeys,
+    JS::Handle<JS::StackGCVector<JS::Value>> unwrappedBindingValues,
+    JS::MutableHandle<JSObject*> env) {
+  ExtraBindingInfoVector extraBindings;
+  if (!CreateExtraBindingInfoVector(cx, unwrappedBindingKeys,
+                                    unwrappedBindingValues, extraBindings)) {
+    return nullptr;
+  }
+
+  JS::Rooted<JSScript*> script(
+      cx, CompileGlobalScriptImpl(cx, fc, options, srcBuf,
+                                  ScopeKind::NonSyntactic, &extraBindings));
+  if (!script) {
+    if (fc->extraBindingsAreNotUsed()) {
+      // Compile the script as regular global script in global lexical.
+
+      fc->clearNoExtraBindingReferencesFound();
+
+      // Warnings can be reported. Clear them to avoid reporting twice.
+      fc->clearWarnings();
+
+      // No other error should be reported.
+      MOZ_ASSERT(!fc->hadErrors());
+      MOZ_ASSERT(!cx->isExceptionPending());
+
+      env.set(&cx->global()->lexicalEnvironment());
+
+      JS::CompileOptions copiedOptions(nullptr, options);
+      copiedOptions.setNonSyntacticScope(false);
+
+      return CompileGlobalScript(cx, fc, copiedOptions, srcBuf,
+                                 ScopeKind::Global);
+    }
+
+    return nullptr;
+  }
+
+  WithEnvironmentObject* extraBindingsEnv = CreateExtraBindingsEnvironment(
+      cx, unwrappedBindingKeys, unwrappedBindingValues, extraBindings);
+  if (!extraBindingsEnv) {
+    return nullptr;
+  }
+
+  env.set(extraBindingsEnv);
+
+  return script;
 }
 
 JSScript* frontend::CompileGlobalScript(
     JSContext* cx, FrontendContext* fc,
     const JS::ReadOnlyCompileOptions& options, JS::SourceText<Utf8Unit>& srcBuf,
     ScopeKind scopeKind) {
-  return CompileGlobalScriptImpl(cx, fc, options, srcBuf, scopeKind);
+  return CompileGlobalScriptImpl(cx, fc, options, srcBuf, scopeKind,
+                                 NoExtraBindings);
 }
 
 template <typename Unit>
@@ -516,8 +773,10 @@ static JSScript* CompileEvalScriptImpl(
     }
 
     uint32_t len = srcBuf.length();
-    SourceExtent extent =
-        SourceExtent::makeGlobalExtent(len, options.lineno, options.column);
+    SourceExtent extent = SourceExtent::makeGlobalExtent(
+        len, options.lineno,
+        JS::LimitedColumnNumberOneOrigin::fromUnlimited(
+            JS::ColumnNumberOneOrigin(options.column)));
     EvalSharedContext evalsc(&fc, compiler.compilationState(), extent);
     if (!compiler.compile(cx, &evalsc)) {
       return nullptr;
@@ -619,8 +878,7 @@ bool SourceAwareCompiler<Unit>::createSourceAndParser(FrontendContext* fc) {
              CanLazilyParse(compilationState_.input.options));
   if (compilationState_.canLazilyParse) {
     syntaxParser.emplace(fc_, options, sourceBuffer_.units(),
-                         sourceBuffer_.length(),
-                         /* foldConstants = */ false, compilationState_,
+                         sourceBuffer_.length(), compilationState_,
                          /* syntaxParser = */ nullptr);
     if (!syntaxParser->checkOptions()) {
       return false;
@@ -628,8 +886,7 @@ bool SourceAwareCompiler<Unit>::createSourceAndParser(FrontendContext* fc) {
   }
 
   parser.emplace(fc_, options, sourceBuffer_.units(), sourceBuffer_.length(),
-                 /* foldConstants = */ true, compilationState_,
-                 syntaxParser.ptrOr(nullptr));
+                 compilationState_, syntaxParser.ptrOr(nullptr));
   parser->ss = compilationState_.source.get();
   return parser->checkOptions();
 }
@@ -674,6 +931,85 @@ void SourceAwareCompiler<Unit>::handleParseFailure(
   compilationState_.directives = newDirectives;
 }
 
+static bool UsesExtraBindings(GlobalSharedContext* globalsc,
+                              const ExtraBindingInfoVector& extraBindings,
+                              const UsedNameTracker::UsedNameMap& usedNameMap) {
+  for (const auto& bindingInfo : extraBindings) {
+    if (bindingInfo.isShadowed) {
+      continue;
+    }
+
+    for (auto r = usedNameMap.all(); !r.empty(); r.popFront()) {
+      const auto& item = r.front();
+      const auto& name = item.key();
+      if (bindingInfo.nameIndex != name) {
+        continue;
+      }
+
+      const auto& nameInfo = item.value();
+      if (nameInfo.empty()) {
+        continue;
+      }
+
+      // This name is free, and uses the extra binding.
+      return true;
+    }
+  }
+
+  return false;
+}
+
+template <typename Unit>
+bool ScriptCompiler<Unit>::popupateExtraBindingsFields(
+    GlobalSharedContext* globalsc) {
+  if (!compilationState_.input.internExtraBindings(
+          this->fc_, compilationState_.parserAtoms)) {
+    return false;
+  }
+
+  bool hasNonShadowedBinding = false;
+  for (auto& bindingInfo : compilationState_.input.extraBindings()) {
+    if (bindingInfo.isShadowed) {
+      continue;
+    }
+
+    bool isShadowed = false;
+
+    if (globalsc->bindings) {
+      for (ParserBindingIter bi(*globalsc->bindings); bi; bi++) {
+        if (bindingInfo.nameIndex == bi.name()) {
+          isShadowed = true;
+          break;
+        }
+      }
+    }
+
+    bindingInfo.isShadowed = isShadowed;
+    if (!isShadowed) {
+      hasNonShadowedBinding = true;
+    }
+  }
+
+  if (!hasNonShadowedBinding) {
+    // All bindings are shadowed.
+    this->fc_->reportExtraBindingsAreNotUsed();
+    return false;
+  }
+
+  if (globalsc->hasDirectEval()) {
+    // Direct eval can contain reference.
+    return true;
+  }
+
+  if (!UsesExtraBindings(globalsc, compilationState_.input.extraBindings(),
+                         parser->usedNames().map())) {
+    this->fc_->reportExtraBindingsAreNotUsed();
+    return false;
+  }
+
+  return true;
+}
+
 template <typename Unit>
 bool ScriptCompiler<Unit>::compile(JSContext* maybeCx, SharedContext* sc) {
   assertSourceParserAndScriptCreated();
@@ -695,9 +1031,9 @@ bool ScriptCompiler<Unit>::compile(JSContext* maybeCx, SharedContext* sc) {
                           JS::ProfilingCategoryPair::JS_Parsing);
     }
     if (sc->isEvalContext()) {
-      pn = parser->evalBody(sc->asEvalContext());
+      pn = parser->evalBody(sc->asEvalContext()).unwrapOr(nullptr);
     } else {
-      pn = parser->globalBody(sc->asGlobalContext());
+      pn = parser->globalBody(sc->asGlobalContext()).unwrapOr(nullptr);
     }
   }
 
@@ -708,6 +1044,12 @@ bool ScriptCompiler<Unit>::compile(JSContext* maybeCx, SharedContext* sc) {
     // - "use asm" directives don't have an effect in global/eval contexts.
     MOZ_ASSERT(!canHandleParseFailure(compilationState_.directives));
     return false;
+  }
+
+  if (sc->isGlobalContext() && compilationState_.input.hasExtraBindings()) {
+    if (!popupateExtraBindingsFields(sc->asGlobalContext())) {
+      return false;
+    }
   }
 
   {
@@ -747,11 +1089,13 @@ bool ModuleCompiler<Unit>::compile(JSContext* maybeCx, FrontendContext* fc) {
   const auto& options = compilationState_.input.options;
 
   uint32_t len = this->sourceBuffer_.length();
-  SourceExtent extent =
-      SourceExtent::makeGlobalExtent(len, options.lineno, options.column);
+  SourceExtent extent = SourceExtent::makeGlobalExtent(
+      len, options.lineno,
+      JS::LimitedColumnNumberOneOrigin::fromUnlimited(
+          JS::ColumnNumberOneOrigin(options.column)));
   ModuleSharedContext modulesc(fc, options, builder, extent);
 
-  ParseNode* pn = parser->moduleBody(&modulesc);
+  ParseNode* pn = parser->moduleBody(&modulesc).unwrapOr(nullptr);
   if (!pn) {
     return false;
   }
@@ -794,9 +1138,11 @@ FunctionNode* StandaloneFunctionCompiler<Unit>::parse(
   FunctionNode* fn;
   for (;;) {
     Directives newDirectives = compilationState_.directives;
-    fn = parser->standaloneFunction(parameterListEnd, syntaxKind, generatorKind,
-                                    asyncKind, compilationState_.directives,
-                                    &newDirectives);
+    fn = parser
+             ->standaloneFunction(parameterListEnd, syntaxKind, generatorKind,
+                                  asyncKind, compilationState_.directives,
+                                  &newDirectives)
+             .unwrapOr(nullptr);
     if (fn) {
       break;
     }
@@ -846,7 +1192,8 @@ bool StandaloneFunctionCompiler<Unit>::compile(
                      funbox->extent().toStringStart,
                      funbox->extent().toStringEnd,
                      options.lineno,
-                     options.column};
+                     JS::LimitedColumnNumberOneOrigin::fromUnlimited(
+                         JS::ColumnNumberOneOrigin(options.column))};
   } else {
     // The asm.js module was created by parser. Instantiation below will
     // allocate the JSFunction that wraps it.
@@ -869,6 +1216,8 @@ template <typename Unit>
     CompilationInput& input, ScopeBindingCache* scopeCache,
     SourceText<Unit>& srcBuf, BytecodeCompilerOutput& output) {
   MOZ_ASSERT(srcBuf.get());
+  MOZ_ASSERT(input.options.lineno != 0,
+             "Module cannot be compiled with lineNumber == 0");
 
   if (!input.initForModule(fc)) {
     return false;
@@ -886,15 +1235,7 @@ template <typename Unit>
     return false;
   }
 
-  if (output.is<UniquePtr<ExtensibleCompilationStencil>>()) {
-    auto stencil =
-        fc->getAllocator()->make_unique<ExtensibleCompilationStencil>(
-            std::move(compiler.stencil()));
-    if (!stencil) {
-      return false;
-    }
-    output.as<UniquePtr<ExtensibleCompilationStencil>>() = std::move(stencil);
-  } else if (output.is<RefPtr<CompilationStencil>>()) {
+  if (output.is<RefPtr<CompilationStencil>>()) {
     Maybe<AutoGeckoProfilerEntry> pseudoFrame;
     if (maybeCx) {
       pseudoFrame.emplace(maybeCx, "script emit",
@@ -943,54 +1284,78 @@ already_AddRefed<CompilationStencil> ParseModuleToStencilImpl(
   return output.as<OutputType>().forget();
 }
 
-already_AddRefed<CompilationStencil> frontend::ParseModuleToStencil(
-    JSContext* maybeCx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
-    CompilationInput& input, ScopeBindingCache* scopeCache,
-    SourceText<char16_t>& srcBuf) {
-  return ParseModuleToStencilImpl(maybeCx, fc, tempLifoAlloc, input, scopeCache,
-                                  srcBuf);
-}
+template <typename CharT>
+static already_AddRefed<JS::Stencil> CompileModuleScriptToStencilImpl(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& optionsInput,
+    JS::SourceText<CharT>& srcBuf) {
+  JS::CompileOptions options(cx, optionsInput);
+  options.setModule();
 
-already_AddRefed<CompilationStencil> frontend::ParseModuleToStencil(
-    JSContext* maybeCx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
-    CompilationInput& input, ScopeBindingCache* scopeCache,
-    SourceText<Utf8Unit>& srcBuf) {
-  return ParseModuleToStencilImpl(maybeCx, fc, tempLifoAlloc, input, scopeCache,
-                                  srcBuf);
-}
+  AutoReportFrontendContext fc(cx);
 
-template <typename Unit>
-UniquePtr<ExtensibleCompilationStencil> ParseModuleToExtensibleStencilImpl(
-    JSContext* cx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
-    CompilationInput& input, ScopeBindingCache* scopeCache,
-    SourceText<Unit>& srcBuf) {
-  using OutputType = UniquePtr<ExtensibleCompilationStencil>;
-  BytecodeCompilerOutput output((OutputType()));
-  if (!ParseModuleToStencilAndMaybeInstantiate(cx, fc, tempLifoAlloc, input,
-                                               scopeCache, srcBuf, output)) {
+  NoScopeBindingCache scopeCache;
+  Rooted<CompilationInput> input(cx, CompilationInput(options));
+  RefPtr<CompilationStencil> stencil = ParseModuleToStencilImpl(
+      cx, &fc, cx->tempLifoAlloc(), input.get(), &scopeCache, srcBuf);
+  if (!stencil) {
     return nullptr;
   }
-  return std::move(output.as<OutputType>());
+  return CreateInitialStencilAndDelazifications(&fc, stencil.get());
 }
 
-UniquePtr<ExtensibleCompilationStencil>
-frontend::ParseModuleToExtensibleStencil(JSContext* cx, FrontendContext* fc,
-                                         js::LifoAlloc& tempLifoAlloc,
-                                         CompilationInput& input,
-                                         ScopeBindingCache* scopeCache,
-                                         SourceText<char16_t>& srcBuf) {
-  return ParseModuleToExtensibleStencilImpl(cx, fc, tempLifoAlloc, input,
-                                            scopeCache, srcBuf);
+already_AddRefed<JS::Stencil> JS::CompileModuleScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+  return CompileModuleScriptToStencilImpl(cx, options, srcBuf);
 }
 
-UniquePtr<ExtensibleCompilationStencil>
-frontend::ParseModuleToExtensibleStencil(JSContext* cx, FrontendContext* fc,
-                                         js::LifoAlloc& tempLifoAlloc,
-                                         CompilationInput& input,
-                                         ScopeBindingCache* scopeCache,
-                                         SourceText<Utf8Unit>& srcBuf) {
-  return ParseModuleToExtensibleStencilImpl(cx, fc, tempLifoAlloc, input,
-                                            scopeCache, srcBuf);
+already_AddRefed<JS::Stencil> JS::CompileModuleScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<char16_t>& srcBuf) {
+  return CompileModuleScriptToStencilImpl(cx, options, srcBuf);
+}
+
+template <typename CharT>
+static already_AddRefed<JS::Stencil> CompileModuleScriptToStencilImpl(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& optionsInput,
+    JS::SourceText<CharT>& srcBuf) {
+  JS::CompileOptions options(nullptr, optionsInput);
+  options.setModule();
+
+  frontend::CompilationInput compilationInput(options);
+
+  NoScopeBindingCache scopeCache;
+  js::LifoAlloc tempLifoAlloc(JSContext::TEMP_LIFO_ALLOC_PRIMARY_CHUNK_SIZE,
+                              js::BackgroundMallocArena);
+  RefPtr<CompilationStencil> stencil = ParseModuleToStencilImpl(
+      nullptr, fc, tempLifoAlloc, compilationInput, &scopeCache, srcBuf);
+  if (!stencil) {
+    JS_HAZ_VALUE_IS_GC_SAFE(compilationInput);
+    return nullptr;
+  }
+  // CompilationInput initialized with ParseModuleToStencil only
+  // references information from the JS::Stencil context and the
+  // ref-counted ScriptSource, which are both GC-free.
+  JS_HAZ_VALUE_IS_GC_SAFE(compilationInput);
+  return CreateInitialStencilAndDelazifications(fc, stencil.get());
+}
+
+already_AddRefed<JS::Stencil> JS::CompileModuleScriptToStencil(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& optionsInput,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+#ifdef DEBUG
+  fc->assertNativeStackLimitThread();
+#endif
+  return CompileModuleScriptToStencilImpl(fc, optionsInput, srcBuf);
+}
+
+already_AddRefed<JS::Stencil> JS::CompileModuleScriptToStencil(
+    JS::FrontendContext* fc, const JS::ReadOnlyCompileOptions& optionsInput,
+    JS::SourceText<char16_t>& srcBuf) {
+#ifdef DEBUG
+  fc->assertNativeStackLimitThread();
+#endif
+  return CompileModuleScriptToStencilImpl(fc, optionsInput, srcBuf);
 }
 
 template <typename Unit>
@@ -1030,24 +1395,11 @@ ModuleObject* frontend::CompileModule(JSContext* cx, FrontendContext* fc,
 }
 
 static bool InstantiateLazyFunction(JSContext* cx, CompilationInput& input,
-                                    CompilationStencil& stencil,
-                                    BytecodeCompilerOutput& output) {
-  // We do check the type, but do not write anything to it as this is not
-  // necessary for lazy function, as the script is patched inside the
-  // JSFunction when instantiating.
-  MOZ_ASSERT(output.is<CompilationGCOutput*>());
-  MOZ_ASSERT(!output.as<CompilationGCOutput*>());
-
+                                    const CompilationStencil& stencil) {
   mozilla::DebugOnly<uint32_t> lazyFlags =
       static_cast<uint32_t>(input.immutableFlags());
 
   Rooted<CompilationGCOutput> gcOutput(cx);
-
-  if (input.source->hasEncoder()) {
-    if (!input.source->addDelazificationToIncrementalEncoding(cx, stencil)) {
-      return false;
-    }
-  }
 
   if (!CompilationStencil::instantiateStencils(cx, input, stencil,
                                                gcOutput.get())) {
@@ -1068,91 +1420,25 @@ static bool InstantiateLazyFunction(JSContext* cx, CompilationInput& input,
   return true;
 }
 
-enum class GetCachedResult {
-  // Similar to return false.
-  Error,
-
-  // We have not found any entry.
-  NotFound,
-
-  // We have found an entry, and set everything according to the desired
-  // BytecodeCompilerOutput out-param.
-  Found
-};
-
-// When we have a cache hit, the addPtr out-param would evaluate to a true-ish
-// value.
-static GetCachedResult GetCachedLazyFunctionStencilMaybeInstantiate(
-    JSContext* maybeCx, FrontendContext* fc, CompilationInput& input,
-    BytecodeCompilerOutput& output) {
-  RefPtr<CompilationStencil> stencil;
-  {
-    DelazificationCache& cache = DelazificationCache::getSingleton();
-    auto guard = cache.isSourceCached(input.source);
-    if (!guard) {
-      return GetCachedResult::NotFound;
-    }
-
-    // Before releasing the guard, which is locking the cache, we increment the
-    // reference counter such that we do not reclaim the CompilationStencil
-    // while we are instantiating it.
-    StencilContext key(input.source, input.extent());
-    stencil = cache.lookup(guard, key);
-    if (!stencil) {
-      return GetCachedResult::NotFound;
-    }
-  }
-
-  if (output.is<RefPtr<CompilationStencil>>()) {
-    output.as<RefPtr<CompilationStencil>>() = stencil;
-    return GetCachedResult::Found;
-  }
-
-  if (output.is<UniquePtr<ExtensibleCompilationStencil>>()) {
-    auto extensible =
-        fc->getAllocator()->make_unique<ExtensibleCompilationStencil>(input);
-    if (!extensible) {
-      return GetCachedResult::Error;
-    }
-    if (!extensible->cloneFrom(fc, *stencil)) {
-      return GetCachedResult::Error;
-    }
-
-    output.as<UniquePtr<ExtensibleCompilationStencil>>() =
-        std::move(extensible);
-    return GetCachedResult::Found;
-  }
-
-  MOZ_ASSERT(maybeCx);
-
-  if (!InstantiateLazyFunction(maybeCx, input, *stencil, output)) {
-    return GetCachedResult::Error;
-  }
-
-  return GetCachedResult::Found;
-}
-
+// Compile lazy functinn specified by a pair of `units` + `length`, and
+// optionally instantiate.
+//
+// If `stencils` is provided, the result of delazification is stored into it.
+//
+// If `borrowOut` is provided, a borrowing pointer is returned.
+//
+// If `borrowOut` is not provided, the function is instantiated.
+// In this case, `maybeCx` should be provided and `input` should be initialized
+// with a BaseScript.
 template <typename Unit>
 static bool CompileLazyFunctionToStencilMaybeInstantiate(
     JSContext* maybeCx, FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     CompilationInput& input, ScopeBindingCache* scopeCache, const Unit* units,
-    size_t length, BytecodeCompilerOutput& output) {
+    size_t length, InitialStencilAndDelazifications* stencils,
+    const CompilationStencil** borrowOut) {
   MOZ_ASSERT(input.source);
 
   AutoAssertReportedException assertException(maybeCx, fc);
-  if (input.options.consumeDelazificationCache()) {
-    auto res = GetCachedLazyFunctionStencilMaybeInstantiate(maybeCx, fc, input,
-                                                            output);
-    switch (res) {
-      case GetCachedResult::Error:
-        return false;
-      case GetCachedResult::Found:
-        assertException.reset();
-        return true;
-      case GetCachedResult::NotFound:
-        break;
-    }
-  }
 
   InheritThis inheritThis =
       input.functionFlags().isArrow() ? InheritThis::Yes : InheritThis::No;
@@ -1166,16 +1452,18 @@ static bool CompileLazyFunctionToStencilMaybeInstantiate(
   }
 
   Parser<FullParseHandler, Unit> parser(fc, input.options, units, length,
-                                        /* foldConstants = */ true,
                                         compilationState,
                                         /* syntaxParser = */ nullptr);
   if (!parser.checkOptions()) {
     return false;
   }
 
-  FunctionNode* pn = parser.standaloneLazyFunction(
-      input, input.extent().toStringStart, input.strict(),
-      input.generatorKind(), input.asyncKind());
+  FunctionNode* pn =
+      parser
+          .standaloneLazyFunction(input, input.extent().toStringStart,
+                                  input.strict(), input.generatorKind(),
+                                  input.asyncKind())
+          .unwrapOr(nullptr);
   if (!pn) {
     return false;
   }
@@ -1199,17 +1487,11 @@ static bool CompileLazyFunctionToStencilMaybeInstantiate(
         .setAllowRelazify();
   }
 
-  if (input.options.checkDelazificationCache()) {
-    using OutputType = RefPtr<CompilationStencil>;
-    BytecodeCompilerOutput cached((OutputType()));
-    auto res = GetCachedLazyFunctionStencilMaybeInstantiate(nullptr, fc, input,
-                                                            cached);
-    if (res == GetCachedResult::Error) {
-      return false;
-    }
-    // Cached results might be removed by GCs.
-    if (res == GetCachedResult::Found) {
-      auto& concurrentSharedData = cached.as<OutputType>().get()->sharedData;
+  if (stencils && input.options.checkDelazificationCache()) {
+    const CompilationStencil* cached =
+        stencils->getDelazificationFor(input.extent());
+    if (cached) {
+      auto& concurrentSharedData = cached->sharedData;
       auto concurrentData =
           concurrentSharedData.isSingle()
               ? concurrentSharedData.asSingle()->get()->immutableData()
@@ -1228,21 +1510,7 @@ static bool CompileLazyFunctionToStencilMaybeInstantiate(
     }
   }
 
-  if (output.is<UniquePtr<ExtensibleCompilationStencil>>()) {
-    auto stencil =
-        fc->getAllocator()->make_unique<ExtensibleCompilationStencil>(
-            std::move(compilationState));
-    if (!stencil) {
-      return false;
-    }
-    output.as<UniquePtr<ExtensibleCompilationStencil>>() = std::move(stencil);
-  } else if (output.is<RefPtr<CompilationStencil>>()) {
-    Maybe<AutoGeckoProfilerEntry> pseudoFrame;
-    if (maybeCx) {
-      pseudoFrame.emplace(maybeCx, "script emit",
-                          JS::ProfilingCategoryPair::JS_Parsing);
-    }
-
+  if (borrowOut) {
     auto extensibleStencil =
         fc->getAllocator()->make_unique<frontend::ExtensibleCompilationStencil>(
             std::move(compilationState));
@@ -1257,12 +1525,34 @@ static bool CompileLazyFunctionToStencilMaybeInstantiate(
       return false;
     }
 
-    output.as<RefPtr<CompilationStencil>>() = std::move(stencil);
+    *borrowOut = stencils->storeDelazification(std::move(stencil));
   } else {
     MOZ_ASSERT(maybeCx);
-    BorrowingCompilationStencil borrowingStencil(compilationState);
-    if (!InstantiateLazyFunction(maybeCx, input, borrowingStencil, output)) {
-      return false;
+    if (stencils) {
+      auto extensibleStencil =
+          maybeCx->make_unique<frontend::ExtensibleCompilationStencil>(
+              std::move(compilationState));
+      if (!extensibleStencil) {
+        return false;
+      }
+
+      RefPtr<CompilationStencil> stencil =
+          maybeCx->new_<CompilationStencil>(std::move(extensibleStencil));
+      if (!stencil) {
+        return false;
+      }
+
+      const CompilationStencil* borrowed =
+          stencils->storeDelazification(std::move(stencil));
+
+      if (!InstantiateLazyFunction(maybeCx, input, *borrowed)) {
+        return false;
+      }
+    } else {
+      BorrowingCompilationStencil borrowingStencil(compilationState);
+      if (!InstantiateLazyFunction(maybeCx, input, borrowingStencil)) {
+        return false;
+      }
     }
   }
 
@@ -1284,6 +1574,29 @@ static bool DelazifyCanonicalScriptedFunctionImpl(JSContext* cx,
 
   AutoIncrementalTimer timer(cx->realm()->timers.delazificationTime);
 
+  JS::CompileOptions options(cx);
+  options.setMutedErrors(lazy->mutedErrors())
+      .setFileAndLine(lazy->filename(), lazy->lineno())
+      .setColumn(JS::ColumnNumberOneOrigin(lazy->column()))
+      .setScriptSourceOffset(lazy->sourceStart())
+      .setNoScriptRval(false)
+      .setSelfHostingMode(false)
+      .setEagerDelazificationStrategy(lazy->delazificationMode());
+
+  Rooted<CompilationInput> input(cx, CompilationInput(options));
+  input.get().initFromLazy(cx, lazy, ss);
+
+  RefPtr<InitialStencilAndDelazifications> stencils =
+      lazy->sourceObject()->maybeGetStencils();
+
+  if (stencils && input.get().options.consumeDelazificationCache()) {
+    const CompilationStencil* cached =
+        stencils->getDelazificationFor(input.get().extent());
+    if (cached) {
+      return InstantiateLazyFunction(cx, input.get(), *cached);
+    }
+  }
+
   size_t sourceStart = lazy->sourceStart();
   size_t sourceLength = lazy->sourceEnd() - lazy->sourceStart();
 
@@ -1300,23 +1613,9 @@ static bool DelazifyCanonicalScriptedFunctionImpl(JSContext* cx,
     return false;
   }
 
-  JS::CompileOptions options(cx);
-  options.setMutedErrors(lazy->mutedErrors())
-      .setFileAndLine(lazy->filename(), lazy->lineno())
-      .setColumn(lazy->column())
-      .setScriptSourceOffset(lazy->sourceStart())
-      .setNoScriptRval(false)
-      .setSelfHostingMode(false)
-      .setEagerDelazificationStrategy(lazy->delazificationMode());
-
-  Rooted<CompilationInput> input(cx, CompilationInput(options));
-  input.get().initFromLazy(cx, lazy, ss);
-
-  CompilationGCOutput* unusedGcOutput = nullptr;
-  BytecodeCompilerOutput output(unusedGcOutput);
   return CompileLazyFunctionToStencilMaybeInstantiate(
       cx, fc, cx->tempLifoAlloc(), input.get(), scopeCache, units.get(),
-      sourceLength, output);
+      sourceLength, stencils, nullptr);
 }
 
 bool frontend::DelazifyCanonicalScriptedFunction(JSContext* cx,
@@ -1346,12 +1645,19 @@ bool frontend::DelazifyCanonicalScriptedFunction(JSContext* cx,
 }
 
 template <typename Unit>
-static already_AddRefed<CompilationStencil>
-DelazifyCanonicalScriptedFunctionImpl(
+static const CompilationStencil* DelazifyCanonicalScriptedFunctionImpl(
     FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     const JS::PrefableCompileOptions& prefableOptions,
     ScopeBindingCache* scopeCache, CompilationStencil& context,
-    ScriptIndex scriptIndex, DelazifyFailureReason* failureReason) {
+    ScriptIndex scriptIndex, InitialStencilAndDelazifications* stencils,
+    DelazifyFailureReason* failureReason) {
+  MOZ_ASSERT(stencils);
+
+  const CompilationStencil* cached = stencils->getDelazificationAt(scriptIndex);
+  if (cached) {
+    return cached;
+  }
+
   ScriptStencilRef script{context, scriptIndex};
   const ScriptStencilExtra& extra = script.scriptExtra();
 
@@ -1379,7 +1685,7 @@ DelazifyCanonicalScriptedFunctionImpl(
   JS::CompileOptions options(prefableOptions);
   options.setMutedErrors(ss->mutedErrors())
       .setFileAndLine(ss->filename(), extra.extent.lineno)
-      .setColumn(extra.extent.column)
+      .setColumn(JS::ColumnNumberOneOrigin(extra.extent.column))
       .setScriptSourceOffset(sourceStart)
       .setNoScriptRval(false)
       .setSelfHostingMode(false);
@@ -1390,36 +1696,36 @@ DelazifyCanonicalScriptedFunctionImpl(
   JS_HAZ_NON_GC_POINTER CompilationInput input(options);
   input.initFromStencil(context, scriptIndex, ss);
 
-  using OutputType = RefPtr<CompilationStencil>;
-  BytecodeCompilerOutput output((OutputType()));
+  const CompilationStencil* borrow;
   if (!CompileLazyFunctionToStencilMaybeInstantiate(
           nullptr, fc, tempLifoAlloc, input, scopeCache, units.get(),
-          sourceLength, output)) {
+          sourceLength, stencils, &borrow)) {
     *failureReason = DelazifyFailureReason::Other;
     return nullptr;
   }
-  return output.as<OutputType>().forget();
+
+  return borrow;
 }
 
-already_AddRefed<CompilationStencil>
-frontend::DelazifyCanonicalScriptedFunction(
+const CompilationStencil* frontend::DelazifyCanonicalScriptedFunction(
     FrontendContext* fc, js::LifoAlloc& tempLifoAlloc,
     const JS::PrefableCompileOptions& prefableOptions,
     ScopeBindingCache* scopeCache, CompilationStencil& context,
-    ScriptIndex scriptIndex, DelazifyFailureReason* failureReason) {
+    ScriptIndex scriptIndex, InitialStencilAndDelazifications* stencils,
+    DelazifyFailureReason* failureReason) {
   ScriptSource* ss = context.source;
   if (ss->hasSourceType<Utf8Unit>()) {
     // UTF-8 source text.
     return DelazifyCanonicalScriptedFunctionImpl<Utf8Unit>(
         fc, tempLifoAlloc, prefableOptions, scopeCache, context, scriptIndex,
-        failureReason);
+        stencils, failureReason);
   }
 
   // UTF-16 source text.
   MOZ_ASSERT(ss->hasSourceType<char16_t>());
   return DelazifyCanonicalScriptedFunctionImpl<char16_t>(
       fc, tempLifoAlloc, prefableOptions, scopeCache, context, scriptIndex,
-      failureReason);
+      stencils, failureReason);
 }
 
 static JSFunction* CompileStandaloneFunction(

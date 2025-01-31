@@ -4,16 +4,20 @@
 
 "use strict";
 
-define(function (require, exports, module) {
-  const { Component } = require("devtools/client/shared/vendor/react");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const dom = require("devtools/client/shared/vendor/react-dom-factories");
-  const { createFactories } = require("devtools/client/shared/react-utils");
+define(function (require, exports) {
+  const {
+    Component,
+  } = require("resource://devtools/client/shared/vendor/react.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+  const {
+    createFactories,
+  } = require("resource://devtools/client/shared/react-utils.js");
   const { TextToolbar } = createFactories(
-    require("devtools/client/jsonview/components/TextToolbar")
+    require("resource://devtools/client/jsonview/components/TextToolbar.js")
   );
   const { LiveText } = createFactories(
-    require("devtools/client/jsonview/components/LiveText")
+    require("resource://devtools/client/jsonview/components/LiveText.js")
   );
   const { div } = dom;
 
@@ -26,6 +30,7 @@ define(function (require, exports, module) {
       return {
         isValidJson: PropTypes.bool,
         actions: PropTypes.object,
+        errorMessage: PropTypes.string,
         data: PropTypes.instanceOf(Text),
       };
     }
@@ -42,6 +47,9 @@ define(function (require, exports, module) {
           actions: this.props.actions,
           isValidJson: this.props.isValidJson,
         }),
+        this.props.errorMessage
+          ? div({ className: "jsonParseError" }, this.props.errorMessage)
+          : null,
         div({ className: "panelContent" }, LiveText({ data: this.props.data }))
       );
     }

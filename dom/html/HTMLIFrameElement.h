@@ -14,6 +14,9 @@
 
 namespace mozilla::dom {
 
+class OwningTrustedHTMLOrString;
+class TrustedHTMLOrString;
+
 class FeaturePolicy;
 
 class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
@@ -43,6 +46,8 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
+  void NodeInfoChanged(Document* aOldDoc) override;
+
   void BindToBrowsingContext(BrowsingContext* aBrowsingContext);
 
   uint32_t GetSandboxFlags() const;
@@ -55,12 +60,13 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
               ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::src, aSrc, aTriggeringPrincipal, aError);
   }
-  void GetSrcdoc(DOMString& aSrcdoc) {
-    GetHTMLAttr(nsGkAtoms::srcdoc, aSrcdoc);
-  }
-  void SetSrcdoc(const nsAString& aSrcdoc, ErrorResult& aError) {
-    SetHTMLAttr(nsGkAtoms::srcdoc, aSrcdoc, aError);
-  }
+
+  // @param aSrcdoc will always be of type `String`.
+  void GetSrcdoc(OwningTrustedHTMLOrString& aSrcdoc);
+
+  MOZ_CAN_RUN_SCRIPT void SetSrcdoc(const TrustedHTMLOrString& aSrcdoc,
+                                    ErrorResult& aError);
+
   void GetName(DOMString& aName) { GetHTMLAttr(nsGkAtoms::name, aName); }
   void SetName(const nsAString& aName, ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::name, aName, aError);
@@ -140,11 +146,6 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
   Document* GetSVGDocument(nsIPrincipal& aSubjectPrincipal) {
     return GetContentDocument(aSubjectPrincipal);
   }
-  bool Mozbrowser() const { return GetBoolAttr(nsGkAtoms::mozbrowser); }
-  void SetMozbrowser(bool aAllow, ErrorResult& aError) {
-    SetHTMLBoolAttr(nsGkAtoms::mozbrowser, aAllow, aError);
-  }
-  using nsGenericHTMLFrameElement::SetMozbrowser;
   // nsGenericHTMLFrameElement::GetFrameLoader is fine
   // nsGenericHTMLFrameElement::GetAppManifestURL is fine
 
@@ -156,6 +157,18 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
   void SetFullscreenFlag(bool aValue) { mFullscreenFlag = aValue; }
 
   mozilla::dom::FeaturePolicy* FeaturePolicy() const;
+
+  void SetLoading(const nsAString& aLoading, ErrorResult& aError) {
+    SetHTMLAttr(nsGkAtoms::loading, aLoading, aError);
+  }
+
+  void SetLazyLoading();
+  void StopLazyLoading();
+  void CancelLazyLoading(bool aClearLazyLoadState);
+
+  const LazyLoadFrameResumptionState& GetLazyLoadFrameResumptionState() const {
+    return mLazyLoadState;
+  }
 
  protected:
   virtual ~HTMLIFrameElement();
@@ -171,6 +184,7 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
   virtual void OnAttrSetButNotChanged(int32_t aNamespaceID, nsAtom* aName,
                                       const nsAttrValueOrString& aValue,
                                       bool aNotify) override;
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
 
  private:
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
@@ -204,6 +218,15 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
 
   RefPtr<dom::FeaturePolicy> mFeaturePolicy;
   RefPtr<nsDOMTokenList> mSandbox;
+
+  /**
+   * Current lazy load resumption state (base URI and referrer policy).
+   * https://html.spec.whatwg.org/#lazy-load-resumption-steps
+   */
+  LazyLoadFrameResumptionState mLazyLoadState;
+
+  // Update lazy load state internally
+  void UpdateLazyLoadState();
 };
 
 }  // namespace mozilla::dom

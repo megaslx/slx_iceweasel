@@ -31,6 +31,7 @@ class Ping:
         reasons: Optional[Dict[str, str]] = None,
         defined_in: Optional[Dict] = None,
         no_lint: Optional[List[str]] = None,
+        enabled: Optional[bool] = None,
         _validated: bool = False,
     ):
         # Avoid cyclical import
@@ -44,6 +45,15 @@ class Ping:
         if metadata is None:
             metadata = {}
         self.metadata = metadata
+        self.precise_timestamps = self.metadata.get("precise_timestamps", True)
+        self.include_info_sections = self.metadata.get("include_info_sections", True)
+        self.follows_collection_enabled = self.metadata.get("follows_collection_enabled", True)
+        if enabled is None:
+            enabled = True
+        self.enabled = enabled
+        if not self.follows_collection_enabled:
+            self.enabled = False
+        self.schedules_pings: List[str] = []
         if data_reviews is None:
             data_reviews = []
         self.data_reviews = data_reviews
@@ -88,6 +98,14 @@ class Ping:
     def _serialize_input(self) -> Dict[str, util.JSONType]:
         d = self.serialize()
         modified_dict = util.remove_output_params(d, "defined_in")
+        modified_dict = util.remove_output_params(modified_dict, "precise_timestamps")
+        modified_dict = util.remove_output_params(
+            modified_dict, "include_info_sections"
+        )
+        modified_dict = util.remove_output_params(
+            modified_dict, "follows_collection_enabled"
+        )
+        modified_dict = util.remove_output_params(modified_dict, "schedules_pings")
         return modified_dict
 
     def identifier(self) -> str:

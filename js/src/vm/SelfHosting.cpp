@@ -6,6 +6,10 @@
 
 #include "vm/SelfHosting.h"
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+#  include "builtin/AsyncDisposableStackObject.h"
+#  include "builtin/DisposableStackObject.h"
+#endif
 #include "mozilla/BinarySearch.h"
 #include "mozilla/Casting.h"
 #include "mozilla/Maybe.h"
@@ -15,7 +19,6 @@
 #include <algorithm>
 #include <iterator>
 
-#include "jsdate.h"
 #include "jsfriendapi.h"
 #include "jsmath.h"
 #include "jsnum.h"
@@ -27,12 +30,14 @@
 #  include "builtin/intl/Collator.h"
 #  include "builtin/intl/DateTimeFormat.h"
 #  include "builtin/intl/DisplayNames.h"
+#  include "builtin/intl/DurationFormat.h"
 #  include "builtin/intl/IntlObject.h"
 #  include "builtin/intl/ListFormat.h"
 #  include "builtin/intl/Locale.h"
 #  include "builtin/intl/NumberFormat.h"
 #  include "builtin/intl/PluralRules.h"
 #  include "builtin/intl/RelativeTimeFormat.h"
+#  include "builtin/intl/Segmenter.h"
 #endif
 #include "builtin/MapObject.h"
 #include "builtin/Object.h"
@@ -47,8 +52,10 @@
 #include "frontend/BytecodeCompiler.h"    // CompileGlobalScriptToStencil
 #include "frontend/CompilationStencil.h"  // js::frontend::CompilationStencil
 #include "frontend/FrontendContext.h"     // AutoReportFrontendContext
+#include "frontend/StencilXdr.h"  // js::EncodeStencil, js::DecodeStencil
 #include "jit/AtomicOperations.h"
 #include "jit/InlinableNatives.h"
+#include "jit/TrampolineNatives.h"
 #include "js/CompilationAndEvaluation.h"
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"  // JS::PrintError
@@ -71,7 +78,8 @@
 #include "vm/Compression.h"
 #include "vm/DateObject.h"
 #include "vm/ErrorReporting.h"  // js::MaybePrintAndClearPendingException
-#include "vm/FrameIter.h"       // js::ScriptFrameIter
+#include "vm/Float16.h"
+#include "vm/FrameIter.h"  // js::ScriptFrameIter
 #include "vm/GeneratorObject.h"
 #include "vm/Interpreter.h"
 #include "vm/Iteration.h"
@@ -100,7 +108,6 @@ using namespace js;
 using namespace js::selfhosted;
 
 using JS::CompileOptions;
-using mozilla::Maybe;
 
 static bool intrinsic_ToObject(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -411,6 +418,24 @@ static bool intrinsic_ThrowInternalError(JSContext* cx, unsigned argc,
   return false;
 }
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+static bool intrinsic_CreateSuppressedError(JSContext* cx, unsigned argc,
+                                            Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 2);
+
+  JS::Rooted<JS::Value> error(cx, args[0]);
+  JS::Rooted<JS::Value> suppressed(cx, args[1]);
+
+  ErrorObject* suppressedError = CreateSuppressedError(cx, error, suppressed);
+  if (!suppressedError) {
+    return false;
+  }
+  args.rval().setObject(*suppressedError);
+  return true;
+}
+#endif
+
 /**
  * Handles an assertion failure in self-hosted code just like an assertion
  * failure in C++ code. Information about the failure can be provided in
@@ -425,7 +450,7 @@ static bool intrinsic_AssertionFailed(JSContext* cx, unsigned argc, Value* vp) {
     if (str) {
       js::Fprinter out(stderr);
       out.put("Self-hosted JavaScript assertion info: ");
-      str->dumpCharsNoNewline(out);
+      str->dumpCharsNoQuote(out);
       out.putChar('\n');
     }
   }
@@ -445,7 +470,7 @@ static bool intrinsic_DumpMessage(JSContext* cx, unsigned argc, Value* vp) {
     js::Fprinter out(stderr);
     JSString* str = ToString<CanGC>(cx, args[0]);
     if (str) {
-      str->dumpCharsNoNewline(out);
+      str->dumpCharsNoQuote(out);
       out.putChar('\n');
     } else {
       cx->recoverFromOutOfMemory();
@@ -899,7 +924,7 @@ static bool intrinsic_GeneratorSetClosed(JSContext* cx, unsigned argc,
   MOZ_ASSERT(args[0].isObject());
 
   GeneratorObject* genObj = &args[0].toObject().as<GeneratorObject>();
-  genObj->setClosed();
+  genObj->setClosed(cx);
   return true;
 }
 
@@ -1023,6 +1048,8 @@ static bool intrinsic_GetTypedArrayKind(JSContext* cx, unsigned argc,
                 "TYPEDARRAY_KIND_BIGINT64 doesn't match the scalar type");
   static_assert(TYPEDARRAY_KIND_BIGUINT64 == Scalar::Type::BigUint64,
                 "TYPEDARRAY_KIND_BIGUINT64 doesn't match the scalar type");
+  static_assert(TYPEDARRAY_KIND_FLOAT16 == Scalar::Type::Float16,
+                "TYPEDARRAY_KIND_FLOAT16 doesn't match the scalar type");
 
   JSObject* obj = &args[0].toObject();
   Scalar::Type type = JS_GetArrayBufferViewType(obj);
@@ -1045,7 +1072,7 @@ static bool intrinsic_TypedArrayBuffer(JSContext* cx, unsigned argc,
                                        Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
-  MOZ_ASSERT(TypedArrayObject::is(args[0]));
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
 
   Rooted<TypedArrayObject*> tarray(cx,
                                    &args[0].toObject().as<TypedArrayObject>());
@@ -1061,10 +1088,10 @@ static bool intrinsic_TypedArrayByteOffset(JSContext* cx, unsigned argc,
                                            Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
-  MOZ_ASSERT(TypedArrayObject::is(args[0]));
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
 
   auto* tarr = &args[0].toObject().as<TypedArrayObject>();
-  args.rval().set(tarr->byteOffsetValue());
+  args.rval().setNumber(tarr->byteOffsetMaybeOutOfBounds());
   return true;
 }
 
@@ -1072,7 +1099,7 @@ static bool intrinsic_TypedArrayElementSize(JSContext* cx, unsigned argc,
                                             Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
-  MOZ_ASSERT(TypedArrayObject::is(args[0]));
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
 
   unsigned size =
       TypedArrayElemSize(args[0].toObject().as<TypedArrayObject>().type());
@@ -1087,10 +1114,38 @@ static bool intrinsic_TypedArrayLength(JSContext* cx, unsigned argc,
                                        Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
-  MOZ_ASSERT(TypedArrayObject::is(args[0]));
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
 
   auto* tarr = &args[0].toObject().as<TypedArrayObject>();
-  args.rval().set(tarr->lengthValue());
+
+  mozilla::Maybe<size_t> length = tarr->length();
+  if (!length) {
+    // Return zero for detached buffers to match JIT code.
+    if (tarr->hasDetachedBuffer()) {
+      args.rval().setInt32(0);
+      return true;
+    }
+
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_TYPED_ARRAY_RESIZED_BOUNDS);
+    return false;
+  }
+
+  args.rval().setNumber(*length);
+  return true;
+}
+
+// Return the value of [[ArrayLength]] internal slot of the TypedArray. If the
+// length is out-of-bounds, always return zero.
+static bool intrinsic_TypedArrayLengthZeroOnOutOfBounds(JSContext* cx,
+                                                        unsigned argc,
+                                                        Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
+
+  auto* tarr = &args[0].toObject().as<TypedArrayObject>();
+  args.rval().setNumber(tarr->length().valueOr(0));
   return true;
 }
 
@@ -1107,7 +1162,20 @@ static bool intrinsic_PossiblyWrappedTypedArrayLength(JSContext* cx,
     return false;
   }
 
-  args.rval().set(obj->lengthValue());
+  mozilla::Maybe<size_t> length = obj->length();
+  if (!length) {
+    // Return zero for detached buffers to match JIT code.
+    if (obj->hasDetachedBuffer()) {
+      args.rval().setInt32(0);
+      return true;
+    }
+
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_TYPED_ARRAY_RESIZED_BOUNDS);
+    return false;
+  }
+
+  args.rval().setNumber(*length);
   return true;
 }
 
@@ -1126,6 +1194,19 @@ static bool intrinsic_PossiblyWrappedTypedArrayHasDetachedBuffer(JSContext* cx,
 
   bool detached = obj->hasDetachedBuffer();
   args.rval().setBoolean(detached);
+  return true;
+}
+
+static bool intrinsic_TypedArrayIsAutoLength(JSContext* cx, unsigned argc,
+                                             Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].toObject().is<TypedArrayObject>());
+
+  JSObject* obj = &args[0].toObject();
+  bool isAutoLength = obj->is<ResizableTypedArrayObject>() &&
+                      obj->as<ResizableTypedArrayObject>().isAutoLength();
+  args.rval().setBoolean(isAutoLength);
   return true;
 }
 
@@ -1156,44 +1237,6 @@ static TypedArrayObject* DangerouslyUnwrapTypedArray(JSContext* cx,
   return unwrapped;
 }
 
-// The specification requires us to perform bitwise copying when |sourceType|
-// and |targetType| are the same (ES2017, §22.2.3.24, step 15). Additionally,
-// as an optimization, we can also perform bitwise copying when |sourceType|
-// and |targetType| have compatible bit-level representations.
-static bool IsTypedArrayBitwiseSlice(Scalar::Type sourceType,
-                                     Scalar::Type targetType) {
-  switch (sourceType) {
-    case Scalar::Int8:
-      return targetType == Scalar::Int8 || targetType == Scalar::Uint8;
-
-    case Scalar::Uint8:
-    case Scalar::Uint8Clamped:
-      return targetType == Scalar::Int8 || targetType == Scalar::Uint8 ||
-             targetType == Scalar::Uint8Clamped;
-
-    case Scalar::Int16:
-    case Scalar::Uint16:
-      return targetType == Scalar::Int16 || targetType == Scalar::Uint16;
-
-    case Scalar::Int32:
-    case Scalar::Uint32:
-      return targetType == Scalar::Int32 || targetType == Scalar::Uint32;
-
-    case Scalar::Float32:
-      return targetType == Scalar::Float32;
-
-    case Scalar::Float64:
-      return targetType == Scalar::Float64;
-
-    case Scalar::BigInt64:
-    case Scalar::BigUint64:
-      return targetType == Scalar::BigInt64 || targetType == Scalar::BigUint64;
-
-    default:
-      MOZ_CRASH("IsTypedArrayBitwiseSlice with a bogus typed array type");
-  }
-}
-
 static bool intrinsic_TypedArrayBitwiseSlice(JSContext* cx, unsigned argc,
                                              Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -1205,6 +1248,18 @@ static bool intrinsic_TypedArrayBitwiseSlice(JSContext* cx, unsigned argc,
 
   Rooted<TypedArrayObject*> source(cx,
                                    &args[0].toObject().as<TypedArrayObject>());
+
+  auto sourceLength = source->length();
+  if (!sourceLength) {
+    if (source->hasDetachedBuffer()) {
+      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                                JSMSG_TYPED_ARRAY_DETACHED);
+    } else {
+      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                                JSMSG_TYPED_ARRAY_RESIZED_BOUNDS);
+    }
+    return false;
+  }
   MOZ_ASSERT(!source->hasDetachedBuffer());
 
   // As directed by |DangerouslyUnwrapTypedArray|, sigil this pointer and all
@@ -1217,9 +1272,13 @@ static bool intrinsic_TypedArrayBitwiseSlice(JSContext* cx, unsigned argc,
   }
   MOZ_ASSERT(!unsafeTypedArrayCrossCompartment->hasDetachedBuffer());
 
+  // The specification requires us to perform bitwise copying when |sourceType|
+  // and |targetType| are the same (ES2017, §22.2.3.24, step 15). Additionally,
+  // as an optimization, we can also perform bitwise copying when |sourceType|
+  // and |targetType| have compatible bit-level representations.
   Scalar::Type sourceType = source->type();
-  if (!IsTypedArrayBitwiseSlice(sourceType,
-                                unsafeTypedArrayCrossCompartment->type())) {
+  if (!CanUseBitwiseCopy(unsafeTypedArrayCrossCompartment->type(),
+                         sourceType)) {
     args.rval().setBoolean(false);
     return true;
   }
@@ -1227,9 +1286,8 @@ static bool intrinsic_TypedArrayBitwiseSlice(JSContext* cx, unsigned argc,
   size_t sourceOffset = size_t(args[2].toNumber());
   size_t count = size_t(args[3].toNumber());
 
-  MOZ_ASSERT(count > 0 && count <= source->length());
-  MOZ_ASSERT(sourceOffset <= source->length() - count);
-  MOZ_ASSERT(count <= unsafeTypedArrayCrossCompartment->length());
+  MOZ_ASSERT(count > 0);
+  MOZ_ASSERT(count <= unsafeTypedArrayCrossCompartment->length().valueOr(0));
 
   size_t elementSize = TypedArrayElemSize(sourceType);
   MOZ_ASSERT(elementSize ==
@@ -1241,7 +1299,7 @@ static bool intrinsic_TypedArrayBitwiseSlice(JSContext* cx, unsigned argc,
   SharedMem<uint8_t*> unsafeTargetDataCrossCompartment =
       unsafeTypedArrayCrossCompartment->dataPointerEither().cast<uint8_t*>();
 
-  size_t byteLength = count * elementSize;
+  size_t byteLength = std::min(count, *sourceLength) * elementSize;
 
   // The same-type case requires exact copying preserving the bit-level
   // encoding of the source data, so use memcpy if possible. If source and
@@ -1280,8 +1338,8 @@ static bool intrinsic_TypedArrayInitFromPackedArray(JSContext* cx,
   MOZ_ASSERT(args[0].isObject());
   MOZ_ASSERT(args[1].isObject());
 
-  Rooted<TypedArrayObject*> target(cx,
-                                   &args[0].toObject().as<TypedArrayObject>());
+  Rooted<FixedLengthTypedArrayObject*> target(
+      cx, &args[0].toObject().as<FixedLengthTypedArrayObject>());
   MOZ_ASSERT(!target->hasDetachedBuffer());
   MOZ_ASSERT(!target->isSharedMemory());
 
@@ -1376,6 +1434,25 @@ static bool intrinsic_RegExpGetSubstitution(JSContext* cx, unsigned argc,
   return RegExpGetSubstitution(cx, matchResult, string, size_t(position),
                                replacement, size_t(firstDollarIndex),
                                namedCaptures, args.rval());
+}
+
+static bool intrinsic_RegExpHasCaptureGroups(JSContext* cx, unsigned argc,
+                                             Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 2);
+  MOZ_ASSERT(args[0].isObject());
+  MOZ_ASSERT(args[1].isString());
+
+  Rooted<RegExpObject*> obj(cx, &args[0].toObject().as<RegExpObject>());
+  Rooted<JSString*> string(cx, args[1].toString());
+
+  bool result;
+  if (!RegExpHasCaptureGroups(cx, obj, string, &result)) {
+    return false;
+  }
+
+  args.rval().setBoolean(result);
+  return true;
 }
 
 static bool intrinsic_StringReplaceString(JSContext* cx, unsigned argc,
@@ -1574,10 +1651,8 @@ static bool intrinsic_RuntimeDefaultLocale(JSContext* cx, unsigned argc,
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 0);
 
-  const char* locale = cx->runtime()->getDefaultLocale();
+  const char* locale = cx->realm()->getLocale();
   if (!locale) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_DEFAULT_LOCALE_ERROR);
     return false;
   }
 
@@ -1603,10 +1678,8 @@ static bool intrinsic_IsRuntimeDefaultLocale(JSContext* cx, unsigned argc,
     return true;
   }
 
-  const char* locale = cx->runtime()->getDefaultLocale();
+  const char* locale = cx->realm()->getLocale();
   if (!locale) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_DEFAULT_LOCALE_ERROR);
     return false;
   }
 
@@ -1747,6 +1820,26 @@ static bool intrinsic_ToBigInt(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
+static bool intrinsic_NumberToBigInt(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].isNumber());
+  BigInt* res = NumberToBigInt(cx, args[0].toNumber());
+  if (!res) {
+    return false;
+  }
+  args.rval().setBigInt(res);
+  return true;
+}
+
+static bool intrinsic_BigIntToNumber(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].isBigInt());
+  args.rval().setNumber(BigInt::numberValue(args[0].toBigInt()));
+  return true;
+}
+
 static bool intrinsic_NewWrapForValidIterator(JSContext* cx, unsigned argc,
                                               Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -1881,14 +1974,22 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("ArrayIteratorPrototypeOptimizable",
                     intrinsic_ArrayIteratorPrototypeOptimizable, 0, 0,
                     IntrinsicArrayIteratorPrototypeOptimizable),
-    JS_FN("ArrayNativeSort", intrinsic_ArrayNativeSort, 1, 0),
     JS_FN("AssertionFailed", intrinsic_AssertionFailed, 1, 0),
+    JS_FN("BigIntToNumber", intrinsic_BigIntToNumber, 1, 0),
     JS_FN("CallArrayBufferMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<ArrayBufferObject>>, 2, 0),
     JS_FN("CallArrayIteratorMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<ArrayIteratorObject>>, 2, 0),
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    JS_FN("CallAsyncDisposableStackMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<AsyncDisposableStackObject>>, 2, 0),
+#endif
     JS_FN("CallAsyncIteratorHelperMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<AsyncIteratorHelperObject>>, 2, 0),
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    JS_FN("CallDisposableStackMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<DisposableStackObject>>, 2, 0),
+#endif
     JS_FN("CallGeneratorMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<GeneratorObject>>, 2, 0),
     JS_FN("CallIteratorHelperMethodIfWrapped",
@@ -1922,6 +2023,9 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("CreateMapIterationResultPair",
           intrinsic_CreateMapIterationResultPair, 0, 0),
     JS_FN("CreateSetIterationResult", intrinsic_CreateSetIterationResult, 0, 0),
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    JS_FN("CreateSuppressedError", intrinsic_CreateSuppressedError, 2, 0),
+#endif
     JS_FN("DecompileArg", intrinsic_DecompileArg, 2, 0),
     JS_FN("DefineDataProperty", intrinsic_DefineDataProperty, 4, 0),
     JS_FN("DefineProperty", intrinsic_DefineProperty, 6, 0),
@@ -1950,9 +2054,19 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("GuardToArrayIterator",
                     intrinsic_GuardToBuiltin<ArrayIteratorObject>, 1, 0,
                     IntrinsicGuardToArrayIterator),
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    JS_INLINABLE_FN("GuardToAsyncDisposableStackHelper",
+                    intrinsic_GuardToBuiltin<AsyncDisposableStackObject>, 1, 0,
+                    IntrinsicGuardToAsyncDisposableStack),
+#endif
     JS_INLINABLE_FN("GuardToAsyncIteratorHelper",
                     intrinsic_GuardToBuiltin<AsyncIteratorHelperObject>, 1, 0,
                     IntrinsicGuardToAsyncIteratorHelper),
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    JS_INLINABLE_FN("GuardToDisposableStackHelper",
+                    intrinsic_GuardToBuiltin<DisposableStackObject>, 1, 0,
+                    IntrinsicGuardToDisposableStack),
+#endif
     JS_INLINABLE_FN("GuardToIteratorHelper",
                     intrinsic_GuardToBuiltin<IteratorHelperObject>, 1, 0,
                     IntrinsicGuardToIteratorHelper),
@@ -2036,6 +2150,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
                     IntrinsicNewStringIterator),
     JS_FN("NewWrapForValidIterator", intrinsic_NewWrapForValidIterator, 0, 0),
     JS_FN("NoPrivateGetter", intrinsic_NoPrivateGetter, 1, 0),
+    JS_FN("NumberToBigInt", intrinsic_NumberToBigInt, 1, 0),
     JS_INLINABLE_FN("ObjectHasPrototype", intrinsic_ObjectHasPrototype, 2, 0,
                     IntrinsicObjectHasPrototype),
     JS_INLINABLE_FN(
@@ -2064,13 +2179,18 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("RegExpExecForTest", intrinsic_RegExpExec<true>, 2, 0,
                     IntrinsicRegExpExecForTest),
     JS_FN("RegExpGetSubstitution", intrinsic_RegExpGetSubstitution, 5, 0),
+    JS_INLINABLE_FN("RegExpHasCaptureGroups", intrinsic_RegExpHasCaptureGroups,
+                    2, 0, RegExpHasCaptureGroups),
     JS_INLINABLE_FN("RegExpInstanceOptimizable", RegExpInstanceOptimizable, 1,
                     0, RegExpInstanceOptimizable),
     JS_INLINABLE_FN("RegExpMatcher", RegExpMatcher, 3, 0, RegExpMatcher),
     JS_INLINABLE_FN("RegExpPrototypeOptimizable", RegExpPrototypeOptimizable, 1,
                     0, RegExpPrototypeOptimizable),
     JS_INLINABLE_FN("RegExpSearcher", RegExpSearcher, 3, 0, RegExpSearcher),
+    JS_INLINABLE_FN("RegExpSearcherLastLimit", RegExpSearcherLastLimit, 0, 0,
+                    RegExpSearcherLastLimit),
     JS_INLINABLE_FN("SameValue", js::obj_is, 2, 0, ObjectIs),
+    JS_FN("SetCopy", SetObject::copy, 1, 0),
     JS_FN("SharedArrayBufferByteLength",
           intrinsic_ArrayBufferByteLength<SharedArrayBufferObject>, 1, 0),
     JS_FN("SharedArrayBufferCopyData",
@@ -2087,7 +2207,8 @@ static const JSFunctionSpec intrinsic_functions[] = {
                     IntrinsicSubstringKernel),
     JS_FN("ThisNumberValueForToLocaleString", ThisNumberValueForToLocaleString,
           0, 0),
-    JS_FN("ThisTimeValue", intrinsic_ThisTimeValue, 1, 0),
+    JS_INLINABLE_FN("ThisTimeValue", intrinsic_ThisTimeValue, 1, 0,
+                    IntrinsicThisTimeValue),
 #ifdef ENABLE_RECORD_TUPLE
     JS_FN("ThisTupleValue", intrinsic_ThisTupleValue, 1, 0),
 #endif
@@ -2112,9 +2233,12 @@ static const JSFunctionSpec intrinsic_functions[] = {
                     0, IntrinsicTypedArrayElementSize),
     JS_FN("TypedArrayInitFromPackedArray",
           intrinsic_TypedArrayInitFromPackedArray, 2, 0),
+    JS_FN("TypedArrayIsAutoLength", intrinsic_TypedArrayIsAutoLength, 1, 0),
     JS_INLINABLE_FN("TypedArrayLength", intrinsic_TypedArrayLength, 1, 0,
                     IntrinsicTypedArrayLength),
-    JS_FN("TypedArrayNativeSort", intrinsic_TypedArrayNativeSort, 1, 0),
+    JS_INLINABLE_FN("TypedArrayLengthZeroOnOutOfBounds",
+                    intrinsic_TypedArrayLengthZeroOnOutOfBounds, 1, 0,
+                    IntrinsicTypedArrayLengthZeroOnOutOfBounds),
     JS_INLINABLE_FN("UnsafeGetInt32FromReservedSlot",
                     intrinsic_UnsafeGetInt32FromReservedSlot, 2, 0,
                     IntrinsicUnsafeGetInt32FromReservedSlot),
@@ -2138,6 +2262,8 @@ static const JSFunctionSpec intrinsic_functions[] = {
           CallNonGenericSelfhostedMethod<Is<DateTimeFormatObject>>, 2, 0),
     JS_FN("intl_CallDisplayNamesMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<DisplayNamesObject>>, 2, 0),
+    JS_FN("intl_CallDurationFormatMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<DurationFormatObject>>, 2, 0),
     JS_FN("intl_CallListFormatMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<ListFormatObject>>, 2, 0),
     JS_FN("intl_CallNumberFormatMethodIfWrapped",
@@ -2146,10 +2272,21 @@ static const JSFunctionSpec intrinsic_functions[] = {
           CallNonGenericSelfhostedMethod<Is<PluralRulesObject>>, 2, 0),
     JS_FN("intl_CallRelativeTimeFormatMethodIfWrapped",
           CallNonGenericSelfhostedMethod<Is<RelativeTimeFormatObject>>, 2, 0),
+    JS_FN("intl_CallSegmentIteratorMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<SegmentIteratorObject>>, 2, 0),
+    JS_FN("intl_CallSegmenterMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<SegmenterObject>>, 2, 0),
+    JS_FN("intl_CallSegmentsMethodIfWrapped",
+          CallNonGenericSelfhostedMethod<Is<SegmentsObject>>, 2, 0),
     JS_FN("intl_Collator", intl_Collator, 2, 0),
     JS_FN("intl_CompareStrings", intl_CompareStrings, 3, 0),
     JS_FN("intl_ComputeDisplayName", intl_ComputeDisplayName, 6, 0),
-    JS_FN("intl_DateTimeFormat", intl_DateTimeFormat, 2, 0),
+    JS_FN("intl_CreateDateTimeFormat", intl_CreateDateTimeFormat, 4, 0),
+    JS_FN("intl_CreateSegmentIterator", intl_CreateSegmentIterator, 1, 0),
+    JS_FN("intl_CreateSegmentsObject", intl_CreateSegmentsObject, 2, 0),
+    JS_FN("intl_FindNextSegmentBoundaries", intl_FindNextSegmentBoundaries, 1,
+          0),
+    JS_FN("intl_FindSegmentBoundaries", intl_FindSegmentBoundaries, 2, 0),
     JS_FN("intl_FormatDateTime", intl_FormatDateTime, 2, 0),
     JS_FN("intl_FormatDateTimeRange", intl_FormatDateTimeRange, 4, 0),
     JS_FN("intl_FormatList", intl_FormatList, 3, 0),
@@ -2158,6 +2295,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("intl_FormatRelativeTime", intl_FormatRelativeTime, 4, 0),
     JS_FN("intl_GetCalendarInfo", intl_GetCalendarInfo, 1, 0),
     JS_FN("intl_GetPluralCategories", intl_GetPluralCategories, 1, 0),
+    JS_FN("intl_GetTimeSeparator", intl_GetTimeSeparator, 2, 0),
     JS_INLINABLE_FN("intl_GuardToCollator",
                     intrinsic_GuardToBuiltin<CollatorObject>, 1, 0,
                     IntlGuardToCollator),
@@ -2167,6 +2305,9 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("intl_GuardToDisplayNames",
                     intrinsic_GuardToBuiltin<DisplayNamesObject>, 1, 0,
                     IntlGuardToDisplayNames),
+    JS_INLINABLE_FN("intl_GuardToDurationFormat",
+                    intrinsic_GuardToBuiltin<DurationFormatObject>, 1, 0,
+                    IntlGuardToDurationFormat),
     JS_INLINABLE_FN("intl_GuardToListFormat",
                     intrinsic_GuardToBuiltin<ListFormatObject>, 1, 0,
                     IntlGuardToListFormat),
@@ -2179,6 +2320,15 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("intl_GuardToRelativeTimeFormat",
                     intrinsic_GuardToBuiltin<RelativeTimeFormatObject>, 1, 0,
                     IntlGuardToRelativeTimeFormat),
+    JS_INLINABLE_FN("intl_GuardToSegmentIterator",
+                    intrinsic_GuardToBuiltin<SegmentIteratorObject>, 1, 0,
+                    IntlGuardToSegmentIterator),
+    JS_INLINABLE_FN("intl_GuardToSegmenter",
+                    intrinsic_GuardToBuiltin<SegmenterObject>, 1, 0,
+                    IntlGuardToSegmenter),
+    JS_INLINABLE_FN("intl_GuardToSegments",
+                    intrinsic_GuardToBuiltin<SegmentsObject>, 1, 0,
+                    IntlGuardToSegments),
     JS_FN("intl_IsRuntimeDefaultLocale", intrinsic_IsRuntimeDefaultLocale, 1,
           0),
     JS_FN("intl_IsValidTimeZoneName", intl_IsValidTimeZoneName, 1, 0),
@@ -2208,6 +2358,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("intl_defaultTimeZone", intl_defaultTimeZone, 0, 0),
     JS_FN("intl_defaultTimeZoneOffset", intl_defaultTimeZoneOffset, 0, 0),
     JS_FN("intl_isDefaultTimeZone", intl_isDefaultTimeZone, 1, 0),
+    JS_FN("intl_isIgnorePunctuation", intl_isIgnorePunctuation, 1, 0),
     JS_FN("intl_isUpperCaseFirst", intl_isUpperCaseFirst, 1, 0),
     JS_FN("intl_numberingSystem", intl_numberingSystem, 1, 0),
     JS_FN("intl_resolveDateTimeFormatComponents",
@@ -2225,8 +2376,8 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("std_Array_indexOf", array_indexOf, 1, 0),
     JS_FN("std_Array_lastIndexOf", array_lastIndexOf, 1, 0),
     JS_INLINABLE_FN("std_Array_pop", array_pop, 0, 0, ArrayPop),
+    JS_TRAMPOLINE_FN("std_Array_sort", array_sort, 1, 0, ArraySort),
     JS_FN("std_BigInt_valueOf", BigIntObject::valueOf, 0, 0),
-    JS_FN("std_Date_now", date_now, 0, 0),
     JS_FN("std_Function_apply", fun_apply, 2, 0),
     JS_FN("std_Map_entries", MapObject::entries, 0, 0),
     JS_FN("std_Map_get", MapObject::get, 1, 0),
@@ -2235,6 +2386,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_INLINABLE_FN("std_Math_floor", math_floor, 1, 0, MathFloor),
     JS_INLINABLE_FN("std_Math_max", math_max, 2, 0, MathMax),
     JS_INLINABLE_FN("std_Math_min", math_min, 2, 0, MathMin),
+    JS_INLINABLE_FN("std_Math_sign", math_sign, 1, 0, MathSign),
     JS_INLINABLE_FN("std_Math_trunc", math_trunc, 1, 0, MathTrunc),
     JS_INLINABLE_FN("std_Object_create", obj_create, 2, 0, ObjectCreate),
     JS_INLINABLE_FN("std_Object_isPrototypeOf", obj_isPrototypeOf, 1, 0,
@@ -2247,10 +2399,14 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("std_Reflect_isExtensible", Reflect_isExtensible, 1, 0),
     JS_FN("std_Reflect_ownKeys", Reflect_ownKeys, 1, 0),
     JS_FN("std_Set_add", SetObject::add, 1, 0),
-    JS_FN("std_Set_has", SetObject::has, 1, 0),
+    JS_FN("std_Set_delete", SetObject::delete_, 1, 0),
+    JS_INLINABLE_FN("std_Set_has", SetObject::has, 1, 0, SetHas),
+    JS_INLINABLE_FN("std_Set_size", SetObject::size, 1, 0, SetSize),
     JS_FN("std_Set_values", SetObject::values, 0, 0),
     JS_INLINABLE_FN("std_String_charCodeAt", str_charCodeAt, 1, 0,
                     StringCharCodeAt),
+    JS_INLINABLE_FN("std_String_codePointAt", str_codePointAt, 1, 0,
+                    StringCodePointAt),
     JS_INLINABLE_FN("std_String_endsWith", str_endsWith, 1, 0, StringEndsWith),
     JS_INLINABLE_FN("std_String_fromCharCode", str_fromCharCode, 1, 0,
                     StringFromCharCode),
@@ -2263,8 +2419,11 @@ static const JSFunctionSpec intrinsic_functions[] = {
 #ifdef ENABLE_RECORD_TUPLE
     JS_FN("std_Tuple_unchecked", tuple_construct, 1, 0),
 #endif
+    JS_TRAMPOLINE_FN("std_TypedArray_sort", TypedArrayObject::sort, 1, 0,
+                     TypedArraySort),
 
-    JS_FS_END};
+    JS_FS_END,
+};
 
 #ifdef DEBUG
 
@@ -2386,8 +2545,7 @@ class MOZ_STACK_CLASS AutoPrintSelfHostingFrontendContext
   JSContext* cx_;
 
  public:
-  explicit AutoPrintSelfHostingFrontendContext(JSContext* cx)
-      : FrontendContext(), cx_(cx) {
+  explicit AutoPrintSelfHostingFrontendContext(JSContext* cx) : cx_(cx) {
     setCurrentJSContext(cx_);
   }
   ~AutoPrintSelfHostingFrontendContext() {
@@ -2496,7 +2654,6 @@ bool JSRuntime::initSelfHostingStencil(JSContext* cx,
   FillSelfHostingCompileOptions(options);
 
   // Try initializing from Stencil XDR.
-  bool decodeOk = false;
   AutoPrintSelfHostingFrontendContext fc(cx);
   if (xdrCache.Length() > 0) {
     // Allow the VM to directly use bytecode from the XDR buffer without
@@ -2516,16 +2673,11 @@ bool JSRuntime::initSelfHostingStencil(JSContext* cx,
       }
     }
 
-    RefPtr<frontend::CompilationStencil> stencil(
-        cx->new_<frontend::CompilationStencil>(input->source));
-    if (!stencil) {
-      return false;
-    }
-    if (!stencil->deserializeStencils(&fc, options, xdrCache, &decodeOk)) {
-      return false;
-    }
-
-    if (decodeOk) {
+    JS::DecodeOptions decodeOption(options);
+    RefPtr<frontend::CompilationStencil> stencil;
+    JS::TranscodeResult result =
+        js::DecodeStencil(&fc, decodeOption, xdrCache, getter_AddRefs(stencil));
+    if (result == JS::TranscodeResult::Ok) {
       MOZ_ASSERT(input->atomCache.empty());
 
       MOZ_ASSERT(!hasSelfHostStencil());
@@ -2563,9 +2715,9 @@ bool JSRuntime::initSelfHostingStencil(JSContext* cx,
   }
   frontend::NoScopeBindingCache scopeCache;
   RefPtr<frontend::CompilationStencil> stencil =
-      frontend::CompileGlobalScriptToStencil(cx, &fc, cx->tempLifoAlloc(),
-                                             *input, &scopeCache, srcBuf,
-                                             ScopeKind::Global);
+      frontend::CompileGlobalScriptToStencilWithInput(
+          cx, &fc, cx->tempLifoAlloc(), *input, &scopeCache, srcBuf,
+          ScopeKind::Global);
   if (!stencil) {
     return false;
   }
@@ -2573,11 +2725,8 @@ bool JSRuntime::initSelfHostingStencil(JSContext* cx,
   // Serialize the stencil to XDR.
   if (xdrWriter) {
     JS::TranscodeBuffer xdrBuffer;
-    bool succeeded = false;
-    if (!stencil->serializeStencils(cx, *input, xdrBuffer, &succeeded)) {
-      return false;
-    }
-    if (!succeeded) {
+    JS::TranscodeResult result = js::EncodeStencil(cx, stencil, xdrBuffer);
+    if (result != JS::TranscodeResult::Ok) {
       JS_ReportErrorASCII(cx, "Encoding failure");
       return false;
     }
@@ -2625,7 +2774,7 @@ void JSRuntime::finishSelfHosting() {
       // instance.
       RefPtr<frontend::CompilationStencil> stencil;
       *getter_AddRefs(stencil) = selfHostStencil_;
-      MOZ_ASSERT(stencil->refCount == 1);
+      MOZ_ASSERT(!stencil->hasMultipleReference());
     }
   }
 
@@ -2769,6 +2918,13 @@ static bool GetComputedIntrinsic(JSContext* cx, Handle<PropertyName*> name,
     }
     cx->global()->setComputedIntrinsicsHolder(computedIntrinsicsHolder);
 
+    // Disable the interrupt callback while executing the top-level script.
+    // This prevents recursive calls to GetComputedIntrinsic through the
+    // interrupt callback.
+    bool hadInterruptsDisabled = JS_DisableInterruptCallback(cx);
+    auto resetInterrupts = mozilla::MakeScopeExit(
+        [&]() { JS_ResetInterruptCallback(cx, hadInterruptsDisabled); });
+
     // Attempt to execute the top-level script. If they fails to run to
     // successful completion, throw away the holder to avoid a partial
     // initialization state.
@@ -2785,6 +2941,14 @@ static bool GetComputedIntrinsic(JSContext* cx, Handle<PropertyName*> name,
   // only have to look for it in one place when performing `GetIntrinsic`.
   mozilla::Maybe<PropertyInfo> prop =
       computedIntrinsicsHolder->lookup(cx, name);
+#ifdef DEBUG
+  if (!prop) {
+    Fprinter out(stderr);
+    out.printf("SelfHosted intrinsic not found: ");
+    name->dumpPropertyName(out);
+    out.printf("\n");
+  }
+#endif
   MOZ_RELEASE_ASSERT(prop, "SelfHosted intrinsic not found");
   RootedValue value(cx, computedIntrinsicsHolder->getSlot(prop->slot()));
   return GlobalObject::addIntrinsicValue(cx, cx->global(), name, value);

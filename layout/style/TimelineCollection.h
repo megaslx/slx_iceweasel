@@ -10,7 +10,9 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/PseudoStyleType.h"
 #include "mozilla/RefPtr.h"
+#include "nsAtomHashKeys.h"
 #include "nsTHashMap.h"
 
 class nsAtom;
@@ -19,7 +21,6 @@ namespace mozilla {
 namespace dom {
 class Element;
 }
-enum class PseudoStyleType : uint8_t;
 
 // The collection of ScrollTimeline or ViewTimeline. We use the template class
 // to share the implementation for these two timeline types.
@@ -28,21 +29,21 @@ class TimelineCollection final
     : public LinkedListElement<TimelineCollection<TimelineType>> {
  public:
   using SelfType = TimelineCollection<TimelineType>;
-  using TimelineMap =
-      nsTHashMap<nsRefPtrHashKey<const nsAtom>, RefPtr<TimelineType>>;
+  using TimelineMap = nsTHashMap<RefPtr<nsAtom>, RefPtr<TimelineType>>;
 
-  TimelineCollection(dom::Element& aElement, PseudoStyleType aPseudoType)
-      : mElement(aElement), mPseudo(aPseudoType) {
+  TimelineCollection(dom::Element& aElement,
+                     const PseudoStyleRequest& aPseudoRequest)
+      : mElement(aElement), mPseudo(aPseudoRequest) {
     MOZ_COUNT_CTOR(TimelineCollection);
   }
 
   ~TimelineCollection();
 
-  already_AddRefed<TimelineType> Lookup(const nsAtom* aName) const {
+  already_AddRefed<TimelineType> Lookup(nsAtom* aName) const {
     return mTimelines.Get(aName).forget();
   }
 
-  already_AddRefed<TimelineType> Extract(const nsAtom* aName) {
+  already_AddRefed<TimelineType> Extract(nsAtom* aName) {
     Maybe<RefPtr<TimelineType>> timeline = mTimelines.Extract(aName);
     return timeline ? timeline->forget() : nullptr;
   }
@@ -54,12 +55,13 @@ class TimelineCollection final
   // Get the collection of timelines for the given |aElement| and or create it
   // if it does not already exist.
   static TimelineCollection* Get(const dom::Element* aElement,
-                                 PseudoStyleType aPseudoType);
+                                 const PseudoStyleRequest& aPseudoRequest);
+  const TimelineMap& Timelines() const { return mTimelines; }
 
  private:
   // The element. Weak reference is fine since it owns us.
   dom::Element& mElement;
-  const PseudoStyleType mPseudo;
+  const PseudoStyleRequest mPseudo;
 
   TimelineMap mTimelines;
 };

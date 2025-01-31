@@ -69,7 +69,7 @@ class UnixPromiseWorker extends PromiseWorker {
 
 class Process extends BaseProcess {
   static get WORKER_URL() {
-    return "resource://gre/modules/subprocess/subprocess_worker_unix.js";
+    return "resource://gre/modules/subprocess/subprocess_unix.worker.js";
   }
 
   static get WorkerClass() {
@@ -197,6 +197,10 @@ var SubprocessUnix = {
     let error = new Error(`Executable not found: ${bin}`);
     error.errorCode = SubprocessConstants.ERROR_BAD_EXECUTABLE;
     throw error;
+  },
+
+  connectRunning(options) {
+    return Process.fromRunning(options);
   },
 };
 

@@ -16,9 +16,11 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/ShadowIncludingTreeIterator.h"
-#include "mozilla/dom/SVGLengthBinding.h"
 #include "mozilla/dom/SVGGraphicsElement.h"
+#include "mozilla/dom/SVGLengthBinding.h"
 #include "mozilla/dom/SVGSVGElement.h"
+#include "mozilla/dom/SVGSwitchElement.h"
+#include "mozilla/dom/SVGSymbolElement.h"
 #include "mozilla/dom/SVGUseElementBinding.h"
 #include "nsGkAtoms.h"
 #include "nsContentUtils.h"
@@ -60,7 +62,6 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(SVGUseElement)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(SVGUseElement,
                                                 SVGUseElementBase)
-  nsAutoScriptBlocker scriptBlocker;
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOriginal)
   tmp->UnlinkSource();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
@@ -78,8 +79,11 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(SVGUseElement, SVGUseElementBase,
 
 SVGUseElement::SVGUseElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-    : SVGUseElementBase(std::move(aNodeInfo)),
-      mReferencedElementTracker(this) {}
+    : SVGUseElementBase(std::move(aNodeInfo)), mReferencedElementTracker(this) {
+  SetEnabledCallbacks(kCharacterDataChanged | kAttributeChanged |
+                      kContentAppended | kContentInserted |
+                      kContentWillBeRemoved | kNodeWillBeDestroyed);
+}
 
 SVGUseElement::~SVGUseElement() {
   UnlinkSource();
@@ -94,6 +98,9 @@ namespace SVGT = SVGGeometryProperty::Tags;
 
 void SVGUseElement::ProcessAttributeChange(int32_t aNamespaceID,
                                            nsAtom* aAttribute) {
+  if (OwnerDoc()->CloningForSVGUse()) {
+    return;
+  }
   if (aNamespaceID == kNameSpaceID_None) {
     if (aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height) {
       const bool hadValidDimensions = HasValidDimensions();
@@ -115,10 +122,14 @@ void SVGUseElement::ProcessAttributeChange(int32_t aNamespaceID,
     if (auto* frame = GetFrame()) {
       frame->HrefChanged();
     }
-    mOriginal = nullptr;
     UnlinkSource();
     TriggerReclone();
   }
+}
+
+void SVGUseElement::DidAnimateAttribute(int32_t aNameSpaceID,
+                                        nsAtom* aAttribute) {
+  ProcessAttributeChange(aNameSpaceID, aAttribute);
 }
 
 void SVGUseElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aAttribute,
@@ -141,8 +152,10 @@ nsresult SVGUseElement::Clone(dom::NodeInfo* aNodeInfo,
   nsresult rv1 = it->Init();
   nsresult rv2 = const_cast<SVGUseElement*>(this)->CopyInnerTo(it);
 
-  // SVGUseElement specific portion - record who we cloned from
-  it->mOriginal = const_cast<SVGUseElement*>(this);
+  if (aNodeInfo->GetDocument()->CloningForSVGUse()) {
+    // SVGUseElement specific portion - record who we cloned from
+    it->mOriginal = const_cast<SVGUseElement*>(this);
+  }
 
   if (NS_SUCCEEDED(rv1) && NS_SUCCEEDED(rv2)) {
     kungFuDeathGrip.swap(*aResult);
@@ -159,8 +172,8 @@ nsresult SVGUseElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void SVGUseElement::UnbindFromTree(bool aNullParent) {
-  SVGUseElementBase::UnbindFromTree(aNullParent);
+void SVGUseElement::UnbindFromTree(UnbindContext& aContext) {
+  SVGUseElementBase::UnbindFromTree(aContext);
   OwnerDoc()->UnscheduleSVGUseElementShadowTreeUpdate(*this);
 }
 
@@ -226,8 +239,7 @@ void SVGUseElement::ContentInserted(nsIContent* aChild) {
   }
 }
 
-void SVGUseElement::ContentRemoved(nsIContent* aChild,
-                                   nsIContent* aPreviousSibling) {
+void SVGUseElement::ContentWillBeRemoved(nsIContent* aChild) {
   if (nsContentUtils::IsInSameAnonymousTree(mReferencedElementTracker.get(),
                                             aChild)) {
     TriggerReclone();
@@ -241,13 +253,19 @@ void SVGUseElement::NodeWillBeDestroyed(nsINode* aNode) {
 
 // Returns whether this node could ever be displayed.
 static bool NodeCouldBeRendered(const nsINode& aNode) {
-  if (aNode.IsSVGElement(nsGkAtoms::symbol)) {
-    // Only <symbol> elements in the root of a <svg:use> shadow tree are
-    // displayed.
-    auto* shadowRoot = ShadowRoot::FromNodeOrNull(aNode.GetParentNode());
-    return shadowRoot && shadowRoot->Host()->IsSVGElement(nsGkAtoms::use);
+  if (const auto* symbol = SVGSymbolElement::FromNode(aNode)) {
+    return symbol->CouldBeRendered();
   }
-  // TODO: Do we have other cases we can optimize out easily?
+  if (auto* svgSwitch =
+          SVGSwitchElement::FromNodeOrNull(aNode.GetParentNode())) {
+    if (&aNode != svgSwitch->GetActiveChild()) {
+      return false;
+    }
+  } else if (const auto* svgGraphics = SVGGraphicsElement::FromNode(aNode)) {
+    if (!svgGraphics->PassesConditionalProcessingTests()) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -276,9 +294,8 @@ auto SVGUseElement::ScanAncestors(const Element& aTarget) const -> ScanResult {
   return ScanAncestorsInternal(aTarget, count);
 }
 
-auto SVGUseElement::ScanAncestorsInternal(const Element& aTarget,
-                                          uint32_t& aCount) const
-    -> ScanResult {
+auto SVGUseElement::ScanAncestorsInternal(
+    const Element& aTarget, uint32_t& aCount) const -> ScanResult {
   if (&aTarget == this) {
     return ScanResult::CyclicReference;
   }
@@ -407,8 +424,7 @@ void SVGUseElement::UpdateShadowTree() {
   RefPtr<Element> newElement;
 
   auto UpdateShadowTree = mozilla::MakeScopeExit([&]() {
-    nsIContent* firstChild = shadow->GetFirstChild();
-    if (firstChild) {
+    if (nsIContent* firstChild = shadow->GetFirstChild()) {
       MOZ_ASSERT(!firstChild->GetNextSibling());
       shadow->RemoveChildNode(firstChild, /* aNotify = */ true);
     }
@@ -543,19 +559,31 @@ void SVGUseElement::LookupHref() {
     return;
   }
 
-  nsCOMPtr<nsIURI> originURI =
-      mOriginal ? mOriginal->GetBaseURI() : GetBaseURI();
-  nsCOMPtr<nsIURI> baseURI =
-      nsContentUtils::IsLocalRefURL(href)
-          ? SVGObserverUtils::GetBaseURLForLocalRef(this, originURI)
-          : originURI;
+  Element* treeToWatch = mOriginal ? mOriginal.get() : this;
+  if (nsContentUtils::IsLocalRefURL(href)) {
+    mReferencedElementTracker.ResetToLocalFragmentID(*treeToWatch, href);
+    return;
+  }
 
+  nsCOMPtr<nsIURI> baseURI = treeToWatch->GetBaseURI();
   nsCOMPtr<nsIURI> targetURI;
   nsContentUtils::NewURIWithDocumentCharset(getter_AddRefs(targetURI), href,
                                             GetComposedDoc(), baseURI);
+  if (!targetURI) {
+    return;
+  }
+
+  // Don't allow <use href="data:...">. Using "#ref" inside a data: document is
+  // handled above.
+  if (targetURI->SchemeIs("data") &&
+      !StaticPrefs::svg_use_element_data_url_href_allowed()) {
+    return;
+  }
+
   nsIReferrerInfo* referrer =
       OwnerDoc()->ReferrerInfoForInternalCSSAndSVGResources();
-  mReferencedElementTracker.ResetToURIFragmentID(this, targetURI, referrer);
+  mReferencedElementTracker.ResetToURIWithFragmentID(treeToWatch, targetURI,
+                                                     referrer);
 }
 
 void SVGUseElement::TriggerReclone() {
@@ -575,41 +603,12 @@ void SVGUseElement::UnlinkSource() {
 // SVGElement methods
 
 /* virtual */
-gfxMatrix SVGUseElement::PrependLocalTransformsTo(
-    const gfxMatrix& aMatrix, SVGTransformTypes aWhich) const {
-  // 'transform' attribute:
-  gfxMatrix userToParent;
-
-  if (aWhich == eUserSpaceToParent || aWhich == eAllTransforms) {
-    userToParent = GetUserToParentTransform(mAnimateMotionTransform.get(),
-                                            mTransforms.get());
-    if (aWhich == eUserSpaceToParent) {
-      return userToParent * aMatrix;
-    }
-  }
-
-  // our 'x' and 'y' attributes:
+gfxMatrix SVGUseElement::ChildToUserSpaceTransform() const {
   float x, y;
   if (!SVGGeometryProperty::ResolveAll<SVGT::X, SVGT::Y>(this, &x, &y)) {
     const_cast<SVGUseElement*>(this)->GetAnimatedLengthValues(&x, &y, nullptr);
   }
-
-  gfxMatrix childToUser = gfxMatrix::Translation(x, y);
-
-  if (aWhich == eAllTransforms) {
-    return childToUser * userToParent * aMatrix;
-  }
-
-  MOZ_ASSERT(aWhich == eChildToUserSpace, "Unknown TransformTypes");
-
-  // The following may look broken because pre-multiplying our eChildToUserSpace
-  // transform with another matrix without including our eUserSpaceToParent
-  // transform between the two wouldn't make sense.  We don't expect that to
-  // ever happen though.  We get here either when the identity matrix has been
-  // passed because our caller just wants our eChildToUserSpace transform, or
-  // when our eUserSpaceToParent transform has already been multiplied into the
-  // matrix that our caller passes (such as when we're called from PaintSVG).
-  return childToUser * aMatrix;
+  return gfxMatrix::Translation(x, y);
 }
 
 /* virtual */
@@ -626,12 +625,12 @@ bool SVGUseElement::HasValidDimensions() const {
 
 SVGElement::LengthAttributesInfo SVGUseElement::GetLengthInfo() {
   return LengthAttributesInfo(mLengthAttributes, sLengthInfo,
-                              ArrayLength(sLengthInfo));
+                              std::size(sLengthInfo));
 }
 
 SVGElement::StringAttributesInfo SVGUseElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 SVGUseFrame* SVGUseElement::GetFrame() const {

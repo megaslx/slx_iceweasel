@@ -15,29 +15,40 @@
 ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
 
 -facebook-container-brand-name = Facebook Container
--lockwise-brand-name = Iceweasel Lockwise
--lockwise-brand-short-name = Lockwise
--monitor-brand-name = Iceweasel Monitor
+-monitor-brand-name = Mozilla Monitor
 -monitor-brand-short-name = Monitor
+-mozmonitor-brand-name = Mozilla Monitor
 -pocket-brand-name = Pocket
--send-brand-name = Iceweasel Send
+-send-brand-name = Mozilla Send
 -screenshots-brand-name = Iceweasel Screenshots
 -mozilla-vpn-brand-name = Mozilla VPN
 -profiler-brand-name = Iceweasel Profiler
 -translations-brand-name = Iceweasel Translations
--focus-brand-name = Iceweasel Focus
--relay-brand-name = Iceweasel Relay
+-focus-brand-name = Mozilla Focus
+-relay-brand-name = Mozilla Relay
 -relay-brand-short-name = Relay
 -fakespot-brand-name = Fakespot
 
-# “Suggest” can be localized, “Iceweasel” must be treated as a brand
+# Note the name of the website is capitalized.
+-fakespot-website-name = Fakespot.com
+
+# The particle "by" can be localized, "Fakespot" and "Mozilla" should not be localized or transliterated.
+-fakespot-brand-full-name = Fakespot by Mozilla
+
+# “Suggest” can be localized, “Firefox” must be treated as a brand
 # and kept in English.
 -firefox-suggest-brand-name = Iceweasel Suggest
 
-# ”Home" can be localized, “Iceweasel” must be treated as a brand
+# ”Home" can be localized, “Firefox” must be treated as a brand
 # and kept in English.
 -firefox-home-brand-name = Iceweasel Home
 
-# View" can be localized, “Iceweasel” must be treated as a brand
+# View" can be localized, “Firefox” must be treated as a brand
 # and kept in English.
 -firefoxview-brand-name = Iceweasel View
+
+# Firefox Labs is the name for a page in Settings to allow users to learn about
+# experimental and in-development features, and turn those features on and off.
+# The "Labs" portion can be localized, “Firefox” must be treated as a brand
+# and kept in English.
+-firefoxlabs-brand-name = Mozilla Labs

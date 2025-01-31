@@ -38,10 +38,9 @@ NS_QUERYFRAME_HEAD(nsColorControlFrame)
   NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
 NS_QUERYFRAME_TAIL_INHERITING(nsHTMLButtonControlFrame)
 
-void nsColorControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                      PostDestroyData& aPostDestroyData) {
-  aPostDestroyData.AddAnonymousContent(mColorContent.forget());
-  nsHTMLButtonControlFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+void nsColorControlFrame::Destroy(DestroyContext& aContext) {
+  aContext.AddAnonymousContent(mColorContent.forget());
+  nsHTMLButtonControlFrame::Destroy(aContext);
 }
 
 #ifdef DEBUG_FRAME_DUMP
@@ -115,8 +114,8 @@ nsresult nsColorControlFrame::AttributeChanged(int32_t aNameSpaceID,
   // If the value attribute is set, update the color box, but only if we're
   // still a color control, which might not be the case if the type attribute
   // was removed/changed.
-  nsCOMPtr<nsIFormControl> fctrl = do_QueryInterface(GetContent());
-  if (fctrl->ControlType() == FormControlType::InputColor &&
+  if (nsIFormControl::FromNode(GetContent())->ControlType() ==
+          FormControlType::InputColor &&
       aNameSpaceID == kNameSpaceID_None && nsGkAtoms::value == aAttribute) {
     UpdateColor();
   }

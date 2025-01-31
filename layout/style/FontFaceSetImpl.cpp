@@ -26,6 +26,7 @@
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
@@ -69,8 +70,7 @@ using namespace mozilla::dom;
 NS_IMPL_ISUPPORTS0(FontFaceSetImpl)
 
 FontFaceSetImpl::FontFaceSetImpl(FontFaceSet* aOwner)
-    : mMutex("mozilla::dom::FontFaceSetImpl"),
-      mOwner(aOwner),
+    : mOwner(aOwner),
       mStatus(FontFaceSetLoadStatus::Loaded),
       mNonRuleFacesDirty(false),
       mHasLoadingFontFaces(false),
@@ -344,8 +344,7 @@ void FontFaceSetImpl::RemoveLoader(nsFontFaceLoader* aLoader) {
   mLoaders.RemoveEntry(aLoader);
 }
 
-void FontFaceSetImpl::InsertNonRuleFontFace(FontFaceImpl* aFontFace,
-                                            bool& aFontSetModified) {
+void FontFaceSetImpl::InsertNonRuleFontFace(FontFaceImpl* aFontFace) {
   gfxUserFontAttributes attr;
   if (!aFontFace->GetAttributes(attr)) {
     // If there is no family name, this rule cannot contribute a
@@ -365,8 +364,6 @@ void FontFaceSetImpl::InsertNonRuleFontFace(FontFaceImpl* aFontFace,
     }
     aFontFace->SetUserFontEntry(entry);
   }
-
-  aFontSetModified = true;
   AddUserFontEntry(family, aFontFace->GetUserFontEntry());
 }
 
@@ -432,7 +429,7 @@ FontFaceSetImpl::FindOrCreateUserFontEntryFromFontFace(
       auto task =
           MakeRefPtr<UpdateUserFontEntryRunnable>(set, existingEntry, aAttr);
       IgnoredErrorResult ignoredRv;
-      task->Dispatch(Canceling, ignoredRv);
+      task->Dispatch(GetCurrentThreadWorkerPrivate(), Canceling, ignoredRv);
     }
     return existingEntry.forget();
   }
@@ -640,12 +637,10 @@ nsresult FontFaceSetImpl::LogMessage(gfxUserFontEntry* aUserFontEntry,
 
   // try to give the user an indication of where the rule came from
   StyleLockedFontFaceRule* rule = FindRuleForUserFontEntry(aUserFontEntry);
-  nsString href;
-  nsAutoCString text;
+  nsAutoCString href;
   uint32_t line = 0;
   uint32_t column = 0;
   if (rule) {
-    Servo_FontFaceRule_GetCssText(rule, &text);
     Servo_FontFaceRule_GetSourceLocation(rule, &line, &column);
     // FIXME We need to figure out an approach to get the style sheet
     // of this raw rule. See bug 1450903.
@@ -669,8 +664,7 @@ nsresult FontFaceSetImpl::LogMessage(gfxUserFontEntry* aUserFontEntry,
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = scriptError->InitWithWindowID(NS_ConvertUTF8toUTF16(message),
-                                     href,                         // file
-                                     NS_ConvertUTF8toUTF16(text),  // src line
+                                     href,  // file
                                      line, column,
                                      aFlags,        // flags
                                      "CSS Loader",  // category (make separate?)
@@ -893,7 +887,7 @@ void FontFaceSetImpl::OnLoadingFinished() {
 void FontFaceSetImpl::RefreshStandardFontLoadPrincipal() {
   RecursiveMutexAutoLock lock(mMutex);
   mAllowedFontLoads.Clear();
-  IncrementGeneration(false);
+  IncrementGenerationLocked(false);
 }
 
 // -- gfxUserFontSet
@@ -914,8 +908,8 @@ void FontFaceSetImpl::RecordFontLoadDone(uint32_t aFontSize,
   TimeStamp navStart = GetNavigationStartTimeStamp();
   TimeStamp zero;
   if (navStart != zero) {
-    Telemetry::AccumulateTimeDelta(Telemetry::WEBFONT_DOWNLOAD_TIME_AFTER_START,
-                                   navStart, aDoneTime);
+    mozilla::glean::network::font_download_end.AccumulateRawDuration(aDoneTime -
+                                                                     navStart);
   }
 }
 

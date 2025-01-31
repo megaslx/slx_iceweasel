@@ -190,7 +190,7 @@ static bool GetSpecialFolderIcon(nsIFile* aFile, int aFolder, UINT aInfoFlags,
   nsAutoString fileNativePathStr;
   aFile->GetPath(fileNativePathStr);
   ::GetShortPathNameW(fileNativePathStr.get(), fileNativePath,
-                      ArrayLength(fileNativePath));
+                      std::size(fileNativePath));
 
   struct IdListDeleter {
     void operator()(ITEMIDLIST* ptr) { ::CoTaskMemFree(ptr); }
@@ -206,7 +206,7 @@ static bool GetSpecialFolderIcon(nsIFile* aFile, int aFolder, UINT aInfoFlags,
   wchar_t specialNativePath[MAX_PATH];
   ::SHGetPathFromIDListW(idList.get(), specialNativePath);
   ::GetShortPathNameW(specialNativePath, specialNativePath,
-                      ArrayLength(specialNativePath));
+                      std::size(specialNativePath));
 
   if (wcsicmp(fileNativePath, specialNativePath) != 0) {
     return false;
@@ -442,7 +442,7 @@ static nsresult MakeIconBuffer(HICON aIcon, ByteBuf* aOutBuffer) {
           }  // if we got mask bits
           delete colorInfo;
         }  // if we allocated the buffer
-      }    // if we got mask size
+      }  // if we got mask size
 
       DeleteDC(hDC);
       DeleteObject(iconInfo.hbmColor);
@@ -841,17 +841,8 @@ nsresult nsIconChannel::StartAsyncOpen() {
         [outputStream](nsresult rv) { outputStream->CloseWithStatus(rv); });
   }
 
-  // Use the main thread for the pumped events unless the load info
-  // specifies otherwise
-  nsCOMPtr<nsISerialEventTarget> listenerTarget =
-      nsContentUtils::GetEventTargetByLoadInfo(mLoadInfo,
-                                               mozilla::TaskCategory::Other);
-  if (!listenerTarget) {
-    listenerTarget = do_GetMainThread();
-  }
-
   rv = mPump->Init(inputStream.get(), 0 /*segmentSize*/, 0 /*segmentCount*/,
-                   false /*closeWhenDone*/, listenerTarget);
+                   false /*closeWhenDone*/, GetMainThreadSerialEventTarget());
   NS_ENSURE_SUCCESS(rv, rv);
 
   return mPump->AsyncRead(this);

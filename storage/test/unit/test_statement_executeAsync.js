@@ -463,13 +463,13 @@ function test_partial_listener_works() {
   var stmt = makeTestStatement("DELETE FROM test WHERE id = ?");
   stmt.bindByIndex(0, 0);
   stmt.executeAsync({
-    handleResult(aResultSet) {},
+    handleResult() {},
   });
   stmt.executeAsync({
-    handleError(aError) {},
+    handleError() {},
   });
   stmt.executeAsync({
-    handleCompletion(aReason) {},
+    handleCompletion() {},
   });
   stmt.finalize();
 
@@ -782,6 +782,12 @@ function test_bind_no_such_name_async_deferred() {
 test_bind_no_such_name_async_deferred.asyncOnly = true;
 
 function test_bind_bogus_type_by_index() {
+  if (AppConstants.DEBUG) {
+    // Skip this test as in debug builds this is a fatal assert.
+    run_next_test();
+    return;
+  }
+
   // We try to bind a JS Object here that should fail to bind.
   let stmt = makeTestStatement("INSERT INTO test (blober) VALUES (?)");
 
@@ -794,6 +800,12 @@ function test_bind_bogus_type_by_index() {
 }
 
 function test_bind_bogus_type_by_name() {
+  if (AppConstants.DEBUG) {
+    // Skip this test as in debug builds this is a fatal assert.
+    run_next_test();
+    return;
+  }
+
   // We try to bind a JS Object here that should fail to bind.
   let stmt = makeTestStatement("INSERT INTO test (blober) VALUES (:blob)");
 

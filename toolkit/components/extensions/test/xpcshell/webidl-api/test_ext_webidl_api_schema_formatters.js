@@ -2,6 +2,9 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
+const { ExtensionCommon } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionCommon.sys.mjs"
+);
 const { ExtensionAPI } = ExtensionCommon;
 
 AddonTestUtils.init(this);
@@ -17,7 +20,7 @@ AddonTestUtils.createAppInfo(
 // is no JSON schema for this namespace so we add one here that is tailored for
 // our testing needs.
 const API = class extends ExtensionAPI {
-  getAPI(context) {
+  getAPI() {
     return {
       mockExtensionAPI: {
         methodAsync: files => {

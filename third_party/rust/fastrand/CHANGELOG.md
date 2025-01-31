@@ -1,3 +1,29 @@
+# Version 2.1.0
+
+- Change the RNG algorithm and the way that the seed is computed. This will cause
+  the algorithm to emit different constants for different seeds, hence the minor
+  SemVer change.
+  - Update to the final WyRand v4.2 constants for better entropy. (#82)
+  - Remove an unnecessary seed modification. (#73)
+
+# Version 2.0.2
+
+- Slight restructuring of the `with_seed` function. (#79)
+
+# Version 2.0.1
+
+- Clarify documentation for the `fork()` method. (#62)
+- Mention `fastrand-contrib` in documentation. (#70)
+
+# Version 2.0.0
+
+- **Breaking:** Remove interior mutability from `Rng`. (#47)
+- Add a `fork()` method. (#49)
+- Add a `no_std` mode. (#50)
+- Add an iterator selection function. (#51)
+- Add a `choose_multiple()` function for sampling several elements from an iterator. (#55)
+- Use the `getrandom` crate for seeding on WebAssembly targets if the `js` feature is enabled. (#60)
+
 # Version 1.9.0
 
 - Add `Rng::fill()` (#35, #43)

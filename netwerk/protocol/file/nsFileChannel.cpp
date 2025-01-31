@@ -20,6 +20,8 @@
 #include "nsProxyRelease.h"
 #include "nsIContentPolicy.h"
 #include "nsContentUtils.h"
+#include "mozilla/dom/ContentParent.h"
+#include "../protocol/http/nsHttpHandler.h"
 
 #include "nsIFileURL.h"
 #include "nsIURIMutator.h"
@@ -28,6 +30,7 @@
 #include "prio.h"
 #include <algorithm>
 
+#include "mozilla/Components.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/Unused.h"
 
@@ -147,8 +150,8 @@ nsresult nsFileCopyEvent::Dispatch(nsIRunnable* callback,
   if (NS_FAILED(rv)) return rv;
 
   // Dispatch ourselves to I/O thread pool...
-  nsCOMPtr<nsIEventTarget> pool =
-      do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID, &rv);
+  nsCOMPtr<nsIEventTarget> pool;
+  pool = mozilla::components::StreamTransport::Service(&rv);
   if (NS_FAILED(rv)) return rv;
 
   return pool->Dispatch(this, NS_DISPATCH_NORMAL);
@@ -239,16 +242,15 @@ nsFileChannel::nsFileChannel(nsIURI* uri) : mUploadLength(0), mFileURI(uri) {}
 nsresult nsFileChannel::Init() {
   NS_ENSURE_STATE(mLoadInfo);
 
+  RefPtr<nsHttpHandler> handler = nsHttpHandler::GetInstance();
+  MOZ_ALWAYS_SUCCEEDS(handler->NewChannelId(mChannelId));
+
   // If we have a link file, we should resolve its target right away.
   // This is to protect against a same origin attack where the same link file
   // can point to different resources right after the first resource is loaded.
   nsCOMPtr<nsIFile> file;
   nsCOMPtr<nsIURI> targetURI;
-#ifdef XP_WIN
-  nsAutoString fileTarget;
-#else
-  nsAutoCString fileTarget;
-#endif
+  AutoPathString fileTarget;
   nsCOMPtr<nsIFile> resolvedFile;
   bool symLink;
   nsCOMPtr<nsIFileURL> fileURL = do_QueryInterface(mFileURI);
@@ -256,13 +258,11 @@ nsresult nsFileChannel::Init() {
       NS_SUCCEEDED(file->IsSymlink(&symLink)) && symLink &&
 #ifdef XP_WIN
       NS_SUCCEEDED(file->GetTarget(fileTarget)) &&
-      NS_SUCCEEDED(
-          NS_NewLocalFile(fileTarget, true, getter_AddRefs(resolvedFile))) &&
 #else
       NS_SUCCEEDED(file->GetNativeTarget(fileTarget)) &&
-      NS_SUCCEEDED(NS_NewNativeLocalFile(fileTarget, true,
-                                         getter_AddRefs(resolvedFile))) &&
 #endif
+      NS_SUCCEEDED(NS_NewPathStringLocalFile(fileTarget,
+                                             getter_AddRefs(resolvedFile))) &&
       NS_SUCCEEDED(
           NS_NewFileURI(getter_AddRefs(targetURI), resolvedFile, nullptr))) {
     // Make an effort to match up the query strings.
@@ -406,6 +406,9 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     }
   }
 
+  // notify "file-channel-opened" observers
+  MaybeSendFileOpenNotification();
+
   *result = nullptr;
   stream.swap(*result);
   return NS_OK;
@@ -419,8 +422,7 @@ nsresult nsFileChannel::ListenerBlockingPromise(BlockingPromise** aPromise) {
     return NS_OK;
   }
 
-  nsCOMPtr<nsIEventTarget> sts(
-      do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID));
+  nsCOMPtr<nsIEventTarget> sts(mozilla::components::StreamTransport::Service());
   if (!sts) {
     return FixupContentLength(true);
   }
@@ -467,7 +469,7 @@ nsresult nsFileChannel::FixupContentLength(bool async) {
 // nsFileChannel::nsISupports
 
 NS_IMPL_ISUPPORTS_INHERITED(nsFileChannel, nsBaseChannel, nsIUploadChannel,
-                            nsIFileChannel)
+                            nsIFileChannel, nsIIdentChannel)
 
 //-----------------------------------------------------------------------------
 // nsFileChannel::nsIFileChannel
@@ -479,6 +481,32 @@ nsFileChannel::GetFile(nsIFile** file) {
 
   // This returns a cloned nsIFile
   return fileURL->GetFile(file);
+}
+
+nsresult nsFileChannel::MaybeSendFileOpenNotification() {
+  nsCOMPtr<nsILoadInfo> loadInfo;
+  nsresult rv = GetLoadInfo(getter_AddRefs(loadInfo));
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  bool isTopLevel;
+  rv = loadInfo->GetIsTopLevelLoad(&isTopLevel);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  uint64_t browsingContextID;
+  rv = loadInfo->GetBrowsingContextID(&browsingContextID);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  if ((browsingContextID != 0 && isTopLevel) ||
+      !loadInfo->TriggeringPrincipal()->IsSystemPrincipal()) {
+    NotifyListeners();
+  }
+  return NS_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -510,5 +538,26 @@ nsFileChannel::SetUploadStream(nsIInputStream* stream,
 NS_IMETHODIMP
 nsFileChannel::GetUploadStream(nsIInputStream** result) {
   *result = do_AddRef(mUploadStream).take();
+  return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// nsFileChannel::nsIIdentChannel
+
+NS_IMETHODIMP
+nsFileChannel::GetChannelId(uint64_t* aChannelId) {
+  *aChannelId = mChannelId;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsFileChannel::SetChannelId(uint64_t aChannelId) {
+  mChannelId = aChannelId;
+  return NS_OK;
+}
+
+nsresult nsFileChannel::NotifyListeners() {
+  // Nothing to do here, this will be handled in
+  // FileChannelChild::NotifyListeners.
   return NS_OK;
 }

@@ -1,26 +1,30 @@
-import { CONTENT_MESSAGE_TYPE } from "common/Actions.sys.mjs";
-import { ActivityStream, PREFS_CONFIG } from "lib/ActivityStream.jsm";
+import { CONTENT_MESSAGE_TYPE } from "common/Actions.mjs";
+import {
+  ActivityStream,
+  PREFS_CONFIG,
+  csvPrefHasValue,
+} from "lib/ActivityStream.sys.mjs";
 import { GlobalOverrider } from "test/unit/utils";
 
 import { DEFAULT_SITES } from "lib/DefaultSites.sys.mjs";
-import { AboutPreferences } from "lib/AboutPreferences.jsm";
-import { DefaultPrefs } from "lib/ActivityStreamPrefs.jsm";
-import { NewTabInit } from "lib/NewTabInit.jsm";
-import { SectionsFeed } from "lib/SectionsManager.jsm";
-import { RecommendationProvider } from "lib/RecommendationProvider.jsm";
-import { PlacesFeed } from "lib/PlacesFeed.jsm";
-import { PrefsFeed } from "lib/PrefsFeed.jsm";
-import { SystemTickFeed } from "lib/SystemTickFeed.jsm";
-import { TelemetryFeed } from "lib/TelemetryFeed.jsm";
-import { FaviconFeed } from "lib/FaviconFeed.jsm";
-import { TopSitesFeed } from "lib/TopSitesFeed.jsm";
-import { TopStoriesFeed } from "lib/TopStoriesFeed.jsm";
-import { HighlightsFeed } from "lib/HighlightsFeed.jsm";
-import { DiscoveryStreamFeed } from "lib/DiscoveryStreamFeed.jsm";
+import { AboutPreferences } from "lib/AboutPreferences.sys.mjs";
+import { DefaultPrefs } from "lib/ActivityStreamPrefs.sys.mjs";
+import { NewTabInit } from "lib/NewTabInit.sys.mjs";
+import { SectionsFeed } from "lib/SectionsManager.sys.mjs";
+import { RecommendationProvider } from "lib/RecommendationProvider.sys.mjs";
+import { PlacesFeed } from "lib/PlacesFeed.sys.mjs";
+import { PrefsFeed } from "lib/PrefsFeed.sys.mjs";
+import { SystemTickFeed } from "lib/SystemTickFeed.sys.mjs";
+import { TelemetryFeed } from "lib/TelemetryFeed.sys.mjs";
+import { FaviconFeed } from "lib/FaviconFeed.sys.mjs";
+import { TopSitesFeed } from "lib/TopSitesFeed.sys.mjs";
+import { TopStoriesFeed } from "lib/TopStoriesFeed.sys.mjs";
+import { HighlightsFeed } from "lib/HighlightsFeed.sys.mjs";
+import { DiscoveryStreamFeed } from "lib/DiscoveryStreamFeed.sys.mjs";
 
 import { LinksCache } from "lib/LinksCache.sys.mjs";
 import { PersistentCache } from "lib/PersistentCache.sys.mjs";
-import { DownloadsManager } from "lib/DownloadsManager.jsm";
+import { DownloadsManager } from "lib/DownloadsManager.sys.mjs";
 
 describe("ActivityStream", () => {
   let sandbox;
@@ -261,6 +265,412 @@ describe("ActivityStream", () => {
       assert.calledWith(global.Services.prefs.clearUserPref, "oldPrefName");
     });
   });
+  describe("csvPrefHasValue", () => {
+    let getStringPrefStub;
+    beforeEach(() => {
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+      sandbox.stub(global.Region, "home").get(() => "CA");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-CA");
+    });
+    it("throws an error when the pref argument is not a string", () => {
+      assert.throws(
+        () => csvPrefHasValue(0, "foo"),
+        Error,
+        "The stringPrefName argument is not a string"
+      );
+    });
+    it("returns true if pref contains test value", () => {
+      getStringPrefStub.withArgs("example.csvPref").returns("foo,bar");
+      const featureCheck = csvPrefHasValue("example.csvPref", "foo");
+      assert.isTrue(featureCheck);
+    });
+    it("returns false if pref contains test value", () => {
+      getStringPrefStub.withArgs("example.csvPref").returns("foo,bar");
+      const featureCheck = csvPrefHasValue("example.csvPref", "baz");
+      assert.isFalse(featureCheck);
+    });
+    it("returns false if pref value returns empty", () => {
+      getStringPrefStub.withArgs("example.csvPref").returns("");
+      const featureCheck = csvPrefHasValue("example.csvPref", "foo");
+      assert.isFalse(featureCheck);
+    });
+    it("returns false if test value is blank", () => {
+      getStringPrefStub.withArgs("example.csvPref").returns("foo,bar");
+      const featureCheck = csvPrefHasValue("example.csvPref", "");
+      assert.isFalse(featureCheck);
+    });
+  });
+  describe("showWeather", () => {
+    let stub;
+    let getStringPrefStub;
+    const FEATURE_ENABLED_PREF = "system.showWeather";
+    const REGION_WEATHER_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.region-weather-config";
+    const LOCALE_WEATHER_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.locale-weather-config";
+    beforeEach(() => {
+      stub = sandbox.stub(global.Region, "home");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+
+      // Set default regions
+      getStringPrefStub.withArgs(REGION_WEATHER_CONFIG).returns("US, CA");
+
+      // Set default locales
+      getStringPrefStub
+        .withArgs(LOCALE_WEATHER_CONFIG)
+        .returns("en-US,en-GB,en-CA");
+    });
+    it("should turn off when region and locale are not set", () => {
+      stub.get(() => "");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not set", () => {
+      stub.get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when region is supported", () => {
+      stub.get(() => "US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not supported", () => {
+      stub.get(() => "FR");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not set", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when locale is supported", () => {
+      stub.get(() => "US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not supported", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region and locale are both not supported", () => {
+      stub.get(() => "FR");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+  });
+  describe("showTopicsSelection", () => {
+    let stub;
+    let getStringPrefStub;
+    const FEATURE_ENABLED_PREF = "discoverystream.topicSelection.enabled";
+    const REGION_TOPICS_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.topicSelection.region-topics-config";
+    const LOCALE_TOPICS_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.topicSelection.locale-topics-config";
+    beforeEach(() => {
+      stub = sandbox.stub(global.Region, "home");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+
+      // Set default regions
+      getStringPrefStub.withArgs(REGION_TOPICS_CONFIG).returns("US, CA");
+
+      // Set default locales
+      getStringPrefStub
+        .withArgs(LOCALE_TOPICS_CONFIG)
+        .returns("en-US,en-GB,en-CA");
+    });
+    it("should turn off when region and locale are not set", () => {
+      stub.get(() => "");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not set", () => {
+      stub.get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when region is supported", () => {
+      stub.get(() => "US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not supported", () => {
+      stub.get(() => "FR");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not set", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when locale is supported", () => {
+      stub.get(() => "US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not supported", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region and locale are both not supported", () => {
+      stub.get(() => "FR");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+  });
+  describe("showTopicLabels", () => {
+    let stub;
+    let getStringPrefStub;
+    const FEATURE_ENABLED_PREF = "discoverystream.topicLabels.enabled";
+    const REGION_TOPIC_LABEL_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.topicLabels.region-topic-label-config";
+    const LOCALE_TOPIC_LABEL_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.topicLabels.locale-topic-label-config";
+    beforeEach(() => {
+      stub = sandbox.stub(global.Region, "home");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+
+      // Set default regions
+      getStringPrefStub.withArgs(REGION_TOPIC_LABEL_CONFIG).returns("US, CA");
+
+      // Set default locales
+      getStringPrefStub
+        .withArgs(LOCALE_TOPIC_LABEL_CONFIG)
+        .returns("en-US,en-GB,en-CA");
+    });
+    it("should turn off when region and locale are not set", () => {
+      stub.get(() => "");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not set", () => {
+      stub.get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when region is supported", () => {
+      stub.get(() => "US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not supported", () => {
+      stub.get(() => "FR");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not set", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when locale is supported", () => {
+      stub.get(() => "US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not supported", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region and locale are both not supported", () => {
+      stub.get(() => "FR");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+  });
+  describe("showThumbsUpDown", () => {
+    let stub;
+    let getStringPrefStub;
+    const FEATURE_ENABLED_PREF = "discoverystream.thumbsUpDown.enabled";
+    const REGION_THUMBS_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.thumbsUpDown.region-thumbs-config";
+    const LOCALE_THUMBS_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.thumbsUpDown.locale-thumbs-config";
+
+    beforeEach(() => {
+      stub = sandbox.stub(global.Region, "home");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+
+      // Set default regions
+      getStringPrefStub.withArgs(REGION_THUMBS_CONFIG).returns("US, CA");
+
+      // Set default locales
+      getStringPrefStub
+        .withArgs(LOCALE_THUMBS_CONFIG)
+        .returns("en-US,en-GB,en-CA");
+    });
+    it("should turn off when region and locale are not set", () => {
+      stub.get(() => "");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not set", () => {
+      stub.get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when region is supported", () => {
+      stub.get(() => "US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not supported", () => {
+      stub.get(() => "FR");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not set", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when locale is supported", () => {
+      stub.get(() => "US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not supported", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region and locale are both not supported", () => {
+      stub.get(() => "FR");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+  });
+  describe("showContextualContent", () => {
+    let stub;
+    let getStringPrefStub;
+    const FEATURE_ENABLED_PREF = "discoverystream.contextualContent.enabled";
+    const REGION_CONTEXTUAL_CONTENT_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.contextualContent.region-content-config";
+    const LOCALE_CONTEXTUAL_CONTENT_CONFIG =
+      "browser.newtabpage.activity-stream.discoverystream.contextualContent.locale-content-config";
+
+    beforeEach(() => {
+      stub = sandbox.stub(global.Region, "home");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+
+      // Set default regions
+      getStringPrefStub
+        .withArgs(REGION_CONTEXTUAL_CONTENT_CONFIG)
+        .returns("US, CA");
+
+      // Set default locales
+      getStringPrefStub
+        .withArgs(LOCALE_CONTEXTUAL_CONTENT_CONFIG)
+        .returns("en-US,en-GB,en-CA");
+    });
+    it("should turn off when region and locale are not set", () => {
+      stub.get(() => "");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not set", () => {
+      stub.get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when region is supported", () => {
+      stub.get(() => "US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region is not supported", () => {
+      stub.get(() => "FR");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not set", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn on when locale is supported", () => {
+      stub.get(() => "US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+      as._updateDynamicPrefs();
+      assert.isTrue(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when locale is not supported", () => {
+      stub.get(() => "US");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+    it("should turn off when region and locale are both not supported", () => {
+      stub.get(() => "FR");
+      sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "fr");
+      as._updateDynamicPrefs();
+      assert.isFalse(PREFS_CONFIG.get(FEATURE_ENABLED_PREF).value);
+    });
+  });
   describe("discoverystream.region-basic-layout config", () => {
     let getStringPrefStub;
     beforeEach(() => {
@@ -417,13 +827,11 @@ describe("ActivityStream", () => {
       clock = sinon.useFakeTimers();
 
       // Have addObserver cause prefHasUserValue to now return true then observe
-      sandbox
-        .stub(global.Services.obs, "addObserver")
-        .callsFake((pref, obs) => {
-          setTimeout(() => {
-            Services.obs.notifyObservers("US", "browser-region-updated");
-          });
+      sandbox.stub(global.Services.obs, "addObserver").callsFake(() => {
+        setTimeout(() => {
+          Services.obs.notifyObservers("US", "browser-region-updated");
         });
+      });
     });
     afterEach(() => clock.restore());
 

@@ -5,23 +5,21 @@
 .history-sort-options:not([hidden]) {
   display: flex;
   gap: 24px;
-  margin-block-start: 35px;
 }
 
 .history-sort-option {
   display: flex;
   align-items: center;
   gap: 8px;
+
+  & label {
+    white-space: nowrap;
+  }
 }
 
 .show-all-history-footer {
   text-align: center;
-  color: var(--fxview-primary-action-background);
-  cursor: pointer;
-}
-
-.show-all-history-link {
-  text-decoration: underline;
+  margin-block-end: 24px;
 }
 
 .import-history-banner .banner-text {
@@ -53,19 +51,8 @@
   cursor: pointer;
 }
 
-.import-history-banner .close {
+moz-button.close::part(button) {
   background-image: url("chrome://global/skin/icons/close-12.svg");
-  background-repeat: no-repeat;
-  background-position: center center;
-  -moz-context-properties: fill;
-  fill: currentColor;
-  min-width: auto;
-  min-height: auto;
-  width: 24px;
-  height: 24px;
-  margin: 0;
-  padding: 0;
-  flex-shrink: 0;
 }
 
 dialog {

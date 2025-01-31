@@ -6,13 +6,14 @@
 #ifndef nsHyphenationManager_h__
 #define nsHyphenationManager_h__
 
-#include "base/shared_memory.h"
+#include "base/process.h"
 #include "mozilla/Omnijar.h"
+#include "mozilla/ipc/SharedMemory.h"
 #include "nsHashKeys.h"
+#include "nsAtomHashKeys.h"
 #include "nsInterfaceHashtable.h"
 #include "nsIObserver.h"
 #include "nsRefPtrHashtable.h"
-
 class nsHyphenator;
 class nsAtom;
 class nsIURI;
@@ -27,7 +28,7 @@ class nsHyphenationManager : public nsIObserver {
   already_AddRefed<nsHyphenator> GetHyphenator(nsAtom* aLocale);
 
   void ShareHyphDictToProcess(nsIURI* aURI, base::ProcessId aPid,
-                              base::SharedMemoryHandle* aOutHandle,
+                              mozilla::ipc::SharedMemory::Handle* aOutHandle,
                               uint32_t* aOutSize);
 
   static nsHyphenationManager* Instance();
@@ -45,9 +46,9 @@ class nsHyphenationManager : public nsIObserver {
   void LoadPatternListFromDir(nsIFile* aDir);
   void LoadAliases();
 
-  nsRefPtrHashtable<nsRefPtrHashKey<nsAtom>, nsAtom> mHyphAliases;
-  nsInterfaceHashtable<nsRefPtrHashKey<nsAtom>, nsIURI> mPatternFiles;
-  nsRefPtrHashtable<nsRefPtrHashKey<nsAtom>, nsHyphenator> mHyphenators;
+  nsRefPtrHashtable<nsAtomHashKey, nsAtom> mHyphAliases;
+  nsInterfaceHashtable<nsAtomHashKey, nsIURI> mPatternFiles;
+  nsRefPtrHashtable<nsAtomHashKey, nsHyphenator> mHyphenators;
 
   static nsHyphenationManager* sInstance;
 };

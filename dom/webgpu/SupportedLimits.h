@@ -40,7 +40,6 @@ enum class Limit : uint8_t {
   MaxBufferSize,
   MaxVertexAttributes,
   MaxVertexBufferArrayStride,
-  MaxInterStageShaderComponents,
   MaxInterStageShaderVariables,
   MaxColorAttachments,
   MaxColorAttachmentBytesPerSample,
@@ -53,7 +52,7 @@ enum class Limit : uint8_t {
   _LAST = MaxComputeWorkgroupsPerDimension,
 };
 
-double GetLimit(const ffi::WGPULimits&, Limit);
+uint64_t GetLimit(const ffi::WGPULimits&, Limit);
 void SetLimit(ffi::WGPULimits*, Limit, double);
 
 class SupportedLimits final : public nsWrapperCache, public ChildOf<Adapter> {
@@ -88,7 +87,6 @@ class SupportedLimits final : public nsWrapperCache, public ChildOf<Adapter> {
   _(MaxBufferSize)
   _(MaxVertexAttributes)
   _(MaxVertexBufferArrayStride)
-  _(MaxInterStageShaderComponents)
   _(MaxInterStageShaderVariables)
   _(MaxColorAttachments)
   _(MaxColorAttachmentBytesPerSample)

@@ -1,10 +1,14 @@
 cfg_io_driver! {
     pub(crate) mod bit;
-    pub(crate) mod slab;
 }
 
 #[cfg(feature = "rt")]
 pub(crate) mod atomic_cell;
+
+pub(crate) mod metric_atomics;
+
+#[cfg(any(feature = "rt", feature = "signal", feature = "process"))]
+pub(crate) mod once_cell;
 
 #[cfg(any(
     // io driver uses `WakeList` directly
@@ -17,6 +21,8 @@ pub(crate) mod atomic_cell;
     // rt and signal use `Notify`, which requires `WakeList`.
     feature = "rt",
     feature = "signal",
+    // time driver uses `WakeList` in `Handle::process_at_time`.
+    feature = "time",
 ))]
 mod wake_list;
 #[cfg(any(
@@ -26,6 +32,7 @@ mod wake_list;
     feature = "fs",
     feature = "rt",
     feature = "signal",
+    feature = "time",
 ))]
 pub(crate) use wake_list::WakeList;
 
@@ -40,14 +47,18 @@ pub(crate) use wake_list::WakeList;
 ))]
 pub(crate) mod linked_list;
 
-#[cfg(any(feature = "rt-multi-thread", feature = "macros"))]
-mod rand;
+cfg_rt! {
+    pub(crate) mod sharded_list;
+}
+
+#[cfg(any(feature = "rt", feature = "macros", feature = "time"))]
+pub(crate) mod rand;
 
 cfg_rt! {
-    cfg_unstable! {
-        mod idle_notified_set;
-        pub(crate) use idle_notified_set::IdleNotifiedSet;
-    }
+    mod idle_notified_set;
+    pub(crate) use idle_notified_set::IdleNotifiedSet;
+
+    pub(crate) use self::rand::RngSeedGenerator;
 
     mod wake;
     pub(crate) use wake::WakerRef;
@@ -56,28 +67,22 @@ cfg_rt! {
     mod sync_wrapper;
     pub(crate) use sync_wrapper::SyncWrapper;
 
-    mod vec_deque_cell;
-    pub(crate) use vec_deque_cell::VecDequeCell;
+    mod rc_cell;
+    pub(crate) use rc_cell::RcCell;
 }
 
 cfg_rt_multi_thread! {
-    pub(crate) use self::rand::FastRand;
-
     mod try_lock;
     pub(crate) use try_lock::TryLock;
 }
 
 pub(crate) mod trace;
 
-#[cfg(any(feature = "macros"))]
-#[cfg_attr(not(feature = "macros"), allow(unreachable_pub))]
-pub use self::rand::thread_rng_n;
-
-#[cfg(any(
-    feature = "rt",
-    feature = "time",
-    feature = "net",
-    feature = "process",
-    all(unix, feature = "signal")
-))]
 pub(crate) mod error;
+
+#[cfg(feature = "io-util")]
+pub(crate) mod memchr;
+
+pub(crate) mod markers;
+
+pub(crate) mod cacheline;

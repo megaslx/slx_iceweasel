@@ -83,7 +83,7 @@ std::vector<SpatialLayer> ConfigureSvcNormalVideo(
     size_t first_active_layer,
     size_t num_spatial_layers,
     size_t num_temporal_layers,
-    absl::optional<ScalableVideoController::StreamLayersConfig> config) {
+    std::optional<ScalableVideoController::StreamLayersConfig> config) {
   RTC_DCHECK_LT(first_active_layer, num_spatial_layers);
 
   // Limit number of layers for given resolution.
@@ -169,8 +169,11 @@ std::vector<SpatialLayer> ConfigureSvcNormalVideo(
 std::vector<SpatialLayer> GetVp9SvcConfig(VideoCodec& codec) {
   RTC_DCHECK_EQ(codec.codecType, kVideoCodecVP9);
 
-  absl::optional<ScalabilityMode> scalability_mode = codec.GetScalabilityMode();
+  std::optional<ScalabilityMode> scalability_mode = codec.GetScalabilityMode();
   RTC_DCHECK(scalability_mode.has_value());
+
+  bool requested_single_spatial_layer =
+      ScalabilityModeToNumSpatialLayers(*scalability_mode) == 1;
 
   // Limit number of spatial layers for given resolution.
   int limited_num_spatial_layers =
@@ -187,7 +190,10 @@ std::vector<SpatialLayer> GetVp9SvcConfig(VideoCodec& codec) {
     codec.SetScalabilityMode(limited_scalability_mode);
   }
 
-  absl::optional<ScalableVideoController::StreamLayersConfig> info =
+  codec.VP9()->interLayerPred =
+      ScalabilityModeToInterLayerPredMode(*scalability_mode);
+
+  std::optional<ScalableVideoController::StreamLayersConfig> info =
       ScalabilityStructureConfig(*scalability_mode);
   if (!info.has_value()) {
     RTC_LOG(LS_WARNING) << "Failed to create structure "
@@ -200,10 +206,18 @@ std::vector<SpatialLayer> GetVp9SvcConfig(VideoCodec& codec) {
       GetSvcConfig(codec.width, codec.height, codec.maxFramerate,
                    /*first_active_layer=*/0, info->num_spatial_layers,
                    info->num_temporal_layers, /*is_screen_sharing=*/false,
-                   codec.GetScalabilityMode() ? info : absl::nullopt);
+                   codec.GetScalabilityMode() ? info : std::nullopt);
   RTC_DCHECK(!spatial_layers.empty());
 
   spatial_layers[0].minBitrate = kMinVp9SvcBitrateKbps;
+
+  // Use codec bitrate limits if spatial layering is not requested.
+  if (requested_single_spatial_layer) {
+    SpatialLayer& spatial_layer = spatial_layers[0];
+    spatial_layer.minBitrate = codec.minBitrate;
+    spatial_layer.maxBitrate = codec.maxBitrate;
+    spatial_layer.targetBitrate = codec.maxBitrate;
+  }
 
   return spatial_layers;
 }
@@ -216,7 +230,7 @@ std::vector<SpatialLayer> GetSvcConfig(
     size_t num_spatial_layers,
     size_t num_temporal_layers,
     bool is_screen_sharing,
-    absl::optional<ScalableVideoController::StreamLayersConfig> config) {
+    std::optional<ScalableVideoController::StreamLayersConfig> config) {
   RTC_DCHECK_GT(input_width, 0);
   RTC_DCHECK_GT(input_height, 0);
   RTC_DCHECK_GT(num_spatial_layers, 0);

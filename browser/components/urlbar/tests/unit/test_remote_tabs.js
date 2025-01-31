@@ -28,7 +28,7 @@ let MockClientsEngine = {
     Assert.ok(guid.endsWith("desktop") || guid.endsWith("mobile"));
     return guid.endsWith("mobile") ? "phone" : "desktop";
   },
-  remoteClientExists(id) {
+  remoteClientExists(_id) {
     return true;
   },
   getClientName(id) {
@@ -48,7 +48,7 @@ function configureEngine(clients) {
 
 testEngine_setup();
 
-add_task(async function setup() {
+add_setup(async function () {
   // Tell Sync about the mocks.
   Weave.Service.engineManager.register(MockTabsEngine);
 
@@ -131,7 +131,7 @@ add_task(async function test_maximal() {
         uri: "http://example.com/",
         device: "My Phone",
         title: "An Example",
-        iconUri: "moz-anno:favicon:http://favicon/",
+        iconUri: "cached-favicon:http://favicon/",
       }),
     ],
   });
@@ -171,35 +171,6 @@ add_task(async function test_noShowIcons() {
     ],
   });
   Services.prefs.clearUserPref("services.sync.syncedTabs.showRemoteIcons");
-});
-
-add_task(async function test_dontMatchSyncedTabs() {
-  Services.prefs.setBoolPref("services.sync.syncedTabs.showRemoteTabs", false);
-  configureEngine([
-    {
-      id: "mobile",
-      tabs: [
-        {
-          urlHistory: ["http://example.com/"],
-          title: "An Example",
-          icon: "http://favicon",
-        },
-      ],
-    },
-  ]);
-
-  let context = createContext("ex", { isPrivate: false });
-  await check_results({
-    context,
-    matches: [
-      makeSearchResult(context, {
-        engineName: SUGGESTIONS_ENGINE_NAME,
-        heuristic: true,
-      }),
-    ],
-  });
-
-  Services.prefs.clearUserPref("services.sync.syncedTabs.showRemoteTabs");
 });
 
 add_task(async function test_tabsDisabledInUrlbar() {
@@ -662,7 +633,7 @@ add_task(async function test_duplicate_remote_tabs() {
   let url = "http://foo.remote.com/";
   let tabs = Array(3)
     .fill(0)
-    .map((e, i) => ({
+    .map(() => ({
       urlHistory: [url],
       title: "A title",
       lastUsed: Math.floor(Date.now() / 1000),

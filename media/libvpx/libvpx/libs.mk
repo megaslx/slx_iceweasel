@@ -178,6 +178,7 @@ INSTALL-LIBS-yes += include/vpx/vpx_image.h
 INSTALL-LIBS-yes += include/vpx/vpx_integer.h
 INSTALL-LIBS-$(CONFIG_DECODERS) += include/vpx/vpx_decoder.h
 INSTALL-LIBS-$(CONFIG_ENCODERS) += include/vpx/vpx_encoder.h
+INSTALL-LIBS-$(CONFIG_ENCODERS) += include/vpx/vpx_tpl.h
 ifeq ($(CONFIG_EXTERNAL_BUILD),yes)
 ifeq ($(CONFIG_MSVS),yes)
 INSTALL-LIBS-yes                  += $(foreach p,$(VS_PLATFORMS),$(LIBSUBDIR)/$(p)/$(CODEC_LIB).lib)
@@ -212,6 +213,11 @@ libvpx_srcs.txt:
 	@echo "    [CREATE] $@"
 	@echo $(CODEC_SRCS) | xargs -n1 echo | LC_ALL=C sort -u > $@
 CLEAN-OBJS += libvpx_srcs.txt
+
+libvpxrc_srcs.txt:
+	@echo "    [CREATE] $@"
+	@echo $(RC_RTC_SRCS) | xargs -n1 echo | LC_ALL=C sort -u > $@
+CLEAN-OBJS += libvpxrc_srcs.txt
 
 # Assembly files that are included, but don't define symbols themselves.
 # Filtered out to avoid Windows build warnings.
@@ -312,8 +318,8 @@ $(BUILD_PFX)libvpx_g.a: $(LIBVPX_OBJS)
 # To determine SO_VERSION_{MAJOR,MINOR,PATCH}, calculate c,a,r with current
 # SO_VERSION_* then follow the rules in the link to detemine the new version
 # (c1, a1, r1) and set MAJOR to [c1-a1], MINOR to a1 and PATCH to r1
-SO_VERSION_MAJOR := 8
-SO_VERSION_MINOR := 0
+SO_VERSION_MAJOR := 9
+SO_VERSION_MINOR := 1
 SO_VERSION_PATCH := 0
 ifeq ($(filter darwin%,$(TGT_OS)),$(TGT_OS))
 LIBVPX_SO               := libvpx.$(SO_VERSION_MAJOR).dylib

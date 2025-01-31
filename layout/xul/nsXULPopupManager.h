@@ -23,6 +23,7 @@
 #include "nsIObserver.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/FunctionRef.h"
 #include "mozilla/widget/InitData.h"
 #include "mozilla/widget/NativeMenu.h"
 
@@ -183,10 +184,10 @@ using HidePopupOptions = mozilla::EnumSet<HidePopupOption>;
  */
 extern const nsNavigationDirection DirectionFromKeyCodeTable[2][6];
 
-#define NS_DIRECTION_FROM_KEY_CODE(frame, keycode) \
-  (DirectionFromKeyCodeTable[static_cast<uint8_t>( \
-      (frame)->StyleVisibility()->mDirection)][(   \
-      keycode)-mozilla::dom::KeyboardEvent_Binding::DOM_VK_END])
+#define NS_DIRECTION_FROM_KEY_CODE(frame, keycode)                    \
+  (DirectionFromKeyCodeTable                                          \
+       [static_cast<uint8_t>((frame)->StyleVisibility()->mDirection)] \
+       [(keycode) - mozilla::dom::KeyboardEvent_Binding::DOM_VK_END])
 
 // Used to hold information about a popup that is about to be opened.
 struct PendingPopup {
@@ -551,6 +552,13 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   void UpdatePopupPositions(nsRefreshDriver* aRefreshDriver);
 
   /**
+   * Get the first nsMenuChainItem that is matched by the matching callback
+   * function provided.
+   */
+  nsMenuChainItem* FirstMatchingPopup(
+      mozilla::FunctionRef<bool(nsMenuChainItem*)> aMatcher) const;
+
+  /**
    * Enable or disable anchor following on the popup if needed.
    */
   void UpdateFollowAnchor(nsMenuPopupFrame* aPopup);
@@ -593,8 +601,10 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   /**
    * Return an array of all the open and visible popup frames for
    * menus, in order from top to bottom.
+   * XXX should we always include native menu?
    */
-  void GetVisiblePopups(nsTArray<nsIFrame*>& aPopups);
+  void GetVisiblePopups(nsTArray<nsMenuPopupFrame*>& aPopups,
+                        bool aIncludeNativeMenu = false);
 
   /**
    * Get the node that last triggered a popup or tooltip in the document
@@ -732,6 +742,9 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   nsMenuChainItem* GetTopVisibleMenu() {
     return GetRollupItem(RollupKind::Menu);
   }
+
+  // Add the chain item to the chain and update mPopups to point to it.
+  void AddMenuChainItem(mozilla::UniquePtr<nsMenuChainItem>);
 
   // Removes the chain item from the chain and deletes it.
   void RemoveMenuChainItem(nsMenuChainItem*);

@@ -13,10 +13,14 @@ loader.lazyRequireGetter(
 
 const lazy = {};
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  NetworkUtils:
-    "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
-});
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    NetworkUtils:
+      "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 /**
  * Handles network events from the content process
@@ -45,7 +49,8 @@ class NetworkEventContentWatcher {
     this.onUpdated = onUpdated;
 
     this.httpFailedOpeningRequest = this.httpFailedOpeningRequest.bind(this);
-    this.httpOnImageCacheResponse = this.httpOnImageCacheResponse.bind(this);
+    this.httpOnResourceCacheResponse =
+      this.httpOnResourceCacheResponse.bind(this);
 
     Services.obs.addObserver(
       this.httpFailedOpeningRequest,
@@ -53,8 +58,8 @@ class NetworkEventContentWatcher {
     );
 
     Services.obs.addObserver(
-      this.httpOnImageCacheResponse,
-      "http-on-image-cache-response"
+      this.httpOnResourceCacheResponse,
+      "http-on-resource-cache-response"
     );
   }
   /**
@@ -64,7 +69,7 @@ class NetworkEventContentWatcher {
     this.networkEvents.clear();
   }
 
-  httpFailedOpeningRequest(subject, topic) {
+  httpFailedOpeningRequest(subject) {
     const channel = subject.QueryInterface(Ci.nsIHttpChannel);
 
     // Ignore preload requests to avoid duplicity request entries in
@@ -89,9 +94,9 @@ class NetworkEventContentWatcher {
     });
   }
 
-  httpOnImageCacheResponse(subject, topic) {
+  httpOnResourceCacheResponse(subject, topic) {
     if (
-      topic != "http-on-image-cache-response" ||
+      topic != "http-on-resource-cache-response" ||
       !(subject instanceof Ci.nsIHttpChannel)
     ) {
       return;
@@ -107,7 +112,8 @@ class NetworkEventContentWatcher {
       return;
     }
 
-    // Only one network request should be created per URI for images from the cache
+    // Only one network request should be created per URI for resources from
+    // the cache
     const hasURI = Array.from(this.networkEvents.values()).some(
       networkEvent => networkEvent.uri === channel.URI.spec
     );
@@ -117,11 +123,12 @@ class NetworkEventContentWatcher {
     }
 
     this.onNetworkEventAvailable(channel, {
-      networkEventOptions: { fromCache: true },
+      fromCache: true,
+      networkEventOptions: {},
     });
   }
 
-  onNetworkEventAvailable(channel, { networkEventOptions }) {
+  onNetworkEventAvailable(channel, { fromCache, networkEventOptions }) {
     const actor = new NetworkEventActor(
       this.targetActor.conn,
       this.targetActor.sessionContext,
@@ -140,7 +147,6 @@ class NetworkEventContentWatcher {
       browsingContextID: resource.browsingContextID,
       innerWindowId: resource.innerWindowId,
       resourceId: resource.resourceId,
-      resourceType: resource.resourceType,
       receivedUpdates: [],
       resourceUpdates: {
         // Requests already come with request cookies and headers, so those
@@ -155,6 +161,8 @@ class NetworkEventContentWatcher {
     this.networkEvents.set(resource.resourceId, networkEvent);
 
     this.onAvailable([resource]);
+
+    actor.addCacheDetails({ fromCache });
     const isBlocked = !!resource.blockedReason;
     if (isBlocked) {
       this._emitUpdate(networkEvent);
@@ -165,6 +173,7 @@ class NetworkEventContentWatcher {
         {} /* timings */,
         {} /* offsets */
       );
+      actor.addServerTimings({});
       actor.addResponseContent(
         {
           mimeType: channel.contentType,
@@ -187,6 +196,10 @@ class NetworkEventContentWatcher {
     const { resourceUpdates, receivedUpdates } = networkEvent;
 
     switch (updateResource.updateType) {
+      case "cacheDetails":
+        resourceUpdates.fromCache = updateResource.fromCache;
+        resourceUpdates.fromServiceWorker = updateResource.fromServiceWorker;
+        break;
       case "responseStart":
         // For cached image requests channel.responseStatus is set to 200 as
         // expected. However responseStatusText is empty. In this case fallback
@@ -234,7 +247,6 @@ class NetworkEventContentWatcher {
   _emitUpdate(networkEvent) {
     this.onUpdated([
       {
-        resourceType: networkEvent.resourceType,
         resourceId: networkEvent.resourceId,
         resourceUpdates: networkEvent.resourceUpdates,
         browsingContextID: networkEvent.browsingContextID,
@@ -257,8 +269,8 @@ class NetworkEventContentWatcher {
     );
 
     Services.obs.removeObserver(
-      this.httpOnImageCacheResponse,
-      "http-on-image-cache-response"
+      this.httpOnResourceCacheResponse,
+      "http-on-resource-cache-response"
     );
   }
 }

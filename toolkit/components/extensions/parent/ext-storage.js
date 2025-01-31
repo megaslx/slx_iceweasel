@@ -15,7 +15,7 @@ ChromeUtils.defineESModuleGetters(this, {
 var { ExtensionError } = ExtensionUtils;
 var { ignoreEvent } = ExtensionCommon;
 
-XPCOMUtils.defineLazyGetter(this, "extensionStorageSync", () => {
+ChromeUtils.defineLazyGetter(this, "extensionStorageSync", () => {
   // TODO bug 1637465: Remove Kinto-based implementation.
   if (Services.prefs.getBoolPref("webextensions.storage.sync.kinto")) {
     const { extensionStorageSyncKinto } = ChromeUtils.importESModule(
@@ -30,6 +30,13 @@ XPCOMUtils.defineLazyGetter(this, "extensionStorageSync", () => {
   return extensionStorageSync;
 });
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "prefStorageSyncEnabled",
+  "webextensions.storage.sync.enabled",
+  true
+);
+
 const enforceNoTemporaryAddon = extensionId => {
   const EXCEPTION_MESSAGE =
     "The storage API will not work with a temporary addon ID. " +
@@ -39,6 +46,35 @@ const enforceNoTemporaryAddon = extensionId => {
     throw new ExtensionError(EXCEPTION_MESSAGE);
   }
 };
+
+// Set of extensions that already recorded the sync quota event.
+const syncQuotasRecorded = new WeakSet();
+const QUOTA_BYTES_PER_ITEM = 8_192;
+
+async function recordSyncQuotaTelemetry(extension, context) {
+  if (syncQuotasRecorded.has(extension) || !prefStorageSyncEnabled) {
+    return;
+  }
+  syncQuotasRecorded.add(extension);
+  let items = await extensionStorageSync.get(extension, null, context);
+  let items_over_quota = 0;
+  let total_size_bytes = 0;
+  let entries = Object.entries(items);
+  for (let [key, value] of entries) {
+    let bytes = JSON.stringify(value).length;
+    total_size_bytes += key.length + bytes;
+    if (bytes > QUOTA_BYTES_PER_ITEM) {
+      items_over_quota++;
+    }
+  }
+  Glean.extensionsData.syncUsageQuotas.record({
+    addon_id: extension.id,
+    total_size_bytes,
+    items_count: entries.length,
+    items_over_quota,
+    backend: extensionStorageSync.backend,
+  });
+}
 
 // WeakMap[extension -> Promise<SerializableMap?>]
 const managedStorage = new WeakMap();
@@ -192,8 +228,8 @@ this.storage = class extends ExtensionAPIPersistent {
         extension,
         onStorageSyncChanged
       );
-      // May be void if ExtensionStorageSyncKinto.jsm was not used.
-      // ExtensionStorageSync.jsm does not use the context.
+      // May be void if ExtensionStorageSyncKinto.sys.mjs was not used.
+      // ExtensionStorageSync.sys.mjs does not use the context.
       closeCallback?.();
     };
   }
@@ -283,17 +319,35 @@ this.storage = class extends ExtensionAPIPersistent {
         },
 
         session: {
+          get QUOTA_BYTES() {
+            return extensionStorageSession.QUOTA_BYTES;
+          },
           get(items) {
             return extensionStorageSession.get(extension, items);
           },
-          set(items) {
-            extensionStorageSession.set(extension, items);
+          set(items, { callerLocation } = {}) {
+            const { warningError } =
+              extensionStorageSession.set(extension, items) ?? {};
+            if (warningError) {
+              context.logConsoleScriptError({
+                message: warningError.message,
+                fileName: callerLocation?.source,
+                lineNumber: callerLocation?.line,
+                columnNumber: callerLocation?.column,
+                flags: Ci.nsIScriptError.warningFlag,
+                innerWindowID:
+                  context.browsingContext.currentWindowContext.innerWindowId,
+              });
+            }
           },
           remove(keys) {
             extensionStorageSession.remove(extension, keys);
           },
           clear() {
             extensionStorageSession.clear(extension);
+          },
+          getBytesInUse(keys) {
+            return extensionStorageSession.getBytesInUse(extension, keys);
           },
           onChanged: new EventManager({
             context,
@@ -306,22 +360,27 @@ this.storage = class extends ExtensionAPIPersistent {
         sync: {
           get(spec) {
             enforceNoTemporaryAddon(extension.id);
+            recordSyncQuotaTelemetry(extension, context);
             return extensionStorageSync.get(extension, spec, context);
           },
           set(items) {
             enforceNoTemporaryAddon(extension.id);
+            recordSyncQuotaTelemetry(extension, context);
             return extensionStorageSync.set(extension, items, context);
           },
           remove(keys) {
             enforceNoTemporaryAddon(extension.id);
+            recordSyncQuotaTelemetry(extension, context);
             return extensionStorageSync.remove(extension, keys, context);
           },
           clear() {
             enforceNoTemporaryAddon(extension.id);
+            recordSyncQuotaTelemetry(extension, context);
             return extensionStorageSync.clear(extension, context);
           },
           getBytesInUse(keys) {
             enforceNoTemporaryAddon(extension.id);
+            recordSyncQuotaTelemetry(extension, context);
             return extensionStorageSync.getBytesInUse(extension, keys, context);
           },
           onChanged: new EventManager({

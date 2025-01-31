@@ -14,9 +14,10 @@ const {
 const {
   setIgnoreLayoutChanges,
   getAdjustedQuads,
+  getCurrentZoom,
 } = require("resource://devtools/shared/layout/utils.js");
 const {
-  getCSSStyleRules,
+  getMatchingCSSRules,
 } = require("resource://devtools/shared/inspector/css-logic.js");
 
 const GEOMETRY_LABEL_SIZE = 6;
@@ -138,13 +139,13 @@ function getDefinedGeometryProperties(node) {
   }
 
   // Get the list of css rules applying to the current node.
-  const cssRules = getCSSStyleRules(node);
+  const cssRules = getMatchingCSSRules(node);
   for (let i = 0; i < cssRules.length; i++) {
     const rule = cssRules[i];
     for (const name of GeoProp.allProps()) {
       const value = rule.style.getPropertyValue(name);
       if (value && value !== "auto") {
-        // getCSSStyleRules returns rules ordered from least to most specific
+        // getMatchingCSSRules returns rules ordered from least to most specific
         // so just override any previous properties we have set.
         props.set(name, {
           cssRule: rule,
@@ -527,6 +528,9 @@ class GeometryEditorHighlighter extends AutoRefreshHighlighter {
     // At each update, the position or/and size may have changed, so get the
     // list of defined properties, and re-position the arrows and highlighters.
     this.definedProperties = getDefinedGeometryProperties(this.currentNode);
+    // We need the zoom factor to fix the original position of the node
+    // as well as the arrows.
+    this.zoomFactor = getCurrentZoom(this.currentNode);
 
     if (!this.definedProperties.size) {
       console.warn("The element does not have editable geometry properties");
@@ -599,8 +603,8 @@ class GeometryEditorHighlighter extends AutoRefreshHighlighter {
       el.setAttribute("points", points);
       isHighlighted = true;
     } else if (isRelative) {
-      const xDelta = parseFloat(this.computedStyle.left);
-      const yDelta = parseFloat(this.computedStyle.top);
+      const xDelta = parseFloat(this.computedStyle.left) * this.zoomFactor;
+      const yDelta = parseFloat(this.computedStyle.top) * this.zoomFactor;
       if (xDelta || yDelta) {
         const { p1, p2, p3, p4 } = this.currentQuads.margin[0];
         const points =
@@ -698,17 +702,23 @@ class GeometryEditorHighlighter extends AutoRefreshHighlighter {
     // |                  | bottom         |
     // +------------------+----------------+
     const getSideArrowStartPos = side => {
-      // In case an offsetParent exists and is highlighted.
-      if (this.parentQuads && this.parentQuads.length) {
-        return this.parentQuads[0].bounds[side];
-      }
-
       // In case of relative positioning.
       if (this.computedStyle.position === "relative") {
         if (GeoProp.isInverted(side)) {
-          return marginBox[side] + parseFloat(this.computedStyle[side]);
+          return (
+            marginBox[side] +
+            parseFloat(this.computedStyle[side]) * this.zoomFactor
+          );
         }
-        return marginBox[side] - parseFloat(this.computedStyle[side]);
+        return (
+          marginBox[side] -
+          parseFloat(this.computedStyle[side]) * this.zoomFactor
+        );
+      }
+
+      // In case an offsetParent exists and is highlighted.
+      if (this.parentQuads && this.parentQuads.length) {
+        return this.parentQuads[0].bounds[side];
       }
 
       // In case the element is positioned in the viewport.

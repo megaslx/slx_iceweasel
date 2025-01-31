@@ -43,8 +43,10 @@ class AccessibleCaretEventHub;
 class ErrorResult;
 class HTMLEditor;
 class PostContentIterator;
+enum class CaretAssociationHint;
 enum class TableSelectionMode : uint32_t;
 struct AutoPrepareFocusRange;
+struct PrimaryFrameData;
 namespace dom {
 class DocGroup;
 }  // namespace dom
@@ -52,7 +54,84 @@ class DocGroup;
 
 namespace mozilla {
 
+enum class SelectionScrollMode : uint8_t {
+  // Don't scroll synchronously. We'll flush when the scroll event fires so we
+  // make sure to scroll to the right place.
+  Async,
+  // Scroll synchronously, without flushing layout.
+  SyncNoFlush,
+  // Scroll synchronously, flushing layout. You MUST hold a strong ref on
+  // 'this' for the duration of this call.  This might destroy arbitrary
+  // layout objects.
+  SyncFlush,
+};
+
 namespace dom {
+
+/**
+ * This cache allows to store all selected nodes during a reflow operation.
+ *
+ * All fully selected nodes are stored in a hash set per-selection instance.
+ * This allows fast paths in `nsINode::IsSelected()` and
+ * `Selection::LookupSelection()`. For partially selected nodes, the old
+ * mechanisms are used. This is okay, because for partially selected nodes
+ * no expensive node traversal is necessary.
+ *
+ * This cache is designed to be used in a context where no script is allowed
+ * to run. It assumes that the selection itself, or any range therein, does not
+ * change during its lifetime.
+ *
+ * By design, this class can only be instantiated in the `PresShell`.
+ */
+class MOZ_RAII SelectionNodeCache final {
+ public:
+  ~SelectionNodeCache();
+  /**
+   * Returns true if `aNode` is fully selected by any of the given selections.
+   *
+   * This method will collect all fully selected nodes of `aSelections` and
+   * store them internally (therefore this method isn't const).
+   */
+  bool MaybeCollectNodesAndCheckIfFullySelectedInAnyOf(
+      const nsINode* aNode, const nsTArray<Selection*>& aSelections);
+
+  /**
+   * Returns true if `aNode` is fully selected by any range in `aSelection`.
+   *
+   * This method collects all fully selected nodes from `aSelection` and store
+   * them internally.
+   */
+  bool MaybeCollectNodesAndCheckIfFullySelected(const nsINode* aNode,
+                                                const Selection* aSelection) {
+    return MaybeCollect(aSelection).Contains(aNode);
+  }
+
+ private:
+  /**
+   * This class is supposed to be only created by the PresShell.
+   */
+  friend PresShell;
+  explicit SelectionNodeCache(PresShell& aOwningPresShell);
+  /**
+   * Collects all nodes from a given list of selections.
+   *
+   * This method assumes that the selections itself won't change during this
+   * object's lifetime. It's not possible to 'update' the cached selected ranges
+   * by calling this method again.
+   */
+  void MaybeCollect(const nsTArray<Selection*>& aSelections);
+  /**
+   * Iterates all ranges in `aSelection` and collects its fully selected nodes
+   * into a hash set, which is also returned.
+   *
+   * If `aSelection` is already cached, the hash set is returned directly.
+   */
+  const nsTHashSet<const nsINode*>& MaybeCollect(const Selection* aSelection);
+
+  nsTHashMap<const Selection*, nsTHashSet<const nsINode*>> mSelectedNodes;
+
+  PresShell& mOwningPresShell;
+};
 
 // Note, the ownership of mozilla::dom::Selection depends on which way the
 // object is created. When nsFrameSelection has created Selection,
@@ -62,6 +141,9 @@ namespace dom {
 class Selection final : public nsSupportsWeakReference,
                         public nsWrapperCache,
                         public SupportsWeakPtr {
+  using AllowRangeCrossShadowBoundary =
+      mozilla::dom::AllowRangeCrossShadowBoundary;
+
  protected:
   virtual ~Selection();
 
@@ -150,25 +232,14 @@ class Selection final : public nsSupportsWeakReference,
                                          nsRect* aRect);
 
   nsresult PostScrollSelectionIntoViewEvent(SelectionRegion aRegion,
-                                            int32_t aFlags,
+                                            ScrollFlags aFlags,
                                             ScrollAxis aVertical,
                                             ScrollAxis aHorizontal);
-  enum {
-    SCROLL_SYNCHRONOUS = 1 << 1,
-    SCROLL_FIRST_ANCESTOR_ONLY = 1 << 2,
-    SCROLL_DO_FLUSH =
-        1 << 3,  // only matters if SCROLL_SYNCHRONOUS is passed too
-    SCROLL_OVERFLOW_HIDDEN = 1 << 5,
-    SCROLL_FOR_CARET_MOVE = 1 << 6
-  };
-  // If aFlags doesn't contain SCROLL_SYNCHRONOUS, then we'll flush when
-  // the scroll event fires so we make sure to scroll to the right place.
-  // Otherwise, if SCROLL_DO_FLUSH is also in aFlags, then this method will
-  // flush layout and you MUST hold a strong ref on 'this' for the duration
-  // of this call.  This might destroy arbitrary layout objects.
-  MOZ_CAN_RUN_SCRIPT nsresult
-  ScrollIntoView(SelectionRegion aRegion, ScrollAxis aVertical = ScrollAxis(),
-                 ScrollAxis aHorizontal = ScrollAxis(), int32_t aFlags = 0);
+
+  MOZ_CAN_RUN_SCRIPT nsresult ScrollIntoView(
+      SelectionRegion, ScrollAxis aVertical = ScrollAxis(),
+      ScrollAxis aHorizontal = ScrollAxis(), ScrollFlags = ScrollFlags::None,
+      SelectionScrollMode = SelectionScrollMode::Async);
 
  private:
   static bool IsUserSelectionCollapsed(
@@ -202,6 +273,10 @@ class Selection final : public nsSupportsWeakReference,
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult AddRangesForSelectableNodes(
       nsRange* aRange, Maybe<size_t>* aOutIndex,
       DispatchSelectstartEvent aDispatchSelectstartEvent);
+
+  already_AddRefed<StaticRange> GetComposedRange(
+      const AbstractRange* aRange,
+      const Sequence<OwningNonNull<ShadowRoot>>& aShadowRoots) const;
 
  public:
   nsresult RemoveCollapsedRanges();
@@ -244,6 +319,8 @@ class Selection final : public nsSupportsWeakReference,
   // anchor and which end is focus.
   const nsRange* GetAnchorFocusRange() const { return mAnchorFocusRange; }
 
+  void GetDirection(nsAString& aDirection) const;
+
   nsDirection GetDirection() const { return mDirection; }
 
   void SetDirection(nsDirection aDir) { mDirection = aDir; }
@@ -254,8 +331,12 @@ class Selection final : public nsSupportsWeakReference,
   void AdjustAnchorFocusForMultiRange(nsDirection aDirection);
 
   nsIFrame* GetPrimaryFrameForAnchorNode() const;
-  nsIFrame* GetPrimaryFrameForFocusNode(bool aVisual,
-                                        int32_t* aOffsetUsed = nullptr) const;
+
+  /**
+   * Get primary frame and some other data for putting caret or extending
+   * selection at the focus point.
+   */
+  PrimaryFrameData GetPrimaryFrameForCaretAtFocusNode(bool aVisual) const;
 
   UniquePtr<SelectionDetails> LookUpSelection(
       nsIContent* aContent, uint32_t aContentOffset, uint32_t aContentLength,
@@ -315,6 +396,30 @@ class Selection final : public nsSupportsWeakReference,
     return offset ? *offset : 0;
   }
 
+  nsINode* GetMayCrossShadowBoundaryAnchorNode() const {
+    const RangeBoundary& anchor = AnchorRef(AllowRangeCrossShadowBoundary::Yes);
+    return anchor.IsSet() ? anchor.Container() : nullptr;
+  }
+
+  uint32_t MayCrossShadowBoundaryAnchorOffset() const {
+    const RangeBoundary& anchor = AnchorRef(AllowRangeCrossShadowBoundary::Yes);
+    const Maybe<uint32_t> offset =
+        anchor.Offset(RangeBoundary::OffsetFilter::kValidOffsets);
+    return offset ? *offset : 0;
+  }
+
+  nsINode* GetMayCrossShadowBoundaryFocusNode() const {
+    const RangeBoundary& focus = FocusRef(AllowRangeCrossShadowBoundary::Yes);
+    return focus.IsSet() ? focus.Container() : nullptr;
+  }
+
+  uint32_t MayCrossShadowBoundaryFocusOffset() const {
+    const RangeBoundary& focus = FocusRef(AllowRangeCrossShadowBoundary::Yes);
+    const Maybe<uint32_t> offset =
+        focus.Offset(RangeBoundary::OffsetFilter::kValidOffsets);
+    return offset ? *offset : 0;
+  }
+
   nsIContent* GetChildAtAnchorOffset() {
     const RangeBoundary& anchor = AnchorRef();
     return anchor.IsSet() ? anchor.GetChildAtOffset() : nullptr;
@@ -324,8 +429,12 @@ class Selection final : public nsSupportsWeakReference,
     return focus.IsSet() ? focus.GetChildAtOffset() : nullptr;
   }
 
-  const RangeBoundary& AnchorRef() const;
-  const RangeBoundary& FocusRef() const;
+  const RangeBoundary& AnchorRef(
+      AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary =
+          AllowRangeCrossShadowBoundary::No) const;
+  const RangeBoundary& FocusRef(
+      AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary =
+          AllowRangeCrossShadowBoundary::No) const;
 
   /*
    * IsCollapsed -- is the whole selection just one point, or unset?
@@ -341,6 +450,30 @@ class Selection final : public nsSupportsWeakReference,
     }
 
     return mStyledRanges.mRanges[0].mRange->Collapsed();
+  }
+
+  // Returns whether both normal range and cross-shadow-boundary
+  // range are collapsed.
+  //
+  // If StaticPrefs::dom_shadowdom_selection_across_boundary_enabled is
+  // disabled, this method always returns result as nsRange::IsCollapsed.
+  bool AreNormalAndCrossShadowBoundaryRangesCollapsed() const {
+    if (!IsCollapsed()) {
+      return false;
+    }
+
+    size_t cnt = mStyledRanges.Length();
+    if (cnt == 0) {
+      return true;
+    }
+
+    AbstractRange* range = mStyledRanges.mRanges[0].mRange;
+    MOZ_ASSERT_IF(
+        range->MayCrossShadowBoundary(),
+        !range->AsDynamicRange()->CrossShadowBoundaryRangeCollapsed());
+    // Returns false if nsRange::mCrossBoundaryRange exists,
+    // true otherwise.
+    return !range->MayCrossShadowBoundary();
   }
 
   // *JS() methods are mapped to Selection.*().
@@ -378,6 +511,10 @@ class Selection final : public nsSupportsWeakReference,
       AbstractRange& aRange, mozilla::ErrorResult& aRv);
 
   MOZ_CAN_RUN_SCRIPT void RemoveAllRanges(mozilla::ErrorResult& aRv);
+
+  void GetComposedRanges(
+      const Sequence<OwningNonNull<ShadowRoot>>& aShadowRoots,
+      nsTArray<RefPtr<StaticRange>>& aComposedRanges);
 
   /**
    * Whether Stringify should flush layout or not.
@@ -484,10 +621,6 @@ class Selection final : public nsSupportsWeakReference,
                             bool aAllowAdjacent,
                             nsTArray<RefPtr<nsRange>>& aReturn,
                             ErrorResult& aRv);
-
-  MOZ_CAN_RUN_SCRIPT void ScrollIntoView(int16_t aRegion, bool aIsSynchronous,
-                                         int16_t aVPercent, int16_t aHPercent,
-                                         ErrorResult& aRv);
 
   void SetColors(const nsAString& aForeColor, const nsAString& aBackColor,
                  const nsAString& aAltForeColor, const nsAString& aAltBackColor,
@@ -725,14 +858,6 @@ class Selection final : public nsSupportsWeakReference,
                                                          Document* aDocument,
                                                          ErrorResult&);
 
-  // This is helper method for GetPrimaryFrameForFocusNode.
-  // If aVisual is true, this returns caret frame.
-  // If false, this returns primary frame.
-  nsIFrame* GetPrimaryOrCaretFrameForNodeOffset(nsIContent* aContent,
-                                                uint32_t aOffset,
-                                                int32_t* aOffsetUsed,
-                                                bool aVisual) const;
-
   // Get the cached value for nsTextFrame::GetPointFromOffset.
   nsresult GetCachedFrameOffset(nsIFrame* aFrame, int32_t inOffset,
                                 nsPoint& aPoint);
@@ -756,6 +881,8 @@ class Selection final : public nsSupportsWeakReference,
   MOZ_CAN_RUN_SCRIPT void NotifySelectionListeners(bool aCalledByJS);
   MOZ_CAN_RUN_SCRIPT void NotifySelectionListeners();
 
+  bool ChangesDuringBatching() const { return mChangesDuringBatching; }
+
   friend struct AutoUserInitiated;
   struct MOZ_RAII AutoUserInitiated {
     explicit AutoUserInitiated(Selection& aSelectionRef)
@@ -778,7 +905,7 @@ class Selection final : public nsSupportsWeakReference,
 
     ScrollSelectionIntoViewEvent(Selection* aSelection, SelectionRegion aRegion,
                                  ScrollAxis aVertical, ScrollAxis aHorizontal,
-                                 int32_t aFlags)
+                                 ScrollFlags aFlags)
         : Runnable("dom::Selection::ScrollSelectionIntoViewEvent"),
           mSelection(aSelection),
           mRegion(aRegion),
@@ -794,7 +921,7 @@ class Selection final : public nsSupportsWeakReference,
     SelectionRegion mRegion;
     ScrollAxis mVerticalScroll;
     ScrollAxis mHorizontalScroll;
-    int32_t mFlags;
+    ScrollFlags mFlags;
   };
 
   /**
@@ -811,6 +938,12 @@ class Selection final : public nsSupportsWeakReference,
   nsresult SelectFramesOfInclusiveDescendantsOfContent(
       PostContentIterator& aPostOrderIter, nsIContent* aContent,
       bool aSelected) const;
+
+  /**
+   * https://dom.spec.whatwg.org/#concept-shadow-including-descendant
+   */
+  void SelectFramesOfShadowIncludingDescendantsOfContent(nsIContent* aContent,
+                                                         bool aSelected) const;
 
   nsresult SelectFrames(nsPresContext* aPresContext, AbstractRange& aRange,
                         bool aSelect) const;
@@ -841,9 +974,9 @@ class Selection final : public nsSupportsWeakReference,
 
     StyledRange* FindRangeData(AbstractRange* aRange);
 
-    using Elements = AutoTArray<StyledRange, 1>;
+    using StyledRangeArray = AutoTArray<StyledRange, 1>;
 
-    Elements::size_type Length() const;
+    StyledRangeArray::size_type Length() const;
 
     nsresult RemoveCollapsedRanges();
 
@@ -881,9 +1014,9 @@ class Selection final : public nsSupportsWeakReference,
                                    const nsINode* aEndNode, uint32_t aEndOffset,
                                    bool aAllowAdjacent,
                                    Maybe<size_t>& aStartIndex,
-                                   Maybe<size_t>& aEndIndex) const;
+                                   Maybe<size_t>& aEndIndex);
 
-    bool HasEqualRangeBoundariesAt(const nsRange& aRange,
+    bool HasEqualRangeBoundariesAt(const AbstractRange& aRange,
                                    size_t aRangeIndex) const;
 
     /**
@@ -896,6 +1029,12 @@ class Selection final : public nsSupportsWeakReference,
      */
     MOZ_CAN_RUN_SCRIPT nsresult
     MaybeAddRangeAndTruncateOverlaps(nsRange* aRange, Maybe<size_t>* aOutIndex);
+
+    /**
+     * Adds the range even if there are overlaps.
+     */
+    MOZ_CAN_RUN_SCRIPT nsresult
+    AddRangeAndIgnoreOverlaps(AbstractRange* aRange);
 
     /**
      * GetCommonEditingHost() returns common editing host of all
@@ -938,6 +1077,15 @@ class Selection final : public nsSupportsWeakReference,
 
     void UnregisterSelection();
 
+    // `mRanges` always needs to be sorted by the Range's start point.
+    // Especially when dealing with `StaticRange`s this is not guaranteed
+    // automatically. Therefore this method should be called before paint to
+    // ensure that any potential DOM mutations are incorporated in `mRanges`
+    // order. This method will also move invalid `StaticRange`s into
+    // `mInvalidStaticRanges` (and previously-invalid-now-valid-again
+    // `StaticRange`s back into `mRanges`).
+    void ReorderRangesIfNecessary();
+
     // These are the ranges inside this selection. They are kept sorted in order
     // of DOM start position.
     //
@@ -951,9 +1099,23 @@ class Selection final : public nsSupportsWeakReference,
     // If this proves to be a performance concern, then an interval tree may be
     // a possible solution, allowing the calculation of the overlap interval in
     // O(log n) time, though this would require rebalancing and other overhead.
-    Elements mRanges;
+    StyledRangeArray mRanges;
+
+    // With introduction of the custom highlight API, Selection must be able to
+    // hold `StaticRange`s as well. If they become invalid (eg. end is before
+    // start), they must be excluded from painting, but still kept.
+    // mRanges needs to contain valid ranges sorted correctly only. Therefore,
+    // invalid static ranges are being stored in this array, which is being kept
+    // up to date in `ReorderRangesIfNecessary()`.
+    StyledRangeArray mInvalidStaticRanges;
 
     Selection& mSelection;
+
+    // The Document's generation for which `mRanges` have been ordered.
+    int32_t mDocumentGeneration{0};
+    // This flag indicates that ranges may have changed. It is set to true in
+    // `Selection::NotifySelectionListeners().`
+    bool mRangesMightHaveChanged{false};
   };
 
   StyledRanges mStyledRanges{*this};
@@ -992,6 +1154,16 @@ class Selection final : public nsSupportsWeakReference,
    * true if AutoCopyListner::OnSelectionChange() should be called.
    */
   bool mNotifyAutoCopy;
+
+  /**
+   * Indicates that this selection has changed during a batch change and
+   * `NotifySelectionListener()` should be called after batching ends.
+   *
+   * See `nsFrameSelection::StartBatchChanges()` and `::EndBatchChanges()`.
+   *
+   * This flag is set and reset in `NotifySelectionListener()`.
+   */
+  bool mChangesDuringBatching = false;
 };
 
 // Stack-class to turn on/off selection batching.
@@ -1057,28 +1229,28 @@ class MOZ_RAII AutoHideSelectionChanges final {
 
 }  // namespace dom
 
-inline bool IsValidRawSelectionType(RawSelectionType aRawSelectionType) {
+constexpr bool IsValidRawSelectionType(RawSelectionType aRawSelectionType) {
   return aRawSelectionType >= nsISelectionController::SELECTION_NONE &&
-         aRawSelectionType <= nsISelectionController::SELECTION_URLSTRIKEOUT;
+         aRawSelectionType <= nsISelectionController::SELECTION_TARGET_TEXT;
 }
 
-inline SelectionType ToSelectionType(RawSelectionType aRawSelectionType) {
+constexpr SelectionType ToSelectionType(RawSelectionType aRawSelectionType) {
   if (!IsValidRawSelectionType(aRawSelectionType)) {
     return SelectionType::eInvalid;
   }
   return static_cast<SelectionType>(aRawSelectionType);
 }
 
-inline RawSelectionType ToRawSelectionType(SelectionType aSelectionType) {
+constexpr RawSelectionType ToRawSelectionType(SelectionType aSelectionType) {
   MOZ_ASSERT(aSelectionType != SelectionType::eInvalid);
   return static_cast<RawSelectionType>(aSelectionType);
 }
 
-inline RawSelectionType ToRawSelectionType(TextRangeType aTextRangeType) {
+constexpr RawSelectionType ToRawSelectionType(TextRangeType aTextRangeType) {
   return ToRawSelectionType(ToSelectionType(aTextRangeType));
 }
 
-inline SelectionTypeMask ToSelectionTypeMask(SelectionType aSelectionType) {
+constexpr SelectionTypeMask ToSelectionTypeMask(SelectionType aSelectionType) {
   MOZ_ASSERT(aSelectionType != SelectionType::eInvalid);
   return aSelectionType == SelectionType::eNone
              ? 0
@@ -1103,5 +1275,27 @@ inline std::ostream& operator<<(
 }
 
 }  // namespace mozilla
+
+inline nsresult nsISelectionController::ScrollSelectionIntoView(
+    mozilla::SelectionType aType, SelectionRegion aRegion,
+    const mozilla::ScrollAxis& aVertical = mozilla::ScrollAxis(),
+    const mozilla::ScrollAxis& aHorizontal = mozilla::ScrollAxis(),
+    mozilla::ScrollFlags aScrollFlags = mozilla::ScrollFlags::None,
+    mozilla::SelectionScrollMode aMode = mozilla::SelectionScrollMode::Async) {
+  RefPtr selection = GetSelection(mozilla::RawSelectionType(aType));
+  if (!selection) {
+    return NS_ERROR_FAILURE;
+  }
+  return selection->ScrollIntoView(aRegion, aVertical, aHorizontal,
+                                   aScrollFlags, aMode);
+}
+
+inline nsresult nsISelectionController::ScrollSelectionIntoView(
+    mozilla::SelectionType aType, SelectionRegion aRegion,
+    mozilla::SelectionScrollMode aMode) {
+  return ScrollSelectionIntoView(aType, aRegion, mozilla::ScrollAxis(),
+                                 mozilla::ScrollAxis(),
+                                 mozilla::ScrollFlags::None, aMode);
+}
 
 #endif  // mozilla_Selection_h__

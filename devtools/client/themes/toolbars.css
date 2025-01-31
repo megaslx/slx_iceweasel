@@ -45,6 +45,11 @@
   margin-inline-start: -3px; /* This needs to match .devtools-toolbar's padding */
 }
 
+.devtools-input-toolbar .devtools-button {
+  /* adjust outline offset so it's not clipped */
+  --theme-outline-offset: -2px;
+}
+
 /* Expected space around a separator:
  * -----------------------
  *            4
@@ -175,6 +180,10 @@ splitter.devtools-horizontal-splitter,
   padding-inline: 2px 10px !important;
   fill: var(--theme-icon-color);
   -moz-context-properties: fill;
+
+  &:hover {
+    fill: var(--theme-icon-hover-color);
+ }
 }
 
 .devtools-dropdown-button:dir(rtl) {

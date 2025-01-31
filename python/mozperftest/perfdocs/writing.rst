@@ -10,10 +10,11 @@ new ones):
 - **xpcshell** a classical xpcshell test, turned into a performance test
 - **browsertime** a browsertime script, which runs a full browser and controls
   it via a Selenium client.
+- **mochitest** a classical mochitest test, turned into a performance test
 
 In order to qualify as performance tests, both flavors require metadata.
 
-For our supported flavors that are both Javascript modules, those are
+For our supported flavors that are both JavaScript modules, those are
 provided in a `perfMetadata` mapping variable in the module, or in
 the `module.exports` variable when using Node.
 
@@ -27,13 +28,13 @@ This is the list of fields:
 - **options**: options used to run the test
 - **supportedBrowsers**: list of supported browsers (or "Any")
 - **supportedPlatforms**: list of supported platforms (or "Any")
-- **tags** a list of tags that describe the test
+- **tags**: a list of tags that describe the test
 
 Tests are registered using tests manifests and the **PERFTESTS_MANIFESTS**
 variable in `moz.build` files - it's good practice to name this file
-`perftest.ini`.
+`perftest.toml`.
 
-Example of such a file: https://searchfox.org/mozilla-central/source/testing/performance/perftest.ini
+Example of such a file: https://searchfox.org/mozilla-central/source/testing/performance/perftest.toml
 
 
 xpcshell
@@ -48,8 +49,93 @@ Here's an example of such a metrics call::
 
     # compute some speed metrics
     let speed = 12345;
-    info("perfMetrics", { speed });
+    info("perfMetrics", JSON.stringify({ speed }));
 
+
+Mochitest
+---------
+
+Similar to ``xpcshell`` tests, these are standard ``mochitest`` tests with some extra things:
+
+- the ``perfMetadata`` variable, as described in the previous section
+- calls to ``info("perfMetrics", ...)`` to send metrics to the ``perftest`` framework
+
+Note that the ``perfMetadata`` variable can exist in any ``<script>...</script>`` element in the Mochitest HTML test file. The ``perfMetadata`` variable also needs a couple additional settings in Mochitest tests. These are the ``manifest``, and ``manifest_flavor`` options::
+
+    var perfMetadata = {
+      owner: "Performance Team",
+      name: "Test test",
+      description: "N/A",
+      options: {
+        default: {
+          perfherder: true,
+          perfherder_metrics: [
+            { name: "Registration", unit: "ms" },
+          ],
+          manifest: "perftest.toml",
+          manifest_flavor: "plain",
+          extra_args: [
+            "headless",
+          ]
+        },
+      },
+    };
+
+The ``extra_args`` setting provides an area to provide custom Mochitest command-line arguments for this test.
+
+Here's an example of a call that will produce metrics::
+
+    # compute some speed metrics
+    let speed = 12345;
+    info("perfMetrics", JSON.stringify({ speed }));
+
+Existing Mochitest unit tests can be modified with these to be compatible with mozperftest, but note that some issues exist when doing this:
+
+- unittest issues with mochitest tests running on hardware
+- multiple configurations of a test running in a single manifest
+
+At the top of this document, you can find some information about the recommended approach for adding a new manifest dedicated to running performance tests.
+
+Locally, mozperftest uses ``./mach test`` to run your test. Always ensure that your test works in ``./mach test`` before attempting to run it through ``./mach perftest``. In CI, we use a custom "remote" run that runs Mochitest directly, skipping ``./mach test``.
+
+If everything is setup correctly, running a performance test locally will be as simple as this::
+
+    ./mach perftest <path/to/my/mochitest-test.html>
+
+
+Custom Script
+-------------
+
+Custom Script tests use a custom/adhoc script to execute a test. Currently, only shell scripts are supported through the ScriptShellRunner. In the future, other types of scripts may be supported through the addition of new test layers. These types of scripts support both mobile and desktop testing within the ``custom-script`` flavor.
+
+Custom Shell Scripts
+^^^^^^^^^^^^^^^^^^^^
+
+A shell script test must contain the following fields as comments somewhere in the code::
+
+  # Name: name-of-test
+  # Owner: Name/team that owns the test
+  # Description: Description of the test
+
+Optionally, it can also contain a line that starts with ``Options:`` to denote any default options. These options are similar to other test layers. For these custom script tests, a valid JSON string is expected in this field.
+
+These scripts have a `BROWSER_BINARY` defined for them which will point to the binary (or package name on mobile) that is being tested. By default, this is Firefox. If a different binary is required, ``--binary`` can be used to specify it, or ``--app`` if the application is known and can be found automatically (not guaranteed).
+
+Once everything is setup for your shell script test, you can run it with the following::
+
+  ./mach perftest <path/to/custom-script.sh>
+
+
+Alert
+-----
+
+This flavor/layer enables running all tests that produced a performance alert locally. It can either run the basic test without any options, or it can run the exact same command that was used to run the test in CI by passing the ``--alert-exact`` option. The ``--alert-tests`` option can also be used to specify which tests should be run from the alert.
+
+The following command can be used as a sample to run all the tests of a given alert number::
+
+  ./mach perftest <ALERT-NUMBER>
+
+Note that this layer has no tests available for it, and new tests should never make use of this layer.
 
 Browsertime
 -----------
@@ -83,7 +169,7 @@ A performance test implements at least one async function published in node's
   - **selenium.driver** - The instantiated version of the WebDriver driving the current version of the browser
 
 - **command** provides API to interact with the browser. It's a wrapper
-  around the selenium client `Full documentation here <https://www.sitespeed.io/documentation/sitespeed.io/scripting/#commands>`_
+  around the selenium client `Full documentation is available here <https://www.sitespeed.io/documentation/sitespeed.io/scripting/#commands>`_
 
 
 Below is an example of a test that visits the BBC homepage and clicks on a link.
@@ -124,7 +210,7 @@ Below is an example of a test that visits the BBC homepage and clicks on a link.
         test_name: "BBC",
         description: "Measures pageload performance when clicking on a link from the bbc.com",
         supportedBrowsers: "Any",
-        supportePlatforms: "Any",
+        supportedPlatforms: "Any",
     };
 
 

@@ -34,6 +34,7 @@
 #include "mozilla/MouseEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ProfilerLabels.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/webgpu/CanvasContext.h"
@@ -62,7 +63,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Canvas)
 namespace mozilla::dom {
 
 class RequestedFrameRefreshObserver : public nsARefreshObserver {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RequestedFrameRefreshObserver, override)
+  NS_INLINE_DECL_REFCOUNTING(RequestedFrameRefreshObserver, override)
 
  public:
   RequestedFrameRefreshObserver(HTMLCanvasElement* const aOwningElement,
@@ -534,6 +535,9 @@ HTMLCanvasElement::CreateContext(CanvasContextType aContextType) {
   // Note that the compositor backend will be LAYERS_NONE if there is no widget.
   RefPtr<nsICanvasRenderingContextInternal> ret =
       CreateContextHelper(aContextType, GetCompositorBackendType());
+  if (NS_WARN_IF(!ret)) {
+    return nullptr;
+  }
 
   // Add Observer for webgl canvas.
   if (aContextType == CanvasContextType::WebGL1 ||
@@ -568,8 +572,8 @@ nsresult HTMLCanvasElement::UpdateContext(
   return NS_OK;
 }
 
-nsIntSize HTMLCanvasElement::GetWidthHeight() {
-  nsIntSize size(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+CSSIntSize HTMLCanvasElement::GetWidthHeight() {
+  CSSIntSize size = kFallbackIntrinsicSizeInPixels;
   const nsAttrValue* value;
 
   if ((value = GetParsedAttr(nsGkAtoms::width)) &&
@@ -645,10 +649,12 @@ nsresult HTMLCanvasElement::DispatchPrintCallback(nsITimerCallback* aCallback) {
   RefPtr<nsRunnableMethod<HTMLCanvasElement>> renderEvent =
       NewRunnableMethod("dom::HTMLCanvasElement::CallPrintCallback", this,
                         &HTMLCanvasElement::CallPrintCallback);
-  return OwnerDoc()->Dispatch(TaskCategory::Other, renderEvent.forget());
+  return OwnerDoc()->Dispatch(renderEvent.forget());
 }
 
 void HTMLCanvasElement::CallPrintCallback() {
+  AUTO_PROFILER_MARKER_TEXT("HTMLCanvasElement Printing", LAYOUT_Printing, {},
+                            "HTMLCanvasElement::CallPrintCallback"_ns);
   if (!mPrintState) {
     // `mPrintState` might have been destroyed by cancelling the previous
     // printing (especially the canvas frame destruction) during processing
@@ -694,7 +700,7 @@ nsresult HTMLCanvasElement::CopyInnerTo(HTMLCanvasElement* aDest) {
     // We make sure that the canvas is not zero sized since that would cause
     // the DrawImage call below to return an error, which would cause printing
     // to fail.
-    nsIntSize size = GetWidthHeight();
+    CSSIntSize size = GetWidthHeight();
     if (size.height > 0 && size.width > 0) {
       nsCOMPtr<nsISupports> cxt;
       aDest->GetContext(u"2d"_ns, getter_AddRefs(cxt));
@@ -814,7 +820,6 @@ class CanvasCaptureTrackSource : public MediaStreamTrackSource {
 
   void Stop() override {
     if (!mCaptureStream) {
-      NS_ERROR("No stream");
       return;
     }
 
@@ -849,6 +854,20 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
   nsPIDOMWindowInner* window = OwnerDoc()->GetInnerWindow();
   if (!window) {
     aRv.Throw(NS_ERROR_FAILURE);
+    return nullptr;
+  }
+
+  // Check if we transferred the OffscreenCanvas to a DOM worker. This is not
+  // defined by the spec yet, so it is better to fail now than implement
+  // something not compliant:
+  // https://github.com/w3c/mediacapture-fromelement/issues/65
+  // https://github.com/w3c/mediacapture-extensions/pull/26
+  // https://github.com/web-platform-tests/wpt/issues/21102
+  if (mOffscreenDisplay &&
+      NS_WARN_IF(!mOffscreenDisplay->CanElementCaptureStream())) {
+    aRv.ThrowNotSupportedError(
+        "Capture stream not supported when OffscreenCanvas transferred to "
+        "worker");
     return nullptr;
   }
 
@@ -891,8 +910,24 @@ nsresult HTMLCanvasElement::ExtractData(JSContext* aCx,
   // If no permission, return all-white, opaque image data.
   bool usePlaceholder = !CanvasUtils::IsImageExtractionAllowed(
       OwnerDoc(), aCx, aSubjectPrincipal);
+
+  if (!usePlaceholder) {
+    auto size = GetWidthHeight();
+    CanvasContextType type = GetCurrentContextType();
+    CanvasFeatureUsage featureUsage = CanvasFeatureUsage::None;
+    if (type == CanvasContextType::Canvas2D) {
+      if (auto ctx =
+              static_cast<CanvasRenderingContext2D*>(GetCurrentContext())) {
+        featureUsage = ctx->FeatureUsage();
+      }
+    }
+
+    CanvasUsage usage(size, type, featureUsage);
+    OwnerDoc()->RecordCanvasUsage(usage);
+  }
+
   return ImageEncoder::ExtractData(aType, aOptions, GetSize(), usePlaceholder,
-                                   mCurrentContext, mCanvasRenderer, aStream);
+                                   mCurrentContext, mOffscreenDisplay, aStream);
 }
 
 nsresult HTMLCanvasElement::ToDataURLImpl(JSContext* aCx,
@@ -900,7 +935,7 @@ nsresult HTMLCanvasElement::ToDataURLImpl(JSContext* aCx,
                                           const nsAString& aMimeType,
                                           const JS::Value& aEncoderOptions,
                                           nsAString& aDataURL) {
-  nsIntSize size = GetWidthHeight();
+  CSSIntSize size = GetWidthHeight();
   if (size.height == 0 || size.width == 0) {
     aDataURL = u"data:,"_ns;
     return NS_OK;
@@ -942,6 +977,17 @@ nsresult HTMLCanvasElement::ToDataURLImpl(JSContext* aCx,
                                  aDataURL.Length());
 }
 
+UniquePtr<uint8_t[]> HTMLCanvasElement::GetImageBuffer(
+    int32_t* aOutFormat, gfx::IntSize* aOutImageSize) {
+  if (mCurrentContext) {
+    return mCurrentContext->GetImageBuffer(aOutFormat, aOutImageSize);
+  }
+  if (mOffscreenDisplay) {
+    return mOffscreenDisplay->GetImageBuffer(aOutFormat, aOutImageSize);
+  }
+  return nullptr;
+}
+
 void HTMLCanvasElement::ToBlob(JSContext* aCx, BlobCallback& aCallback,
                                const nsAString& aType,
                                JS::Handle<JS::Value> aParams,
@@ -956,18 +1002,16 @@ void HTMLCanvasElement::ToBlob(JSContext* aCx, BlobCallback& aCallback,
   nsCOMPtr<nsIGlobalObject> global = OwnerDoc()->GetScopeObject();
   MOZ_ASSERT(global);
 
-  nsIntSize elemSize = GetWidthHeight();
+  CSSIntSize elemSize = GetWidthHeight();
   if (elemSize.width == 0 || elemSize.height == 0) {
     // According to spec, blob should return null if either its horizontal
     // dimension or its vertical dimension is zero. See link below.
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-canvas-toblob
-    OwnerDoc()->Dispatch(
-        TaskCategory::Other,
-        NewRunnableMethod<Blob*, const char*>(
-            "dom::HTMLCanvasElement::ToBlob", &aCallback,
-            static_cast<void (BlobCallback::*)(Blob*, const char*)>(
-                &BlobCallback::Call),
-            nullptr, nullptr));
+    OwnerDoc()->Dispatch(NewRunnableMethod<Blob*, const char*>(
+        "dom::HTMLCanvasElement::ToBlob", &aCallback,
+        static_cast<void (BlobCallback::*)(Blob*, const char*)>(
+            &BlobCallback::Call),
+        nullptr, nullptr));
     return;
   }
 
@@ -995,22 +1039,19 @@ OffscreenCanvas* HTMLCanvasElement::TransferControlToOffscreen(
   }
 
   LayersBackend backend = LayersBackend::LAYERS_NONE;
-  TextureType textureType = TextureType::Unknown;
   nsIWidget* docWidget = nsContentUtils::WidgetForDocument(OwnerDoc());
   if (docWidget) {
     WindowRenderer* renderer = docWidget->GetWindowRenderer();
     if (renderer) {
       backend = renderer->GetCompositorBackendType();
-      textureType = TexTypeForWebgl(renderer->AsKnowsCompositor());
     }
   }
 
-  nsIntSize sz = GetWidthHeight();
+  CSSIntSize sz = GetWidthHeight();
   mOffscreenDisplay =
       MakeRefPtr<OffscreenCanvasDisplayHelper>(this, sz.width, sz.height);
-  mOffscreenCanvas =
-      new OffscreenCanvas(win->AsGlobal(), sz.width, sz.height, backend,
-                          textureType, do_AddRef(mOffscreenDisplay));
+  mOffscreenCanvas = new OffscreenCanvas(win->AsGlobal(), sz.width, sz.height,
+                                         backend, do_AddRef(mOffscreenDisplay));
   if (mWriteOnly) {
     mOffscreenCanvas->SetWriteOnly(mExpandedReader);
   }
@@ -1044,7 +1085,7 @@ already_AddRefed<nsISupports> HTMLCanvasElement::GetContext(
       aContextOptions.isObject() ? aContextOptions : JS::NullHandleValue, aRv);
 }
 
-nsIntSize HTMLCanvasElement::GetSize() { return GetWidthHeight(); }
+CSSIntSize HTMLCanvasElement::GetSize() { return GetWidthHeight(); }
 
 bool HTMLCanvasElement::IsWriteOnly() const { return mWriteOnly; }
 
@@ -1081,7 +1122,8 @@ void HTMLCanvasElement::SetWidth(uint32_t aWidth, ErrorResult& aRv) {
     return;
   }
 
-  SetUnsignedIntAttr(nsGkAtoms::width, aWidth, DEFAULT_CANVAS_WIDTH, aRv);
+  SetUnsignedIntAttr(nsGkAtoms::width, aWidth, kFallbackIntrinsicWidthInPixels,
+                     aRv);
 }
 
 void HTMLCanvasElement::SetHeight(uint32_t aHeight, ErrorResult& aRv) {
@@ -1092,7 +1134,29 @@ void HTMLCanvasElement::SetHeight(uint32_t aHeight, ErrorResult& aRv) {
     return;
   }
 
-  SetUnsignedIntAttr(nsGkAtoms::height, aHeight, DEFAULT_CANVAS_HEIGHT, aRv);
+  SetUnsignedIntAttr(nsGkAtoms::height, aHeight,
+                     kFallbackIntrinsicHeightInPixels, aRv);
+}
+
+void HTMLCanvasElement::SetSize(const nsIntSize& aSize, ErrorResult& aRv) {
+  if (mOffscreenCanvas) {
+    aRv.ThrowInvalidStateError(
+        "Cannot set width of placeholder canvas transferred to "
+        "OffscreenCanvas.");
+    return;
+  }
+
+  if (NS_WARN_IF(aSize.IsEmpty())) {
+    aRv.ThrowRangeError("Canvas size is empty, must be non-empty.");
+    return;
+  }
+
+  SetUnsignedIntAttr(nsGkAtoms::width, aSize.width,
+                     kFallbackIntrinsicWidthInPixels, aRv);
+  MOZ_ASSERT(!aRv.Failed());
+  SetUnsignedIntAttr(nsGkAtoms::height, aSize.height,
+                     kFallbackIntrinsicHeightInPixels, aRv);
+  MOZ_ASSERT(!aRv.Failed());
 }
 
 void HTMLCanvasElement::FlushOffscreenCanvas() {
@@ -1104,9 +1168,11 @@ void HTMLCanvasElement::FlushOffscreenCanvas() {
 void HTMLCanvasElement::InvalidateCanvasPlaceholder(uint32_t aWidth,
                                                     uint32_t aHeight) {
   ErrorResult rv;
-  SetUnsignedIntAttr(nsGkAtoms::width, aWidth, DEFAULT_CANVAS_WIDTH, rv);
+  SetUnsignedIntAttr(nsGkAtoms::width, aWidth, kFallbackIntrinsicWidthInPixels,
+                     rv);
   MOZ_ASSERT(!rv.Failed());
-  SetUnsignedIntAttr(nsGkAtoms::height, aHeight, DEFAULT_CANVAS_HEIGHT, rv);
+  SetUnsignedIntAttr(nsGkAtoms::height, aHeight,
+                     kFallbackIntrinsicHeightInPixels, rv);
   MOZ_ASSERT(!rv.Failed());
 }
 
@@ -1137,7 +1203,7 @@ void HTMLCanvasElement::InvalidateCanvasContent(const gfx::Rect* damageRect) {
     frame->SchedulePaint(nsIFrame::PAINT_COMPOSITE_ONLY);
   } else {
     if (damageRect) {
-      nsIntSize size = GetWidthHeight();
+      CSSIntSize size = GetWidthHeight();
       if (size.width != 0 && size.height != 0) {
         gfx::IntRect invalRect = gfx::IntRect::Truncate(*damageRect);
         frame->InvalidateLayer(DisplayItemType::TYPE_CANVAS, &invalRect);

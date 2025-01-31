@@ -1,4 +1,4 @@
-use crate::{encode_section, Encode, HeapType, Section, SectionId, ValType};
+use crate::{encode_section, Encode, HeapType, RefType, Section, SectionId, ValType};
 use std::borrow::Cow;
 
 /// An encoder for the code section.
@@ -14,7 +14,7 @@ use std::borrow::Cow;
 /// };
 ///
 /// let mut types = TypeSection::new();
-/// types.function(vec![], vec![ValType::I32]);
+/// types.ty().function(vec![], vec![ValType::I32]);
 ///
 /// let mut functions = FunctionSection::new();
 /// let type_index = 0;
@@ -83,11 +83,13 @@ impl CodeSection {
     /// into a new code section encoder:
     ///
     /// ```
+    /// # use wasmparser::{BinaryReader, CodeSectionReader};
     /// //                  id, size, # entries, entry
     /// let code_section = [10, 6,    1,         4, 0, 65, 0, 11];
     ///
     /// // Parse the code section.
-    /// let reader = wasmparser::CodeSectionReader::new(&code_section, 0).unwrap();
+    /// let reader = BinaryReader::new(&code_section, 0);
+    /// let reader = CodeSectionReader::new(reader).unwrap();
     /// let body = reader.into_iter().next().unwrap().unwrap();
     /// let body_range = body.range();
     ///
@@ -235,6 +237,45 @@ impl Function {
     pub fn byte_len(&self) -> usize {
         self.bytes.len()
     }
+
+    /// Unwraps and returns the raw byte encoding of this function.
+    ///
+    /// This encoding doesn't include the variable-width size field
+    /// that `encode` will write before the added bytes. As such, its
+    /// length will match the return value of [`byte_len`].
+    ///
+    /// # Use Case
+    ///
+    /// This raw byte form is suitable for later using with
+    /// [`CodeSection::raw`]. Note that it *differs* from what results
+    /// from [`Function::encode`] precisely due to the *lack* of the
+    /// length prefix; [`CodeSection::raw`] will use this. Using
+    /// [`Function::encode`] instead produces bytes that cannot be fed
+    /// into other wasm-encoder types without stripping off the length
+    /// prefix, which is awkward and error-prone.
+    ///
+    /// This method combined with [`CodeSection::raw`] may be useful
+    /// together if one wants to save the result of function encoding
+    /// and use it later: for example, caching the result of some code
+    /// generation process.
+    ///
+    /// For example:
+    ///
+    /// ```
+    /// # use wasm_encoder::{CodeSection, Function, Instruction};
+    /// let mut f = Function::new([]);
+    /// f.instruction(&Instruction::End);
+    /// let bytes = f.into_raw_body();
+    /// // (save `bytes` somewhere for later use)
+    /// let mut code = CodeSection::new();
+    /// code.raw(&bytes[..]);
+    ///
+    /// assert_eq!(2, bytes.len());  // Locals count, then `end`
+    /// assert_eq!(3, code.byte_len()); // Function length byte, function body
+    /// ```
+    pub fn into_raw_body(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 impl Encode for Function {
@@ -274,6 +315,34 @@ impl Encode for MemArg {
     }
 }
 
+/// The memory ordering for atomic instructions.
+///
+/// For an in-depth explanation of memory orderings, see the C++ documentation
+/// for [`memory_order`] or the Rust documentation for [`atomic::Ordering`].
+///
+/// [`memory_order`]: https://en.cppreference.com/w/cpp/atomic/memory_order
+/// [`atomic::Ordering`]: https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html
+#[derive(Clone, Copy, Debug)]
+pub enum Ordering {
+    /// For a load, it acquires; this orders all operations before the last
+    /// "releasing" store. For a store, it releases; this orders all operations
+    /// before it at the next "acquiring" load.
+    AcqRel,
+    /// Like `AcqRel` but all threads see all sequentially consistent operations
+    /// in the same order.
+    SeqCst,
+}
+
+impl Encode for Ordering {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let flag: u8 = match self {
+            Ordering::SeqCst => 0,
+            Ordering::AcqRel => 1,
+        };
+        sink.push(flag);
+    }
+}
+
 /// Describe an unchecked SIMD lane index.
 pub type Lane = u8;
 
@@ -310,10 +379,6 @@ pub enum Instruction<'a> {
     Loop(BlockType),
     If(BlockType),
     Else,
-    Try(BlockType),
-    Delegate(u32),
-    Catch(u32),
-    CatchAll,
     End,
     Br(u32),
     BrIf(u32),
@@ -323,11 +388,25 @@ pub enum Instruction<'a> {
     Return,
     Call(u32),
     CallRef(u32),
-    CallIndirect { ty: u32, table: u32 },
+    CallIndirect {
+        type_index: u32,
+        table_index: u32,
+    },
     ReturnCallRef(u32),
     ReturnCall(u32),
-    ReturnCallIndirect { ty: u32, table: u32 },
+    ReturnCallIndirect {
+        type_index: u32,
+        table_index: u32,
+    },
+    TryTable(BlockType, Cow<'a, [Catch]>),
     Throw(u32),
+    ThrowRef,
+
+    // Deprecated exception-handling instructions
+    Try(BlockType),
+    Delegate(u32),
+    Catch(u32),
+    CatchAll,
     Rethrow(u32),
 
     // Parametric instructions.
@@ -367,9 +446,15 @@ pub enum Instruction<'a> {
     I64Store32(MemArg),
     MemorySize(u32),
     MemoryGrow(u32),
-    MemoryInit { mem: u32, data_index: u32 },
+    MemoryInit {
+        mem: u32,
+        data_index: u32,
+    },
     DataDrop(u32),
-    MemoryCopy { src_mem: u32, dst_mem: u32 },
+    MemoryCopy {
+        src_mem: u32,
+        dst_mem: u32,
+    },
     MemoryFill(u32),
     MemoryDiscard(u32),
 
@@ -520,22 +605,97 @@ pub enum Instruction<'a> {
     RefNull(HeapType),
     RefIsNull,
     RefFunc(u32),
+    RefEq,
     RefAsNonNull,
 
     // GC types instructions.
-    I31New,
+    StructNew(u32),
+    StructNewDefault(u32),
+    StructGet {
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructGetS {
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructGetU {
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructSet {
+        struct_type_index: u32,
+        field_index: u32,
+    },
+
+    ArrayNew(u32),
+    ArrayNewDefault(u32),
+    ArrayNewFixed {
+        array_type_index: u32,
+        array_size: u32,
+    },
+    ArrayNewData {
+        array_type_index: u32,
+        array_data_index: u32,
+    },
+    ArrayNewElem {
+        array_type_index: u32,
+        array_elem_index: u32,
+    },
+    ArrayGet(u32),
+    ArrayGetS(u32),
+    ArrayGetU(u32),
+    ArraySet(u32),
+    ArrayLen,
+    ArrayFill(u32),
+    ArrayCopy {
+        array_type_index_dst: u32,
+        array_type_index_src: u32,
+    },
+    ArrayInitData {
+        array_type_index: u32,
+        array_data_index: u32,
+    },
+    ArrayInitElem {
+        array_type_index: u32,
+        array_elem_index: u32,
+    },
+    RefTestNonNull(HeapType),
+    RefTestNullable(HeapType),
+    RefCastNonNull(HeapType),
+    RefCastNullable(HeapType),
+    BrOnCast {
+        relative_depth: u32,
+        from_ref_type: RefType,
+        to_ref_type: RefType,
+    },
+    BrOnCastFail {
+        relative_depth: u32,
+        from_ref_type: RefType,
+        to_ref_type: RefType,
+    },
+    AnyConvertExtern,
+    ExternConvertAny,
+
+    RefI31,
     I31GetS,
     I31GetU,
 
     // Bulk memory instructions.
-    TableInit { elem_index: u32, table: u32 },
+    TableInit {
+        elem_index: u32,
+        table: u32,
+    },
     ElemDrop(u32),
     TableFill(u32),
     TableSet(u32),
     TableGet(u32),
     TableGrow(u32),
     TableSize(u32),
-    TableCopy { src_table: u32, dst_table: u32 },
+    TableCopy {
+        src_table: u32,
+        dst_table: u32,
+    },
 
     // SIMD instructions.
     V128Load(MemArg),
@@ -552,14 +712,38 @@ pub enum Instruction<'a> {
     V128Load32Zero(MemArg),
     V128Load64Zero(MemArg),
     V128Store(MemArg),
-    V128Load8Lane { memarg: MemArg, lane: Lane },
-    V128Load16Lane { memarg: MemArg, lane: Lane },
-    V128Load32Lane { memarg: MemArg, lane: Lane },
-    V128Load64Lane { memarg: MemArg, lane: Lane },
-    V128Store8Lane { memarg: MemArg, lane: Lane },
-    V128Store16Lane { memarg: MemArg, lane: Lane },
-    V128Store32Lane { memarg: MemArg, lane: Lane },
-    V128Store64Lane { memarg: MemArg, lane: Lane },
+    V128Load8Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Load16Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Load32Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Load64Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Store8Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Store16Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Store32Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
+    V128Store64Lane {
+        memarg: MemArg,
+        lane: Lane,
+    },
     V128Const(i128),
     I8x16Shuffle([Lane; 16]),
     I8x16ExtractLaneS(Lane),
@@ -865,6 +1049,186 @@ pub enum Instruction<'a> {
     I64AtomicRmw8CmpxchgU(MemArg),
     I64AtomicRmw16CmpxchgU(MemArg),
     I64AtomicRmw32CmpxchgU(MemArg),
+
+    // More atomic instructions (the shared-everything-threads proposal)
+    GlobalAtomicGet {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicSet {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwAdd {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwSub {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwAnd {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwOr {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwXor {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwXchg {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwCmpxchg {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    TableAtomicGet {
+        ordering: Ordering,
+        table_index: u32,
+    },
+    TableAtomicSet {
+        ordering: Ordering,
+        table_index: u32,
+    },
+    TableAtomicRmwXchg {
+        ordering: Ordering,
+        table_index: u32,
+    },
+    TableAtomicRmwCmpxchg {
+        ordering: Ordering,
+        table_index: u32,
+    },
+    StructAtomicGet {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicGetS {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicGetU {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicSet {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwAdd {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwSub {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwAnd {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwOr {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwXor {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwXchg {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    StructAtomicRmwCmpxchg {
+        ordering: Ordering,
+        struct_type_index: u32,
+        field_index: u32,
+    },
+    ArrayAtomicGet {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicGetS {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicGetU {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicSet {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwAdd {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwSub {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwAnd {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwOr {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwXor {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwXchg {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    ArrayAtomicRmwCmpxchg {
+        ordering: Ordering,
+        array_type_index: u32,
+    },
+    RefI31Shared,
+    // Stack switching
+    ContNew(u32),
+    ContBind {
+        argument_index: u32,
+        result_index: u32,
+    },
+    Suspend(u32),
+    Resume {
+        cont_type_index: u32,
+        resume_table: Cow<'a, [Handle]>,
+    },
+    ResumeThrow {
+        cont_type_index: u32,
+        tag_index: u32,
+        resume_table: Cow<'a, [Handle]>,
+    },
+    Switch {
+        cont_type_index: u32,
+        tag_index: u32,
+    },
+
+    // Wide Arithmetic
+    I64Add128,
+    I64Sub128,
+    I64MulWideS,
+    I64MulWideU,
 }
 
 impl Encode for Instruction<'_> {
@@ -902,6 +1266,9 @@ impl Encode for Instruction<'_> {
                 sink.push(0x09);
                 l.encode(sink);
             }
+            Instruction::ThrowRef => {
+                sink.push(0x0A);
+            }
             Instruction::End => sink.push(0x0B),
             Instruction::Br(l) => {
                 sink.push(0x0C);
@@ -917,7 +1284,7 @@ impl Encode for Instruction<'_> {
                 l.encode(sink);
             }
             Instruction::BrOnNull(l) => {
-                sink.push(0xD4);
+                sink.push(0xD5);
                 l.encode(sink);
             }
             Instruction::BrOnNonNull(l) => {
@@ -933,10 +1300,13 @@ impl Encode for Instruction<'_> {
                 sink.push(0x14);
                 ty.encode(sink);
             }
-            Instruction::CallIndirect { ty, table } => {
+            Instruction::CallIndirect {
+                type_index,
+                table_index,
+            } => {
                 sink.push(0x11);
-                ty.encode(sink);
-                table.encode(sink);
+                type_index.encode(sink);
+                table_index.encode(sink);
             }
             Instruction::ReturnCallRef(ty) => {
                 sink.push(0x15);
@@ -947,10 +1317,13 @@ impl Encode for Instruction<'_> {
                 sink.push(0x12);
                 f.encode(sink);
             }
-            Instruction::ReturnCallIndirect { ty, table } => {
+            Instruction::ReturnCallIndirect {
+                type_index,
+                table_index,
+            } => {
                 sink.push(0x13);
-                ty.encode(sink);
-                table.encode(sink);
+                type_index.encode(sink);
+                table_index.encode(sink);
             }
             Instruction::Delegate(l) => {
                 sink.push(0x18);
@@ -966,6 +1339,12 @@ impl Encode for Instruction<'_> {
             Instruction::TypedSelect(ty) => {
                 sink.push(0x1c);
                 [ty].encode(sink);
+            }
+
+            Instruction::TryTable(ty, ref catches) => {
+                sink.push(0x1f);
+                ty.encode(sink);
+                catches.encode(sink);
             }
 
             // Variable instructions.
@@ -1318,20 +1697,216 @@ impl Encode for Instruction<'_> {
                 sink.push(0xd2);
                 f.encode(sink);
             }
-            Instruction::RefAsNonNull => sink.push(0xD3),
+            Instruction::RefEq => sink.push(0xd3),
+            Instruction::RefAsNonNull => sink.push(0xd4),
 
             // GC instructions.
-            Instruction::I31New => {
+            Instruction::StructNew(type_index) => {
                 sink.push(0xfb);
-                sink.push(0x20)
+                sink.push(0x00);
+                type_index.encode(sink);
+            }
+            Instruction::StructNewDefault(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x01);
+                type_index.encode(sink);
+            }
+            Instruction::StructGet {
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x02);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructGetS {
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x03);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructGetU {
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x04);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructSet {
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x05);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::ArrayNew(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x06);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayNewDefault(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x07);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayNewFixed {
+                array_type_index,
+                array_size,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x08);
+                array_type_index.encode(sink);
+                array_size.encode(sink);
+            }
+            Instruction::ArrayNewData {
+                array_type_index,
+                array_data_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x09);
+                array_type_index.encode(sink);
+                array_data_index.encode(sink);
+            }
+            Instruction::ArrayNewElem {
+                array_type_index,
+                array_elem_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x0a);
+                array_type_index.encode(sink);
+                array_elem_index.encode(sink);
+            }
+            Instruction::ArrayGet(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x0b);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayGetS(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x0c);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayGetU(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x0d);
+                type_index.encode(sink);
+            }
+            Instruction::ArraySet(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x0e);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayLen => {
+                sink.push(0xfb);
+                sink.push(0x0f);
+            }
+            Instruction::ArrayFill(type_index) => {
+                sink.push(0xfb);
+                sink.push(0x10);
+                type_index.encode(sink);
+            }
+            Instruction::ArrayCopy {
+                array_type_index_dst,
+                array_type_index_src,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x11);
+                array_type_index_dst.encode(sink);
+                array_type_index_src.encode(sink);
+            }
+            Instruction::ArrayInitData {
+                array_type_index,
+                array_data_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x12);
+                array_type_index.encode(sink);
+                array_data_index.encode(sink);
+            }
+            Instruction::ArrayInitElem {
+                array_type_index,
+                array_elem_index,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x13);
+                array_type_index.encode(sink);
+                array_elem_index.encode(sink);
+            }
+            Instruction::RefTestNonNull(heap_type) => {
+                sink.push(0xfb);
+                sink.push(0x14);
+                heap_type.encode(sink);
+            }
+            Instruction::RefTestNullable(heap_type) => {
+                sink.push(0xfb);
+                sink.push(0x15);
+                heap_type.encode(sink);
+            }
+            Instruction::RefCastNonNull(heap_type) => {
+                sink.push(0xfb);
+                sink.push(0x16);
+                heap_type.encode(sink);
+            }
+            Instruction::RefCastNullable(heap_type) => {
+                sink.push(0xfb);
+                sink.push(0x17);
+                heap_type.encode(sink);
+            }
+            Instruction::BrOnCast {
+                relative_depth,
+                from_ref_type,
+                to_ref_type,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x18);
+                let cast_flags =
+                    (from_ref_type.nullable as u8) | ((to_ref_type.nullable as u8) << 1);
+                sink.push(cast_flags);
+                relative_depth.encode(sink);
+                from_ref_type.heap_type.encode(sink);
+                to_ref_type.heap_type.encode(sink);
+            }
+            Instruction::BrOnCastFail {
+                relative_depth,
+                from_ref_type,
+                to_ref_type,
+            } => {
+                sink.push(0xfb);
+                sink.push(0x19);
+                let cast_flags =
+                    (from_ref_type.nullable as u8) | ((to_ref_type.nullable as u8) << 1);
+                sink.push(cast_flags);
+                relative_depth.encode(sink);
+                from_ref_type.heap_type.encode(sink);
+                to_ref_type.heap_type.encode(sink);
+            }
+            Instruction::AnyConvertExtern => {
+                sink.push(0xfb);
+                sink.push(0x1a);
+            }
+            Instruction::ExternConvertAny => {
+                sink.push(0xfb);
+                sink.push(0x1b);
+            }
+            Instruction::RefI31 => {
+                sink.push(0xfb);
+                sink.push(0x1c);
             }
             Instruction::I31GetS => {
                 sink.push(0xfb);
-                sink.push(0x21)
+                sink.push(0x1d);
             }
             Instruction::I31GetU => {
                 sink.push(0xfb);
-                sink.push(0x22)
+                sink.push(0x1e);
             }
 
             // Bulk memory instructions.
@@ -2467,7 +3042,7 @@ impl Encode for Instruction<'_> {
                 0x113u32.encode(sink);
             }
 
-            // Atmoic instructions from the thread proposal
+            // Atomic instructions from the thread proposal
             Instruction::MemoryAtomicNotify(memarg) => {
                 sink.push(0xFE);
                 sink.push(0x00);
@@ -2803,6 +3378,464 @@ impl Encode for Instruction<'_> {
                 sink.push(0x4E);
                 memarg.encode(sink);
             }
+
+            // Atomic instructions from the shared-everything-threads proposal
+            Instruction::GlobalAtomicGet {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x4F);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicSet {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x50);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwAdd {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x51);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwSub {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x52);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwAnd {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x53);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwOr {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x54);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwXor {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x55);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwXchg {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x56);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwCmpxchg {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x57);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::TableAtomicGet {
+                ordering,
+                table_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x58);
+                ordering.encode(sink);
+                table_index.encode(sink);
+            }
+            Instruction::TableAtomicSet {
+                ordering,
+                table_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x59);
+                ordering.encode(sink);
+                table_index.encode(sink);
+            }
+            Instruction::TableAtomicRmwXchg {
+                ordering,
+                table_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5A);
+                ordering.encode(sink);
+                table_index.encode(sink);
+            }
+            Instruction::TableAtomicRmwCmpxchg {
+                ordering,
+                table_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5B);
+                ordering.encode(sink);
+                table_index.encode(sink);
+            }
+            Instruction::StructAtomicGet {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5C);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicGetS {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5D);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicGetU {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5E);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicSet {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x5F);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwAdd {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x60);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwSub {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x61);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwAnd {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x62);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwOr {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x63);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwXor {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x64);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwXchg {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x65);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::StructAtomicRmwCmpxchg {
+                ordering,
+                struct_type_index,
+                field_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x66);
+                ordering.encode(sink);
+                struct_type_index.encode(sink);
+                field_index.encode(sink);
+            }
+            Instruction::ArrayAtomicGet {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x67);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicGetS {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x68);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicGetU {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x69);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicSet {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6A);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwAdd {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6B);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwSub {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6C);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwAnd {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6D);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwOr {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6E);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwXor {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x6F);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwXchg {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x70);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::ArrayAtomicRmwCmpxchg {
+                ordering,
+                array_type_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x71);
+                ordering.encode(sink);
+                array_type_index.encode(sink);
+            }
+            Instruction::RefI31Shared => {
+                sink.push(0xFE);
+                sink.push(0x72);
+            }
+            Instruction::ContNew(type_index) => {
+                sink.push(0xE0);
+                type_index.encode(sink);
+            }
+            Instruction::ContBind {
+                argument_index,
+                result_index,
+            } => {
+                sink.push(0xE1);
+                argument_index.encode(sink);
+                result_index.encode(sink);
+            }
+            Instruction::Suspend(tag_index) => {
+                sink.push(0xE2);
+                tag_index.encode(sink);
+            }
+            Instruction::Resume {
+                cont_type_index,
+                ref resume_table,
+            } => {
+                sink.push(0xE3);
+                cont_type_index.encode(sink);
+                resume_table.encode(sink);
+            }
+            Instruction::ResumeThrow {
+                cont_type_index,
+                tag_index,
+                ref resume_table,
+            } => {
+                sink.push(0xE4);
+                cont_type_index.encode(sink);
+                tag_index.encode(sink);
+                resume_table.encode(sink);
+            }
+            Instruction::Switch {
+                cont_type_index,
+                tag_index,
+            } => {
+                sink.push(0xE5);
+                cont_type_index.encode(sink);
+                tag_index.encode(sink);
+            }
+            Instruction::I64Add128 => {
+                sink.push(0xFC);
+                19u32.encode(sink);
+            }
+            Instruction::I64Sub128 => {
+                sink.push(0xFC);
+                20u32.encode(sink);
+            }
+            Instruction::I64MulWideS => {
+                sink.push(0xFC);
+                21u32.encode(sink);
+            }
+            Instruction::I64MulWideU => {
+                sink.push(0xFC);
+                22u32.encode(sink);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[allow(missing_docs)]
+pub enum Catch {
+    One { tag: u32, label: u32 },
+    OneRef { tag: u32, label: u32 },
+    All { label: u32 },
+    AllRef { label: u32 },
+}
+
+impl Encode for Catch {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        match self {
+            Catch::One { tag, label } => {
+                sink.push(0x00);
+                tag.encode(sink);
+                label.encode(sink);
+            }
+            Catch::OneRef { tag, label } => {
+                sink.push(0x01);
+                tag.encode(sink);
+                label.encode(sink);
+            }
+            Catch::All { label } => {
+                sink.push(0x02);
+                label.encode(sink);
+            }
+            Catch::AllRef { label } => {
+                sink.push(0x03);
+                label.encode(sink);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[allow(missing_docs)]
+pub enum Handle {
+    OnLabel { tag: u32, label: u32 },
+    OnSwitch { tag: u32 },
+}
+
+impl Encode for Handle {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        match self {
+            Handle::OnLabel { tag, label } => {
+                sink.push(0x00);
+                tag.encode(sink);
+                label.encode(sink);
+            }
+            Handle::OnSwitch { tag } => {
+                sink.push(0x01);
+                tag.encode(sink);
+            }
         }
     }
 }
@@ -2810,7 +3843,7 @@ impl Encode for Instruction<'_> {
 /// A constant expression.
 ///
 /// Usable in contexts such as offsets or initializers.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ConstExpr {
     bytes: Vec<u8>,
 }
@@ -2832,6 +3865,11 @@ impl ConstExpr {
         let mut bytes = vec![];
         insn.encode(&mut bytes);
         Self { bytes }
+    }
+
+    fn with_insn(mut self, insn: Instruction) -> Self {
+        insn.encode(&mut self.bytes);
+        self
     }
 
     /// Create a constant expression containing a single `global.get` instruction.
@@ -2873,6 +3911,90 @@ impl ConstExpr {
     pub fn v128_const(value: i128) -> Self {
         Self::new_insn(Instruction::V128Const(value))
     }
+
+    /// Add a `global.get` instruction to this constant expression.
+    pub fn with_global_get(self, index: u32) -> Self {
+        self.with_insn(Instruction::GlobalGet(index))
+    }
+
+    /// Add a `ref.null` instruction to this constant expression.
+    pub fn with_ref_null(self, ty: HeapType) -> Self {
+        self.with_insn(Instruction::RefNull(ty))
+    }
+
+    /// Add a `ref.func` instruction to this constant expression.
+    pub fn with_ref_func(self, func: u32) -> Self {
+        self.with_insn(Instruction::RefFunc(func))
+    }
+
+    /// Add an `i32.const` instruction to this constant expression.
+    pub fn with_i32_const(self, value: i32) -> Self {
+        self.with_insn(Instruction::I32Const(value))
+    }
+
+    /// Add an `i64.const` instruction to this constant expression.
+    pub fn with_i64_const(self, value: i64) -> Self {
+        self.with_insn(Instruction::I64Const(value))
+    }
+
+    /// Add a `f32.const` instruction to this constant expression.
+    pub fn with_f32_const(self, value: f32) -> Self {
+        self.with_insn(Instruction::F32Const(value))
+    }
+
+    /// Add a `f64.const` instruction to this constant expression.
+    pub fn with_f64_const(self, value: f64) -> Self {
+        self.with_insn(Instruction::F64Const(value))
+    }
+
+    /// Add a `v128.const` instruction to this constant expression.
+    pub fn with_v128_const(self, value: i128) -> Self {
+        self.with_insn(Instruction::V128Const(value))
+    }
+
+    /// Add an `i32.add` instruction to this constant expression.
+    pub fn with_i32_add(self) -> Self {
+        self.with_insn(Instruction::I32Add)
+    }
+
+    /// Add an `i32.sub` instruction to this constant expression.
+    pub fn with_i32_sub(self) -> Self {
+        self.with_insn(Instruction::I32Sub)
+    }
+
+    /// Add an `i32.mul` instruction to this constant expression.
+    pub fn with_i32_mul(self) -> Self {
+        self.with_insn(Instruction::I32Mul)
+    }
+
+    /// Add an `i64.add` instruction to this constant expression.
+    pub fn with_i64_add(self) -> Self {
+        self.with_insn(Instruction::I64Add)
+    }
+
+    /// Add an `i64.sub` instruction to this constant expression.
+    pub fn with_i64_sub(self) -> Self {
+        self.with_insn(Instruction::I64Sub)
+    }
+
+    /// Add an `i64.mul` instruction to this constant expression.
+    pub fn with_i64_mul(self) -> Self {
+        self.with_insn(Instruction::I64Mul)
+    }
+
+    /// Returns the function, if any, referenced by this global.
+    pub fn get_ref_func(&self) -> Option<u32> {
+        let prefix = *self.bytes.get(0)?;
+        // 0xd2 == `ref.func` opcode, and if that's found then load the leb
+        // corresponding to the function index.
+        if prefix != 0xd2 {
+            return None;
+        }
+        leb128::read::unsigned(&mut &self.bytes[1..])
+            .ok()?
+            .try_into()
+            .ok()
+    }
 }
 
 impl Encode for ConstExpr {
@@ -2909,5 +4031,24 @@ mod tests {
         ]);
 
         assert_eq!(f1.bytes, f2.bytes)
+    }
+
+    #[test]
+    fn func_raw_bytes() {
+        use super::*;
+
+        let mut f = Function::new([(1, ValType::I32), (1, ValType::F32)]);
+        f.instruction(&Instruction::End);
+        let mut code_from_func = CodeSection::new();
+        code_from_func.function(&f);
+        let bytes = f.into_raw_body();
+        let mut code_from_raw = CodeSection::new();
+        code_from_raw.raw(&bytes[..]);
+
+        let mut c1 = vec![];
+        code_from_func.encode(&mut c1);
+        let mut c2 = vec![];
+        code_from_raw.encode(&mut c2);
+        assert_eq!(c1, c2);
     }
 }

@@ -116,7 +116,7 @@ static const char* kBaseFonts[] = {
   "Muna",
   "Myanmar MN",
   "Myanmar Sangam MN",
-  "Nadeem Regular",
+  "Nadeem",
   "New Peninim MT",
   "Noteworthy",
   "Noto Nastaliq Urdu",
@@ -292,4 +292,8 @@ static const char* kBaseFonts[] = {
   "Wingdings 3",
   "Zapf Dingbats",
   "Zapfino",
+};
+
+static const char* kBaseFonts_13_Higher[] = {
+  "Stix Two Math",
 };

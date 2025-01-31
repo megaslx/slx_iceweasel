@@ -622,7 +622,7 @@ HashCompleterRequest.prototype = {
       "@mozilla.org/io/string-input-stream;1"
     ].createInstance(Ci.nsIStringInputStream);
 
-    inputStream.setData(aBody, aBody.length);
+    inputStream.setByteStringData(aBody);
 
     let uploadChannel = this._channel.QueryInterface(Ci.nsIUploadChannel);
     uploadChannel.setUploadStream(inputStream, "text/plain", -1);
@@ -858,7 +858,7 @@ HashCompleterRequest.prototype = {
     this._response += sis.readBytes(aCount);
   },
 
-  onStartRequest: function HCR_onStartRequest(aRequest) {
+  onStartRequest: function HCR_onStartRequest() {
     // At this point no data is available for us and we have no reason to
     // terminate the connection, so we do nothing until |onStopRequest|.
     this._completer._nextGethashTimeMs[this.gethashUrl] = 0;
@@ -945,7 +945,7 @@ HashCompleterRequest.prototype = {
     }
   },
 
-  observe: function HCR_observe(aSubject, aTopic, aData) {
+  observe: function HCR_observe(aSubject, aTopic) {
     if (aTopic == "quit-application") {
       this._shuttingDown = true;
       if (this._channel) {

@@ -14,10 +14,21 @@ edition = "2021"
 name = "sync-guid"
 version = "0.1.0"
 authors = ["Thom Chiovoloni <tchiovoloni@mozilla.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+readme = false
 license = "MPL-2.0"
 
+[lib]
+name = "sync_guid"
+path = "src/lib.rs"
+
 [dependencies.base64]
-version = "0.13"
+version = "0.21"
 optional = true
 
 [dependencies.rand]
@@ -25,7 +36,7 @@ version = "0.8"
 optional = true
 
 [dependencies.rusqlite]
-version = "0.29.0"
+version = "0.31.0"
 features = ["bundled"]
 optional = true
 

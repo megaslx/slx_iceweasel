@@ -45,12 +45,10 @@ class TempFile(object):
 
 
 class TPSTestRunner(object):
-
     extra_env = {
         "MOZ_CRASHREPORTER_DISABLE": "1",
         "GNOME_DISABLE_CRASH_DIALOG": "1",
         "XRE_NO_WINDOWS_CRASH_DIALOG": "1",
-        "MOZ_NO_REMOTE": "1",
         "XPCOM_DEBUG_BREAK": "warn",
     }
 
@@ -425,7 +423,6 @@ class TPSTestRunner(object):
                 traceback.print_exc()
         else:
             try:
-
                 self.writeToResultFile(self.postdata)
             except Exception:
                 traceback.print_exc()
@@ -463,7 +460,7 @@ class TPSTestRunner(object):
             f.close()
             testfiles = json.loads(jsondata)
             testlist = []
-            for (filename, meta) in testfiles["tests"].items():
+            for filename, meta in testfiles["tests"].items():
                 skip_reason = meta.get("disabled")
                 if skip_reason:
                     print("Skipping test {} - {}".format(filename, skip_reason))

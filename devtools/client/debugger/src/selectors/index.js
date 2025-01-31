@@ -18,7 +18,6 @@ export { isLineInScope } from "./isLineInScope";
 export { isSelectedFrameVisible } from "./isSelectedFrameVisible";
 export * from "./pause";
 export * from "./pending-breakpoints";
-export * from "./project-text-search";
 export * from "./quick-open";
 export * from "./source-actors";
 export * from "./source-blackbox";
@@ -27,6 +26,7 @@ export * from "./sources-tree";
 export * from "./sources";
 export * from "./tabs";
 export * from "./threads";
+export * from "./tracer";
 export * from "./ui";
 export {
   getVisibleBreakpoints,
@@ -34,7 +34,7 @@ export {
 } from "./visibleBreakpoints";
 export * from "./visibleColumnBreakpoints";
 
-import { objectInspector } from "devtools/client/shared/components/reps/index";
+import * as objectInspector from "resource://devtools/client/shared/components/object-inspector/index.js";
 
 const { reducer } = objectInspector;
 

@@ -21,15 +21,18 @@
 #include "mozilla/NotNull.h"
 #include "mozilla/PerfStats.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/SharedSubResourceCache.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/Vector.h"
+#include "mozilla/dom/CacheExpirationTime.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/SRICheck.h"
 #include "mozilla/dom/ScriptDecoding.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsDebug.h"
+#include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsICacheInfoChannel.h"
 #include "nsIChannel.h"
 #include "nsIHttpChannel.h"
@@ -93,7 +96,7 @@ nsresult ScriptDecoder::DecodeRawDataHelper(
   MOZ_ASSERT(haveRead <= capacity.value(),
              "mDecoder produced more data than expected");
   MOZ_ALWAYS_TRUE(scriptText.resize(haveRead));
-  aRequest->mScriptTextLength = scriptText.length();
+  aRequest->SetReceivedScriptTextLength(scriptText.length());
 
   return NS_OK;
 }
@@ -123,7 +126,17 @@ ScriptLoadHandler::ScriptLoadHandler(
 
 ScriptLoadHandler::~ScriptLoadHandler() = default;
 
-NS_IMPL_ISUPPORTS(ScriptLoadHandler, nsIIncrementalStreamLoaderObserver)
+NS_IMPL_ISUPPORTS(ScriptLoadHandler, nsIIncrementalStreamLoaderObserver,
+                  nsIChannelEventSink, nsIInterfaceRequestor)
+
+NS_IMETHODIMP
+ScriptLoadHandler::OnStartRequest(nsIRequest* aRequest) {
+  mRequest->SetMinimumExpirationTime(
+      nsContentUtils::GetSubresourceCacheExpirationTime(aRequest,
+                                                        mRequest->mURI));
+
+  return NS_OK;
+}
 
 NS_IMETHODIMP
 ScriptLoadHandler::OnIncrementalData(nsIIncrementalStreamLoader* aLoader,
@@ -176,7 +189,7 @@ ScriptLoadHandler::OnIncrementalData(nsIIncrementalStreamLoader* aLoader,
     }
   } else {
     MOZ_ASSERT(mRequest->IsBytecode());
-    if (!mRequest->mScriptBytecode.append(aData, aDataLength)) {
+    if (!mRequest->SRIAndBytecode().append(aData, aDataLength)) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -187,7 +200,7 @@ ScriptLoadHandler::OnIncrementalData(nsIIncrementalStreamLoader* aLoader,
       return channelRequest->Cancel(mScriptLoader->RestartLoad(mRequest));
     }
     if (sriLength) {
-      mRequest->mBytecodeOffset = JS::AlignTranscodingBytecodeOffset(sriLength);
+      mRequest->SetSRILength(sriLength);
     }
   }
 
@@ -245,8 +258,7 @@ bool ScriptLoadHandler::TrySetDecoder(nsIIncrementalStreamLoader* aLoader,
   // request.
   nsAutoString hintCharset;
   if (!mRequest->GetScriptLoadContext()->IsPreload()) {
-    mRequest->GetScriptLoadContext()->GetScriptElement()->GetScriptCharset(
-        hintCharset);
+    mRequest->GetScriptLoadContext()->GetHintCharset(hintCharset);
   } else {
     nsTArray<ScriptLoader::PreloadInfo>::index_type i =
         mScriptLoader->mPreloads.IndexOf(
@@ -288,13 +300,13 @@ nsresult ScriptLoadHandler::MaybeDecodeSRI(uint32_t* sriLength) {
   }
 
   // Skip until the content is large enough to be decoded.
-  if (mRequest->mScriptBytecode.length() <=
-      mSRIDataVerifier->DataSummaryLength()) {
+  JS::TranscodeBuffer& receivedData = mRequest->SRIAndBytecode();
+  if (receivedData.length() <= mSRIDataVerifier->DataSummaryLength()) {
     return NS_OK;
   }
 
-  mSRIStatus = mSRIDataVerifier->ImportDataSummary(
-      mRequest->mScriptBytecode.length(), mRequest->mScriptBytecode.begin());
+  mSRIStatus = mSRIDataVerifier->ImportDataSummary(receivedData.length(),
+                                                   receivedData.begin());
 
   if (NS_FAILED(mSRIStatus)) {
     // We are unable to decode the hash contained in the alternate data which
@@ -321,9 +333,8 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (mRequest->mFetchSourceOnly) {
-    mRequest->SetTextSource();
-    TRACE_FOR_TEST(mRequest->GetScriptLoadContext()->GetScriptElement(),
-                   "scriptloader_load_source");
+    mRequest->SetTextSource(mRequest->mLoadContext.get());
+    TRACE_FOR_TEST(mRequest, "scriptloader_load_source");
     return NS_OK;
   }
 
@@ -333,16 +344,14 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
     cic->GetAlternativeDataType(altDataType);
     if (altDataType.Equals(ScriptLoader::BytecodeMimeTypeFor(mRequest))) {
       mRequest->SetBytecode();
-      TRACE_FOR_TEST(mRequest->GetScriptLoadContext()->GetScriptElement(),
-                     "scriptloader_load_bytecode");
+      TRACE_FOR_TEST(mRequest, "scriptloader_load_bytecode");
       return NS_OK;
     }
     MOZ_ASSERT(altDataType.IsEmpty());
   }
 
-  mRequest->SetTextSource();
-  TRACE_FOR_TEST(mRequest->GetScriptLoadContext()->GetScriptElement(),
-                 "scriptloader_load_source");
+  mRequest->SetTextSource(mRequest->mLoadContext.get());
+  TRACE_FOR_TEST(mRequest, "scriptloader_load_source");
 
   MOZ_ASSERT(!mRequest->IsUnknownDataType());
   MOZ_ASSERT(mRequest->IsFetching());
@@ -364,6 +373,14 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
 
   nsCOMPtr<nsIRequest> channelRequest;
   aLoader->GetRequest(getter_AddRefs(channelRequest));
+
+  mRequest->mNetworkMetadata =
+      new SubResourceNetworkMetadataHolder(channelRequest);
+
+  {
+    nsCOMPtr<nsIChannel> channel = do_QueryInterface(channelRequest);
+    channel->SetNotificationCallbacks(nullptr);
+  }
 
   auto firstMessage = !mPreloadStartNotified;
   if (!mPreloadStartNotified) {
@@ -404,15 +421,16 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
       }
     } else {
       MOZ_ASSERT(mRequest->IsBytecode());
-      if (!mRequest->mScriptBytecode.append(aData, aDataLength)) {
+      JS::TranscodeBuffer& bytecode = mRequest->SRIAndBytecode();
+      if (!bytecode.append(aData, aDataLength)) {
         return NS_ERROR_OUT_OF_MEMORY;
       }
 
       LOG(("ScriptLoadRequest (%p): Bytecode length = %u", mRequest.get(),
-           unsigned(mRequest->mScriptBytecode.length())));
+           unsigned(bytecode.length())));
 
-      // If we abort while decoding the SRI, we fallback on explictly requesting
-      // the source. Thus, we should not continue in
+      // If we abort while decoding the SRI, we fallback on explicitly
+      // requesting the source. Thus, we should not continue in
       // ScriptLoader::OnStreamComplete, which removes the request from the
       // waiting lists.
       //
@@ -427,21 +445,19 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
       // is no SRI data verifier instance, we still want to skip the hash.
       uint32_t sriLength;
       rv = SRICheckDataVerifier::DataSummaryLength(
-          mRequest->mScriptBytecode.length(), mRequest->mScriptBytecode.begin(),
-          &sriLength);
+          bytecode.length(), bytecode.begin(), &sriLength);
       if (NS_FAILED(rv)) {
         return channelRequest->Cancel(mScriptLoader->RestartLoad(mRequest));
       }
 
-      mRequest->mBytecodeOffset = JS::AlignTranscodingBytecodeOffset(sriLength);
+      mRequest->SetSRILength(sriLength);
 
       Vector<uint8_t> compressedBytecode;
       // mRequest has the compressed bytecode, but will be filled with the
       // uncompressed bytecode
-      compressedBytecode.swap(mRequest->mScriptBytecode);
-      if (!JS::loader::ScriptBytecodeDecompress(compressedBytecode,
-                                                mRequest->mBytecodeOffset,
-                                                mRequest->mScriptBytecode)) {
+      compressedBytecode.swap(bytecode);
+      if (!JS::loader::ScriptBytecodeDecompress(
+              compressedBytecode, mRequest->GetSRILength(), bytecode)) {
         return NS_ERROR_UNEXPECTED;
       }
     }
@@ -466,6 +482,26 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
   }
 
   return rv;
+}
+
+NS_IMETHODIMP
+ScriptLoadHandler::GetInterface(const nsIID& aIID, void** aResult) {
+  if (aIID.Equals(NS_GET_IID(nsIChannelEventSink))) {
+    return QueryInterface(aIID, aResult);
+  }
+
+  return NS_NOINTERFACE;
+}
+
+nsresult ScriptLoadHandler::AsyncOnChannelRedirect(
+    nsIChannel* aOld, nsIChannel* aNew, uint32_t aFlags,
+    nsIAsyncVerifyRedirectCallback* aCallback) {
+  mRequest->SetMinimumExpirationTime(
+      nsContentUtils::GetSubresourceCacheExpirationTime(aOld, mRequest->mURI));
+
+  aCallback->OnRedirectVerifyCallback(NS_OK);
+
+  return NS_OK;
 }
 
 #undef LOG_ENABLED

@@ -46,9 +46,7 @@ export interface Commands {
   client: any;
   targetCommand: {
     targetFront: {
-      getTrait: (
-        traitName: string
-      ) => unknown;
+      getTrait: (traitName: string) => unknown;
     };
   };
 }
@@ -131,6 +129,10 @@ export type ThunkDispatch = <Returns>(action: ThunkAction<Returns>) => Returns;
 export type PlainDispatch = (action: Action) => Action;
 export type GetState = () => State;
 export type SymbolTableAsTuple = [Uint32Array, Uint32Array, Uint8Array];
+export type ProfilerFaviconData = {
+  data: ArrayBuffer;
+  mimeType: string;
+};
 
 /**
  * The `dispatch` function can accept either a plain action or a thunk action.
@@ -438,6 +440,21 @@ export interface ScaleFunctions {
  */
 export type ProfilerViewMode = "full" | "active-tab" | "origins";
 
+/**
+ * Panel string identifier in the profiler frontend.
+ *
+ * To be synchronized with:
+ * https://github.com/firefox-devtools/profiler/blob/b7fe97217b5d3ae770e2b7025738a075eba9ec34/src/app-logic/tabs-handling.js#L12
+ */
+export type ProfilerPanel =
+  | "calltree"
+  | "flame-graph"
+  | "stack-chart"
+  | "marker-chart"
+  | "marker-table"
+  | "network-chart"
+  | "js-tracer";
+
 export interface PresetDefinition {
   entries: number;
   interval: number;
@@ -474,12 +491,25 @@ export type RequestFromFrontend =
   | StatusQueryRequest
   | EnableMenuButtonRequest
   | GetProfileRequest
+  | GetExternalMarkersRequest
+  | GetExternalPowerTracksRequest
   | GetSymbolTableRequest
-  | QuerySymbolicationApiRequest;
+  | QuerySymbolicationApiRequest
+  | GetPageFaviconsRequest;
 
 type StatusQueryRequest = { type: "STATUS_QUERY" };
 type EnableMenuButtonRequest = { type: "ENABLE_MENU_BUTTON" };
 type GetProfileRequest = { type: "GET_PROFILE" };
+type GetExternalMarkersRequest = {
+  type: "GET_EXTERNAL_MARKERS";
+  startTime: number;
+  endTime: number;
+};
+type GetExternalPowerTracksRequest = {
+  type: "GET_EXTERNAL_POWER_TRACKS";
+  startTime: number;
+  endTime: number;
+};
 type GetSymbolTableRequest = {
   type: "GET_SYMBOL_TABLE";
   debugName: string;
@@ -489,6 +519,10 @@ type QuerySymbolicationApiRequest = {
   type: "QUERY_SYMBOLICATION_API";
   path: string;
   requestJson: string;
+};
+type GetPageFaviconsRequest = {
+  type: "GET_PAGE_FAVICONS";
+  pageUrls: Array<string>;
 };
 
 export type MessageToFrontend<R> =
@@ -517,8 +551,11 @@ export type ResponseToFrontend =
   | StatusQueryResponse
   | EnableMenuButtonResponse
   | GetProfileResponse
+  | GetExternalMarkersResponse
+  | GetExternalPowerTracksResponse
   | GetSymbolTableResponse
-  | QuerySymbolicationApiResponse;
+  | QuerySymbolicationApiResponse
+  | GetPageFaviconsResponse;
 
 type StatusQueryResponse = {
   menuButtonIsEnabled: boolean;
@@ -534,12 +571,19 @@ type StatusQueryResponse = {
   //    - GET_PROFILE
   //    - GET_SYMBOL_TABLE
   //    - QUERY_SYMBOLICATION_API
+  // Version 2:
+  //   Shipped in Firefox 121.
+  //   Adds support for the following message types:
+  //    - GET_EXTERNAL_POWER_TRACKS
   version: number;
 };
 type EnableMenuButtonResponse = void;
 type GetProfileResponse = ArrayBuffer | MinimallyTypedGeckoProfile;
+type GetExternalMarkersResponse = Array<object>;
+type GetExternalPowerTracksResponse = Array<object>;
 type GetSymbolTableResponse = SymbolTableAsTuple;
 type QuerySymbolicationApiResponse = string;
+type GetPageFaviconsResponse = Array<ProfilerFaviconData | null>;
 
 /**
  * This represents an event channel that can talk to a content page on the web.

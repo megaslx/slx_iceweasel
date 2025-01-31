@@ -8,6 +8,7 @@
 
 #include "mozilla/SMILValue.h"
 #include "nsCRT.h"
+#include "nsMathUtils.h"
 #include "SVGTransformList.h"
 #include "SVGTransform.h"
 #include <math.h>
@@ -24,8 +25,7 @@ using TransformArray = FallibleTArray<SVGTransformSMILData>;
 void SVGTransformListSMILType::Init(SMILValue& aValue) const {
   MOZ_ASSERT(aValue.IsNull(), "Unexpected value type");
 
-  TransformArray* transforms = new TransformArray(1);
-  aValue.mU.mPtr = transforms;
+  aValue.mU.mPtr = new TransformArray(1);
   aValue.mType = this;
 }
 
@@ -200,7 +200,7 @@ nsresult SVGTransformListSMILType::ComputeDistance(const SMILValue& aFrom,
       const float& a_ty = fromTransform.mParams[1];
       const float& b_tx = toTransform.mParams[0];
       const float& b_ty = toTransform.mParams[1];
-      aDistance = sqrt(pow(a_tx - b_tx, 2) + (pow(a_ty - b_ty, 2)));
+      aDistance = NS_hypot(a_tx - b_tx, a_ty - b_ty);
     } break;
 
     case SVG_TRANSFORM_ROTATE:
@@ -331,11 +331,10 @@ bool SVGTransformListSMILType::GetTransforms(
   aTransforms.Clear();
   if (!aTransforms.SetCapacity(smilTransforms.Length(), fallible)) return false;
 
-  for (uint32_t i = 0; i < smilTransforms.Length(); ++i) {
+  for (const auto& smilTransform : smilTransforms) {
     // No need to check the return value below since we have already allocated
     // the necessary space
-    (void)aTransforms.AppendElement(smilTransforms[i].ToSVGTransform(),
-                                    fallible);
+    (void)aTransforms.AppendElement(smilTransform.ToSVGTransform(), fallible);
   }
   return true;
 }

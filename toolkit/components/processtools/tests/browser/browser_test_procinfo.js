@@ -8,23 +8,55 @@ const DUMMY_URL =
     "http://example.com"
   ) + "/dummy.html";
 
-const HAS_THREAD_NAMES =
-  AppConstants.platform != "win" ||
-  AppConstants.isPlatformAndVersionAtLeast("win", 10);
 const isFissionEnabled = SpecialPowers.useRemoteSubframes;
 
 const SAMPLE_SIZE = 10;
 const NS_PER_MS = 1000000;
 
+/* 8ms of rounding error allowed on Linux, required due to difference in
+ * precision from reading process time vs thread time. Triggered when some
+ * processes are still quite new, much more frequent when running with
+ * ForkServer enabled.
+ * */
+const LINUX_ROUNDING_ERROR = 20.0 * NS_PER_MS;
+
 function checkProcessCpuTime(proc) {
-  Assert.greater(proc.cpuTime, 0, "Got some cpu time");
+  let hasProcessCPUTime = proc.cpuTime > 0;
+  if (hasProcessCPUTime || AppConstants.platform !== "linux") {
+    Assert.ok(hasProcessCPUTime, "Got some cpu time");
+    Assert.greater(proc.threads.length, 0, "Got some threads");
+  } else {
+    // With ForkServer on Linux it can happen a process has just been forked
+    // and has not been doing anything yet
+    Assert.equal(proc.threads.length, 1, "Got one thread");
+    Assert.equal(proc.threads[0].name, "forkserver", "Got one forkserver");
+  }
+
+  let hasThreadCPUTime = proc.threads.some(thread => thread.cpuTime > 0);
+  if (hasThreadCPUTime || AppConstants.platform !== "linux") {
+    Assert.ok(hasThreadCPUTime, "Got some cpu time in the threads");
+  } else {
+    // On Linux the process cpu time is read with the high precision
+    // clock_gettime syscall, but the CPU time for child process
+    // threads is read by parsing /proc file that have a lower
+    // precision, so accept that there will be some rounding errors
+    // for processes with very low CPU times (ie. processes that have
+    // just been forked).
+    Assert.less(
+      proc.cpuTime / proc.threads.length,
+      LINUX_ROUNDING_ERROR,
+      `No CPU time (${proc.cpuTime}) in the threads (${proc.threads.length}) on Linux, but within rounding errors`
+    );
+  }
 
   let cpuThreads = 0;
   for (let thread of proc.threads) {
     cpuThreads += Math.floor(thread.cpuTime / NS_PER_MS);
   }
-  Assert.greater(cpuThreads, 0, "Got some cpu time in the threads");
-  let processCpuTime = Math.ceil(proc.cpuTime / NS_PER_MS);
+  // Add 1ms to the process CPU time because ProcInfo captures the CPU time for
+  // the whole process first and then for each of the threads, so the process
+  // CPU time might have increased slightly in the meantime.
+  let processCpuTime = Math.floor(proc.cpuTime / NS_PER_MS) + 1;
   if (AppConstants.platform == "win" && processCpuTime < cpuThreads) {
     // On Windows, our test jobs likely run in VMs without constant TSC,
     // so we might have low precision CPU time measurements.
@@ -54,7 +86,7 @@ add_task(async function test_proc_info() {
 
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: DUMMY_URL },
-    async function (browser) {
+    async function () {
       // We test `SAMPLE_SIZE` times to increase a tad the chance of encountering race conditions.
       for (let z = 0; z < SAMPLE_SIZE; z++) {
         let parentProc = await ChromeUtils.requestProcInfo();
@@ -67,13 +99,10 @@ add_task(async function test_proc_info() {
 
         checkProcessCpuTime(parentProc);
 
-        // Under Windows, thread names appeared with Windows 10.
-        if (HAS_THREAD_NAMES) {
-          Assert.ok(
-            parentProc.threads.some(thread => thread.name),
-            "At least one of the threads of the parent process is named"
-          );
-        }
+        Assert.ok(
+          parentProc.threads.some(thread => thread.name),
+          "At least one of the threads of the parent process is named"
+        );
 
         Assert.ok(parentProc.memory > 0, "Memory was set");
 

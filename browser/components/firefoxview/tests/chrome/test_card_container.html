@@ -7,6 +7,7 @@
   <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"></script>
   <link rel="stylesheet" href="chrome://mochikit/content/tests/SimpleTest/test.css"/>
   <link rel="stylesheet" href="chrome://global/skin/in-content/common.css">
+  <link rel="localization" href="browser/preferences/preferences.ftl"/>
   <link rel="localization" href="browser/firefoxView.ftl"/>
   <script type="module" src="chrome://browser/content/firefoxview/card-container.mjs"></script>
 </head>
@@ -15,7 +16,7 @@
   </style>
 <p id="display"></p>
 <div id="content">
-  <card-container viewAllPage="history">
+  <card-container shortPageName="history" showViewAll="true">
     <h2 slot="header" data-l10n-id="history-header"></h2>
     <ul slot="main">
         <li>History Row 1</li>

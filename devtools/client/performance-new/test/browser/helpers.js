@@ -155,8 +155,8 @@ async function makeSureProfilerPopupIsEnabled() {
   info("Make sure the profiler popup is enabled.");
 
   info("> Load the profiler menu button.");
-  const { ProfilerMenuButton } = ChromeUtils.import(
-    "resource://devtools/client/performance-new/popup/menu-button.jsm.js"
+  const { ProfilerMenuButton } = ChromeUtils.importESModule(
+    "resource://devtools/client/performance-new/popup/menu-button.sys.mjs"
   );
 
   if (!ProfilerMenuButton.isInNavbar()) {
@@ -306,9 +306,9 @@ async function openPopupAndEnsureCloses(window, callback) {
  * This function overwrites the default profiler.firefox.com URL for tests. This
  * ensures that the tests do not attempt to access external URLs.
  * The origin needs to be on the allowlist in validateProfilerWebChannelUrl,
- * otherwise the WebChannel won't work. ("http://example.com" is on that list.)
+ * otherwise the WebChannel won't work. ("https://example.com" is on that list.)
  *
- * @param {string} origin - For example: http://example.com
+ * @param {string} origin - For example: https://example.com
  * @param {string} pathname - For example: /my/testing/frontend.html
  * @returns {Promise}
  */
@@ -524,8 +524,8 @@ async function withDevToolsPanel(url, callback, aWindow = window) {
  * @returns {Object}
  */
 function getActiveConfiguration() {
-  const BackgroundJSM = ChromeUtils.import(
-    "resource://devtools/client/performance-new/shared/background.jsm.js"
+  const BackgroundJSM = ChromeUtils.importESModule(
+    "resource://devtools/client/performance-new/shared/background.sys.mjs"
   );
 
   const { startProfiler, stopProfiler } = BackgroundJSM;
@@ -737,8 +737,8 @@ async function makeSureProfilerPopupIsDisabled() {
   info("Make sure the profiler popup is dsiabled.");
 
   info("> Load the profiler menu button module.");
-  const { ProfilerMenuButton } = ChromeUtils.import(
-    "resource://devtools/client/performance-new/popup/menu-button.jsm.js"
+  const { ProfilerMenuButton } = ChromeUtils.importESModule(
+    "resource://devtools/client/performance-new/popup/menu-button.sys.mjs"
   );
 
   const isOriginallyInNavBar = ProfilerMenuButton.isInNavbar();
@@ -768,7 +768,7 @@ function withWebChannelTestDocument(callback) {
   return BrowserTestUtils.withNewTab(
     {
       gBrowser,
-      url: "http://example.com/browser/devtools/client/performance-new/test/browser/webchannel.html",
+      url: "https://example.com/browser/devtools/client/performance-new/test/browser/webchannel.html",
     },
     callback
   );

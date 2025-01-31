@@ -201,9 +201,8 @@ add_task(async function test_delete() {
   );
 
   extension.sendMessage("delete-all");
-  [historyClearedCount, removedUrls] = await extension.awaitMessage(
-    "history-cleared"
-  );
+  [historyClearedCount, removedUrls] =
+    await extension.awaitMessage("history-cleared");
   equal(
     historyClearedCount,
     2,
@@ -251,7 +250,7 @@ add_task(async function test_search() {
   function background(BGSCRIPT_REFERENCE_DATE) {
     const futureTime = Date.now() + 24 * 60 * 60 * 1000;
 
-    browser.test.onMessage.addListener(msg => {
+    browser.test.onMessage.addListener(() => {
       browser.history
         .search({ text: "" })
         .then(results => {
@@ -295,7 +294,7 @@ add_task(async function test_search() {
           });
         })
         .then(
-          results => {
+          () => {
             browser.test.fail(
               "history.search rejects with startTime that is after the endTime"
             );

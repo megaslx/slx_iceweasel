@@ -19,7 +19,6 @@ use headers::{
 };
 use http::StatusCode;
 use hyper::Body;
-use mime_guess;
 use percent_encoding::percent_decode_str;
 use tokio::fs::File as TkFile;
 use tokio::io::AsyncSeekExt;
@@ -37,7 +36,7 @@ use crate::reply::{Reply, Response};
 /// filters, such as after validating in `POST` request, wanting to return a
 /// specific file as the body.
 ///
-/// For serving a directory, see [dir](dir).
+/// For serving a directory, see [dir].
 ///
 /// # Example
 ///

@@ -8,7 +8,7 @@
 // Readerable.sys.mjs.
 
 /* exported Readerable */
-/* import-globals-from Readability-readerable.js */
+/* import-globals-from readability/Readability-readerable.js */
 
 const { XPCOMUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/XPCOMUtils.sys.mjs"
@@ -29,7 +29,8 @@ var Readerable = {
     // Only care about 'real' HTML documents:
     if (
       doc.mozSyntheticDocument ||
-      !doc.defaultView.HTMLDocument.isInstance(doc)
+      !doc.defaultView.HTMLDocument.isInstance(doc) ||
+      doc.contentType == "application/pdf"
     ) {
       return false;
     }
@@ -54,6 +55,7 @@ var Readerable = {
     "reddit.com",
     "twitter.com",
     "youtube.com",
+    "app.slack.com",
   ],
 
   shouldCheckUri(uri, isBaseUri = false) {

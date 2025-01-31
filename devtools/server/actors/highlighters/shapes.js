@@ -36,7 +36,7 @@ const {
 } = require("resource://devtools/shared/layout/dom-matrix-2d.js");
 const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 const {
-  getCSSStyleRules,
+  getMatchingCSSRules,
 } = require("resource://devtools/shared/inspector/css-logic.js");
 
 const BASE_MARKER_SIZE = 5;
@@ -519,7 +519,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
   }
 
   // eslint-disable-next-line complexity
-  handleEvent(event, id) {
+  handleEvent(event) {
     // No event handling if the highlighter is hidden
     if (this.areShapesHidden()) {
       return;
@@ -1222,7 +1222,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     coordinates.splice(point, 1);
     let polygonDef = this.fillRule ? `${this.fillRule}, ` : "";
     polygonDef += coordinates
-      .map((coords, i) => {
+      .map(coords => {
         return `${coords[0]} ${coords[1]}`;
       })
       .join(", ");
@@ -1324,8 +1324,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const delta = (newRadiusPx - origRadius) * ratio;
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
+      const position = cx !== "" ? ` at ${cx} ${cy}` : "";
       const circleDef =
-        `circle(${newRadius} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+        `circle(${newRadius}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1410,6 +1411,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       pageY
     );
     const { rx, ry, cx, cy } = this.coordUnits;
+    const position = cx !== "" ? ` at ${cx} ${cy}` : "";
 
     if (point === "center") {
       const { unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } =
@@ -1433,7 +1435,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
       const ellipseDef =
-        `ellipse(${newRadius} ${ry} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+        `ellipse(${newRadius} ${ry}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1447,7 +1449,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
       const ellipseDef =
-        `ellipse(${rx} ${newRadius} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+        `ellipse(${rx} ${newRadius}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -2171,7 +2173,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     const values = definition.split("at");
     let radius = values[0] ? values[0].trim() : "closest-side";
     const { width, height } = this.currentDimensions;
-    const center = splitCoords(values[1]).map(
+    // This defaults to center if omitted.
+    const position = values[1] || "50% 50%";
+    const center = splitCoords(position).map(
       this.convertCoordsToPercent.bind(this)
     );
 
@@ -2258,7 +2262,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     }
 
     const values = definition.split("at");
-    const center = splitCoords(values[1]).map(
+    // This defaults to center if omitted.
+    const position = values[1] || "50% 50%";
+    const center = splitCoords(position).map(
       this.convertCoordsToPercent.bind(this)
     );
 
@@ -2332,9 +2338,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       this.origCoordUnits = this.coordUnits;
     }
     const values = definition.split(" round ");
-    const offsets = splitCoords(values[0]).map(
-      this.convertCoordsToPercent.bind(this)
-    );
+    const offsets = splitCoords(values[0]);
 
     let top, left, right, bottom;
     // The offsets, like margin/padding/border, are in order: top, right, bottom, left.
@@ -2353,6 +2357,11 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       bottom = offsets[2];
       left = offsets[3];
     }
+
+    top = this.convertCoordsToPercentFromCurrentDimension(top, "height");
+    bottom = this.convertCoordsToPercentFromCurrentDimension(bottom, "height");
+    left = this.convertCoordsToPercentFromCurrentDimension(left, "width");
+    right = this.convertCoordsToPercentFromCurrentDimension(right, "width");
 
     // maxX/maxY are found by subtracting the right/bottom edges from 100
     // (the width/height of the element in %)
@@ -2412,9 +2421,32 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     return { top, left, right, bottom };
   }
 
+  /**
+   * This uses the index to decide whether to use width or height for the
+   * computation. See `convertCoordsToPercentFromCurrentDimension()` if you
+   * need to specify width or height.
+   * @param {Number} coord a single coordinate
+   * @param {Number} i the index of its position in the function
+   * @returns {Number} the coordinate as a percentage value
+   */
   convertCoordsToPercent(coord, i) {
     const { width, height } = this.currentDimensions;
     const size = i % 2 === 0 ? width : height;
+    if (coord.includes("calc(")) {
+      return evalCalcExpression(coord.substring(5, coord.length - 1), size);
+    }
+    return coordToPercent(coord, size);
+  }
+
+  /**
+   * Converts a value to percent based on the specified dimension.
+   * @param {Number} coord a single coordinate
+   * @param {Number} currentDimensionProperty the dimension ("width" or
+   *        "height") to base the calculation off of
+   * @returns {Number} the coordinate as a percentage value
+   */
+  convertCoordsToPercentFromCurrentDimension(coord, currentDimensionProperty) {
+    const size = this.currentDimensions[currentDimensionProperty];
     if (coord.includes("calc(")) {
       return evalCalcExpression(coord.substring(5, coord.length - 1), size);
     }
@@ -2703,11 +2735,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG polygon to fit the CSS polygon.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updatePolygonShape(width, height, zoom) {
+  _updatePolygonShape() {
     // Draw and show the polygon.
     const points = this.coordinates.map(point => point.join(",")).join(" ");
 
@@ -2726,11 +2755,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG ellipse to fit the CSS circle or ellipse.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updateEllipseShape(width, height, zoom) {
+  _updateEllipseShape() {
     const { rx, ry, cx, cy } = this.coordinates;
     const ellipseEl = this.getElement("ellipse");
     ellipseEl.setAttribute("rx", rx);
@@ -2756,11 +2782,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG rect to fit the CSS inset.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updateInsetShape(width, height, zoom) {
+  _updateInsetShape() {
     const { top, left, right, bottom } = this.coordinates;
     const rectEl = this.getElement("rect");
     rectEl.setAttribute("x", left);
@@ -2968,7 +2991,7 @@ function getDefinedShapeProperties(node, property) {
     return prop;
   }
 
-  const cssRules = getCSSStyleRules(node);
+  const cssRules = getMatchingCSSRules(node);
   for (let i = 0; i < cssRules.length; i++) {
     const rule = cssRules[i];
     const value = rule.style.getPropertyValue(property);

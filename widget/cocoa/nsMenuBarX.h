@@ -37,34 +37,22 @@ class Element;
 - (id)initWithApplicationMenu:(nsMenuBarX*)aApplicationMenu;
 @end
 
-// Objective-C class used to allow us to intervene with keyboard event handling.
-// We allow mouse actions to work normally.
-@interface GeckoNSMenu : NSMenu {
-}
-- (BOOL)performSuperKeyEquivalent:(NSEvent*)aEvent;
-@end
-
-// Objective-C class used as action target for menu items
-@interface NativeMenuItemTarget : NSObject {
-}
-- (IBAction)menuItemHit:(id)aSender;
-@end
-
-// Objective-C class used for menu items on the Services menu to allow Gecko
-// to override their standard behavior in order to stop key equivalents from
-// firing in certain instances.
-@interface GeckoServicesNSMenuItem : NSMenuItem {
+// Objective-C class used for menu items to allow Gecko to override their
+// standard behavior in order to stop key equivalents from firing in certain
+// instances.
+@interface GeckoNSMenuItem : NSMenuItem {
 }
 - (id)target;
 - (SEL)action;
 - (void)_doNothing:(id)aSender;
 @end
 
-// Objective-C class used as the Services menu so that Gecko can override the
-// standard behavior of the Services menu in order to stop key equivalents
-// from firing in certain instances.
-@interface GeckoServicesNSMenu : NSMenu {
+// Objective-C class used to allow us to intervene with keyboard event handling,
+// particularly to stop key equivalents from firing in certain instances. We
+// allow mouse actions to work normally.
+@interface GeckoNSMenu : NSMenu {
 }
+- (BOOL)performSuperKeyEquivalent:(NSEvent*)aEvent;
 - (void)addItem:(NSMenuItem*)aNewItem;
 - (NSMenuItem*)addItemWithTitle:(NSString*)aString
                          action:(SEL)aSelector
@@ -77,9 +65,18 @@ class Element;
 - (void)_overrideClassOfMenuItem:(NSMenuItem*)aMenuItem;
 @end
 
-// Once instantiated, this object lives until its DOM node or its parent window is destroyed.
-// Do not hold references to this, they can become invalid any time the DOM node can be destroyed.
-class nsMenuBarX : public nsMenuParentX, public nsChangeObserver, public mozilla::SupportsWeakPtr {
+// Objective-C class used as action target for menu items.
+@interface NativeMenuItemTarget : NSObject {
+}
+- (IBAction)menuItemHit:(id)aSender;
+@end
+
+// Once instantiated, this object lives until its DOM node or its parent window
+// is destroyed. Do not hold references to this, they can become invalid any
+// time the DOM node can be destroyed.
+class nsMenuBarX : public nsMenuParentX,
+                   public nsChangeObserver,
+                   public mozilla::SupportsWeakPtr {
  public:
   explicit nsMenuBarX(mozilla::dom::Element* aElement);
 
@@ -108,6 +105,7 @@ class nsMenuBarX : public nsMenuParentX, public nsChangeObserver, public mozilla
   nsMenuX* GetXULHelpMenu();
   void SetSystemHelpMenu();
   nsresult Paint();
+  void PaintAsync();
   void ForceUpdateNativeMenuAt(const nsAString& aIndexString);
   void ForceNativeMenuReload();  // used for testing
   static void ResetNativeApplicationMenu();
@@ -117,7 +115,8 @@ class nsMenuBarX : public nsMenuParentX, public nsChangeObserver, public mozilla
   GeckoNSMenu* NativeNSMenu() { return mNativeMenu; }
 
   // nsMenuParentX
-  void MenuChildChangedVisibility(const MenuChild& aChild, bool aIsVisible) override;
+  void MenuChildChangedVisibility(const MenuChild& aChild,
+                                  bool aIsVisible) override;
 
  protected:
   virtual ~nsMenuBarX();
@@ -126,20 +125,24 @@ class nsMenuBarX : public nsMenuParentX, public nsChangeObserver, public mozilla
   void ConstructFallbackNativeMenus();
   void InsertMenuAtIndex(RefPtr<nsMenuX>&& aMenu, uint32_t aIndex);
   void RemoveMenuAtIndex(uint32_t aIndex);
-  RefPtr<mozilla::dom::Element> HideItem(mozilla::dom::Document* aDocument, const nsAString& aID);
+  RefPtr<mozilla::dom::Element> HideItem(mozilla::dom::Document* aDocument,
+                                         const nsAString& aID);
   void AquifyMenuBar();
-  NSMenuItem* CreateNativeAppMenuItem(nsMenuX* aMenu, const nsAString& aNodeID, SEL aAction,
-                                      int aTag, NativeMenuItemTarget* aTarget);
+  NSMenuItem* CreateNativeAppMenuItem(nsMenuX* aMenu, const nsAString& aNodeID,
+                                      SEL aAction, int aTag,
+                                      NativeMenuItemTarget* aTarget);
   void CreateApplicationMenu(nsMenuX* aMenu);
 
-  // Calculates the index at which aChild's NSMenuItem should be inserted into our NSMenu.
-  // The order of NSMenuItems in the NSMenu is the same as the order of nsMenuX objects in
-  // mMenuArray; there are two differences:
-  //  - mMenuArray contains both visible and invisible menus, and the NSMenu only contains visible
+  // Calculates the index at which aChild's NSMenuItem should be inserted into
+  // our NSMenu. The order of NSMenuItems in the NSMenu is the same as the order
+  // of nsMenuX objects in mMenuArray; there are two differences:
+  //  - mMenuArray contains both visible and invisible menus, and the NSMenu
+  //  only contains visible
   //    menus.
-  //  - Our NSMenu may also contain an item for the app menu, whereas mMenuArray never does.
-  // So the insertion index is equal to the number of visible previous siblings of aChild in
-  // mMenuArray, plus one if the app menu is present.
+  //  - Our NSMenu may also contain an item for the app menu, whereas mMenuArray
+  //  never does.
+  // So the insertion index is equal to the number of visible previous siblings
+  // of aChild in mMenuArray, plus one if the app menu is present.
   NSInteger CalculateNativeInsertionPoint(nsMenuX* aChild);
 
   RefPtr<nsIContent> mContent;

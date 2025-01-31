@@ -12,6 +12,7 @@
 #include "gfxMatrix.h"
 #include "gfxRect.h"
 #include "nsCOMPtr.h"
+#include "nsCSSRenderingGradients.h"
 #include "nsIFrame.h"
 #include "nsLiteralString.h"
 
@@ -72,11 +73,9 @@ class SVGGradientFrame : public SVGPaintServerFrame {
    */
   SVGGradientFrame* GetReferencedGradient();
 
-  // Optionally get a stop frame (returns stop index/count)
-  void GetStopFrames(nsTArray<nsIFrame*>* aStopFrames);
+  void GetStops(nsTArray<ColorStop>* aStops, float aGraphicOpacity);
 
-  const SVGAnimatedTransformList* GetGradientTransformList(
-      nsIContent* aDefault);
+  SVGGradientFrame* GetGradientTransformFrame(SVGGradientFrame* aDefault);
   // Will be singular for gradientUnits="objectBoundingBox" with an empty bbox.
   gfxMatrix GetGradientTransform(nsIFrame* aSource,
                                  const gfxRect* aOverrideBounds);

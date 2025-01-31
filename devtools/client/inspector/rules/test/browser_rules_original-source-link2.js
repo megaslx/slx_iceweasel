@@ -31,9 +31,8 @@ add_task(async function () {
   Services.prefs.setBoolPref(PREF, true);
 
   await testClickingLink(toolbox, view);
-  const selectedEditor = await waitForOriginalStyleSheetEditorSelection(
-    toolbox
-  );
+  const selectedEditor =
+    await waitForOriginalStyleSheetEditorSelection(toolbox);
   const href = selectedEditor.styleSheet.href;
   ok(
     href.endsWith("doc_sourcemaps.scss"),
@@ -61,7 +60,7 @@ async function testClickingLink(toolbox, view) {
 
 function waitForOriginalStyleSheetEditorSelection(toolbox) {
   const panel = toolbox.getCurrentPanel();
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     const maybeContinue = editor => {
       // The style editor selects the first sheet at first load before
       // selecting the desired sheet.

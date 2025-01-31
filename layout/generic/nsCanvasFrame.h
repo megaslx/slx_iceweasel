@@ -46,8 +46,7 @@ class nsCanvasFrame final : public nsContainerFrame,
 
   Element* GetDefaultTooltip() override;
 
-  void DestroyFrom(nsIFrame* aDestructRoot,
-                   PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
   void SetInitialChildList(ChildListID aListID,
                            nsFrameList&& aChildList) override;
@@ -56,18 +55,15 @@ class nsCanvasFrame final : public nsContainerFrame,
                     const nsLineList::iterator* aPrevFrameLine,
                     nsFrameList&& aFrameList) override;
 #ifdef DEBUG
-  void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) override;
+  void RemoveFrame(DestroyContext&, ChildListID, nsIFrame*) override;
 #endif
 
-  nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  nscoord GetPrefISize(gfxContext* aRenderingContext) override;
+  nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                         mozilla::IntrinsicISizeType aType) override;
+
   void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
               const ReflowInput& aReflowInput,
               nsReflowStatus& aStatus) override;
-  bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eCanContainOverflowContainers));
-  }
 
   // nsIAnonymousContentCreator
   nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) override;
@@ -157,7 +153,7 @@ class nsDisplayCanvasBackgroundColor final : public nsDisplaySolidColorBase {
   void WriteDebugInfo(std::stringstream& aStream) override;
 };
 
-class nsDisplayCanvasBackgroundImage : public nsDisplayBackgroundImage {
+class nsDisplayCanvasBackgroundImage final : public nsDisplayBackgroundImage {
  public:
   explicit nsDisplayCanvasBackgroundImage(nsDisplayListBuilder* aBuilder,
                                           nsIFrame* aFrame,
@@ -176,7 +172,7 @@ class nsDisplayCanvasBackgroundImage : public nsDisplayBackgroundImage {
   NS_DISPLAY_DECL_NAME("CanvasBackgroundImage", TYPE_CANVAS_BACKGROUND_IMAGE)
 };
 
-class nsDisplayCanvasThemedBackground : public nsDisplayThemedBackground {
+class nsDisplayCanvasThemedBackground final : public nsDisplayThemedBackground {
  public:
   nsDisplayCanvasThemedBackground(nsDisplayListBuilder* aBuilder,
                                   nsIFrame* aFrame)

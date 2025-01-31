@@ -45,8 +45,23 @@ function renderInfo({
   const bodyEl = document.getElementById("info-body");
   const linkEl = document.getElementById("private-browsing-myths");
 
-  if (infoIcon) {
+  let feltPrivacyEnabled = RPMGetBoolPref(
+    "browser.privatebrowsing.felt-privacy-v1",
+    false
+  );
+
+  if (infoIcon && !feltPrivacyEnabled) {
     container.style.backgroundImage = `url(${infoIcon})`;
+  }
+
+  if (feltPrivacyEnabled) {
+    // Record exposure event for Felt Privacy experiment
+    window.FeltPrivacyExposureTelemetry();
+
+    infoTitleEnabled = true;
+    infoTitle = "fluent:about-private-browsing-felt-privacy-v1-info-header";
+    infoBody = "fluent:about-private-browsing-felt-privacy-v1-info-body";
+    infoLinkText = "fluent:about-private-browsing-felt-privacy-v1-info-link";
   }
 
   titleEl.hidden = !infoTitleEnabled;
@@ -103,7 +118,7 @@ async function renderPromo({
 
       // Record promo click telemetry and set metrics as allow for spotlight
       // modal opened on promo click if user is enrolled in an experiment
-      let isExperiment = window.PrivateBrowsingRecordClick("promo_link");
+      let isExperiment = window.PrivateBrowsingRecordClick("PromoLink");
       const promoButtonData = promoButton?.action?.data;
       if (
         promoButton?.action?.type === "SHOW_SPOTLIGHT" &&
@@ -125,7 +140,7 @@ async function renderPromo({
       type: "BLOCK_MESSAGE_BY_ID",
       data: { id: messageId },
     });
-    window.PrivateBrowsingRecordClick("dismiss_button");
+    window.PrivateBrowsingRecordClick("DismissButton");
     container.remove();
   };
 
@@ -192,7 +207,7 @@ function recordOnceVisible(message) {
         data: message,
       });
       // Similar telemetry, but for Nimbus experiments
-      window.PrivateBrowsingExposureTelemetry();
+      window.PrivateBrowsingPromoExposureTelemetry();
       document.removeEventListener("visibilitychange", recordImpression);
     }
   };
@@ -203,7 +218,7 @@ function recordOnceVisible(message) {
       data: message,
     });
     // Similar telemetry, but for Nimbus experiments
-    window.PrivateBrowsingExposureTelemetry();
+    window.PrivateBrowsingPromoExposureTelemetry();
   } else {
     document.addEventListener("visibilitychange", recordImpression);
   }
@@ -278,11 +293,6 @@ document.addEventListener("DOMContentLoaded", function () {
     return;
   }
 
-  let newLogoEnabled = window.PrivateBrowsingEnableNewLogo();
-  document
-    .getElementById("about-private-browsing-logo")
-    .toggleAttribute("legacy", !newLogoEnabled);
-
   // The default info content is already in the markup, but we need to use JS to
   // set up the learn more link, since it's dynamically generated.
   const linkEl = document.getElementById("private-browsing-myths");
@@ -291,7 +301,7 @@ document.addEventListener("DOMContentLoaded", function () {
     RPMGetFormatURLPref("app.support.baseURL") + "private-browsing-myths"
   );
   linkEl.addEventListener("click", () => {
-    window.PrivateBrowsingRecordClick("info_link");
+    window.PrivateBrowsingRecordClick("InfoLink");
   });
 
   // We don't do this setup until now, because we don't want to record any impressions until we're
@@ -345,38 +355,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Setup the search hand-off box.
   let btn = document.getElementById("search-handoff-button");
-  RPMSendQuery("ShouldShowSearch", {}).then(
-    ([engineName, shouldHandOffToSearchMode]) => {
-      let input = document.querySelector(".fake-textbox");
-      if (shouldHandOffToSearchMode) {
-        document.l10n.setAttributes(btn, "about-private-browsing-search-btn");
-        document.l10n.setAttributes(
-          input,
-          "about-private-browsing-search-placeholder"
-        );
-      } else if (engineName) {
-        document.l10n.setAttributes(btn, "about-private-browsing-handoff", {
-          engine: engineName,
-        });
-        document.l10n.setAttributes(
-          input,
-          "about-private-browsing-handoff-text",
-          {
-            engine: engineName,
-          }
-        );
-      } else {
-        document.l10n.setAttributes(
-          btn,
-          "about-private-browsing-handoff-no-engine"
-        );
-        document.l10n.setAttributes(
-          input,
-          "about-private-browsing-handoff-text-no-engine"
-        );
-      }
-    }
-  );
 
   let editable = document.getElementById("fake-editable");
   let DISABLE_SEARCH_TOPIC = "DisableSearch";

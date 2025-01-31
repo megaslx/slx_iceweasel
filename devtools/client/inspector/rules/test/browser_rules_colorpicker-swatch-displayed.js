@@ -77,8 +77,6 @@ const TESTS = [
 ];
 
 add_task(async function () {
-  await pushPref("layout.css.color-mix.enabled", true);
-
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { view } = await openRuleView();
 
@@ -93,7 +91,7 @@ add_task(async function () {
     const prop = (
       await getRuleViewProperty(view, selector, propertyName, { wait: true })
     ).valueSpan;
-    const swatches = prop.querySelectorAll(".ruleview-colorswatch");
+    const swatches = prop.querySelectorAll(".inspector-colorswatch");
 
     ok(swatches.length, "Swatches found in the property");
     is(swatches.length, nb, "Correct number of swatches found in the property");

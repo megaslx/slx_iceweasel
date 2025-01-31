@@ -11,9 +11,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 // GMP IDs
 export const OPEN_H264_ID = "gmp-gmpopenh264";
+export const WIDEVINE_L1_ID = "gmp-widevinecdm-l1";
+export const WIDEVINE_L3_ID = "gmp-widevinecdm";
 
-export const WIDEVINE_ID = "gmp-widevinecdm";
-export const GMP_PLUGIN_IDS = [OPEN_H264_ID, WIDEVINE_ID];
+export const GMP_PLUGIN_IDS = [OPEN_H264_ID, WIDEVINE_L1_ID, WIDEVINE_L3_ID];
 
 export var GMPUtils = {
   /**
@@ -47,7 +48,15 @@ export var GMPUtils = {
     if (this._isPluginForceSupported(aPlugin)) {
       return true;
     }
-    if (aPlugin.id == WIDEVINE_ID) {
+    if (aPlugin.id == WIDEVINE_L1_ID) {
+      // The Widevine L1 plugin is currently only available for Windows x64.
+      return (
+        AppConstants.MOZ_WMF_CDM &&
+        AppConstants.platform == "win" &&
+        lazy.UpdateUtils.ABI.match(/x64/)
+      );
+    }
+    if (aPlugin.id == WIDEVINE_L1_ID || aPlugin.id == WIDEVINE_L3_ID) {
       // The Widevine plugin is available for Windows versions Vista and later,
       // Mac OSX, and Linux.
       return (
@@ -92,10 +101,46 @@ export var GMPUtils = {
     );
   },
 
+  _getChromiumUpdateParameters(aPlugin) {
+    let params = "";
+    if (AppConstants.platform === "win") {
+      params += "&os=win";
+    } else if (AppConstants.platform === "macosx") {
+      params += "&os=mac";
+    } else if (AppConstants.platform === "linux") {
+      params += "&os=Linux";
+    } else {
+      throw new Error("Unknown platform " + AppConstants.platform);
+    }
+
+    const abi = Services.appinfo.XPCOMABI;
+    if (abi.match(/aarch64/)) {
+      params += "&arch=arm64&os_arch=arm64";
+    } else if (abi.match(/x86_64/)) {
+      params += "&arch=x64&os_arch=x64";
+    } else if (abi.match(/x86/)) {
+      params += "&arch=x86&os_arch=x86";
+    } else {
+      throw new Error("Unknown ABI " + abi);
+    }
+
+    if (
+      GMPPrefs.getBool(
+        GMPPrefs.KEY_PLUGIN_FORCE_CHROMIUM_BETA,
+        false,
+        aPlugin.id
+      )
+    ) {
+      params += "&testrequest=1";
+    }
+
+    return params;
+  },
+
   _expectedABI(aPlugin) {
     let defaultABI = lazy.UpdateUtils.ABI;
     let expectedABIs = [defaultABI];
-    if (aPlugin.id == WIDEVINE_ID && this._isWindowsOnARM64()) {
+    if (aPlugin.id == WIDEVINE_L3_ID && this._isWindowsOnARM64()) {
       // On Windows on aarch64, we may use either the x86 or the ARM64 plugin
       // as we are still shipping the former to release.
       expectedABIs.push(defaultABI.replace(/aarch64/g, "x86"));
@@ -123,9 +168,15 @@ export var GMPPrefs = {
   KEY_PLUGIN_VISIBLE: "media.{0}.visible",
   KEY_PLUGIN_ABI: "media.{0}.abi",
   KEY_PLUGIN_FORCE_SUPPORTED: "media.{0}.forceSupported",
+  KEY_PLUGIN_FORCE_INSTALL: "media.{0}.forceInstall",
   KEY_PLUGIN_ALLOW_X64_ON_ARM64: "media.{0}.allow-x64-plugin-on-arm64",
+  KEY_PLUGIN_CHROMIUM_GUID: "media.{0}.chromium-guid",
+  KEY_PLUGIN_FORCE_CHROMIUM_UPDATE: "media.{0}.force-chromium-update",
+  KEY_PLUGIN_FORCE_CHROMIUM_BETA: "media.{0}.force-chromium-beta",
+  KEY_ALLOW_LOCAL_SOURCES: "media.gmp-manager.allowLocalSources",
   KEY_URL: "media.gmp-manager.url",
   KEY_URL_OVERRIDE: "media.gmp-manager.url.override",
+  KEY_CHROMIUM_UPDATE_URL: "media.gmp-manager.chromium-update-url",
   KEY_CERT_CHECKATTRS: "media.gmp-manager.cert.checkAttributes",
   KEY_CERT_REQUIREBUILTIN: "media.gmp-manager.cert.requireBuiltIn",
   KEY_CHECK_CONTENT_SIGNATURE: "media.gmp-manager.checkContentSignature",

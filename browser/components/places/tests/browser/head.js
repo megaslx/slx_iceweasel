@@ -2,12 +2,12 @@ ChromeUtils.defineESModuleGetters(this, {
   PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(this, "gFluentStrings", function () {
+ChromeUtils.defineLazyGetter(this, "gFluentStrings", function () {
   return new Localization(["branding/brand.ftl", "browser/browser.ftl"], true);
 });
 
-function openLibrary(callback, aLeftPaneRoot) {
-  let library = window.openDialog(
+function openLibrary(callback, aLeftPaneRoot, win = window) {
+  let library = win.openDialog(
     "chrome://browser/content/places/places.xhtml",
     "",
     "chrome,toolbar=yes,dialog=no,resizable",
@@ -27,10 +27,12 @@ function openLibrary(callback, aLeftPaneRoot) {
  *
  * @param {object} aLeftPaneRoot
  *        Hierarchy to open and select in the left pane.
+ * @param {Window} [win]
+ *        The window to use to open the library.
  * @returns {Promise}
  *          Resolves to the handle to the library window.
  */
-function promiseLibrary(aLeftPaneRoot) {
+function promiseLibrary(aLeftPaneRoot, win = window) {
   return new Promise(resolve => {
     let library = Services.wm.getMostRecentWindow("Places:Organizer");
     if (library && !library.closed) {
@@ -42,7 +44,7 @@ function promiseLibrary(aLeftPaneRoot) {
       checkLibraryPaneVisibility(library, aLeftPaneRoot);
       resolve(library);
     } else {
-      openLibrary(resolve, aLeftPaneRoot);
+      openLibrary(resolve, aLeftPaneRoot, win);
     }
   });
 }
@@ -131,6 +133,17 @@ function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
   var rect = aTree.getCoordsForCellItem(rowID, aTree.columns[0], "text");
   var x = rect.x + rect.width / 2;
   var y = rect.y + rect.height / 2;
+  if (aTree.id == "bookmarks-view" || aTree.id == "historyTree") {
+    // We are purposefully keeping the main <tree> element unlabeled, because in
+    // this specific case, the on-screen label for either "Bookmarks" or
+    // "History" sidebar is positioned closely to the tree, visually and in DOM.
+    // We want to avoid making a screen reader user to listen to a redundant
+    // announcement, therefore no accessible name is provided to the container
+    // and we account for this in a11y-checks:
+    AccessibilityUtils.setEnv({
+      labelRule: false,
+    });
+  }
   // Simulate the click.
   EventUtils.synthesizeMouse(
     aTree.body,
@@ -139,6 +152,7 @@ function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
     aOptions || {},
     aTree.ownerGlobal
   );
+  AccessibilityUtils.resetEnv();
 }
 
 /**
@@ -182,7 +196,7 @@ function promiseSetToolbarVisibility(aToolbar, aVisible) {
 function isToolbarVisible(aToolbar) {
   let hidingAttribute =
     aToolbar.getAttribute("type") == "menubar" ? "autohide" : "collapsed";
-  let hidingValue = aToolbar.getAttribute(hidingAttribute).toLowerCase();
+  let hidingValue = aToolbar.getAttribute(hidingAttribute)?.toLowerCase();
   // Check for both collapsed="true" and collapsed="collapsed"
   return hidingValue !== "true" && hidingValue !== hidingAttribute;
 }
@@ -368,9 +382,11 @@ function fillBookmarkTextField(id, text, win, blur = true) {
  * @param {Function} taskFn
  *        The task to execute once the sidebar is ready. Will get the Places
  *        tree view as input.
+ * @param {Window} [win]
+ *        The window to open the sidebar in, else uses the default window.
  */
-var withSidebarTree = async function (type, taskFn) {
-  let sidebar = document.getElementById("sidebar");
+var withSidebarTree = async function (type, taskFn, win = window) {
+  let sidebar = win.document.getElementById("sidebar");
   info("withSidebarTree: waiting sidebar load");
   let sidebarLoadedPromise = new Promise(resolve => {
     sidebar.addEventListener(
@@ -383,7 +399,7 @@ var withSidebarTree = async function (type, taskFn) {
   });
   let sidebarId =
     type == "bookmarks" ? "viewBookmarksSidebar" : "viewHistorySidebar";
-  SidebarUI.show(sidebarId);
+  win.SidebarController.show(sidebarId);
   await sidebarLoadedPromise;
 
   let treeId = type == "bookmarks" ? "bookmarks-view" : "historyTree";
@@ -394,7 +410,7 @@ var withSidebarTree = async function (type, taskFn) {
   try {
     await taskFn(tree);
   } finally {
-    SidebarUI.hide();
+    win.SidebarController.hide();
   }
 };
 
@@ -407,9 +423,11 @@ var withSidebarTree = async function (type, taskFn) {
  * @param {Function} taskFn
  *        The task to execute once the Library is ready.
  *        Will get { left, right } trees as argument.
+ * @param {Window} [win]
+ *        The window to use to open the library.
  */
-var withLibraryWindow = async function (hierarchy, taskFn) {
-  let library = await promiseLibrary(hierarchy);
+var withLibraryWindow = async function (hierarchy, taskFn, win = window) {
+  let library = await promiseLibrary(hierarchy, win);
   let left = library.document.getElementById("placesList");
   let right = library.document.getElementById("placeContent");
   info("withLibrary: executing the task");
@@ -444,7 +462,7 @@ function promisePopupShown(popup) {
     if (popup.state == "open") {
       resolve();
     } else {
-      let onPopupShown = event => {
+      let onPopupShown = () => {
         popup.removeEventListener("popupshown", onPopupShown);
         resolve();
       };
@@ -456,7 +474,7 @@ function promisePopupShown(popup) {
 // Function copied from browser/base/content/test/general/head.js.
 function promisePopupHidden(popup) {
   return new Promise(resolve => {
-    let onPopupHidden = event => {
+    let onPopupHidden = () => {
       popup.removeEventListener("popuphidden", onPopupHidden);
       resolve();
     };
@@ -465,8 +483,8 @@ function promisePopupHidden(popup) {
 }
 
 // Identify a bookmark node in the Bookmarks Toolbar by its guid.
-function getToolbarNodeForItemGuid(itemGuid) {
-  let children = document.getElementById("PlacesToolbarItems").childNodes;
+function getToolbarNodeForItemGuid(itemGuid, win = window) {
+  let children = win.document.getElementById("PlacesToolbarItems").childNodes;
   for (let child of children) {
     if (itemGuid === child._placesNode.bookmarkGuid) {
       return child;
@@ -525,6 +543,34 @@ async function createAndRemoveDefaultFolder() {
   is(defaultGUID, tempFolder[0].guid, "check default guid");
 
   await PlacesUtils.bookmarks.remove(tempFolder);
+}
+
+async function showLibraryColumn(library, columnName) {
+  await SimpleTest.promiseFocus(library);
+
+  const viewMenu = library.document.getElementById("viewMenu");
+  info("await viewMenuPopup");
+  await new Promise(resolve => {
+    library.document
+      .getElementById("viewMenuPopup")
+      .addEventListener("popupshown", resolve, {
+        once: true,
+      });
+    viewMenu.click();
+  });
+
+  const viewColumns = library.document.getElementById("viewColumns");
+  info("await viewColumnsPopup");
+  await new Promise(resolve => {
+    viewColumns
+      .querySelector("menupopup")
+      .addEventListener("popupshown", () => resolve(), {
+        once: true,
+      });
+    viewColumns.click();
+  });
+
+  library.document.getElementById(`menucol_${columnName}`).click();
 }
 
 registerCleanupFunction(async () => {

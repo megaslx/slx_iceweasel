@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <title>Test serialization of computed CSS variable values</title>
-<script src="/MochiKit/MochiKit.js"></script>
 <script src="/tests/SimpleTest/SimpleTest.js"></script>
 <link rel="stylesheet" href="/tests/SimpleTest/test.css" type="text/css">
 
@@ -68,7 +67,7 @@ function runTest() {
     var expected = entry[2];
     span.setAttribute("style", declaration);
     var cs = getComputedStyle(span, "");
-    is(cs.getPropertyValue(property), expected, "subtest #" + i);
+    is(cs.getPropertyValue(property), expected, `subtest #${i}: ${declaration}`);
   });
 
   SimpleTest.finish();

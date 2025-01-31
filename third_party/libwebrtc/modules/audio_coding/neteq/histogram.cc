@@ -13,8 +13,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <numeric>
+#include <optional>
 
-#include "absl/types/optional.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/numerics/safe_conversions.h"
 
@@ -22,7 +22,7 @@ namespace webrtc {
 
 Histogram::Histogram(size_t num_buckets,
                      int forget_factor,
-                     absl::optional<double> start_forget_weight)
+                     std::optional<double> start_forget_weight)
     : buckets_(num_buckets, 0),
       forget_factor_(0),
       base_forget_factor_(forget_factor),
@@ -114,8 +114,8 @@ int Histogram::Quantile(int probability) {
   // `iat_index`, it is more efficient to start with `sum` = 1 and subtract
   // elements from the start of the histogram.
   int inverse_probability = (1 << 30) - probability;
-  size_t index = 0;        // Start from the beginning of `buckets_`.
-  int sum = 1 << 30;       // Assign to 1 in Q30.
+  size_t index = 0;   // Start from the beginning of `buckets_`.
+  int sum = 1 << 30;  // Assign to 1 in Q30.
   sum -= buckets_[index];
 
   while ((sum > inverse_probability) && (index < buckets_.size() - 1)) {

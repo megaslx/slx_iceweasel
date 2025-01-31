@@ -35,10 +35,10 @@ function verifySignatures() {
     Services.obs.addObserver(observer, "xpi-signature-changed");
 
     info("Verifying signatures");
-    const { XPIDatabase } = ChromeUtils.import(
-      "resource://gre/modules/addons/XPIDatabase.jsm"
+    const { XPIExports } = ChromeUtils.importESModule(
+      "resource://gre/modules/addons/XPIExports.sys.mjs"
     );
-    XPIDatabase.verifySignatures();
+    XPIExports.XPIDatabase.verifySignatures();
   });
 }
 
@@ -115,7 +115,7 @@ add_task(async function () {
   await promiseShutdownManager();
 
   Services.prefs.setBoolPref(PREF_XPI_SIGNATURES_REQUIRED, true);
-  gAppInfo.version = 5.0;
+  gAppInfo.version = "5.0";
   await promiseStartupManager();
 
   addon = await promiseAddonByID(ID);

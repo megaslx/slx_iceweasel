@@ -1,12 +1,12 @@
 import { assert } from '../../../common/util/util.js';
-import { takeScreenshotDelayed } from '../../../common/util/wpt_reftest_wait.js';
+import { takeScreenshot, takeScreenshotDelayed } from '../../../common/util/wpt_reftest_wait.js';
 
 interface GPURefTest {
   readonly device: GPUDevice;
   readonly queue: GPUQueue;
 }
 
-export function runRefTest(fn: (t: GPURefTest) => Promise<void>): void {
+export function runRefTest(fn: (t: GPURefTest) => Promise<void> | void): void {
   void (async () => {
     assert(
       typeof navigator !== 'undefined' && navigator.gpu !== undefined,
@@ -22,5 +22,8 @@ export function runRefTest(fn: (t: GPURefTest) => Promise<void>): void {
     await fn({ device, queue });
 
     takeScreenshotDelayed(50);
-  })();
+  })().catch(() => {
+    // remove reftest-wait to mark end of test
+    takeScreenshot();
+  });
 }

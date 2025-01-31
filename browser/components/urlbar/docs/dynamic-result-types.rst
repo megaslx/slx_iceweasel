@@ -3,11 +3,10 @@ Dynamic Result Types
 
 This document discusses a special category of address bar results called dynamic
 result types. Dynamic result types allow you to easily add new types of results
-to the address bar and are especially useful for extensions.
+to the address bar.
 
 The intended audience for this document is developers who need to add new kinds
-of address bar results, either internally in the address bar codebase or through
-extensions.
+of address bar results.
 
 .. contents::
    :depth: 2
@@ -34,14 +33,6 @@ so that your card is drawn correctly; you may need to update the keyboard
 selection behavior if your card contains elements that can be independently
 selected such as different days of the week; and so on.
 
-If you're implementing your weather card in an extension, as you might in an
-add-on experiment, then you'd need to land your new result type in
-mozilla-central so your extension can use it. Your new result type would ship
-with Firefox even though the vast majority of users would never see it, and your
-fellow address bar hackers would have to work around your code even though it
-would remain inactive most of the time, at least until your experiment
-graduated.
-
 Dynamic Result Types
 --------------------
 
@@ -49,52 +40,27 @@ Dynamic Result Types
 types. Instead of adding a new built-in type along with all that entails, you
 add a new provider subclass and register a template that describes how the view
 should draw your result type and indicates which elements are selectable. The
-address bar takes care of everything else. (Or if you're implementing an
-extension, you add a few event handlers instead of a provider subclass, although
-we have a shim_ that abstracts away the differences between internal and
-extension address bar code.)
+address bar takes care of everything else.
 
 Dynamic result types are essentially an abstraction layer: Support for them as a
 general category of results is built into the address bar, and each
 implementation of a specific dynamic result type fills in the details.
 
-In addition, dynamic result types can be added at runtime. This is important for
-extensions that implement new types of results like the weather forecast example
-above.
-
-.. _shim: https://github.com/0c0w3/dynamic-result-type-extension/blob/master/src/shim.js
+In addition, dynamic result types can be added at runtime.
 
 Getting Started
 ---------------
 
 To get a feel for how dynamic result types are implemented, you can look at the
-`example dynamic result type extension <exampleExtension_>`__. The extension
-uses the recommended shim_ that makes writing address bar extension code very
-similar to writing internal address bar code, and it's therefore a useful
-example even if you intend to add a new dynamic result type internally in the
-address bar codebase in mozilla-central.
+:searchfox:`UrlbarProviderCalculator <browser/components/urlbar/UrlbarProviderCalculator.sys.mjs>`.
 
 The next section describes the specific steps you need to take to add a new
 dynamic result type.
 
-.. _exampleExtension: https://github.com/0c0w3/dynamic-result-type-extension/blob/master/src/background.js
-
 Implementation Steps
 --------------------
 
-This section describes how to add a new dynamic result type in either of the
-following cases:
-
-* You want to add a new dynamic result type in an extension using the
-  recommended shim_.
-* You want to add a new dynamic result type internal to the address bar codebase
-  in mozilla-central.
-
-The steps are mostly the same in both cases and are described next.
-
-If you want to add a new dynamic result type in an extension but don't want to
-use the shim, then skip ahead to `Appendix B: Using the WebExtensions API
-Directly`_.
+This section describes how to add a new dynamic result type.
 
 1. Register the dynamic result type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -123,9 +89,7 @@ Next, add the view template for the new type:
 
 ``viewTemplate`` is an object called a view template. It describes in a
 declarative manner the DOM that should be created in the view for all results of
-the new type. For providers created in extensions, it also declares the
-stylesheet that should be applied to results in the view. See `View Templates`_
-for a description of this object.
+the new type.
 
 3. Add the provider
 ~~~~~~~~~~~~~~~~~~~
@@ -152,17 +116,14 @@ aren't relevant to dynamic result types, and you should choose values
 appropriate to your use case.
 
 If any elements created in the view for your results can be picked with the
-keyboard or mouse, then be sure to implement your provider's ``onEngagement``
-method.
+keyboard or mouse, then be sure to implement your provider's
+``onEngagement`` method.
 
 For help on implementing providers in general, see the address bar's
 `Architecture Overview`__.
 
 If you are creating the provider in the internal address bar implementation in
 mozilla-central, then don't forget to register it in ``UrlbarProvidersManager``.
-
-If you are creating the provider in an extension, then it's registered
-automatically, and there's nothing else you need to do.
 
 __ https://firefox-source-docs.mozilla.org/browser/urlbar/overview.html#urlbarprovider
 
@@ -220,11 +181,6 @@ mozilla-central, then add styling `urlbar-dynamic-results.css`_.
 
 .. _urlbar-dynamic-results.css: https://searchfox.org/mozilla-central/source/browser/themes/shared/urlbar-dynamic-results.css
 
-If you are creating the provider in an extension, then bundle a CSS file in your
-extension and declare it in the top-level ``stylesheet`` property of your view
-template, as described in `View Templates`_. Additionally, if any of your rules
-override built-in rules, then you'll need to declare them as ``!important``.
-
 The rest of this section will discuss the CSS rules you need to use to style
 your results.
 
@@ -275,11 +231,6 @@ A **view template** is a plain JS object that declaratively describes how to
 build the DOM for a dynamic result type. When a result of a particular dynamic
 result type is shown in the view, the type's view template is used to construct
 the part of the view that represents the type in general.
-
-The need for view templates arises from the fact that extensions run in a
-separate process from the chrome process and can't directly access the chrome
-DOM, where the address bar view lives. Since extensions are a primary use case
-for dynamic result types, this is an important constraint on their design.
 
 Properties
 ~~~~~~~~~~
@@ -332,18 +283,6 @@ structure may include the following properties:
 ``{array} [classList]``
   An optional list of classes. Each class will be added to the element created
   for the object by calling ``element.classList.add()``.
-
-``{string} [stylesheet]``
-  For dynamic result types created in extensions, this property should be set on
-  the root object in the view template structure, and its value should be a
-  stylesheet URL. The stylesheet will be loaded in all browser windows so that
-  the dynamic result type view may be styled. The specified URL will be resolved
-  against the extension's base URI. We recommend specifying a URL relative to
-  your extension's base directory.
-
-  For dynamic result types created internally in the address bar codebase, this
-  value should not be specified and instead styling should be added to
-  `urlbar-dynamic-results.css`_.
 
 Example
 ~~~~~~~
@@ -614,10 +553,9 @@ useful in this case.
 URL Navigation
 ~~~~~~~~~~~~~~
 
-If a result's payload includes a string ``url`` property and a boolean
-``shouldNavigate: true`` property, then picking the result will navigate to the
-URL. The ``onEngagement`` method of the result's provider will still be called
-before navigation.
+If a result's payload includes a string ``url`` property, picking the result
+will navigate to the URL. The ``onEngagement`` method of the result's provider
+will be called before navigation.
 
 Text Highlighting
 ~~~~~~~~~~~~~~~~~
@@ -648,9 +586,6 @@ payload property in the following example:
         // *more payload properties*
       }
     );
-
-``UrlbarUtils.HIGHLIGHT`` is defined in the extensions shim_ and is described
-below.
 
 Your view template must create an element corresponding to the payload
 property. That is, it must include an object where the value of the ``name``
@@ -694,113 +629,7 @@ Appendix A: Examples
 This section lists some example and real-world consumers of dynamic result
 types.
 
-`Example Extension`__
-  This extension demonstrates a simple use of dynamic result types.
-
-`Weather Quick Suggest Extension`__
-  A real-world Firefox extension experiment that shows weather forecasts and
-  alerts when the user performs relevant searches in the address bar.
-
 `Tab-to-Search Provider`__
   This is a built-in provider in mozilla-central that uses dynamic result types.
 
-__ https://github.com/0c0w3/dynamic-result-type-extension
-__ https://github.com/mozilla-extensions/firefox-quick-suggest-weather/blob/master/src/background.js
 __ https://searchfox.org/mozilla-central/source/browser/components/urlbar/UrlbarProviderTabToSearch.sys.mjs
-
-Appendix B: Using the WebExtensions API Directly
-------------------------------------------------
-
-If you're developing an extension, the recommended way of using dynamic result
-types is to use the shim_, which abstracts away the differences between writing
-internal address bar code and extensions code. The `implementation steps`_ above
-apply to extensions as long as you're using the shim.
-
-For completeness, in this section we'll document the WebExtensions APIs that the
-shim is built on. If you don't use the shim for some reason, then follow these
-steps instead. You'll see that each step above using the shim has an analogous
-step here.
-
-The WebExtensions API schema is declared in `schema.json`_ and implemented in
-`api.js`_.
-
-.. _schema.json: https://github.com/0c0w3/dynamic-result-type-extension/blob/master/src/experiments/urlbar/schema.json
-.. _api.js: https://github.com/0c0w3/dynamic-result-type-extension/blob/master/src/experiments/urlbar/api.js
-
-1. Register the dynamic result type
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-First, register the new dynamic result type:
-
-.. code-block:: javascript
-
-    browser.experiments.urlbar.addDynamicResultType(name, type);
-
-``name`` is a string identifier for the new type. See step 1 in `Implementation
-Steps`_ for a description, which applies here, too.
-
-``type`` is an object with metadata for the new type. Currently no metadata is
-supported, so this should be an empty object, which is the default value.
-
-2. Register the view template
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Next, add the view template for the new type:
-
-.. code-block:: javascript
-
-    browser.experiments.urlbar.addDynamicViewTemplate(name, viewTemplate);
-
-See step 2 above for a description of the parameters.
-
-3. Add WebExtension event listeners
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Add all the WebExtension event listeners you normally would in an address bar
-extension, including the two required listeners, ``onBehaviorRequested`` and
-and ``onResultsRequested``.
-
-.. code-block:: javascript
-
-    browser.urlbar.onBehaviorRequested.addListener(query => {
-      return "active";
-    }, providerName);
-
-    browser.urlbar.onResultsRequested.addListener(query => {
-      let results = [
-        // ...
-      ];
-      return results;
-    }, providerName);
-
-See the address bar extensions__ document for help on the urlbar WebExtensions
-API.
-
-__ https://firefox-source-docs.mozilla.org/browser/urlbar/experiments.html
-
-4. Add an onViewUpdateRequested event listener
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``onViewUpdateRequested`` is a WebExtensions event particular to dynamic result
-types. It's analogous to the ``getViewUpdate`` provider method described
-earlier.
-
-.. code-block:: javascript
-
-    browser.experiments.urlbar.onViewUpdateRequested.addListener((payload, idsByName) => {
-      let viewUpdate = {
-        // ...
-      };
-      return viewUpdate;
-    });
-
-Note that unlike ``getViewUpdate``, here the listener's first parameter is a
-result payload, not the result itself.
-
-The listener should return a view update object.
-
-5. Style the results
-~~~~~~~~~~~~~~~~~~~~
-
-This step is the same as step 5 above. Bundle a CSS file in your extension and
-declare it in the top-level ``stylesheet`` property of your view template.

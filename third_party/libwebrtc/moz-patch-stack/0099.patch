@@ -1,40 +1,39 @@
 From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Tue, 16 May 2023 06:38:00 +0000
-Subject: Bug 1832804 - Revert changeset b0339fd77c82. r=webrtc-reviewers,mjf
+Date: Wed, 10 Apr 2024 21:54:00 +0000
+Subject: Bug 1888181 - (fix-52fec7d3) Limit scope of race checker in
+ VideoCaptureModuleV4L2::StartCapture. r=mjf
 
-This bit is now restored to original libwebrtc M111 code.
+TSAN detects a race between destroying the scoped race checker in StartCapture
+and creating the scoped race checker in CaptureProcess, because once the capture
+thread has been created (and given its run function) there is no synchronization
+before the run function starts to run.
 
-Differential Revision: https://phabricator.services.mozilla.com/D178006
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/47b1b27c8f75293c0861ca6197d438076ca9e693
+This patch avoids the race by destroying the StartCapture scoped race checker
+before creating the capture thread.
+
+Differential Revision: https://phabricator.services.mozilla.com/D207203
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/b046a1446cee5ab485d4868b3ca9784b16b2d02f
 ---
- modules/rtp_rtcp/source/packet_sequencer.cc | 14 ++------------
- 1 file changed, 2 insertions(+), 12 deletions(-)
+ modules/video_capture/linux/video_capture_v4l2.cc | 2 ++
+ 1 file changed, 2 insertions(+)
 
-diff --git a/modules/rtp_rtcp/source/packet_sequencer.cc b/modules/rtp_rtcp/source/packet_sequencer.cc
-index acc2e87aa3..55edd768a8 100644
---- a/modules/rtp_rtcp/source/packet_sequencer.cc
-+++ b/modules/rtp_rtcp/source/packet_sequencer.cc
-@@ -118,18 +118,8 @@ void PacketSequencer::PopulatePaddingFields(RtpPacketToSend& packet) {
-     return;
+diff --git a/modules/video_capture/linux/video_capture_v4l2.cc b/modules/video_capture/linux/video_capture_v4l2.cc
+index 6d8a5e463f..db2450a2c7 100644
+--- a/modules/video_capture/linux/video_capture_v4l2.cc
++++ b/modules/video_capture/linux/video_capture_v4l2.cc
+@@ -129,6 +129,7 @@ int32_t VideoCaptureModuleV4L2::StartCapture(
+     }
    }
  
--  if (last_timestamp_time_ms_ > 0) {
--    RTC_DCHECK_GT(last_rtp_timestamp_, 0);
--    RTC_DCHECK_GT(last_capture_time_ms_, 0);
--    packet.SetTimestamp(last_rtp_timestamp_);
--    packet.set_capture_time(Timestamp::Millis(last_capture_time_ms_));
--  } else {
--    // No media packet has been sent yet so timestamps are not known. Set them
--    // now as they will be needed when serializing the packet later on.
--    auto now = clock_->CurrentTime();
--    packet.SetTimestamp(now.ms() * kTimestampTicksPerMs);
--    packet.set_capture_time(now);
--  }
-+  packet.SetTimestamp(last_rtp_timestamp_);
-+  packet.set_capture_time(Timestamp::Millis(last_capture_time_ms_));
++  {
+   // We don't want members above to be guarded by capture_checker_ as
+   // it's meant to be for members that are accessed on the API thread
+   // only when we are not capturing. The code above can be called many
+@@ -298,6 +299,7 @@ int32_t VideoCaptureModuleV4L2::StartCapture(
+   _requestedCapability = capability;
+   _captureStarted = true;
+   _streaming = true;
++  }
  
-   // Only change the timestamp of padding packets sent over RTX.
-   // Padding only packets over RTP has to be sent as part of a media
--- 
-2.34.1
-
+   // start capture thread;
+   if (_captureThread.empty()) {

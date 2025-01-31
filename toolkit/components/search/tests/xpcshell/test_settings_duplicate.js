@@ -12,6 +12,8 @@ const { getAppInfo } = ChromeUtils.importESModule(
   "resource://testing-common/AppInfo.sys.mjs"
 );
 
+const DUPLICATE_ENGINE_ID = "f3094ab7-3302-4d5b-9f79-ea92c9a49f87";
+
 const enginesSettings = {
   version: SearchUtils.SETTINGS_VERSION,
   buildID: "TBD",
@@ -30,22 +32,25 @@ const enginesSettings = {
   },
   engines: [
     {
+      id: "appDefault",
       _metaData: { alias: null },
       _isAppProvided: true,
-      _name: "engine1",
+      _name: "appDefault",
     },
     {
+      id: "other",
       _metaData: { alias: null },
       _isAppProvided: true,
-      _name: "engine2",
+      _name: "other",
     },
     // This is a user-installed engine - the only one that was listed due to the
     // original issue.
     {
-      _name: "engine1",
-      _shortName: "engine1",
-      _loadPath: "[test]oldduplicateversion",
-      description: "An old near duplicate version of engine1",
+      id: DUPLICATE_ENGINE_ID,
+      _name: "appDefault",
+      _shortName: "appDefault",
+      _loadPath: "[https]oldduplicateversion",
+      description: "An old near duplicate version of appDefault",
       _iconURL:
         "data:image/x-icon;base64,AAABAAEAEBAQAAEABAAoAQAAFgAAACgAAAAQAAAAIAAAAAEABAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAEAgQAhIOEAMjHyABIR0gA6ejpAGlqaQCpqKkAKCgoAPz9/AAZGBkAmJiYANjZ2ABXWFcAent6ALm6uQA8OjwAiIiIiIiIiIiIiI4oiL6IiIiIgzuIV4iIiIhndo53KIiIiB/WvXoYiIiIfEZfWBSIiIEGi/foqoiIgzuL84i9iIjpGIoMiEHoiMkos3FojmiLlUipYliEWIF+iDe0GoRa7D6GPbjcu1yIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       _iconMapObj: {
@@ -69,16 +74,24 @@ const enginesSettings = {
   ],
 };
 
-add_task(async function setup() {
-  await AddonTestUtils.promiseStartupManager();
-
+add_setup(async function () {
   // Allow telemetry probes which may otherwise be disabled for some applications (e.g. Thunderbird)
   Services.prefs.setBoolPref(
     "toolkit.telemetry.testing.overrideProductsCheck",
     true
   );
 
-  await SearchTestUtils.useTestEngines("data1");
+  SearchTestUtils.setRemoteSettingsConfig([
+    {
+      identifier: "appDefault",
+      base: {
+        urls: {
+          search: { base: "https://1.example.com", searchTermParamName: "q" },
+        },
+      },
+    },
+    { identifier: "other" },
+  ]);
   Services.prefs.setCharPref(SearchUtils.BROWSER_SEARCH_PREF + "region", "US");
   Services.locale.availableLocales = ["en-US"];
   Services.locale.requestedLocales = ["en-US"];
@@ -103,6 +116,8 @@ add_task(async function setup() {
     new TextEncoder().encode(JSON.stringify(enginesSettings)),
     { compress: true }
   );
+
+  consoleAllowList.push("Failed to load");
 });
 
 add_task(async function test_cached_duplicate() {
@@ -116,19 +131,24 @@ add_task(async function test_cached_duplicate() {
     "Should have successfully created the search service"
   );
 
-  let engine = await Services.search.getEngineByName("engine1");
+  let engine = Services.search.getEngineByName("appDefault");
   let submission = engine.getSubmission("foo");
   Assert.equal(
     submission.uri.spec,
-    "https://1.example.com/search?q=foo",
+    "https://1.example.com/?q=foo",
     "Should have not changed the app provided engine."
+  );
+
+  Assert.ok(
+    !(await Services.search.getEngineById(DUPLICATE_ENGINE_ID)),
+    "Should not have added the duplicate engine"
   );
 
   let engines = await Services.search.getEngines();
 
   Assert.deepEqual(
     engines.map(e => e.name),
-    ["engine1", "engine2"],
+    ["appDefault", "other"],
     "Should have the expected default engines"
   );
 });

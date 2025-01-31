@@ -7,22 +7,25 @@
 // Tracks possibly-redundant flow control signals from other code and converts
 // into flow control frames needing to be sent to the remote.
 
-use crate::frame::{
-    FRAME_TYPE_DATA_BLOCKED, FRAME_TYPE_MAX_DATA, FRAME_TYPE_MAX_STREAMS_BIDI,
-    FRAME_TYPE_MAX_STREAMS_UNIDI, FRAME_TYPE_MAX_STREAM_DATA, FRAME_TYPE_STREAMS_BLOCKED_BIDI,
-    FRAME_TYPE_STREAMS_BLOCKED_UNIDI, FRAME_TYPE_STREAM_DATA_BLOCKED,
+use std::{
+    fmt::Debug,
+    ops::{Deref, DerefMut, Index, IndexMut},
 };
-use crate::packet::PacketBuilder;
-use crate::recovery::{RecoveryToken, StreamRecoveryToken};
-use crate::stats::FrameStats;
-use crate::stream_id::{StreamId, StreamType};
-use crate::{Error, Res};
+
 use neqo_common::{qtrace, Role};
 
-use std::convert::TryFrom;
-use std::fmt::Debug;
-use std::ops::{Deref, DerefMut};
-use std::ops::{Index, IndexMut};
+use crate::{
+    frame::{
+        FRAME_TYPE_DATA_BLOCKED, FRAME_TYPE_MAX_DATA, FRAME_TYPE_MAX_STREAMS_BIDI,
+        FRAME_TYPE_MAX_STREAMS_UNIDI, FRAME_TYPE_MAX_STREAM_DATA, FRAME_TYPE_STREAMS_BLOCKED_BIDI,
+        FRAME_TYPE_STREAMS_BLOCKED_UNIDI, FRAME_TYPE_STREAM_DATA_BLOCKED,
+    },
+    packet::PacketBuilder,
+    recovery::{RecoveryToken, StreamRecoveryToken},
+    stats::FrameStats,
+    stream_id::{StreamId, StreamType},
+    Error, Res,
+};
 
 #[derive(Debug)]
 pub struct SenderFlowControl<T>
@@ -51,7 +54,7 @@ where
     T: Debug + Sized,
 {
     /// Make a new instance with the initial value and subject.
-    pub fn new(subject: T, initial: u64) -> Self {
+    pub const fn new(subject: T, initial: u64) -> Self {
         Self {
             subject,
             limit: initial,
@@ -61,15 +64,16 @@ where
         }
     }
 
-    /// Update the maximum.  Returns `true` if the change was an increase.
-    pub fn update(&mut self, limit: u64) -> bool {
+    /// Update the maximum. Returns `Some` with the updated available flow
+    /// control if the change was an increase and `None` otherwise.
+    pub fn update(&mut self, limit: u64) -> Option<usize> {
         debug_assert!(limit < u64::MAX);
         if limit > self.limit {
             self.limit = limit;
             self.blocked_frame = false;
-            true
+            Some(self.available())
         } else {
-            false
+            None
         }
     }
 
@@ -86,7 +90,7 @@ where
     }
 
     /// How much data has been written.
-    pub fn used(&self) -> u64 {
+    pub const fn used(&self) -> u64 {
         self.used
     }
 
@@ -103,7 +107,7 @@ where
     /// This is `Some` with the active limit if `blocked` has been called,
     /// if a blocking frame has not been sent (or it has been lost), and
     /// if the blocking condition remains.
-    fn blocked_needed(&self) -> Option<u64> {
+    const fn blocked_needed(&self) -> Option<u64> {
         if self.blocked_frame && self.limit < self.blocked_at {
             Some(self.blocked_at - 1)
         } else {
@@ -221,7 +225,7 @@ where
     T: Debug + Sized,
 {
     /// Make a new instance with the initial value and subject.
-    pub fn new(subject: T, max: u64) -> Self {
+    pub const fn new(subject: T, max: u64) -> Self {
         Self {
             subject,
             max_active: max,
@@ -245,7 +249,7 @@ where
         }
     }
 
-    /// This function is called when STREAM_DATA_BLOCKED frame is received.
+    /// This function is called when `STREAM_DATA_BLOCKED` frame is received.
     /// The flow control will try to send an update if possible.
     pub fn send_flowc_update(&mut self) {
         if self.retired + self.max_active > self.max_allowed {
@@ -253,15 +257,15 @@ where
         }
     }
 
-    pub fn frame_needed(&self) -> bool {
+    pub const fn frame_needed(&self) -> bool {
         self.frame_pending
     }
 
-    pub fn next_limit(&self) -> u64 {
+    pub const fn next_limit(&self) -> u64 {
         self.retired + self.max_active
     }
 
-    pub fn max_active(&self) -> u64 {
+    pub const fn max_active(&self) -> u64 {
         self.max_active
     }
 
@@ -282,11 +286,11 @@ where
         self.max_active = max;
     }
 
-    pub fn retired(&self) -> u64 {
+    pub const fn retired(&self) -> u64 {
         self.retired
     }
 
-    pub fn consumed(&self) -> u64 {
+    pub const fn consumed(&self) -> u64 {
         self.consumed
     }
 }
@@ -420,7 +424,7 @@ impl ReceiverFlowControl<StreamType> {
     }
 
     /// Check if received item exceeds the allowed flow control limit.
-    pub fn check_allowed(&self, new_end: u64) -> bool {
+    pub const fn check_allowed(&self, new_end: u64) -> bool {
         new_end < self.max_allowed
     }
 
@@ -440,7 +444,7 @@ pub struct RemoteStreamLimit {
 }
 
 impl RemoteStreamLimit {
-    pub fn new(stream_type: StreamType, max_streams: u64, role: Role) -> Self {
+    pub const fn new(stream_type: StreamType, max_streams: u64, role: Role) -> Self {
         Self {
             streams_fc: ReceiverFlowControl::new(stream_type, max_streams),
             // // This is for a stream created by a peer, therefore we use role.remote().
@@ -448,7 +452,7 @@ impl RemoteStreamLimit {
         }
     }
 
-    pub fn is_allowed(&self, stream_id: StreamId) -> bool {
+    pub const fn is_allowed(&self, stream_id: StreamId) -> bool {
         let stream_idx = stream_id.as_u64() >> 2;
         self.streams_fc.check_allowed(stream_idx)
     }
@@ -487,7 +491,7 @@ pub struct RemoteStreamLimits {
 }
 
 impl RemoteStreamLimits {
-    pub fn new(local_max_stream_bidi: u64, local_max_stream_uni: u64, role: Role) -> Self {
+    pub const fn new(local_max_stream_bidi: u64, local_max_stream_uni: u64, role: Role) -> Self {
         Self {
             bidirectional: RemoteStreamLimit::new(StreamType::BiDi, local_max_stream_bidi, role),
             unidirectional: RemoteStreamLimit::new(StreamType::UniDi, local_max_stream_uni, role),
@@ -522,7 +526,7 @@ pub struct LocalStreamLimits {
 }
 
 impl LocalStreamLimits {
-    pub fn new(role: Role) -> Self {
+    pub const fn new(role: Role) -> Self {
         Self {
             bidirectional: SenderFlowControl::new(StreamType::BiDi, 0),
             unidirectional: SenderFlowControl::new(StreamType::UniDi, 0),
@@ -572,12 +576,15 @@ impl IndexMut<StreamType> for LocalStreamLimits {
 
 #[cfg(test)]
 mod test {
-    use super::{LocalStreamLimits, ReceiverFlowControl, RemoteStreamLimits, SenderFlowControl};
-    use crate::packet::PacketBuilder;
-    use crate::stats::FrameStats;
-    use crate::stream_id::{StreamId, StreamType};
-    use crate::Error;
     use neqo_common::{Encoder, Role};
+
+    use super::{LocalStreamLimits, ReceiverFlowControl, RemoteStreamLimits, SenderFlowControl};
+    use crate::{
+        packet::PacketBuilder,
+        stats::FrameStats,
+        stream_id::{StreamId, StreamType},
+        Error,
+    };
 
     #[test]
     fn blocked_at_zero() {
@@ -803,7 +810,7 @@ mod test {
         fc[StreamType::BiDi].add_retired(1);
         fc[StreamType::BiDi].send_flowc_update();
         // consume the frame
-        let mut builder = PacketBuilder::short(Encoder::new(), false, []);
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
         let mut tokens = Vec::new();
         fc[StreamType::BiDi].write_frames(&mut builder, &mut tokens, &mut FrameStats::default());
         assert_eq!(tokens.len(), 1);
@@ -853,13 +860,13 @@ mod test {
         remote_stream_limits(Role::Server, 0, 2);
     }
 
-    #[should_panic]
+    #[should_panic(expected = ".is_allowed")]
     #[test]
     fn remote_stream_limits_asserts_if_limit_exceeded() {
         let mut fc = RemoteStreamLimits::new(2, 1, Role::Client);
         assert_eq!(fc[StreamType::BiDi].take_stream_id(), StreamId::from(1));
         assert_eq!(fc[StreamType::BiDi].take_stream_id(), StreamId::from(5));
-        let _ = fc[StreamType::BiDi].take_stream_id();
+        _ = fc[StreamType::BiDi].take_stream_id();
     }
 
     fn local_stream_limits(role: Role, bidi: u64, unidi: u64) {

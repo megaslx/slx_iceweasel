@@ -60,6 +60,18 @@ function getSkipProtoDialogPermissionKey(aProtocolScheme) {
   );
 }
 
+function getSystemProtocol() {
+  // TODO add a scheme for Windows 10 or greater once support is added (see bug 1764599).
+  if (AppConstants.platform == "macosx") {
+    return "itunes";
+  }
+
+  info(
+    "Skipping this test since there isn't a suitable default protocol on this platform"
+  );
+  return null;
+}
+
 /**
  * Creates dummy web protocol handlers used for testing.
  */
@@ -128,7 +140,7 @@ function useServerRedirect(serverRedirect) {
       ROOT_PATH +
       "redirect_helper.sjs?" +
       params.toString();
-    BrowserTestUtils.loadURIString(browser, uri);
+    BrowserTestUtils.startLoadingURIString(browser, uri);
   };
 }
 
@@ -219,7 +231,7 @@ async function testOpenProto(
 
     let descriptionEl = dialogEl.querySelector("#description");
     ok(
-      descriptionEl && BrowserTestUtils.is_visible(descriptionEl),
+      descriptionEl && BrowserTestUtils.isVisible(descriptionEl),
       "Has a visible description element."
     );
 
@@ -315,14 +327,14 @@ async function testCheckbox(
   let checkbox = dialogEl.ownerDocument.getElementById("remember");
   if (typeof hasCheckbox == "boolean") {
     is(
-      checkbox && BrowserTestUtils.is_visible(checkbox),
+      checkbox && BrowserTestUtils.isVisible(checkbox),
       hasCheckbox,
       "Dialog checkbox has correct visibility."
     );
 
     let checkboxLabel = dialogEl.ownerDocument.getElementById("remember-label");
     is(
-      checkbox && BrowserTestUtils.is_visible(checkboxLabel),
+      checkbox && BrowserTestUtils.isVisible(checkboxLabel),
       hasCheckbox,
       "Dialog checkbox label has correct visibility."
     );
@@ -349,16 +361,6 @@ async function testCheckbox(
   if (typeof actionCheckbox == "boolean") {
     checkbox.click();
   }
-}
-
-/**
- * Get the dialog element which is a child of the SubDialogs browser frame.
- * @param {SubDialog} subDialog - Dialog to get the dialog element for.
- */
-function getDialogElementFromSubDialog(subDialog) {
-  let dialogEl = subDialog._frame.contentDocument.querySelector("dialog");
-  ok(dialogEl, "SubDialog should have dialog element");
-  return dialogEl;
 }
 
 /**
@@ -463,9 +465,6 @@ registerCleanupFunction(function () {
 });
 
 add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["security.external_protocol_requires_permission", true]],
-  });
   initTestHandlers();
 });
 
@@ -605,13 +604,19 @@ add_task(async function test_permission_application_set() {
 
 /**
  * Tests that we correctly handle system principals. They should always
- * skip the permission dialog.
+ * show the permission dialog, but give the option to choose another
+ * app if there isn't a default handler.
  */
 add_task(async function test_permission_system_principal() {
   let scheme = TEST_PROTOS[0];
   await BrowserTestUtils.withNewTab(ORIGIN1, async browser => {
     await testOpenProto(browser, scheme, {
-      chooserDialogOptions: { hasCheckbox: true, actionConfirm: false },
+      permDialogOptions: {
+        hasCheckbox: false,
+        hasChangeApp: false,
+        chooserIsNext: true,
+        actionChangeApp: false,
+      },
       triggerLoad: useTriggeringPrincipal(
         Services.scriptSecurityManager.getSystemPrincipal()
       ),
@@ -620,23 +625,27 @@ add_task(async function test_permission_system_principal() {
 });
 
 /**
- * Tests that we don't show the permission dialog if the permission is disabled
- * by pref.
+ * Tests that we correctly handle system principals and show
+ * a simplified permission dialog if there is a default handler.
  */
-add_task(async function test_permission_disabled() {
-  let scheme = TEST_PROTOS[0];
-
-  await SpecialPowers.pushPrefEnv({
-    set: [["security.external_protocol_requires_permission", false]],
-  });
-
+add_task(async function test_permission_system_principal_have_default() {
+  let scheme = getSystemProtocol();
+  if (!scheme) {
+    return;
+  }
   await BrowserTestUtils.withNewTab(ORIGIN1, async browser => {
     await testOpenProto(browser, scheme, {
-      chooserDialogOptions: { hasCheckbox: true, actionConfirm: true },
+      permDialogOptions: {
+        hasCheckbox: false,
+        hasChangeApp: false,
+        chooserIsNext: false,
+        actionChangeApp: false,
+      },
+      triggerLoad: useTriggeringPrincipal(
+        Services.scriptSecurityManager.getSystemPrincipal()
+      ),
     });
   });
-
-  await SpecialPowers.popPrefEnv();
 });
 
 /**
@@ -762,17 +771,10 @@ add_task(async function test_no_principal() {
  * and the user hasn't selected an alternative only the permission dialog is shown.
  */
 add_task(async function test_non_standard_protocol() {
-  let scheme = null;
-  // TODO add a scheme for Windows 10 or greater once support is added (see bug 1764599).
-  if (AppConstants.platform == "macosx") {
-    scheme = "itunes";
-  } else {
-    info(
-      "Skipping this test since there isn't a suitable default protocol on this platform"
-    );
+  let scheme = getSystemProtocol();
+  if (!scheme) {
     return;
   }
-
   await BrowserTestUtils.withNewTab(ORIGIN1, async browser => {
     await testOpenProto(browser, scheme, {
       permDialogOptions: {
@@ -1242,7 +1244,7 @@ add_task(async function test_redirect_principal() {
 /**
  * Test that we use the redirect principal for the dialog for refresh headers.
  */
-add_task(async function test_redirect_principal() {
+add_task(async function test_redirect_principal_refresh_header() {
   let scheme = TEST_PROTOS[0];
   await BrowserTestUtils.withNewTab("about:blank", async browser => {
     await testOpenProto(browser, scheme, {
@@ -1260,7 +1262,7 @@ add_task(async function test_redirect_principal() {
 /**
  * Test that we use the redirect principal for the dialog for meta refreshes.
  */
-add_task(async function test_redirect_principal() {
+add_task(async function test_redirect_principal_meta() {
   let scheme = TEST_PROTOS[0];
   await BrowserTestUtils.withNewTab("about:blank", async browser => {
     await testOpenProto(browser, scheme, {
@@ -1300,7 +1302,7 @@ add_task(async function test_redirect_principal_js() {
           ROOT_PATH +
           "script_redirect.html?" +
           params.toString();
-        BrowserTestUtils.loadURIString(browser, uri);
+        BrowserTestUtils.startLoadingURIString(browser, uri);
       },
       permDialogOptions: {
         checkboxOrigin: ORIGIN1,
@@ -1335,6 +1337,36 @@ add_task(async function test_redirect_principal_links() {
           textLink.textContent = "click me";
           content.document.body.appendChild(textLink);
           textLink.click();
+        });
+      },
+      permDialogOptions: {
+        checkboxOrigin: ORIGIN1,
+        chooserIsNext: true,
+        hasCheckbox: true,
+        actionConfirm: false, // Cancel dialog
+      },
+    });
+  });
+});
+
+add_task(async function test_unloaded_iframe() {
+  let scheme = TEST_PROTOS[0];
+  await BrowserTestUtils.withNewTab(ORIGIN1, async browser => {
+    await testOpenProto(browser, scheme, {
+      triggerLoad() {
+        let uri = `${scheme}://test`;
+        return ContentTask.spawn(browser, { uri }, args => {
+          let frame = content.document.createElement("iframe");
+          frame.setAttribute("loading", "lazy");
+          frame.setAttribute("src", "about:blank");
+          frame.setAttribute("style", "margin-top: 10000px;");
+          frame.setAttribute("name", "yo");
+          content.document.body.append(frame);
+          // Navigate...
+          content.open(args.uri, "yo");
+          // Then remove the iframe again so that we can't find a
+          // currentWindowGlobal for the BC once we show the dialog.
+          frame.remove();
         });
       },
       permDialogOptions: {

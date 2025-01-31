@@ -40,7 +40,7 @@ RDDProcessHost::RDDProcessHost(Listener* aListener)
 
 RDDProcessHost::~RDDProcessHost() { MOZ_COUNT_DTOR(RDDProcessHost); }
 
-bool RDDProcessHost::Launch(StringVector aExtraOpts) {
+bool RDDProcessHost::Launch(geckoargs::ChildProcessArgs aExtraOpts) {
   MOZ_ASSERT(NS_IsMainThread());
 
   MOZ_ASSERT(mLaunchPhase == LaunchPhase::Unlaunched);
@@ -52,10 +52,6 @@ bool RDDProcessHost::Launch(StringVector aExtraOpts) {
     return false;
   }
   mPrefSerializer->AddSharedPrefCmdLineArgs(*this, aExtraOpts);
-
-#if defined(XP_WIN) && defined(MOZ_SANDBOX)
-  mSandboxLevel = Preferences::GetInt("security.sandbox.rdd.level");
-#endif
 
   mLaunchPhase = LaunchPhase::Waiting;
   mLaunchTime = TimeStamp::Now();
@@ -88,7 +84,7 @@ bool RDDProcessHost::Launch(StringVector aExtraOpts) {
         timeoutMs);
   }
 
-  if (!GeckoChildProcessHost::AsyncLaunch(aExtraOpts)) {
+  if (!GeckoChildProcessHost::AsyncLaunch(std::move(aExtraOpts))) {
     mLaunchPhase = LaunchPhase::Complete;
     mPrefSerializer = nullptr;
     return false;

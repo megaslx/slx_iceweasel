@@ -76,10 +76,10 @@ impl<'a> FromReader<'a> for ComponentTypeRef {
 }
 
 /// Represents an import in a WebAssembly component
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ComponentImport<'a> {
     /// The name of the imported item.
-    pub name: ComponentExternName<'a>,
+    pub name: ComponentImportName<'a>,
     /// The type reference for the import.
     pub ty: ComponentTypeRef,
 }
@@ -98,9 +98,10 @@ impl<'a> FromReader<'a> for ComponentImport<'a> {
 /// # Examples
 ///
 /// ```
-/// use wasmparser::ComponentImportSectionReader;
+/// use wasmparser::{ComponentImportSectionReader, BinaryReader};
 /// let data: &[u8] = &[0x01, 0x00, 0x01, 0x41, 0x01, 0x66];
-/// let reader = ComponentImportSectionReader::new(data, 0).unwrap();
+/// let reader = BinaryReader::new(data, 0);
+/// let reader = ComponentImportSectionReader::new(reader).unwrap();
 /// for import in reader {
 ///     let import = import.expect("import");
 ///     println!("Import: {:?}", import);
@@ -109,29 +110,36 @@ impl<'a> FromReader<'a> for ComponentImport<'a> {
 pub type ComponentImportSectionReader<'a> = SectionLimited<'a, ComponentImport<'a>>;
 
 /// Represents the name of a component import.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[allow(missing_docs)]
-pub enum ComponentExternName<'a> {
-    Kebab(&'a str),
-    Interface(&'a str),
-}
+pub struct ComponentImportName<'a>(pub &'a str);
 
-impl<'a> ComponentExternName<'a> {
-    /// Returns the underlying string representing this name.
-    pub fn as_str(&self) -> &'a str {
-        match self {
-            ComponentExternName::Kebab(name) => name,
-            ComponentExternName::Interface(name) => name,
-        }
-    }
-}
-
-impl<'a> FromReader<'a> for ComponentExternName<'a> {
+impl<'a> FromReader<'a> for ComponentImportName<'a> {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
-        Ok(match reader.read_u8()? {
-            0x00 => ComponentExternName::Kebab(reader.read()?),
-            0x01 => ComponentExternName::Interface(reader.read()?),
+        match reader.read_u8()? {
+            // This is the spec-required byte as of this time.
+            0x00 => {}
+
+            // Prior to WebAssembly/component-model#263 export names used a
+            // discriminator byte of 0x01 to indicate an "interface" of the
+            // form `a:b/c` but nowadays that's inferred from string syntax.
+            // Ignore 0-vs-1 to continue to parse older binaries. Eventually
+            // this will go away.
+            //
+            // This logic to ignore 0x01 was landed on 2023-10-28 in
+            // bytecodealliance/wasm-tools#1262 and the encoder at the time
+            // still emitted 0x01 to have better compatibility with prior
+            // validators.
+            //
+            // On 2024-09-03 in bytecodealliance/wasm-tools#TODO the encoder
+            // was updated to always emit 0x00 as a leading byte. After enough
+            // time has passed this case may be able to be removed. When
+            // removing this it's probably best to do it with a `WasmFeatures`
+            // flag first to ensure there's an opt-in way of fixing things.
+            0x01 => {}
+
             x => return reader.invalid_leading_byte(x, "import name"),
-        })
+        }
+        Ok(ComponentImportName(reader.read_string()?))
     }
 }

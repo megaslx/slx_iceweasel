@@ -19,8 +19,8 @@ namespace js {
 namespace jit {
 
 // VIXL imports.
-typedef vixl::Register ARMRegister;
-typedef vixl::FPRegister ARMFPRegister;
+using ARMRegister = vixl::Register;
+using ARMFPRegister = vixl::FPRegister;
 using vixl::ARMBuffer;
 using vixl::Instruction;
 
@@ -447,7 +447,7 @@ class Assembler : public vixl::Assembler {
  public:
   Assembler() : vixl::Assembler() {}
 
-  typedef vixl::Condition Condition;
+  using Condition = vixl::Condition;
 
   void finish();
   bool appendRawCode(const uint8_t* code, size_t numBytes);
@@ -544,6 +544,8 @@ class Assembler : public vixl::Assembler {
   static bool SupportsUnalignedAccesses() { return true; }
   static bool SupportsFastUnalignedFPAccesses() { return true; }
   static bool SupportsWasmSimd() { return true; }
+  static bool SupportsFloat64To16() { return true; }
+  static bool SupportsFloat32To16() { return true; }
 
   static bool HasRoundInstruction(RoundingMode mode) {
     switch (mode) {
@@ -717,7 +719,13 @@ static constexpr Register WasmTableCallIndexReg = ABINonArgReg3;
 // Registers used for ref calls.
 static constexpr Register WasmCallRefCallScratchReg0 = ABINonArgReg0;
 static constexpr Register WasmCallRefCallScratchReg1 = ABINonArgReg1;
+static constexpr Register WasmCallRefCallScratchReg2 = ABINonArgReg2;
 static constexpr Register WasmCallRefReg = ABINonArgReg3;
+
+// Registers used for wasm tail calls operations.
+static constexpr Register WasmTailCallInstanceScratchReg = ABINonArgReg1;
+static constexpr Register WasmTailCallRAScratchReg = lr;
+static constexpr Register WasmTailCallFPScratchReg = ABINonArgReg3;
 
 // Register used as a scratch along the return path in the fast js -> wasm stub
 // code.  This must not overlap ReturnReg, JSReturnOperand, or InstanceReg.
@@ -763,11 +771,8 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
   return true;
 }
 
-inline Imm32 Imm64::firstHalf() const { return low(); }
-
-inline Imm32 Imm64::secondHalf() const { return hi(); }
-
-// Forbids nop filling for testing purposes. Not nestable.
+// Forbids nop filling for testing purposes.  Nestable, but nested calls have
+// no effect on the no-nops status; it is only the top level one that counts.
 class AutoForbidNops {
  protected:
   Assembler* asm_;
@@ -777,7 +782,9 @@ class AutoForbidNops {
   ~AutoForbidNops() { asm_->leaveNoNops(); }
 };
 
-// Forbids pool generation during a specified interval. Not nestable.
+// Forbids pool generation during a specified interval.  Nestable, but nested
+// calls must imply a no-pool area of the assembler buffer that is completely
+// contained within the area implied by the outermost level call.
 class AutoForbidPoolsAndNops : public AutoForbidNops {
  public:
   AutoForbidPoolsAndNops(Assembler* asm_, size_t maxInst)

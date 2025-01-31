@@ -1,5 +1,3 @@
-// |jit-test| --enable-arraybuffer-transfer; skip-if: !ArrayBuffer.prototype.transfer
-
 const byteLengths = [
   // Byte lengths applicable for inline storage
   0, 1, 4, 16, 32, 64, 96,
@@ -141,7 +139,7 @@ function assertEqNum(e, a) {
 }
 
 // Mapped file buffer.
-if (getBuildConfiguration()["mapped-array-buffer"]) {
+if (getBuildConfiguration("mapped-array-buffer")) {
   let fileName = "arraybuffer-transfer-mapped.txt";
   let fileContent = os.file.readRelativeToScript(fileName, "binary");
 
@@ -179,7 +177,7 @@ if (getBuildConfiguration()["mapped-array-buffer"]) {
 
 // Cross-compartment
 {
-  let g = newGlobal({newCompartment: true});
+  let g = newGlobal({ newCompartment: true });
 
   let byteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
   let detachedGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "detached").get;

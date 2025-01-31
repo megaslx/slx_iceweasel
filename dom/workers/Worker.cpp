@@ -10,11 +10,9 @@
 #include "mozilla/dom/WorkerBinding.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/ProfilerMarkers.h"
-#include "mozilla/TimelineConsumers.h"
 #include "mozilla/Unused.h"
-#include "mozilla/WorkerTimelineMarker.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindowOuter.h"
+#include "nsGlobalWindowInner.h"
 #include "WorkerPrivate.h"
 #include "EventWithOptionsRunnable.h"
 #include "js/RootingAPI.h"
@@ -23,6 +21,9 @@
 #include "nsDebug.h"
 #include "mozilla/dom/WorkerStatus.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/TrustedScriptURL.h"
+#include "mozilla/dom/TrustedTypeUtils.h"
+#include "mozilla/dom/TrustedTypesConstants.h"
 
 #ifdef XP_WIN
 #  undef PostMessage
@@ -31,24 +32,50 @@
 namespace mozilla::dom {
 
 /* static */
-already_AddRefed<Worker> Worker::Constructor(const GlobalObject& aGlobal,
-                                             const nsAString& aScriptURL,
-                                             const WorkerOptions& aOptions,
-                                             ErrorResult& aRv) {
+already_AddRefed<Worker> Worker::Constructor(
+    const GlobalObject& aGlobal, const TrustedScriptURLOrUSVString& aScriptURL,
+    const WorkerOptions& aOptions, ErrorResult& aRv) {
   JSContext* cx = aGlobal.Context();
 
   nsCOMPtr<nsIGlobalObject> globalObject =
       do_QueryInterface(aGlobal.GetAsSupports());
 
-  if (globalObject->AsInnerWindow() &&
-      !globalObject->AsInnerWindow()->IsCurrentInnerWindow()) {
+  nsPIDOMWindowInner* innerWindow = globalObject->GetAsInnerWindow();
+  if (innerWindow && !innerWindow->IsCurrentInnerWindow()) {
     aRv.ThrowInvalidStateError(
         "Cannot create worker for a going to be discarded document");
     return nullptr;
   }
 
+  // The spec only mentions Window and WorkerGlobalScope global objects, but
+  // Gecko can actually call the constructor with other ones, so we just skip
+  // trusted types handling in that case.
+  // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-worker-interface
+  const nsAString* compliantString = nullptr;
+  bool performTrustedTypeConversion = innerWindow;
+  if (!performTrustedTypeConversion) {
+    if (JSObject* globalJSObject = globalObject->GetGlobalJSObject()) {
+      performTrustedTypeConversion = IsWorkerGlobal(globalJSObject);
+    }
+  }
+  Maybe<nsAutoString> compliantStringHolder;
+  if (performTrustedTypeConversion) {
+    constexpr nsLiteralString sink = u"Worker constructor"_ns;
+    compliantString = TrustedTypeUtils::GetTrustedTypesCompliantString(
+        aScriptURL, sink, kTrustedTypesOnlySinkGroup, *globalObject,
+        compliantStringHolder, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
+  } else {
+    compliantString = aScriptURL.IsUSVString()
+                          ? &aScriptURL.GetAsUSVString()
+                          : &aScriptURL.GetAsTrustedScriptURL().mData;
+  }
+  MOZ_ASSERT(compliantString);
+
   RefPtr<WorkerPrivate> workerPrivate = WorkerPrivate::Constructor(
-      cx, aScriptURL, false /* aIsChromeWorker */, WorkerKindDedicated,
+      cx, *compliantString, false /* aIsChromeWorker */, WorkerKindDedicated,
       aOptions.mCredentials, aOptions.mType, aOptions.mName, VoidCString(),
       nullptr /*aLoadInfo */, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
@@ -83,6 +110,12 @@ JSObject* Worker::WrapObject(JSContext* aCx,
   }
 
   return wrapper;
+}
+
+bool Worker::IsEligibleForMessaging() {
+  NS_ASSERT_OWNINGTHREAD(Worker);
+
+  return mWorkerPrivate && mWorkerPrivate->ParentStatusProtected() <= Running;
 }
 
 void Worker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
@@ -121,20 +154,8 @@ void Worker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
       "Worker.postMessage", nameOrScriptURL.get(),
       JS::ProfilingCategoryPair::DOM, flags);
 
-  RefPtr<MessageEventRunnable> runnable = new MessageEventRunnable(
-      mWorkerPrivate, WorkerRunnable::WorkerThreadModifyBusyCount);
-
-  UniquePtr<AbstractTimelineMarker> start;
-  UniquePtr<AbstractTimelineMarker> end;
-  bool isTimelineRecording = !TimelineConsumers::IsEmpty();
-
-  if (isTimelineRecording) {
-    start = MakeUnique<WorkerTimelineMarker>(
-        NS_IsMainThread()
-            ? ProfileTimelineWorkerOperationType::SerializeDataOnMainThread
-            : ProfileTimelineWorkerOperationType::SerializeDataOffMainThread,
-        MarkerTracingType::START);
-  }
+  RefPtr<MessageEventRunnable> runnable =
+      new MessageEventRunnable(mWorkerPrivate);
 
   JS::CloneDataPolicy clonePolicy;
   // DedicatedWorkers are always part of the same agent cluster.
@@ -158,16 +179,6 @@ void Worker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
     return;
   }
 
-  if (isTimelineRecording) {
-    end = MakeUnique<WorkerTimelineMarker>(
-        NS_IsMainThread()
-            ? ProfileTimelineWorkerOperationType::SerializeDataOnMainThread
-            : ProfileTimelineWorkerOperationType::SerializeDataOffMainThread,
-        MarkerTracingType::END);
-    TimelineConsumers::AddMarkerForAllObservedDocShells(start);
-    TimelineConsumers::AddMarkerForAllObservedDocShells(end);
-  }
-
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
@@ -175,7 +186,7 @@ void Worker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
   // The worker could have closed between the time we entered this function and
   // checked ParentStatusProtected and now, which could cause the dispatch to
   // fail.
-  Unused << NS_WARN_IF(!runnable->Dispatch());
+  Unused << NS_WARN_IF(!runnable->Dispatch(mWorkerPrivate));
 }
 
 void Worker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
@@ -209,7 +220,7 @@ void Worker::PostEventWithOptions(JSContext* aCx,
     return;
   }
 
-  Unused << NS_WARN_IF(!aRunnable->Dispatch());
+  Unused << NS_WARN_IF(!aRunnable->Dispatch(mWorkerPrivate));
 }
 
 void Worker::Terminate() {

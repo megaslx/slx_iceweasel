@@ -16,7 +16,7 @@
 class nsIWidget;
 class nsIFile;
 
-class nsFilePicker : public nsBaseFilePicker {
+class nsFilePicker final : public nsBaseFilePicker {
  public:
   nsFilePicker();
 
@@ -24,6 +24,8 @@ class nsFilePicker : public nsBaseFilePicker {
 
   // nsIFilePicker (less what's in nsBaseFilePicker)
   NS_IMETHOD Open(nsIFilePickerShownCallback* aCallback) override;
+  NS_IMETHOD IsModeSupported(nsIFilePicker::Mode, JSContext*,
+                             mozilla::dom::Promise**) override;
   NS_IMETHOD AppendFilters(int32_t aFilterMask) override;
   NS_IMETHOD AppendFilter(const nsAString& aTitle,
                           const nsAString& aFilter) override;
@@ -45,7 +47,6 @@ class nsFilePicker : public nsBaseFilePicker {
  protected:
   virtual ~nsFilePicker();
 
-  nsresult Show(nsIFilePicker::ResultCode* aReturn) override;
   void ReadValuesFromFileChooser(void* file_chooser);
 
   bool WarnForNonReadableFile(void* file_chooser);
@@ -59,10 +60,8 @@ class nsFilePicker : public nsBaseFilePicker {
   nsCOMPtr<nsIFilePickerShownCallback> mCallback;
   nsCOMArray<nsIFile> mFiles;
 
-  int16_t mSelectedType;
-  nsIFilePicker::ResultCode mResult;
-  bool mRunning;
-  bool mAllowURLs;
+  int16_t mSelectedType = 0;
+  bool mAllowURLs = false;
   nsCString mFileURL;
   nsString mTitle;
   nsString mDefault;
@@ -82,8 +81,13 @@ class nsFilePicker : public nsBaseFilePicker {
   void GtkFileChooserSetModal(void* file_chooser, GtkWindow* parent_widget,
                               gboolean modal);
 
-  GtkFileChooserWidget* mFileChooserDelegate;
+  GtkFileChooserWidget* mFileChooserDelegate = nullptr;
   bool mUseNativeFileChooser;
+
+  /**
+   * mFileChooser is non-null while open.
+   */
+  void* mFileChooser = nullptr;
 };
 
 #endif

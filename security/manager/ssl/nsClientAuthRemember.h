@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/ReentrantMonitor.h"
 #include "nsIClientAuthRememberService.h"
@@ -63,7 +64,7 @@ class nsClientAuthRemember final : public nsIClientAuthRememberRecord {
   nsCString mAsciiHost;
   nsCString mOriginAttributesSuffix;
   nsCString mDBKey;
-  static const nsCString SentinelValue;
+  static constexpr nsLiteralCString SentinelValue = "no client certificate"_ns;
 
  protected:
   ~nsClientAuthRemember() = default;
@@ -74,7 +75,8 @@ class nsClientAuthRememberService final : public nsIClientAuthRememberService {
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICLIENTAUTHREMEMBERSERVICE
 
-  nsClientAuthRememberService() = default;
+  nsClientAuthRememberService()
+      : mMigrated(false, "nsClientAuthRememberService::mMigrated") {}
 
   nsresult Init();
 
@@ -92,6 +94,7 @@ class nsClientAuthRememberService final : public nsIClientAuthRememberService {
                           const OriginAttributes& aOriginAttributes,
                           const nsACString& aDBKey);
 
+  mozilla::DataMutex<bool> mMigrated;
   void Migrate();
 };
 

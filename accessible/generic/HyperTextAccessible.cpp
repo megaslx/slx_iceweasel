@@ -26,7 +26,6 @@
 #include "nsContainerFrame.h"
 #include "nsFrameSelection.h"
 #include "nsILineIterator.h"
-#include "nsIScrollableFrame.h"
 #include "nsIMathMLFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsRange.h"
@@ -35,6 +34,8 @@
 #include "mozilla/HTMLEditor.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
+#include "mozilla/SelectionMovementUtils.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLBRElement.h"
 #include "mozilla/dom/Selection.h"
@@ -553,22 +554,13 @@ nsresult HyperTextAccessible::SetSelectionRange(int32_t aStartPos,
   NS_ENSURE_STATE(domSel);
 
   // Set up the selection.
-  for (const uint32_t idx : Reversed(IntegerRange(1u, domSel->RangeCount()))) {
-    MOZ_ASSERT(domSel->RangeCount() == idx + 1);
-    RefPtr<nsRange> range{domSel->GetRangeAt(idx)};
-    if (!range) {
-      break;  // The range count has been changed by somebody else.
-    }
-    domSel->RemoveRangeAndUnselectFramesAndNotifyListeners(*range,
-                                                           IgnoreErrors());
-  }
+  domSel->RemoveAllRanges(IgnoreErrors());
   SetSelectionBoundsAt(0, aStartPos, aEndPos);
 
   // Make sure it is visible
   domSel->ScrollIntoView(nsISelectionController::SELECTION_FOCUS_REGION,
                          ScrollAxis(), ScrollAxis(),
-                         dom::Selection::SCROLL_FOR_CARET_MOVE |
-                             dom::Selection::SCROLL_OVERFLOW_HIDDEN);
+                         ScrollFlags::ScrollOverflowHidden);
 
   // When selection is done, move the focus to the selection if accessible is
   // not focusable. That happens when selection is set within hypertext
@@ -649,20 +641,18 @@ int32_t HyperTextAccessible::CaretLineNumber() {
   RefPtr<nsFrameSelection> frameSelection = FrameSelection();
   if (!frameSelection) return -1;
 
-  dom::Selection* domSel = frameSelection->GetSelection(SelectionType::eNormal);
-  if (!domSel) return -1;
+  dom::Selection& domSel = frameSelection->NormalSelection();
 
-  nsINode* caretNode = domSel->GetFocusNode();
+  nsINode* caretNode = domSel.GetFocusNode();
   if (!caretNode || !caretNode->IsContent()) return -1;
 
   nsIContent* caretContent = caretNode->AsContent();
   if (!nsCoreUtils::IsAncestorOf(GetNode(), caretContent)) return -1;
 
-  int32_t returnOffsetUnused;
-  uint32_t caretOffset = domSel->FocusOffset();
+  uint32_t caretOffset = domSel.FocusOffset();
   CaretAssociationHint hint = frameSelection->GetHint();
-  nsIFrame* caretFrame = frameSelection->GetFrameForNodeOffset(
-      caretContent, caretOffset, hint, &returnOffsetUnused);
+  nsIFrame* caretFrame = SelectionMovementUtils::GetFrameForNodeOffset(
+      caretContent, caretOffset, hint);
   NS_ENSURE_TRUE(caretFrame, -1);
 
   AutoAssertNoDomMutations guard;  // The nsILineIterators below will break if
@@ -765,6 +755,17 @@ LayoutDeviceIntRect HyperTextAccessible::GetCaretRect(nsIWidget** aWidget) {
 
 void HyperTextAccessible::GetSelectionDOMRanges(SelectionType aSelectionType,
                                                 nsTArray<nsRange*>* aRanges) {
+  if (IsDoc() && !AsDoc()->HasLoadState(DocAccessible::eTreeConstructed)) {
+    // Rarely, a client query can be handled after a DocAccessible is created
+    // but before the initial tree is constructed, since DoInitialUpdate happens
+    // during a refresh tick. In that case, there might be a DOM selection, but
+    // we can't use it. We will crash if we try due to mContent being null, etc.
+    // This should only happen in the parent process because we should never
+    // try to push the cache in a content process before the initial tree is
+    // constructed.
+    MOZ_ASSERT(XRE_IsParentProcess(), "Query before DoInitialUpdate");
+    return;
+  }
   // Ignore selection if it is not visible.
   RefPtr<nsFrameSelection> frameSelection = FrameSelection();
   if (!frameSelection || frameSelection->GetDisplaySelection() <=
@@ -891,8 +892,7 @@ void HyperTextAccessible::ScrollSubstringToPoint(int32_t aStartOffset,
   bool initialScrolled = false;
   nsIFrame* parentFrame = frame;
   while ((parentFrame = parentFrame->GetParent())) {
-    nsIScrollableFrame* scrollableFrame = do_QueryFrame(parentFrame);
-    if (scrollableFrame) {
+    if (parentFrame->IsScrollContainerOrSubclass()) {
       if (!initialScrolled) {
         // Scroll substring to the given point. Turn the point into percents
         // relative scrollable area to use nsCoreUtils::ScrollSubstringTo.
@@ -995,7 +995,13 @@ void HyperTextAccessible::DeleteText(int32_t aStartPos, int32_t aEndPos) {
 void HyperTextAccessible::PasteText(int32_t aPosition) {
   RefPtr<EditorBase> editorBase = GetEditor();
   if (editorBase) {
-    SetSelectionRange(aPosition, aPosition);
+    // If the caller wants to paste at the caret, we don't need to set the
+    // selection. If there is text already selected, this also allows the caller
+    // to replace it, just as would happen when pasting using the keyboard or
+    // GUI.
+    if (aPosition != nsIAccessibleText::TEXT_OFFSET_CARET) {
+      SetSelectionRange(aPosition, aPosition);
+    }
     editorBase->PasteAsAction(nsIClipboard::kGlobalClipboard,
                               EditorBase::DispatchPasteEvent::Yes);
   }

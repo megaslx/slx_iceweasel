@@ -138,7 +138,6 @@
 #include "nsBaseHashtable.h"
 #include "nsHashKeys.h"
 #include "nsWrapperCache.h"
-#include "nsStringBuffer.h"
 #include "nsDeque.h"
 
 #include "nsIScriptSecurityManager.h"
@@ -149,7 +148,7 @@
 #include "xpcObjectHelper.h"
 
 #include "SandboxPrivate.h"
-#include "BackstagePass.h"
+#include "SystemGlobal.h"
 
 #ifdef XP_WIN
 // Nasty MS defines
@@ -380,6 +379,11 @@ class XPCJSContext final : public mozilla::CycleCollectedJSContext,
     IDX_CRYPTO,
     IDX_INDEXEDDB,
     IDX_STRUCTUREDCLONE,
+    IDX_LOCKS,
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    IDX_SUPPRESSED,
+    IDX_ERROR,
+#endif
     IDX_TOTAL_COUNT  // just a count of the above
   };
 
@@ -560,7 +564,6 @@ class XPCJSRuntime final : public mozilla::CycleCollectedJSRuntime {
   JSObject* UnprivilegedJunkScope(const mozilla::fallible_t&);
 
   bool IsUnprivilegedJunkScope(JSObject*);
-  JSObject* LoaderGlobal();
 
   void DeleteSingletonScopes();
 
@@ -610,7 +613,6 @@ class XPCJSRuntime final : public mozilla::CycleCollectedJSRuntime {
   JS::GCSliceCallback mPrevGCSliceCallback;
   JS::DoCycleCollectionCallback mPrevDoCycleCollectionCallback;
   mozilla::WeakPtr<SandboxPrivate> mUnprivilegedJunkScope;
-  JS::PersistentRootedObject mLoaderGlobal;
   RefPtr<AsyncFreeSnowWhite> mAsyncSnowWhiteFreer;
 
   friend class XPCJSContext;
@@ -1428,7 +1430,6 @@ class XPCWrappedNative final : public nsIXPConnectWrappedNative {
 
   static nsresult WrapNewGlobal(JSContext* cx, xpcObjectHelper& nativeHelper,
                                 nsIPrincipal* principal,
-                                bool initStandardClasses,
                                 JS::RealmOptions& aOptions,
                                 XPCWrappedNative** wrappedGlobal);
 
@@ -2077,20 +2078,12 @@ using AutoMarkingWrappedNativeProtoPtr =
 // Definitions in XPCVariant.cpp.
 
 // {1809FD50-91E8-11d5-90F9-0010A4E73D9A}
-#define XPCVARIANT_IID                              \
-  {                                                 \
-    0x1809fd50, 0x91e8, 0x11d5, {                   \
-      0x90, 0xf9, 0x0, 0x10, 0xa4, 0xe7, 0x3d, 0x9a \
-    }                                               \
-  }
+#define XPCVARIANT_IID \
+  {0x1809fd50, 0x91e8, 0x11d5, {0x90, 0xf9, 0x0, 0x10, 0xa4, 0xe7, 0x3d, 0x9a}}
 
 // {DC524540-487E-4501-9AC7-AAA784B17C1C}
-#define XPCVARIANT_CID                               \
-  {                                                  \
-    0xdc524540, 0x487e, 0x4501, {                    \
-      0x9a, 0xc7, 0xaa, 0xa7, 0x84, 0xb1, 0x7c, 0x1c \
-    }                                                \
-  }
+#define XPCVARIANT_CID \
+  {0xdc524540, 0x487e, 0x4501, {0x9a, 0xc7, 0xaa, 0xa7, 0x84, 0xb1, 0x7c, 0x1c}}
 
 class XPCVariant : public nsIVariant {
  public:
@@ -2194,6 +2187,7 @@ struct GlobalProperties {
   bool ChromeUtils : 1;
   bool CSS : 1;
   bool CSSRule : 1;
+  bool CustomStateSet : 1;
   bool Directory : 1;
   bool Document : 1;
   bool DOMException : 1;
@@ -2206,6 +2200,7 @@ struct GlobalProperties {
   bool FormData : 1;
   bool Headers : 1;
   bool IOUtils : 1;
+  bool InspectorCSSParser : 1;
   bool InspectorUtils : 1;
   bool MessageChannel : 1;
   bool MIDIInputMap : 1;
@@ -2235,6 +2230,7 @@ struct GlobalProperties {
   bool fetch : 1;
   bool storage : 1;
   bool structuredClone : 1;
+  bool locks : 1;
   bool indexedDB : 1;
   bool isSecureContext : 1;
   bool rtcIdentityProvider : 1;
@@ -2265,6 +2261,7 @@ class MOZ_STACK_CLASS OptionsBase {
   bool ParseJSString(const char* name, JS::MutableHandleString prop);
   bool ParseString(const char* name, nsCString& prop);
   bool ParseString(const char* name, nsString& prop);
+  bool ParseOptionalString(const char* name, mozilla::Maybe<nsString>& prop);
   bool ParseId(const char* name, JS::MutableHandleId id);
   bool ParseUInt32(const char* name, uint32_t* prop);
 
@@ -2302,6 +2299,7 @@ class MOZ_STACK_CLASS SandboxOptions : public OptionsBase {
   bool wantExportHelpers;
   bool isWebExtensionContentScript;
   JS::RootedObject proto;
+  mozilla::Maybe<nsString> sandboxContentSecurityPolicy;
   nsCString sandboxName;
   JS::RootedObject sameZoneAs;
   bool forceSecureContext;
@@ -2408,18 +2406,6 @@ JSObject* CreateGlobalObject(JSContext* cx, const JSClass* clasp,
                              nsIPrincipal* principal,
                              JS::RealmOptions& aOptions);
 
-// Modify the provided compartment options, consistent with |aPrincipal| and
-// with globally-cached values of various preferences.
-//
-// Call this function *before* |aOptions| is used to create the corresponding
-// global object, as not all of the options it sets can be modified on an
-// existing global object.  (The type system should make this obvious, because
-// you can't get a *mutable* JS::RealmOptions& from an existing global
-// object.)
-void InitGlobalObjectOptions(JS::RealmOptions& aOptions,
-                             bool aIsSystemPrincipal, bool aForceUTC,
-                             bool aAlwaysUseFdlibm);
-
 // Finish initializing an already-created, not-yet-exposed-to-script global
 // object.  This will attach a Components object (if necessary) and call
 // |JS_FireOnNewGlobalObject| (if necessary).
@@ -2456,8 +2442,9 @@ nsresult EvalInSandbox(JSContext* cx, JS::HandleObject sandbox,
 nsresult GetSandboxMetadata(JSContext* cx, JS::HandleObject sandboxArg,
                             JS::MutableHandleValue rval);
 
-nsresult SetSandboxMetadata(JSContext* cx, JS::HandleObject sandboxArg,
-                            JS::HandleValue metadata);
+[[nodiscard]] nsresult SetSandboxMetadata(JSContext* cx,
+                                          JS::HandleObject sandboxArg,
+                                          JS::HandleValue metadata);
 
 bool CreateObjectIn(JSContext* cx, JS::HandleValue vobj,
                     CreateObjectInOptions& options,
@@ -2820,6 +2807,7 @@ void DestructValue(const nsXPTType& aType, void* aValue,
 bool SandboxCreateCrypto(JSContext* cx, JS::Handle<JSObject*> obj);
 bool SandboxCreateFetch(JSContext* cx, JS::Handle<JSObject*> obj);
 bool SandboxCreateStructuredClone(JSContext* cx, JS::Handle<JSObject*> obj);
+bool SandboxCreateLocks(JSContext* cx, JS::Handle<JSObject*> obj);
 
 }  // namespace xpc
 

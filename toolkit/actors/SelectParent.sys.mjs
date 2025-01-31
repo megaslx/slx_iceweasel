@@ -22,9 +22,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
   false
 );
 
-// Maximum number of rows to display in the select dropdown.
-const MAX_ROWS = 20;
-
 // Minimum elements required to show select search
 const SEARCH_MINIMUM_ELEMENTS = 40;
 
@@ -35,7 +32,7 @@ const PROPERTIES_RESET_WHEN_ACTIVE = [
   "text-shadow",
 ];
 
-// Duplicated in SelectChild.jsm
+// Duplicated in SelectChild.sys.mjs
 // Please keep these lists in sync.
 const SUPPORTED_OPTION_OPTGROUP_PROPERTIES = [
   "direction",
@@ -274,10 +271,41 @@ export var SelectParentHelper = {
 
     this._currentZoom = zoom;
     this._currentMenulist = menulist;
-    this.populateChildren(menulist, items, uniqueItemStyles, selectedIndex);
+    this.populateChildren(
+      menulist,
+      custom,
+      items,
+      uniqueItemStyles,
+      selectedIndex
+    );
   },
 
   open(browser, menulist, rect, isOpenedViaTouch, selectParentActor) {
+    const canOpen = (() => {
+      if (!menulist.ownerDocument.hasFocus()) {
+        // Don't open in inactive browser windows.
+        return false;
+      }
+      if (browser) {
+        if (!browser.browsingContext.isActive) {
+          // Don't open in inactive tabs.
+          return false;
+        }
+        let tabbrowser = browser.getTabBrowser();
+        if (tabbrowser && tabbrowser.selectedBrowser != browser) {
+          // AsyncTabSwitcher might delay activating our browser, check
+          // explicitly for tabbrowser.
+          return false;
+        }
+      }
+      return true;
+    })();
+
+    if (!canOpen) {
+      selectParentActor.sendAsyncMessage("Forms:DismissedDropDown", {});
+      return;
+    }
+
     this._actor = selectParentActor;
     menulist.hidden = false;
     this._currentBrowser = browser;
@@ -285,31 +313,13 @@ export var SelectParentHelper = {
     this._selectRect = rect;
     this._registerListeners(menulist.menupopup);
 
-    // Set the maximum height to show exactly MAX_ROWS items.
     let menupopup = menulist.menupopup;
-    let firstItem = menupopup.firstElementChild;
-    while (firstItem && firstItem.hidden) {
-      firstItem = firstItem.nextElementSibling;
-    }
-
-    let win = menulist.ownerGlobal;
-    if (firstItem) {
-      let itemHeight = firstItem.getBoundingClientRect().height;
-
-      // Include the padding and border on the popup.
-      let cs = win.getComputedStyle(menupopup);
-      let bpHeight =
-        parseFloat(cs.borderTopWidth) +
-        parseFloat(cs.borderBottomWidth) +
-        parseFloat(cs.paddingTop) +
-        parseFloat(cs.paddingBottom);
-      menupopup.style.maxHeight = itemHeight * MAX_ROWS + bpHeight + "px";
-    }
-
     menupopup.classList.toggle("isOpenedViaTouch", isOpenedViaTouch);
 
+    let win = menulist.ownerGlobal;
     if (browser) {
       browser.constrainPopup(menupopup);
+      browser.style.pointerEvents = "none";
     } else {
       menupopup.setConstraintRect(new win.DOMRect(0, 0, 0, 0));
     }
@@ -385,6 +395,7 @@ export var SelectParentHelper = {
         break;
 
       case "fullscreen":
+      case "FullscreenWarningOnScreen":
         if (this._currentMenulist) {
           this._currentMenulist.menupopup.hidePopup();
         }
@@ -395,7 +406,10 @@ export var SelectParentHelper = {
         let popup = event.target;
         this._unregisterListeners(popup);
         popup.parentNode.hidden = true;
-        this._currentBrowser = null;
+        if (this._currentBrowser) {
+          this._currentBrowser.style.pointerEvents = "";
+          this._currentBrowser = null;
+        }
         this._currentMenulist = null;
         this._selectRect = null;
         this._currentZoom = 1;
@@ -444,6 +458,7 @@ export var SelectParentHelper = {
     popup.ownerGlobal.addEventListener("mouseup", this, true);
     popup.ownerGlobal.addEventListener("keydown", this, true);
     popup.ownerGlobal.addEventListener("fullscreen", this, true);
+    popup.ownerGlobal.addEventListener("FullscreenWarningOnScreen", this, true);
   },
 
   _unregisterListeners(popup) {
@@ -454,6 +469,11 @@ export var SelectParentHelper = {
     popup.ownerGlobal.removeEventListener("mouseup", this, true);
     popup.ownerGlobal.removeEventListener("keydown", this, true);
     popup.ownerGlobal.removeEventListener("fullscreen", this, true);
+    popup.ownerGlobal.removeEventListener(
+      "FullscreenWarningOnScreen",
+      this,
+      true
+    );
   },
 
   /**
@@ -476,6 +496,7 @@ export var SelectParentHelper = {
    */
   populateChildren(
     menulist,
+    custom,
     options,
     uniqueOptionStyles,
     selectedIndex,
@@ -489,26 +510,19 @@ export var SelectParentHelper = {
     let ariaOwns = "";
     for (let option of options) {
       let isOptGroup = option.isOptGroup;
-      let item = element.ownerDocument.createXULElement(
-        isOptGroup ? "menucaption" : "menuitem"
-      );
+      let isHR = option.isHR;
+
+      let xulElement = "menuitem";
       if (isOptGroup) {
-        item.setAttribute("role", "group");
+        xulElement = "menucaption";
       }
-      item.setAttribute("label", option.textContent);
-      item.className = `ContentSelectDropdown-item-${option.styleIndex}`;
+      if (isHR) {
+        xulElement = "menuseparator";
+      }
+
+      let item = element.ownerDocument.createXULElement(xulElement);
       item.hidden =
         option.display == "none" || (parentElement && parentElement.hidden);
-      // Keep track of which options are hidden by page content, so we can avoid
-      // showing them on search input.
-      item.hiddenByContent = item.hidden;
-      item.setAttribute("tooltiptext", option.tooltip);
-
-      if (uniqueOptionStyles[option.styleIndex].customStyling) {
-        item.setAttribute("customoptionstyling", "true");
-      } else {
-        item.removeAttribute("customoptionstyling");
-      }
 
       if (parentElement) {
         // In the menupopup, the optgroup is a sibling of its contained options.
@@ -523,6 +537,30 @@ export var SelectParentHelper = {
       element.appendChild(item);
       nthChildIndex++;
 
+      if (isHR) {
+        item.style.color = (custom && option.color) || "";
+
+        // Continue early as HRs do not have other attributes.
+        continue;
+      }
+
+      item.className = `ContentSelectDropdown-item-${option.styleIndex}`;
+
+      if (isOptGroup) {
+        item.setAttribute("role", "group");
+      }
+      item.setAttribute("label", option.textContent);
+      // Keep track of which options are hidden by page content, so we can avoid
+      // showing them on search input.
+      item.hiddenByContent = item.hidden;
+      item.setAttribute("tooltiptext", option.tooltip);
+
+      if (uniqueOptionStyles[option.styleIndex].customStyling) {
+        item.setAttribute("customoptionstyling", "true");
+      } else {
+        item.removeAttribute("customoptionstyling");
+      }
+
       // A disabled optgroup disables all of its child options.
       let isDisabled = isGroupDisabled || option.disabled;
       if (isDisabled) {
@@ -532,6 +570,7 @@ export var SelectParentHelper = {
       if (isOptGroup) {
         nthChildIndex = this.populateChildren(
           menulist,
+          custom,
           option.children,
           uniqueOptionStyles,
           selectedIndex,
@@ -660,8 +699,9 @@ export var SelectParentHelper = {
       if (!currentItem.hiddenByContent) {
         // Get label and tooltip (title) from option and change to
         // lower case for comparison
-        let itemLabel = currentItem.getAttribute("label").toLowerCase();
-        let itemTooltip = currentItem.getAttribute("title").toLowerCase();
+        let itemLabel = currentItem.getAttribute("label")?.toLowerCase() || "";
+        let itemTooltip =
+          currentItem.getAttribute("title")?.toLowerCase() || "";
 
         // If search input is empty, all options should be shown
         if (!input) {
@@ -739,6 +779,7 @@ export class SelectParent extends JSWindowActorParent {
     popup.setAttribute("id", "ContentSelectDropdownPopup");
     popup.setAttribute("activateontab", "true");
     popup.setAttribute("position", "after_start");
+    popup.setAttribute("tabspecific", "true");
     popup.setAttribute("level", "parent");
     if (AppConstants.platform == "win") {
       popup.setAttribute("consumeoutsideclicks", "false");

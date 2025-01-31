@@ -23,7 +23,7 @@ Instructions for single-locale repacks for developers
 -----------------------------------------------------
 
 This assumes that ``$AB_CD`` is the locale you want to repack with; you
-find the available localizations on `l10n-central <https://hg.mozilla.org/l10n-central/>`_.
+find the available localizations from `firefox-l10n <https://github.com/mozilla-l10n/firefox-l10n>`_.
 
 #. You must have a built and packaged object directory, or a pre-built
    ``en-US`` package.
@@ -39,15 +39,13 @@ find the available localizations on `l10n-central <https://hg.mozilla.org/l10n-c
 
       ./mach build installers-$AB_CD
 
-You should find a re-packaged build at ``OBJDIR/dist/``, and a
-runnable binary in ``OBJDIR/dist/l10n-stage/``.
-The ``installers`` target runs quite a few things for you, including getting
-the repository for the requested locale from
-https://hg.mozilla.org/l10n-central/. It will clone them into
-``~/.mozbuild/l10n-central``. If you have an existing repository there, you
-may want to occasionally update that via ``hg pull -u``. If you prefer
-to have the l10n repositories at a different location on your disk, you
-can point to the directory via
+You should find a re-packaged build at ``OBJDIR/dist/``, and a runnable binary
+in ``OBJDIR/dist/l10n-stage/``. The ``installers`` target runs quite a few
+things for you, including getting the localizations from
+https://github.com/mozilla-l10n/firefox-l10n (or updating it if already
+present). It will clone them into ``~/.mozbuild/l10n-central``. If you prefer to
+have the l10n repositories at a different location on your disk, you can point
+to the directory via
 
    .. code-block:: shell
 
@@ -188,11 +186,11 @@ localization ecosystem at Mozilla, and `the documentation about the
 file format <http://moz-l10n-config.readthedocs.io/en/latest/fileformat.html>`_
 explains how to set them up, and what the entries mean. In short, you find
 
-.. code-block::
+.. code-block:: toml
 
-    [[paths]]
-        reference = browser/locales/en-US/**
-        l10n = {l}browser/**
+   [paths]
+   reference = browser/locales/en-US/**
+   l10n = {l}browser/**
 
 to add a directory for all localizations. Changes to these files are best
 submitted for review by :Pike or :flod.
@@ -285,10 +283,10 @@ a ``key``, and an action. An example like
 
 .. code-block:: toml
 
-  [[filters]]
-      path = "{l}calendar/chrome/calendar/calendar-event-dialog.properties"
-      key = "re:.*Nounclass[1-9].*"
-      action = "ignore"
+  [filters]
+  path = "{l}calendar/chrome/calendar/calendar-event-dialog.properties"
+  key = "re:.*Nounclass[1-9].*"
+  action = "ignore"
 
 indicates that the matching messages in ``calendar-event-dialog.properties`` are optional.
 
@@ -361,8 +359,8 @@ Localizations
 Now that we talked in-depth about how to expose content to localizers,
 where are the localizations?
 
-We host a mercurial repository per locale. All of our
-localizations can be found on https://hg.mozilla.org/l10n-central/.
+We host all locales in a git monorepo. All of our
+localizations can be found on https://github.com/mozilla-l10n/firefox-l10n.
 
 You can search inside our localized files on
 `Transvision <https://transvision.mozfr.org/>`_.

@@ -46,7 +46,6 @@ Whenever a new generally-useful helper is added, it should be indexed here.
 - {@link webgpu/capability_info}: Structured information about texture formats, binding types, etc.
 - {@link webgpu/constants}:
     Constant values (needed anytime a WebGPU constant is needed outside of a test function).
-- {@link webgpu/util/buffer}: Helpers for GPUBuffers.
 - {@link webgpu/util/texture}: Helpers for GPUTextures.
 - {@link webgpu/util/unions}: Helpers for various union typedefs in the WebGPU spec.
 - {@link webgpu/util/math}: Helpers for common math operations.
@@ -62,6 +61,7 @@ Whenever a new generally-useful helper is added, it should be indexed here.
 - {@link webgpu/util/create_elements}:
     Helpers for creating web elements like HTMLCanvasElement, OffscreenCanvas, etc.
 - {@link webgpu/util/shader}: Helpers for creating fragment shader based on intended output values, plainType, and componentCount.
+- {@link webgpu/util/prng}: Seed-able deterministic pseudo random number generator. Replacement for Math.random().
 - {@link webgpu/util/texture/base}: General texture-related helpers.
 - {@link webgpu/util/texture/data_generation}: Helper for generating dummy texture data.
 - {@link webgpu/util/texture/layout}: Helpers for working with linear image data

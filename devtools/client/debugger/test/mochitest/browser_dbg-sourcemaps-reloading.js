@@ -19,21 +19,20 @@ add_task(async function () {
 
   await selectSource(dbg, entrySrc);
   ok(
-    getCM(dbg).getValue().includes("window.keepMeAlive"),
+    getEditorContent(dbg).includes("window.keepMeAlive"),
     "Original source text loaded correctly"
   );
 
   await addBreakpoint(dbg, entrySrc, 5);
-  await addBreakpoint(dbg, entrySrc, 15, 0);
-  await disableBreakpoint(dbg, entrySrc, 15, 0);
+  await addBreakpoint(dbg, entrySrc, 15, 1);
+  await disableBreakpoint(dbg, entrySrc, 15, 1);
 
   // Test reloading the debugger
   const onReloaded = reload(dbg, "opts.js");
   await waitForDispatch(dbg.store, "LOAD_ORIGINAL_SOURCE_TEXT");
 
-  await waitForPaused(dbg);
-  await waitForDispatch(dbg.store, "ADD_INLINE_PREVIEW");
-  assertPausedAtSourceAndLine(dbg, findSource(dbg, "entry.js").id, 5);
+  await waitForPausedInOriginalFileAndToggleMapScopes(dbg, "entry.js");
+  await assertPausedAtSourceAndLine(dbg, findSource(dbg, "entry.js").id, 5);
 
   await waitForBreakpointCount(dbg, 2);
   is(getBreakpointCount(), 2, "Two breakpoints exist");
@@ -55,8 +54,5 @@ add_task(async function () {
 });
 
 async function waitForBreakpointCount(dbg, count) {
-  return waitForState(
-    dbg,
-    state => dbg.selectors.getBreakpointCount() === count
-  );
+  return waitForState(dbg, () => dbg.selectors.getBreakpointCount() === count);
 }

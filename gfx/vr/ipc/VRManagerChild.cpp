@@ -10,7 +10,7 @@
 #include "VRManagerParent.h"
 #include "VRThread.h"
 #include "VRDisplayClient.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/layers/CompositorThread.h"  // for CompositorThread
@@ -590,7 +590,7 @@ void VRManagerChild::StopActivity() {
 }
 
 void VRManagerChild::HandleFatalError(const char* aMsg) {
-  dom::ContentChild::FatalErrorIfNotUsingGPUProcess(aMsg, OtherPid());
+  dom::ContentChild::FatalErrorIfNotUsingGPUProcess(aMsg, OtherChildID());
 }
 
 void VRManagerChild::AddPromise(const uint32_t& aID, dom::Promise* aPromise) {

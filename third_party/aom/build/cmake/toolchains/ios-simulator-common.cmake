@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, Alliance for Open Media. All rights reserved
+# Copyright (c) 2017, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and the
 # Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License was
@@ -16,8 +16,9 @@ set(AOM_BUILD_CMAKE_IOS_SIMULATOR_COMMON_CMAKE_ 1)
 set(CMAKE_SYSTEM_NAME "Darwin")
 set(CMAKE_OSX_SYSROOT iphonesimulator)
 set(CMAKE_C_COMPILER clang)
-set(CMAKE_C_COMPILER_ARG1 "-arch ${CMAKE_SYSTEM_PROCESSOR}")
+set(CMAKE_C_FLAGS_INIT "-arch ${CMAKE_SYSTEM_PROCESSOR}")
 set(CMAKE_CXX_COMPILER clang++)
-set(CMAKE_CXX_COMPILER_ARG1 "-arch ${CMAKE_SYSTEM_PROCESSOR}")
+set(CMAKE_CXX_FLAGS_INIT "-arch ${CMAKE_SYSTEM_PROCESSOR}")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-arch ${CMAKE_SYSTEM_PROCESSOR}")
 
 # TODO(tomfinegan): Handle bit code embedding.

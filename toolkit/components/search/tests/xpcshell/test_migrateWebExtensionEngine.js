@@ -5,18 +5,18 @@
 
 const kExtensionID = "simple@tests.mozilla.org";
 
-add_task(async function setup() {
-  useHttpServer("opensearch");
-  await AddonTestUtils.promiseStartupManager();
-  await SearchTestUtils.useTestEngines("data1");
+add_setup(async function () {
+  useHttpServer();
+  SearchTestUtils.setRemoteSettingsConfig([{ identifier: "unused" }]);
   await Services.search.init();
 });
 
 add_task(async function test_migrateLegacyEngine() {
-  await Services.search.addOpenSearchEngine(gDataUrl + "simple.xml", null);
+  let engine = await SearchTestUtils.installOpenSearchEngine({
+    url: `${gHttpURL}/opensearch/simple.xml`,
+  });
 
   // Modify the loadpath so it looks like a legacy plugin loadpath
-  let engine = Services.search.getEngineByName("simple");
   engine.wrappedJSObject._loadPath = `jar:[profile]/extensions/${kExtensionID}.xpi!/simple.xml`;
   engine.wrappedJSObject._extensionID = null;
 
@@ -49,10 +49,11 @@ add_task(async function test_migrateLegacyEngine() {
 });
 
 add_task(async function test_migrateLegacyEngineDifferentName() {
-  await Services.search.addOpenSearchEngine(gDataUrl + "simple.xml", null);
+  let engine = await SearchTestUtils.installOpenSearchEngine({
+    url: `${gHttpURL}/opensearch/simple.xml`,
+  });
 
   // Modify the loadpath so it looks like an legacy plugin loadpath
-  let engine = Services.search.getEngineByName("simple");
   engine.wrappedJSObject._loadPath = `jar:[profile]/extensions/${kExtensionID}.xpi!/simple.xml`;
   engine.wrappedJSObject._extensionID = null;
 

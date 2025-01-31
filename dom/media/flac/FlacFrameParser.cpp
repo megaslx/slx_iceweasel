@@ -11,6 +11,7 @@
 #include "VideoUtils.h"
 #include "BufferReader.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/Try.h"
 
 namespace mozilla {
 
@@ -37,7 +38,7 @@ FlacFrameParser::FlacFrameParser()
       mMaxFrameSize(0),
       mNumFrames(0),
       mFullMetadata(false),
-      mPacketCount(0){};
+      mPacketCount(0) {};
 
 FlacFrameParser::~FlacFrameParser() = default;
 

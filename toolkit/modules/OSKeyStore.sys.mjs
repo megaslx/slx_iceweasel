@@ -70,13 +70,8 @@ export var OSKeyStore = {
   },
 
   canReauth() {
-    // The OS auth dialog is not supported on macOS < 10.12
-    // (Darwin 16) due to various issues (bug 1622304 and bug 1622303).
-    // We have no support on linux (bug 1527745.)
-    if (
-      AppConstants.platform == "win" ||
-      AppConstants.isPlatformAndVersionAtLeast("macosx", "16")
-    ) {
+    // We have no support on linux (bug 1527745)
+    if (AppConstants.platform == "win" || AppConstants.platform == "macosx") {
       lazy.log.debug(
         "canReauth, returning true, this._testReauth:",
         this._testReauth
@@ -344,6 +339,23 @@ export var OSKeyStore = {
 
     // Mark the output with a version number.
     return rawEncryptedText;
+  },
+
+  /**
+   * Exports the recovery phrase within the native OSKeyStore if authenticated
+   * as a byte string.
+   *
+   * @returns {Promise<string>}
+   */
+  async exportRecoveryPhrase() {
+    if (!(await this.ensureLoggedIn()).authenticated) {
+      throw Components.Exception(
+        "User canceled OS unlock entry",
+        Cr.NS_ERROR_ABORT
+      );
+    }
+
+    return await lazy.nativeOSKeyStore.asyncGetRecoveryPhrase(this.STORE_LABEL);
   },
 
   /**

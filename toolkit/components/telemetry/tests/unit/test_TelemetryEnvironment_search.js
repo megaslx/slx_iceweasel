@@ -7,11 +7,17 @@ const { TelemetryEnvironment } = ChromeUtils.importESModule(
 const { SearchTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/SearchTestUtils.sys.mjs"
 );
+
 const { TelemetryEnvironmentTesting } = ChromeUtils.importESModule(
   "resource://testing-common/TelemetryEnvironmentTesting.sys.mjs"
 );
 
+const { ExtensionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ExtensionXPCShellUtils.sys.mjs"
+);
+
 SearchTestUtils.init(this);
+ExtensionTestUtils.init(this);
 
 function promiseNextTick() {
   return new Promise(resolve => executeSoon(resolve));
@@ -23,6 +29,27 @@ var gHttpServer = null;
 var gHttpRoot = null;
 // The URL of the data directory, on the webserver.
 var gDataRoot = null;
+
+const SEARCH_CONFIG = [
+  {
+    identifier: "telemetrySearchIdentifier",
+    base: {
+      name: "telemetrySearchIdentifier",
+      urls: {
+        search: {
+          base: "https://ar.wikipedia.org/wiki/%D8%AE%D8%A7%D8%B5:%D8%A8%D8%AD%D8%AB",
+          params: [
+            {
+              name: "sourceId",
+              value: "Mozilla-search",
+            },
+          ],
+          searchTermParamName: "search",
+        },
+      },
+    },
+  },
+];
 
 add_task(async function setup() {
   TelemetryEnvironmentTesting.registerFakeSysInfo();
@@ -69,12 +96,14 @@ add_task(async function setup() {
   // The attribution functionality only exists in Firefox.
   if (AppConstants.MOZ_BUILD_APP == "browser") {
     TelemetryEnvironmentTesting.spoofAttributionData();
-    registerCleanupFunction(TelemetryEnvironmentTesting.cleanupAttributionData);
+    registerCleanupFunction(async function () {
+      await TelemetryEnvironmentTesting.cleanupAttributionData;
+    });
   }
 
   await TelemetryEnvironmentTesting.spoofProfileReset();
   await TelemetryEnvironment.delayedInit();
-  await SearchTestUtils.useTestEngines("data", "search-extensions");
+  await SearchTestUtils.setRemoteSettingsConfig(SEARCH_CONFIG);
 
   // Now continue with startup.
   let initPromise = TelemetryEnvironment.onInitialized();
@@ -138,10 +167,10 @@ async function checkDefaultSearch(privateOn, reInitSearchService) {
   Assert.equal(data.settings.defaultSearchEngine, "telemetrySearchIdentifier");
   let expectedSearchEngineData = {
     name: "telemetrySearchIdentifier",
-    loadPath: "[addon]telemetrySearchIdentifier@search.mozilla.org",
+    loadPath: "[app]telemetrySearchIdentifier",
     origin: "default",
     submissionURL:
-      "https://ar.wikipedia.org/wiki/%D8%AE%D8%A7%D8%B5:%D8%A8%D8%AD%D8%AB?search=&sourceId=Mozilla-search",
+      "https://ar.wikipedia.org/wiki/%D8%AE%D8%A7%D8%B5:%D8%A8%D8%AD%D8%AB?sourceId=Mozilla-search&search=",
   };
   Assert.deepEqual(
     data.settings.defaultSearchEngineData,
@@ -182,7 +211,7 @@ async function checkDefaultSearch(privateOn, reInitSearchService) {
   });
 
   // Register a new change listener and then wait for the search engine change to be notified.
-  let deferred = PromiseUtils.defer();
+  let deferred = Promise.withResolvers();
   TelemetryEnvironment.registerChangeListener(
     "testWatch_SearchDefault",
     deferred.resolve
@@ -258,30 +287,11 @@ add_task(async function test_defaultSearchEngine() {
       resolve
     );
   });
-  let engine = await new Promise((resolve, reject) => {
-    Services.obs.addObserver(function obs(obsSubject, obsTopic, obsData) {
-      try {
-        let searchEngine = obsSubject.QueryInterface(Ci.nsISearchEngine);
-        info("Observed " + obsData + " for " + searchEngine.name);
-        if (
-          obsData != "engine-added" ||
-          searchEngine.name != "engine-telemetry"
-        ) {
-          return;
-        }
-
-        Services.obs.removeObserver(obs, "browser-search-engine-modified");
-        resolve(searchEngine);
-      } catch (ex) {
-        reject(ex);
-      }
-    }, "browser-search-engine-modified");
-    Services.search.addOpenSearchEngine(gDataRoot + "/engine.xml", null);
+  let engine = await SearchTestUtils.installOpenSearchEngine({
+    url: gDataRoot + "engine.xml",
+    setAsDefault: true,
+    skipReset: true,
   });
-  await Services.search.setDefault(
-    engine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
-  );
   await promise;
   TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
   let data = TelemetryEnvironment.currentEnvironment;
@@ -309,7 +319,6 @@ add_task(async function test_defaultSearchEngine() {
   TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
   data = TelemetryEnvironment.currentEnvironment;
   Assert.equal(data.settings.defaultSearchEngineData.origin, "invalid");
-  await Services.search.removeEngine(engine);
 
   const SEARCH_ENGINE_ID = "telemetry_default";
   const EXPECTED_SEARCH_ENGINE = "other-" + SEARCH_ENGINE_ID;
@@ -333,7 +342,7 @@ add_task(async function test_defaultSearchEngine() {
 
   // Watch the test preference.
   await TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
-  let deferred = PromiseUtils.defer();
+  let deferred = Promise.withResolvers();
   TelemetryEnvironment.registerChangeListener(
     "testSearchEngine_pref",
     deferred.resolve
@@ -391,14 +400,16 @@ add_task(async function test_defaultSearchEngine_paramsChanged() {
     );
   });
 
-  engine.wrappedJSObject.update({
-    manifest: SearchTestUtils.createEngineManifest({
-      name: "TestEngine",
-      version: "1.2",
-      search_url: "https://www.google.com/fake2",
-    }),
+  let manifest = SearchTestUtils.createEngineManifest({
+    name: "TestEngine",
+    version: "1.2",
+    search_url: "https://www.google.com/fake2",
   });
-
+  await extension.upgrade({
+    useAddonManager: "permanent",
+    manifest,
+  });
+  await AddonTestUtils.waitForSearchProviderStartup(extension);
   await promise;
 
   data = TelemetryEnvironment.currentEnvironment;

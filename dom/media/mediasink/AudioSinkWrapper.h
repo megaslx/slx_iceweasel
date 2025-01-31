@@ -8,6 +8,7 @@
 #define AudioSinkWrapper_h_
 
 #include "mozilla/AbstractThread.h"
+#include "mozilla/EventTargetCapability.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
@@ -69,8 +70,6 @@ class AudioSinkWrapper : public MediaSink {
 
   void GetDebugInfo(dom::MediaSinkDebugInfo& aInfo) override;
 
-  void EnableTreatAudioUnderrunAsSilence(bool aEnabled) override;
-
  private:
   // The clock that was in use for the previous position query, allowing to
   // detect clock switches.
@@ -87,8 +86,8 @@ class AudioSinkWrapper : public MediaSink {
   void OnMuted(bool aMuted);
   virtual ~AudioSinkWrapper();
 
-  void AssertOwnerThread() const {
-    MOZ_ASSERT(mOwnerThread->IsCurrentThreadIn());
+  void AssertOwnerThread() const MOZ_ASSERT_CAPABILITY(mOwnerThread) {
+    mOwnerThread.AssertOnCurrentThread();
   }
 
   bool NeedAudioSink();
@@ -123,7 +122,7 @@ class AudioSinkWrapper : public MediaSink {
 
   bool IsAudioSourceEnded(const MediaInfo& aInfo) const;
 
-  const RefPtr<AbstractThread> mOwnerThread;
+  const EventTargetCapability<AbstractThread> mOwnerThread;
   const RefPtr<TaskQueue> mAsyncInitTaskQueue;
   SinkCreator mSinkCreator;
   UniquePtr<AudioSink> mAudioSink;
@@ -135,7 +134,7 @@ class AudioSinkWrapper : public MediaSink {
   MozPromiseHolder<EndedPromise> mEndedPromiseHolder;
   // true between Start() and Stop()
   bool mIsStarted = false;
-  PlaybackParams mParams;
+  PlaybackParams MOZ_GUARDED_BY(mOwnerThread) mParams;
   // mClockStartTime is null before Start(), after Stop(), and between
   // SetPlaying(false) and SetPlaying(true).  When the system time is used for
   // the clock, this is the time corresponding to mPositionAtClockStart.  When
@@ -165,9 +164,6 @@ class AudioSinkWrapper : public MediaSink {
   TimeStamp mRetrySinkTime;
   // Number of async AudioSink creation tasks in flight
   uint32_t mAsyncCreateCount = 0;
-  // True if we'd like to treat underrun as silent frames. But that can only be
-  // applied in the special situation for seamless looping.
-  bool mTreatUnderrunAsSilence = false;
 };
 
 }  // namespace mozilla

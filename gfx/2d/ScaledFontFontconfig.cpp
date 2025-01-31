@@ -396,13 +396,12 @@ bool ScaledFontFontconfig::GetWRFontInstanceOptions(
     Maybe<wr::FontInstanceOptions>* aOutOptions,
     Maybe<wr::FontInstancePlatformOptions>* aOutPlatformOptions,
     std::vector<FontVariation>* aOutVariations) {
-  wr::FontInstanceOptions options;
+  wr::FontInstanceOptions options = {};
   options.render_mode = wr::FontRenderMode::Alpha;
   options.flags = wr::FontInstanceFlags{0};
   if (UseSubpixelPosition()) {
     options.flags |= wr::FontInstanceFlags::SUBPIXEL_POSITION;
   }
-  options.bg_color = wr::ToColorU(DeviceColor());
   options.synthetic_italics =
       wr::DegreesToSyntheticItalics(GetSyntheticObliqueAngle());
 

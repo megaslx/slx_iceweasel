@@ -21,6 +21,9 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(HTMLElement,
                                            nsGenericHTMLFormElement)
 
+  [[nodiscard]] nsIFormControl* GetAsFormControl() final;
+  [[nodiscard]] const nsIFormControl* GetAsFormControl() const final;
+
   // EventTarget
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
 
@@ -30,7 +33,7 @@ class HTMLElement final : public nsGenericHTMLFormElement {
 
   // nsIContent
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
   void DoneCreatingElement() override;
 
   // Element
@@ -49,6 +52,7 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   void AfterClearForm(bool aUnbindOrDelete) override;
   void FieldSetDisabledChanged(bool aNotify) override;
   void SaveState() override;
+  void UpdateValidityElementStates(bool aNotify);
 
   void UpdateFormOwner();
 
@@ -67,7 +71,6 @@ class HTMLElement final : public nsGenericHTMLFormElement {
                     const nsAttrValue* aValue, const nsAttrValue* aOldValue,
                     nsIPrincipal* aMaybeScriptedPrincipal,
                     bool aNotify) override;
-  ElementState IntrinsicState() const override;
 
   // nsGenericHTMLFormElement
   void SetFormInternal(HTMLFormElement* aForm, bool aBindToTree) override;
@@ -75,7 +78,6 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   void SetFieldSetInternal(HTMLFieldSetElement* aFieldset) override;
   HTMLFieldSetElement* GetFieldSetInternal() const override;
   bool CanBeDisabled() const override;
-  bool DoesReadOnlyApply() const override;
   void UpdateDisabledState(bool aNotify) override;
   void UpdateFormOwner(bool aBindToTree, Element* aFormIdElement) override;
 

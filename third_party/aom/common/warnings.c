@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -86,7 +86,7 @@ void check_encoder_config(int disable_prompt,
   /* Count and print warnings. */
   for (warning = warning_list.warning_node; warning != NULL;
        warning = warning->next_warning, ++num_warnings) {
-    warn(warning->warning_string);
+    aom_tools_warn("%s", warning->warning_string);
   }
 
   free_warning_list(&warning_list);

@@ -15,7 +15,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include "third_party/googletest/src/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 #include "./vpx_config.h"
 #include "./vp8_rtcd.h"
@@ -74,7 +74,7 @@ using libvpx_test::ACMRandom;
 
 class FdctTest : public ::testing::TestWithParam<FdctFunc> {
  public:
-  virtual void SetUp() {
+  void SetUp() override {
     fdct_func_ = GetParam();
     rnd_.Reset(ACMRandom::DeterministicSeed());
   }

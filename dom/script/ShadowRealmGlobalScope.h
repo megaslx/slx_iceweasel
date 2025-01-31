@@ -11,6 +11,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/OriginTrials.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsContentUtils.h"
 #include "nsIGlobalObject.h"
@@ -29,7 +30,8 @@ namespace mozilla::dom {
 
 // Required for providing the wrapper, as this is the global used inside a Gecko
 // backed ShadowRealm, but also required to power module resolution.
-class ShadowRealmGlobalScope : public nsIGlobalObject, public nsWrapperCache {
+class ShadowRealmGlobalScope final : public nsIGlobalObject,
+                                     public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ShadowRealmGlobalScope)
@@ -37,7 +39,7 @@ class ShadowRealmGlobalScope : public nsIGlobalObject, public nsWrapperCache {
   NS_DECLARE_STATIC_IID_ACCESSOR(SHADOWREALMGLOBALSCOPE_IID)
 
   explicit ShadowRealmGlobalScope(nsIGlobalObject* aCreatingGlobal)
-      : mCreatingGlobal(aCreatingGlobal){};
+      : mCreatingGlobal(aCreatingGlobal) {};
 
   nsIGlobalObject* GetCreatingGlobal() const { return mCreatingGlobal; }
   OriginTrials Trials() const override { return {}; }
@@ -60,6 +62,13 @@ class ShadowRealmGlobalScope : public nsIGlobalObject, public nsWrapperCache {
         "Presently we don't have enough context to make an informed decision"
         "on JS Sandboxes. See 1782853",
         aTarget);
+  }
+
+  nsISerialEventTarget* SerialEventTarget() const final {
+    return mozilla::GetMainThreadSerialEventTarget();
+  }
+  nsresult Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) const final {
+    return mozilla::SchedulerGroup::Dispatch(std::move(aRunnable));
   }
 
  private:

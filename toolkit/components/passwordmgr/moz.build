@@ -7,16 +7,15 @@
 if CONFIG["MOZ_BUILD_APP"] == "browser":
     DEFINES["MOZ_BUILD_APP_IS_BROWSER"] = True
 
-MOCHITEST_MANIFESTS += ["test/mochitest/mochitest.ini"]
-BROWSER_CHROME_MANIFESTS += ["test/browser/browser.ini"]
-XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.ini"]
+MOCHITEST_MANIFESTS += ["test/mochitest/mochitest.toml"]
+BROWSER_CHROME_MANIFESTS += ["test/browser/browser.toml"]
+XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.toml"]
 
 TESTING_JS_MODULES += [
     "test/LoginTestUtils.sys.mjs",
 ]
 
 XPIDL_SOURCES += [
-    "nsILoginAutoCompleteSearch.idl",
     "nsILoginInfo.idl",
     "nsILoginManager.idl",
     "nsILoginManagerAuthPrompter.idl",
@@ -30,14 +29,11 @@ XPIDL_MODULE = "loginmgr"
 
 EXTRA_JS_MODULES += [
     "crypto-SDR.sys.mjs",
-    "FirefoxRelay.sys.mjs",
-    "FirefoxRelayTelemetry.mjs",
     "InsecurePasswordUtils.sys.mjs",
     "LoginAutoComplete.sys.mjs",
-    "LoginFormFactory.sys.mjs",
     "LoginHelper.sys.mjs",
     "LoginInfo.sys.mjs",
-    "LoginManager.shared.mjs",
+    "LoginManager.shared.sys.mjs",
     "LoginManager.sys.mjs",
     "LoginManagerAuthPrompter.sys.mjs",
     "LoginManagerChild.sys.mjs",
@@ -46,12 +42,15 @@ EXTRA_JS_MODULES += [
     "LoginManagerTelemetry.sys.mjs",
     "LoginRecipes.sys.mjs",
     "LoginRelatedRealms.sys.mjs",
-    "NewPasswordModel.sys.mjs",
-    "PasswordGenerator.sys.mjs",
     "PasswordRulesManager.sys.mjs",
-    "PasswordRulesParser.sys.mjs",
-    "SignUpFormRuleset.sys.mjs",
     "storage-json.sys.mjs",
+]
+
+EXTRA_JS_MODULES.shared += [
+    "shared/LoginFormFactory.sys.mjs",
+    "shared/NewPasswordModel.sys.mjs",
+    "shared/PasswordGenerator.sys.mjs",
+    "shared/PasswordRulesParser.sys.mjs",
 ]
 
 if CONFIG["OS_TARGET"] != "Android":

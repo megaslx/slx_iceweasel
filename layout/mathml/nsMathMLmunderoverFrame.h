@@ -27,7 +27,7 @@ class nsMathMLmunderoverFrame final : public nsMathMLContainerFrame,
   friend nsIFrame* NS_NewMathMLmunderoverFrame(mozilla::PresShell* aPresShell,
                                                ComputedStyle* aStyle);
 
-  nsresult Place(DrawTarget* aDrawTarget, bool aPlaceOrigin,
+  nsresult Place(DrawTarget* aDrawTarget, const PlaceFlags& aFlags,
                  ReflowOutput& aDesiredSize) override;
 
   NS_IMETHOD InheritAutomaticData(nsIFrame* aParent) override;
@@ -37,7 +37,7 @@ class nsMathMLmunderoverFrame final : public nsMathMLContainerFrame,
   NS_IMETHOD UpdatePresentationData(uint32_t aFlagsValues,
                                     uint32_t aFlagsToUpdate) override;
 
-  void DestroyFrom(nsIFrame* aRoot, PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
                             int32_t aModType) override;
@@ -58,6 +58,8 @@ class nsMathMLmunderoverFrame final : public nsMathMLContainerFrame,
   virtual ~nsMathMLmunderoverFrame();
 
  private:
+  bool IsMathContentBoxHorizontallyCentered() const final;
+
   // Helper to set the "increment script level" flag on the element belonging
   // to a child frame given by aChildIndex.
   //

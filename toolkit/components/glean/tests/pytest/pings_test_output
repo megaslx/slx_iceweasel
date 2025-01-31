@@ -19,7 +19,12 @@ pub static not_baseline: Lazy<Ping> = Lazy::new(|| {
         "not-baseline",
         true,
         false,
+        true,
+        true,
+        true,
+        vec![],
         vec!["background".into(), "dirty_startup".into(), "foreground".into()],
+        true,
     )
 });
 
@@ -34,7 +39,12 @@ pub static not_deletion_request: Lazy<Ping> = Lazy::new(|| {
         "not-deletion-request",
         true,
         true,
+        true,
+        true,
+        true,
         vec![],
+        vec![],
+        true,
     )
 });
 
@@ -47,7 +57,12 @@ pub static not_events: Lazy<Ping> = Lazy::new(|| {
         "not-events",
         true,
         false,
+        true,
+        true,
+        true,
+        vec![],
         vec!["background".into(), "max_capacity".into(), "startup".into()],
+        true,
     )
 });
 
@@ -64,7 +79,44 @@ pub static not_metrics: Lazy<Ping> = Lazy::new(|| {
         "not-metrics",
         true,
         false,
+        true,
+        true,
+        true,
+        vec![],
         vec!["overdue".into(), "reschedule".into(), "today".into(), "tomorrow".into(), "upgrade".into()],
+        true,
+    )
+});
+
+#[allow(non_upper_case_globals)]
+/// A fake OHTTP-using ping
+pub static not_ohttp: Lazy<Ping> = Lazy::new(|| {
+    Ping::new(
+        "not-ohttp",
+        false,
+        true,
+        true,
+        false,
+        true,
+        vec![],
+        vec![],
+        true,
+    )
+});
+
+#[allow(non_upper_case_globals)]
+/// A fake ping to test ride-along
+pub static ridealong_test: Lazy<Ping> = Lazy::new(|| {
+    Ping::new(
+        "ridealong-test",
+        false,
+        true,
+        true,
+        true,
+        true,
+        vec![],
+        vec![],
+        true,
     )
 });
 
@@ -83,8 +135,22 @@ pub fn register_pings(application_id: Option<&str>) {
             let _ = &*not_deletion_request;
             let _ = &*not_events;
             let _ = &*not_metrics;
+            let _ = &*not_ohttp;
+            let _ = &*ridealong_test;
         }
     }
+}
+
+/// Map from pings to the pings scheduled along with them.
+///
+#[doc(hidden)]
+pub fn ping_schedule() -> std::collections::HashMap<String, Vec<String>> {
+  std::collections::HashMap::from([
+      (
+        "baseline".into(),
+        vec!["ridealong-test".into()]
+      ),
+  ])
 }
 
 #[cfg(feature = "with_gecko")]
@@ -106,9 +172,27 @@ pub(crate) fn submit_ping_by_id(id: u32, reason: Option<&str>) {
         2 => not_deletion_request.submit(reason),
         3 => not_events.submit(reason),
         4 => not_metrics.submit(reason),
+        5 => not_ohttp.submit(reason),
+        6 => ridealong_test.submit(reason),
         _ => {
             // TODO: instrument this error.
             log::error!("Cannot submit unknown ping {} by id.", id);
+        }
+    }
+}
+
+#[cfg(feature = "with_gecko")]
+pub(crate) fn set_ping_enabled(id: u32, enabled: bool) {
+    match id {
+        1 => not_baseline.set_enabled(enabled),
+        2 => not_deletion_request.set_enabled(enabled),
+        3 => not_events.set_enabled(enabled),
+        4 => not_metrics.set_enabled(enabled),
+        5 => not_ohttp.set_enabled(enabled),
+        6 => ridealong_test.set_enabled(enabled),
+        _ => {
+            // TODO: instrument this error.
+            log::error!("Cannot set_enabled on unknown ping {} by id.", id);
         }
     }
 }

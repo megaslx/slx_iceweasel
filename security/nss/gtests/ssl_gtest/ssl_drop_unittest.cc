@@ -72,11 +72,12 @@ static void CheckAcks(const std::shared_ptr<TlsRecordRecorder>& acks,
   const DataBuffer& buf = acks->record(index).buffer;
   size_t offset = 2;
   uint64_t len;
-
-  EXPECT_EQ(2 + expected.size() * 8, buf.len());
+  // RFC 9147 -  7. ACK Message.
+  // 16 bytes correspond to the length of the epoch and the length of the seqNum
+  EXPECT_EQ(2 + expected.size() * 16, buf.len());
   ASSERT_TRUE(buf.Read(0, 2, &len));
   ASSERT_EQ(static_cast<size_t>(len + 2), buf.len());
-  if ((2 + expected.size() * 8) != buf.len()) {
+  if ((2 + expected.size() * 16) != buf.len()) {
     while (offset < buf.len()) {
       uint64_t ack;
       ASSERT_TRUE(buf.Read(offset, 8, &ack));
@@ -88,9 +89,13 @@ static void CheckAcks(const std::shared_ptr<TlsRecordRecorder>& acks,
 
   for (size_t i = 0; i < expected.size(); ++i) {
     uint64_t a = expected[i];
-    uint64_t ack;
-    ASSERT_TRUE(buf.Read(offset, 8, &ack));
+    uint64_t ackEpoch;
+    uint64_t ackSeq;
+    ASSERT_TRUE(buf.Read(offset, 8, &ackEpoch));
     offset += 8;
+    ASSERT_TRUE(buf.Read(offset, 8, &ackSeq));
+    offset += 8;
+    uint64_t ack = (ackEpoch << 48) | ackSeq;
     if (a != ack) {
       ADD_FAILURE() << "Wrong ack " << i << " expected=0x" << std::hex << a
                     << " got=0x" << ack << std::dec;
@@ -910,5 +915,43 @@ INSTANTIATE_TEST_SUITE_P(DatagramReorder13, TlsReorderDatagram13,
                          ::testing::Values(true, false));
 INSTANTIATE_TEST_SUITE_P(DatagramFragment13, TlsFragmentationAndRecoveryTest,
                          ::testing::Values(true, false));
+
+class FirstDropThenKeepHandshakeFilter : public TlsHandshakeFilter {
+ public:
+  FirstDropThenKeepHandshakeFilter(const std::shared_ptr<TlsAgent>& a)
+      : TlsHandshakeFilter(a) {}
+
+  virtual PacketFilter::Action FilterHandshake(
+      const TlsHandshakeFilter::HandshakeHeader& header,
+      const DataBuffer& input, DataBuffer* output) {
+    if (enabled) {
+      return KEEP;
+    } else {
+      enabled = true;
+      return DROP;
+    }
+  }
+
+ private:
+  bool enabled = false;
+};
+
+// This test is responsible for checking that when DTLS fragments the message,
+// the hanshake will be successfully reconstructed, but if one of handshakes
+// was dropped, they are not going to be glued all together.
+
+// See: https://bugzilla.mozilla.org/show_bug.cgi?id=1874451
+TEST_F(TlsConnectDatagram13, PreviousHandshakeRemovedWhenDropped) {
+  EnsureTlsSetup();
+  static const std::vector<SSLNamedGroup> client_groups = {
+      ssl_grp_ec_secp384r1, ssl_grp_ec_secp521r1, ssl_grp_ec_curve25519};
+  client_->ConfigNamedGroups(client_groups);
+  // Ensure that the message is indeed longer than the MTU we install.
+  EXPECT_EQ(SECSuccess, SSL_SendAdditionalKeyShares(client_->ssl_fd(), 2));
+
+  SSLInt_SetMTU(client_->ssl_fd(), 150);
+  auto filter = MakeTlsFilter<FirstDropThenKeepHandshakeFilter>(client_);
+  Connect();
+}
 
 }  // namespace nss_test

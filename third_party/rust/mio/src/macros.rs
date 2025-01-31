@@ -51,8 +51,8 @@ macro_rules! cfg_net {
 macro_rules! cfg_io_source {
     ($($item:item)*) => {
         $(
-            #[cfg(any(feature = "net", all(unix, feature = "os-ext")))]
-            #[cfg_attr(docsrs, doc(cfg(any(feature = "net", all(unix, feature = "os-ext")))))]
+            #[cfg(any(feature = "net", all(any(unix, target_os = "hermit"), feature = "os-ext")))]
+            #[cfg_attr(docsrs, doc(cfg(any(feature = "net", all(any(unix, target_os = "hermit"), feature = "os-ext")))))]
             $item
         )*
     }
@@ -66,5 +66,33 @@ macro_rules! cfg_any_os_ext {
             #[cfg_attr(docsrs, doc(cfg(any(feature = "os-ext", feature = "net"))))]
             $item
         )*
+    }
+}
+
+macro_rules! trace {
+    ($($t:tt)*) => {
+        log!(trace, $($t)*)
+    }
+}
+
+macro_rules! warn {
+    ($($t:tt)*) => {
+        log!(warn, $($t)*)
+    }
+}
+
+macro_rules! error {
+    ($($t:tt)*) => {
+        log!(error, $($t)*)
+    }
+}
+
+macro_rules! log {
+    ($level: ident, $($t:tt)*) => {
+        #[cfg(feature = "log")]
+        { log::$level!($($t)*) }
+        // Silence unused variables warnings.
+        #[cfg(not(feature = "log"))]
+        { if false { let _ = ( $($t)* ); } }
     }
 }

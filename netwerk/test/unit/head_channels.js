@@ -274,12 +274,10 @@ ChannelEventSink.prototype = {
 /**
  * A helper class to construct origin attributes.
  */
-function OriginAttributes(inIsolatedMozBrowser, privateId) {
-  this.inIsolatedMozBrowser = inIsolatedMozBrowser;
+function OriginAttributes(privateId) {
   this.privateBrowsingId = privateId;
 }
 OriginAttributes.prototype = {
-  inIsolatedMozBrowser: false,
   privateBrowsingId: 0,
 };
 
@@ -379,6 +377,7 @@ async function asyncStartTLSTestServer(
   Services.env.set("LD_LIBRARY_PATH", greBinDir.path + ":/data/local/xpcb");
   Services.env.set("MOZ_TLS_SERVER_DEBUG_LEVEL", "3");
   Services.env.set("MOZ_TLS_SERVER_CALLBACK_PORT", CALLBACK_PORT);
+  Services.env.set("MOZ_TLS_ECH_ALPN_FLAG", "1");
 
   let httpServer = new HttpServer();
   let serverReady = new Promise(resolve => {
@@ -482,7 +481,7 @@ function bytesToString(bytes) {
 function check_http_info(request, expected_httpVersion, expected_proxy) {
   let httpVersion = "";
   try {
-    httpVersion = request.protocolVersion;
+    httpVersion = request.QueryInterface(Ci.nsIHttpChannel).protocolVersion;
   } catch (e) {}
 
   request.QueryInterface(Ci.nsIProxiedChannel);
@@ -524,4 +523,28 @@ function makeHTTPChannel(url, with_proxy) {
     uri: url,
     loadUsingSystemPrincipal: true,
   }).QueryInterface(Ci.nsIHttpChannel);
+}
+
+// Like ChannelListener but does not throw an exception if something
+// goes wrong. Callback is supposed to do all the work.
+class SimpleChannelListener {
+  constructor(callback) {
+    this._onStopCallback = callback;
+    this._buffer = "";
+  }
+  get QueryInterface() {
+    return ChromeUtils.generateQI(["nsIStreamListener", "nsIRequestObserver"]);
+  }
+
+  onStartRequest() {}
+
+  onDataAvailable(request, stream, offset, count) {
+    this._buffer = this._buffer.concat(read_stream(stream, count));
+  }
+
+  onStopRequest(request) {
+    if (this._onStopCallback) {
+      this._onStopCallback(request, this._buffer);
+    }
+  }
 }

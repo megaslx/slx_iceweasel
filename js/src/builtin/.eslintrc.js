@@ -112,6 +112,22 @@ module.exports = {
             message:
               "'arguments' is disallowed, use ArgumentsLength(), GetArgument(n), or rest-parameters",
           },
+          {
+            selector: "VariableDeclaration[kind='let']",
+            message: "'let' declarations are disallowed to avoid TDZ checks, use 'var' instead",
+          },
+          {
+            selector: "VariableDeclaration[kind='const']",
+            message: "'const' declarations are disallowed to avoid TDZ checks, use 'var' instead",
+          },
+        ],
+        // Method signatures are important in builtins so disable unused argument errors.
+        "no-unused-vars": [
+          "error",
+          {
+            args: "none",
+            vars: "local",
+          },
         ],
       },
 
@@ -139,6 +155,8 @@ module.exports = {
         SetIsInlinableLargeFunction: "readonly",
         ToNumeric: "readonly",
         ToString: "readonly",
+        DisposeResourcesAsync: "readonly",
+        DisposeResourcesSync: "readonly",
 
         // We've disabled all built-in environments, which also removed
         // `undefined` from the list of globals. Put it back because it's

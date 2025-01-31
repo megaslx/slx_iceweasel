@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -45,7 +45,7 @@ int ppc_simd_caps(void) {
   unsigned int i;
   uint64_t buf[64];
 
-  // If VPX_SIMD_CAPS is set then allow only those capabilities.
+  // If AOM_SIMD_CAPS_MASK is set then allow only those capabilities.
   if (!cpu_env_flags(&flags)) {
     return flags;
   }

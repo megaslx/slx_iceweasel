@@ -10,10 +10,10 @@ import warnings
 from argparse import Namespace
 from collections import defaultdict
 
-import six
 from mach.decorators import Command, CommandArgument
 from mozbuild.base import MachCommandConditions as conditions
 from mozbuild.base import MozbuildObject
+from mozfile import load_source
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -57,7 +57,6 @@ parser = None
 
 
 class MochitestRunner(MozbuildObject):
-
     """Easily run mochitests.
 
     This currently contains just the basics for running mochitests. We may want
@@ -90,11 +89,8 @@ class MochitestRunner(MozbuildObject):
         """Runs a mochitest."""
         # runtests.py is ambiguous, so we load the file/module manually.
         if "mochitest" not in sys.modules:
-            import imp
-
             path = os.path.join(self.mochitest_dir, "runtests.py")
-            with open(path, "r") as fh:
-                imp.load_module("mochitest", fh, path, (".py", "r", imp.PY_SOURCE))
+            load_source("mochitest", path)
 
         import mochitest
 
@@ -145,11 +141,9 @@ class MochitestRunner(MozbuildObject):
         if host_ret != 0:
             return host_ret
 
-        import imp
-
         path = os.path.join(self.mochitest_dir, "runtestsremote.py")
-        with open(path, "r") as fh:
-            imp.load_module("runtestsremote", fh, path, (".py", "r", imp.PY_SOURCE))
+        load_source("runtestsremote", path)
+
         import runtestsremote
 
         options = Namespace(**kwargs)
@@ -160,11 +154,6 @@ class MochitestRunner(MozbuildObject):
             manifest = TestManifest()
             manifest.tests.extend(tests)
             options.manifestFile = manifest
-
-        # Firefox for Android doesn't use e10s
-        if options.app is not None and "geckoview" not in options.app:
-            options.e10s = False
-            print("using e10s=False for non-geckoview app")
 
         return runtestsremote.run_test_harness(parser, options)
 
@@ -195,14 +184,11 @@ def setup_argument_parser():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
-        import imp
-
         path = os.path.join(build_obj.topobjdir, mochitest_dir, "runtests.py")
         if not os.path.exists(path):
             path = os.path.join(here, "runtests.py")
 
-        with open(path, "r") as fh:
-            imp.load_module("mochitest", fh, path, (".py", "r", imp.PY_SOURCE))
+        load_source("mochitest", path)
 
         from mochitest_options import MochitestArgumentParser
 
@@ -237,14 +223,11 @@ def setup_junit_argument_parser():
         warnings.simplefilter("ignore")
 
         # runtests.py contains MochitestDesktop, required by runjunit
-        import imp
-
         path = os.path.join(build_obj.topobjdir, mochitest_dir, "runtests.py")
         if not os.path.exists(path):
             path = os.path.join(here, "runtests.py")
 
-        with open(path, "r") as fh:
-            imp.load_module("mochitest", fh, path, (".py", "r", imp.PY_SOURCE))
+        load_source("mochitest", path)
 
         import runjunit
         from mozrunner.devices.android_device import (
@@ -309,16 +292,14 @@ def run_mochitest_general(
 
     flavors = None
     if flavor:
-        for fname, fobj in six.iteritems(ALL_FLAVORS):
+        for fname, fobj in ALL_FLAVORS.items():
             if flavor in fobj["aliases"]:
                 if buildapp not in fobj["enabled_apps"]:
                     continue
                 flavors = [fname]
                 break
     else:
-        flavors = [
-            f for f, v in six.iteritems(ALL_FLAVORS) if buildapp in v["enabled_apps"]
-        ]
+        flavors = [f for f, v in ALL_FLAVORS.items() if buildapp in v["enabled_apps"]]
 
     from mozbuild.controller.building import BuildDriver
 
@@ -407,6 +388,20 @@ def run_mochitest_general(
         # sys.executable is used to start the websocketprocessbridge, though for some
         # reason it doesn't get set when calling `activate_this.py` in the virtualenv.
         sys.executable = command_context.virtualenv_manager.python_path
+
+    if ("browser-chrome", "a11y") in suites and sys.platform == "win32":
+        # Only Windows a11y browser tests need this.
+        req = os.path.join(
+            "accessible",
+            "tests",
+            "browser",
+            "windows",
+            "a11y_setup_requirements.txt",
+        )
+        command_context.virtualenv_manager.activate()
+        command_context.virtualenv_manager.install_pip_requirements(
+            req, require_hashes=False
+        )
 
     # This is a hack to introduce an option in mach to not send
     # filtered tests to the mochitest harness. Mochitest harness will read
@@ -551,5 +546,31 @@ def run_junit(command_context, no_install, **kwargs):
             "mach-mochitest", kwargs, {default_format: sys.stdout}, format_args
         )
 
+    if kwargs.get("mach_test") and kwargs.get("test_objects"):
+        test_classes = []
+        test_objects = kwargs.get("test_objects")
+        for test_object in test_objects:
+            test_classes.append(classname_for_test(test_object["name"]))
+        kwargs["test_filters"] = test_classes
+
     mochitest = command_context._spawn(MochitestRunner)
     return mochitest.run_geckoview_junit_test(command_context._mach_context, **kwargs)
+
+
+def classname_for_test(test):
+    """Convert path of test file to gradle recognized test suite name"""
+    test_path = os.path.join(
+        "mobile",
+        "android",
+        "geckoview",
+        "src",
+        "androidTest",
+        "java",
+    )
+    return (
+        os.path.normpath(test)
+        .split(os.path.normpath(test_path))[-1]
+        .removeprefix(os.path.sep)
+        .replace(os.path.sep, ".")
+        .removesuffix(".kt")
+    )

@@ -26,12 +26,19 @@ add_task(async function test_cookie_banner_service_disabled() {
       ],
     });
 
+    // Clear the executed records before testing.
+    if (serviceMode != Ci.nsICookieBannerService.MODE_DISABLED) {
+      Services.cookieBanners.removeAllExecutedRecords(false);
+    }
+
     await openPageAndVerify({
       win: window,
       domain: TEST_DOMAIN_A,
       testURL: TEST_PAGE_A,
       visible: true,
       expected: "NoClick",
+      expectActorEnabled:
+        serviceMode != Ci.nsICookieBannerService.MODE_DISABLED,
     });
 
     await SpecialPowers.popPrefEnv();
@@ -48,6 +55,9 @@ add_task(async function test_no_rules() {
     ],
   });
 
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   info("Clearing existing rules");
   Services.cookieBanners.resetRules(false);
 
@@ -58,9 +68,6 @@ add_task(async function test_no_rules() {
     visible: true,
     expected: "NoClick",
   });
-
-  // No click telemetry reported.
-  testClickResultTelemetry({});
 });
 
 /**
@@ -73,6 +80,9 @@ add_task(async function test_clicking_mode_reject() {
     ],
   });
 
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   insertTestClickRules();
 
   await openPageAndVerify({
@@ -83,11 +93,7 @@ add_task(async function test_clicking_mode_reject() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry(
-    { success: 1, success_dom_content_loaded: 1 },
-    false
-  );
-
+  Services.cookieBanners.removeAllExecutedRecords(false);
   // No opt out rule for the example.org, the banner shouldn't be clicked.
   await openPageAndVerify({
     win: window,
@@ -95,14 +101,6 @@ add_task(async function test_clicking_mode_reject() {
     testURL: TEST_PAGE_B,
     visible: true,
     expected: "NoClick",
-  });
-
-  // No matching rule means we don't record any telemetry for clicks.
-  await testClickResultTelemetry({
-    success: 1,
-    success_dom_content_loaded: 1,
-    fail: 1,
-    fail_no_rule_for_mode: 1,
   });
 });
 
@@ -119,9 +117,10 @@ add_task(async function test_clicking_mode_reject_or_accept() {
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   await openPageAndVerify({
     win: window,
@@ -131,25 +130,13 @@ add_task(async function test_clicking_mode_reject_or_accept() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 1,
-      success_dom_content_loaded: 1,
-    },
-    false
-  );
-
+  Services.cookieBanners.removeAllExecutedRecords(false);
   await openPageAndVerify({
     win: window,
     domain: TEST_DOMAIN_B,
     testURL: TEST_PAGE_B,
     visible: false,
     expected: "OptIn",
-  });
-
-  await testClickResultTelemetry({
-    success: 2,
-    success_dom_content_loaded: 2,
   });
 });
 
@@ -161,12 +148,14 @@ add_task(async function test_clicking_with_delayed_banner() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["cookiebanners.service.mode", Ci.nsICookieBannerService.MODE_REJECT],
+      ["cookiebanners.bannerClicking.timeoutAfterLoad", 10000],
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   let TEST_PAGE =
     TEST_ORIGIN_A + TEST_PATH + "file_delayed_banner.html?delay=100";
@@ -176,11 +165,6 @@ add_task(async function test_clicking_with_delayed_banner() {
     testURL: TEST_PAGE,
     visible: false,
     expected: "OptOut",
-  });
-
-  await testClickResultTelemetry({
-    success: 1,
-    success_mutation_pre_load: 1,
   });
 });
 
@@ -194,9 +178,10 @@ add_task(async function test_embedded_iframe() {
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   await openIframeAndVerify({
     win: window,
@@ -204,11 +189,6 @@ add_task(async function test_embedded_iframe() {
     testURL: TEST_PAGE_A,
     visible: false,
     expected: "OptOut",
-  });
-
-  await testClickResultTelemetry({
-    success: 1,
-    success_dom_content_loaded: 1,
   });
 });
 
@@ -225,9 +205,10 @@ add_task(async function test_pbm() {
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
@@ -242,11 +223,6 @@ add_task(async function test_pbm() {
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
-
-  await testClickResultTelemetry({
-    success: 1,
-    success_dom_content_loaded: 1,
-  });
 });
 
 /**
@@ -264,9 +240,10 @@ add_task(async function test_pref_pbm_pref() {
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
@@ -279,14 +256,7 @@ add_task(async function test_pref_pbm_pref() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 1,
-      success_dom_content_loaded: 1,
-    },
-    false
-  );
-
+  Services.cookieBanners.removeAllExecutedRecords(false);
   await openPageAndVerify({
     win: pbmWindow,
     domain: TEST_DOMAIN_A,
@@ -294,14 +264,6 @@ add_task(async function test_pref_pbm_pref() {
     visible: true,
     expected: "NoClick",
   });
-
-  await testClickResultTelemetry(
-    {
-      success: 1,
-      success_dom_content_loaded: 1,
-    },
-    false
-  );
 
   info("Disable in normal browsing but enable in private browsing.");
   await SpecialPowers.pushPrefEnv({
@@ -314,6 +276,8 @@ add_task(async function test_pref_pbm_pref() {
     ],
   });
 
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   await openPageAndVerify({
     domain: TEST_DOMAIN_A,
     testURL: TEST_PAGE_A,
@@ -321,14 +285,7 @@ add_task(async function test_pref_pbm_pref() {
     expected: "NoClick",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 1,
-      success_dom_content_loaded: 1,
-    },
-    false
-  );
-
+  Services.cookieBanners.removeAllExecutedRecords(false);
   await openPageAndVerify({
     win: pbmWindow,
     domain: TEST_DOMAIN_A,
@@ -336,14 +293,6 @@ add_task(async function test_pref_pbm_pref() {
     visible: false,
     expected: "OptOut",
   });
-
-  await testClickResultTelemetry(
-    {
-      success: 2,
-      success_dom_content_loaded: 2,
-    },
-    false
-  );
 
   info(
     "Set normal browsing to REJECT_OR_ACCEPT and private browsing to REJECT."
@@ -361,6 +310,8 @@ add_task(async function test_pref_pbm_pref() {
     ],
   });
 
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   info(
     "The normal browsing window accepts the banner according to the opt-in rule."
   );
@@ -372,14 +323,7 @@ add_task(async function test_pref_pbm_pref() {
     expected: "OptIn",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 3,
-      success_dom_content_loaded: 3,
-    },
-    false
-  );
-
+  Services.cookieBanners.removeAllExecutedRecords(false);
   info(
     "The private browsing window should not perform any click, because there is only an opt-in rule."
   );
@@ -392,13 +336,6 @@ add_task(async function test_pref_pbm_pref() {
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
-
-  await testClickResultTelemetry({
-    success: 3,
-    success_dom_content_loaded: 3,
-    fail: 1,
-    fail_no_rule_for_mode: 1,
-  });
 });
 
 /**
@@ -414,9 +351,10 @@ add_task(async function test_embedded_iframe_pbm() {
     ],
   });
 
-  insertTestClickRules();
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
-  await testClickResultTelemetry({});
+  insertTestClickRules();
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
@@ -431,9 +369,4 @@ add_task(async function test_embedded_iframe_pbm() {
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
-
-  await testClickResultTelemetry({
-    success: 1,
-    success_dom_content_loaded: 1,
-  });
 });

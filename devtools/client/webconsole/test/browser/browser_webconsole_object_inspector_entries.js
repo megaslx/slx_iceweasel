@@ -16,6 +16,10 @@ add_task(async function () {
   await pushPref("dom.webmidi.enabled", true);
   await pushPref("midi.prompt.testing", true);
   await pushPref("media.navigator.permission.disabled", true);
+  // enable custom highlight API
+  await pushPref("dom.customHighlightAPI.enabled", true);
+  // enable custom state
+  await pushPref("dom.element.customstateset.enabled", true);
 
   const hud = await openNewTabAndConsole(TEST_URI);
 
@@ -33,6 +37,20 @@ add_task(async function () {
       const midiAccess = Cu.waiveXrays(
         await content.wrappedJSObject.navigator.requestMIDIAccess()
       );
+
+      content.CSS.highlights.set("search", new content.Highlight());
+      content.CSS.highlights.set("glow", new content.Highlight());
+      content.CSS.highlights.set("anchor", new content.Highlight());
+
+      content.customElements.define(
+        "fx-test",
+        class extends content.HTMLElement {}
+      );
+      const { states } = content.document
+        .createElement("fx-test")
+        .attachInternals();
+      states.add("custom-state");
+      states.add("another-custom-state");
 
       content.wrappedJSObject.console.log(
         "oi-entries-test",
@@ -63,7 +81,9 @@ add_task(async function () {
         new content.Headers({ a: 1, b: 2, c: 3 }),
         formData,
         midiAccess.inputs,
-        midiAccess.outputs
+        midiAccess.outputs,
+        content.CSS.highlights,
+        states
       );
 
       return {
@@ -91,7 +111,7 @@ add_task(async function () {
   const objectInspectors = [...node.querySelectorAll(".tree")];
   is(
     objectInspectors.length,
-    11,
+    13,
     "There is the expected number of object inspectors"
   );
 
@@ -107,6 +127,8 @@ add_task(async function () {
     formDataOi,
     midiInputsOi,
     midiOutputsOi,
+    highlightsRegistryOi,
+    customStateSetOi,
   ] = objectInspectors;
 
   await testSmallMap(smallMapOi);
@@ -120,52 +142,35 @@ add_task(async function () {
   await testFormData(formDataOi);
   await testMidiInputs(midiInputsOi, taskResult.midi.inputs);
   await testMidiOutputs(midiOutputsOi, taskResult.midi.outputs);
+  await testHighlightsRegistry(highlightsRegistryOi);
+  await testCustomStateSet(customStateSetOi);
 });
 
 async function testSmallMap(oi) {
   info("Expanding the Map");
-  let onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the map");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(entriesNode);
 
-  entriesNode.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  oiNodes = oi.querySelectorAll(".node");
+  oiNodes = oi.querySelectorAll(".tree-node");
   // There are now 6 nodes, the 4 original ones, and the 2 entries.
   is(oiNodes.length, 6, "There is the expected number of nodes in the tree");
 
   info("Expand first entry");
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-  oiNodes[3].querySelector(".arrow").click();
-  await onMapOiMutation;
+  await expandObjectInspectorNode(oiNodes[3]);
 
-  oiNodes = oi.querySelectorAll(".node");
+  oiNodes = oi.querySelectorAll(".tree-node");
   /*
    * ▼ Map (2)
    * |   size: 2
@@ -179,13 +184,9 @@ async function testSmallMap(oi) {
   is(oiNodes.length, 8, "There is the expected number of nodes in the tree");
 
   info("Expand <key> for first entry");
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-  oiNodes[4].querySelector(".arrow").click();
-  await onMapOiMutation;
+  await expandObjectInspectorNode(oiNodes[4]);
 
-  oiNodes = oi.querySelectorAll(".node");
+  oiNodes = oi.querySelectorAll(".tree-node");
   /*
    * ▼ Map (2)
    * |   size: 2
@@ -201,84 +202,50 @@ async function testSmallMap(oi) {
   is(oiNodes.length, 10, "There is the expected number of nodes in the tree");
 
   info("Expand <value> for first entry");
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-  oiNodes[7].querySelector(".arrow").click();
-  await onMapOiMutation;
+  await expandObjectInspectorNode(oiNodes[7]);
 
-  oiNodes = oi.querySelectorAll(".node");
-  ok(oiNodes.length > 10, "The document node was expanded");
+  oiNodes = oi.querySelectorAll(".tree-node");
+  Assert.greater(oiNodes.length, 10, "The document node was expanded");
 }
 
 async function testMap(oi) {
   info("Expanding the Map");
-  let onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the map");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(entriesNode);
 
-  entriesNode.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  oiNodes = oi.querySelectorAll(".node");
+  oiNodes = oi.querySelectorAll(".tree-node");
   // There are now 24 nodes, the 4 original ones, and the 20 entries.
   is(oiNodes.length, 24, "There is the expected number of nodes in the tree");
 }
 
 async function testLargeMap(oi) {
   info("Expanding the large map");
-  let onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the map");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onMapOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 8 nodes, the 4 original ones, and the 4 buckets.
@@ -291,46 +258,27 @@ async function testLargeMap(oi) {
 
 async function testSmallSet(oi) {
   info("Expanding the Set");
-  let onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the map");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(entriesNode);
 
-  entriesNode.querySelector(".arrow").click();
-  await onMapOiMutation;
-
-  oiNodes = oi.querySelectorAll(".node");
+  oiNodes = oi.querySelectorAll(".tree-node");
   // There are now 6 nodes, the 4 original ones, and the 2 entries.
   is(oiNodes.length, 6, "There is the expected number of nodes in the tree");
 
   info("Expand first entry");
-  onMapOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-  oiNodes[3].querySelector(".arrow").click();
-  await onMapOiMutation;
+  await expandObjectInspectorNode(oiNodes[3]);
 
   oiNodes = oi.querySelectorAll(".node");
   /*
@@ -348,35 +296,20 @@ async function testSmallSet(oi) {
 
 async function testSet(oi) {
   info("Expanding the Set");
-  let onSetOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onSetOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the Set");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onSetOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onSetOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 24 nodes, the 4 original ones, and the 20 entries.
@@ -385,35 +318,20 @@ async function testSet(oi) {
 
 async function testLargeSet(oi) {
   info("Expanding the large Set");
-  let onSetOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onSetOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   info("Expanding the <entries> leaf of the Set");
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
-  onSetOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onSetOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 7 nodes, the 4 original ones, and the 3 buckets.
@@ -431,36 +349,21 @@ async function testUrlSearchParams(oi) {
   );
 
   info("Expanding the URLSearchParams");
-  let onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
 
   info("Expanding the <entries> leaf of the URLSearchParams");
-  onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 14 nodes, the 4 original ones, and the 11 entries.
@@ -506,36 +409,21 @@ async function testHeaders(oi) {
   );
 
   info("Expanding the Headers");
-  let onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 3 nodes: the root, entries and the proto.
   is(oiNodes.length, 3, "There is the expected number of nodes in the tree");
 
   const entriesNode = oiNodes[1];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
 
   info("Expanding the <entries> leaf of the Headers");
-  onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 6 nodes, the 3 original ones, and the 3 entries.
@@ -558,36 +446,21 @@ async function testFormData(oi) {
   );
 
   info("Expanding the FormData");
-  let onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 3 nodes: the root, entries and the proto.
   is(oiNodes.length, 3, "There is the expected number of nodes in the tree");
 
   const entriesNode = oiNodes[1];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
 
   info("Expanding the <entries> leaf of the FormData");
-  onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 6 nodes, the 3 original ones, and the 3 entries.
@@ -619,36 +492,21 @@ async function testMidiInputs(oi, midiInputs) {
   );
 
   info("Expanding the MIDIInputMap");
-  let onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
 
   info("Expanding the <entries> leaf of the MIDIInputMap");
-  onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 5 nodes, the 4 original ones, and the entry.
@@ -669,36 +527,21 @@ async function testMidiOutputs(oi, midiOutputs) {
   );
 
   info("Expanding the MIDIOutputMap");
-  let onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
 
-  oi.querySelector(".arrow").click();
-  await onOiMutation;
-
-  ok(
-    oi.querySelector(".arrow").classList.contains("expanded"),
-    "The arrow of the node has the expected class after clicking on it"
-  );
-
-  let oiNodes = oi.querySelectorAll(".node");
+  let oiNodes = oi.querySelectorAll(".tree-node");
   // There are 4 nodes: the root, size, entries and the proto.
   is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
 
   const entriesNode = oiNodes[2];
   is(
-    entriesNode.textContent,
+    entriesNode.querySelector(".node").textContent,
     "<entries>",
     "There is the expected <entries> node"
   );
 
   info("Expanding the <entries> leaf of the MIDIOutputMap");
-  onOiMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  entriesNode.querySelector(".arrow").click();
-  await onOiMutation;
+  await expandObjectInspectorNode(entriesNode);
 
   oiNodes = oi.querySelectorAll(".node");
   // There are now 7 nodes, the 4 original ones, and the 3 entries.
@@ -718,5 +561,120 @@ async function testMidiOutputs(oi, midiOutputs) {
     oiNodes[5].textContent,
     `"${midiOutputs[2].id}": MIDIOutput { id: "${midiOutputs[2].id}", manufacturer: "${midiOutputs[2].manufacturer}", name: "${midiOutputs[2].name}", ${ELLIPSIS} }`,
     "Third entry is displayed as expected"
+  );
+}
+
+async function testHighlightsRegistry(oi) {
+  is(
+    oi.textContent,
+    `HighlightRegistry(3) { search → Highlight, glow → Highlight, anchor → Highlight }`,
+    "HighlightRegistry has expected content"
+  );
+
+  info("Expanding the HighlightRegistry");
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
+
+  let oiNodes = oi.querySelectorAll(".tree-node");
+  // There are 4 nodes: the root, size, entries and the proto.
+  is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
+
+  const entriesNode = oiNodes[2];
+  is(
+    entriesNode.querySelector(".node").textContent,
+    "<entries>",
+    "There is the expected <entries> node"
+  );
+
+  info("Expanding the <entries> leaf of the HighlightRegistry");
+  await expandObjectInspectorNode(entriesNode);
+
+  oiNodes = oi.querySelectorAll(".tree-node");
+  // There are now 7 nodes, the 4 original ones, and the 3 entries.
+  is(oiNodes.length, 7, "There is the expected number of nodes in the tree");
+
+  is(
+    oiNodes[3].querySelector(".node").textContent,
+    `0: search → Highlight { priority: 0, type: "highlight", size: 0 }`,
+    "First entry is displayed as expected"
+  );
+  is(
+    oiNodes[4].querySelector(".node").textContent,
+    `1: glow → Highlight { priority: 0, type: "highlight", size: 0 }`,
+    `Second entry is displayed as expected`
+  );
+  is(
+    oiNodes[5].querySelector(".node").textContent,
+    `2: anchor → Highlight { priority: 0, type: "highlight", size: 0 }`,
+    `Third entry entry is displayed as expected`
+  );
+
+  info("Expand last entry");
+  await expandObjectInspectorNode(oiNodes[5]);
+
+  oiNodes = oi.querySelectorAll(".tree-node");
+  // There are now 9 nodes, the 7 original ones, <key> and <value>
+  is(oiNodes.length, 9, "There is the expected number of nodes in the tree");
+  is(
+    oiNodes[6].querySelector(".node").textContent,
+    `<key>: "anchor"`,
+    `Got expected key node`
+  );
+  is(
+    oiNodes[7].querySelector(".node").textContent,
+    `<value>: Highlight { priority: 0, type: "highlight", size: 0 }`,
+    `Got expected value node`
+  );
+
+  info("Expand Highlight object");
+  await expandObjectInspectorNode(oiNodes[7]);
+
+  oiNodes = oi.querySelectorAll(".node");
+  // There are now 13 nodes, the 9 previous ones, and all the properties of the Highlight object
+  is(oiNodes.length, 13, "There is the expected number of nodes in the tree");
+  is(oiNodes[8].textContent, `priority: 0`, `Got expected priority property`);
+  is(oiNodes[9].textContent, `size: 0`, `Got expected size property`);
+  is(
+    oiNodes[10].textContent,
+    `type: "highlight"`,
+    `Got expected type property`
+  );
+  is(
+    oiNodes[11].textContent,
+    `<prototype>: HighlightPrototype { add: add(), clear: clear(), delete: delete(), … }`,
+    `Got expected prototype property`
+  );
+}
+
+async function testCustomStateSet(oi) {
+  info("Expanding the CustomStateSet");
+  await expandObjectInspectorNode(oi.querySelector(".tree-node"));
+
+  let oiNodes = oi.querySelectorAll(".tree-node");
+  // There are 4 nodes: the root, size, entries and the proto.
+  is(oiNodes.length, 4, "There is the expected number of nodes in the tree");
+
+  info("Expanding the <entries> leaf of the map");
+
+  const entriesNode = oiNodes[2];
+  is(
+    entriesNode.querySelector(".node").textContent,
+    "<entries>",
+    "There is the expected <entries> node"
+  );
+  await expandObjectInspectorNode(entriesNode);
+
+  oiNodes = oi.querySelectorAll(".node");
+  // There are now 6 nodes, the 4 original ones, and the 2 entries.
+  is(oiNodes.length, 6, "There is the expected number of nodes in the tree");
+
+  is(
+    oiNodes[3].textContent,
+    `0: "custom-state"`,
+    `Got expected first entry item`
+  );
+  is(
+    oiNodes[4].textContent,
+    `1: "another-custom-state"`,
+    `Got expected second entry item`
   );
 }

@@ -18,21 +18,19 @@ using namespace mozilla;
 
 nsresult nsMacRemoteClient::Init() { return NS_OK; }
 
-nsresult nsMacRemoteClient::SendCommandLine(const char* aProgram, const char* aProfile,
-                                            int32_t argc, char** argv,
-                                            const char* aDesktopStartupID, char** aResponse,
-                                            bool* aSucceeded) {
+nsresult nsMacRemoteClient::SendCommandLine(const char* aProgram,
+                                            const char* aProfile, int32_t argc,
+                                            const char** argv, bool aRaise) {
   mozilla::MacAutoreleasePool pool;
-
-  *aSucceeded = false;
 
   nsString className;
   BuildClassName(aProgram, aProfile, className);
-  NSString* serverNameString =
-      [NSString stringWithCharacters:reinterpret_cast<const unichar*>(className.get())
-                              length:className.Length()];
+  NSString* serverNameString = [NSString
+      stringWithCharacters:reinterpret_cast<const unichar*>(className.get())
+                    length:className.Length()];
 
-  CFMessagePortRef messageServer = CFMessagePortCreateRemote(0, (CFStringRef)serverNameString);
+  CFMessagePortRef messageServer =
+      CFMessagePortCreateRemote(0, (CFStringRef)serverNameString);
 
   if (messageServer) {
     // Getting current process directory
@@ -44,19 +42,18 @@ nsresult nsMacRemoteClient::SendCommandLine(const char* aProgram, const char* aP
       NSString* argument = [NSString stringWithUTF8String:argv[i]];
       [argumentsArray addObject:argument];
     }
-    NSDictionary* dict = @{@"args" : argumentsArray};
+    NSDictionary* dict = @{@"args" : argumentsArray, @"raise" : @(aRaise)};
 
     NSData* data = [NSKeyedArchiver archivedDataWithRootObject:dict];
 
-    CFMessagePortSendRequest(messageServer, 0, (CFDataRef)data, 10.0, 0.0, NULL, NULL);
+    CFMessagePortSendRequest(messageServer, 0, (CFDataRef)data, 10.0, 0.0, NULL,
+                             NULL);
 
     CFMessagePortInvalidate(messageServer);
     CFRelease(messageServer);
-    *aSucceeded = true;
 
-  } else {
-    // Remote Server not found. Doing nothing.
+    return NS_OK;
   }
 
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }

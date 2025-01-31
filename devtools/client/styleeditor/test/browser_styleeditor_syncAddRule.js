@@ -15,11 +15,13 @@ add_task(async function () {
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
 
-  const onRuleViewChanged = once(view, "ruleview-changed");
+  const onNewRuleAdded = once(view, "new-rule-added");
   view.addRuleButton.click();
-  await onRuleViewChanged;
+  await onNewRuleAdded;
 
   const { ui } = await openStyleEditor();
+
+  await waitUntil(() => ui.editors.length > 1);
 
   info("Selecting the second editor");
   await ui.selectStyleSheet(ui.editors[1].styleSheet);

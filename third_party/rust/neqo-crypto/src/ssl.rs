@@ -8,17 +8,16 @@
     dead_code,
     non_upper_case_globals,
     non_snake_case,
-    clippy::cognitive_complexity,
     clippy::too_many_lines,
-    clippy::upper_case_acronyms,
-    unknown_lints,
-    clippy::borrow_as_ptr
+    clippy::cognitive_complexity
 )]
 
-use crate::constants::Epoch;
-use crate::err::{secstatus_to_res, Res};
-
 use std::os::raw::{c_uint, c_void};
+
+use crate::{
+    constants::Epoch,
+    err::{secstatus_to_res, Res},
+};
 
 include!(concat!(env!("OUT_DIR"), "/nss_ssl.rs"));
 mod SSLOption {
@@ -26,9 +25,7 @@ mod SSLOption {
 }
 
 // I clearly don't understand how bindgen operates.
-#[allow(clippy::empty_enum)]
 pub enum PLArenaPool {}
-#[allow(clippy::empty_enum)]
 pub enum PRFileDesc {}
 
 // Remap some constants.
@@ -48,12 +45,15 @@ pub enum Opt {
     Tls13CompatMode,
     HelloDowngradeCheck,
     SuppressEndOfEarlyData,
+    Grease,
+    EnableChExtensionPermutation,
 }
 
 impl Opt {
     // Cast is safe here because SSLOptions are within the i32 range
     #[allow(clippy::cast_possible_wrap)]
-    pub(crate) fn as_int(self) -> PRInt32 {
+    #[must_use]
+    pub const fn as_int(self) -> PRInt32 {
         let i = match self {
             Self::Locking => SSLOption::SSL_NO_LOCKS,
             Self::Tickets => SSLOption::SSL_ENABLE_SESSION_TICKETS,
@@ -66,6 +66,8 @@ impl Opt {
             Self::Tls13CompatMode => SSLOption::SSL_ENABLE_TLS13_COMPAT_MODE,
             Self::HelloDowngradeCheck => SSLOption::SSL_ENABLE_HELLO_DOWNGRADE_CHECK,
             Self::SuppressEndOfEarlyData => SSLOption::SSL_SUPPRESS_END_OF_EARLY_DATA,
+            Self::Grease => SSLOption::SSL_ENABLE_GREASE,
+            Self::EnableChExtensionPermutation => SSLOption::SSL_ENABLE_CH_EXTENSION_PERMUTATION,
         };
         i as PRInt32
     }

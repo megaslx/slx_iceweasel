@@ -12,8 +12,15 @@
 //! there.
 
 #![cfg_attr(feature = "nightly", feature(nonzero))]
-#![cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp, clippy::too_many_arguments))]
-#![cfg_attr(feature = "cargo-clippy", allow(clippy::unreadable_literal, clippy::new_without_default))]
+#![allow(
+    clippy::float_cmp,
+    clippy::too_many_arguments,
+    clippy::unreadable_literal,
+    clippy::new_without_default,
+    clippy::empty_docs,
+    clippy::manual_range_contains,
+)]
+
 
 pub extern crate crossbeam_channel;
 pub extern crate euclid;
@@ -42,6 +49,7 @@ mod display_list;
 mod font;
 mod gradient_builder;
 mod image;
+mod tile_pool;
 pub mod units;
 
 pub use crate::color::*;
@@ -51,6 +59,7 @@ pub use crate::display_list::*;
 pub use crate::font::*;
 pub use crate::gradient_builder::*;
 pub use crate::image::*;
+pub use crate::tile_pool::*;
 
 use crate::units::*;
 use crate::channel::Receiver;
@@ -226,16 +235,28 @@ pub struct SampledScrollOffset {
 /// See https://firefox-source-docs.mozilla.org/performance/scroll-linked_effects.html
 /// for a definition of scroll-linked effect.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub enum HasScrollLinkedEffect {
     Yes,
+    #[default]
     No,
 }
 
-impl Default for HasScrollLinkedEffect {
-    fn default() -> Self {
-        HasScrollLinkedEffect::No
-    }
+#[repr(C)]
+pub struct MinimapData {
+  pub is_root_content: bool,
+  // All rects in local coords relative to the scrolled content's origin.
+  pub visual_viewport: LayoutRect,
+  pub layout_viewport: LayoutRect,
+  pub scrollable_rect: LayoutRect,
+  pub displayport: LayoutRect,
+  // Populated for root content nodes only, otherwise the identity
+  pub zoom_transform: LayoutTransform,
+  // Populated for nodes in the subtree of a root content node
+  // (outside such subtrees we'll have `root_content_scroll_id == 0`).
+  // Stores the enclosing root content node's ExternalScrollId.
+  pub root_content_pipeline_id: PipelineId,
+  pub root_content_scroll_id: u64
 }
 
 /// A handler to integrate WebRender with the thread that contains the `Renderer`.
@@ -471,7 +492,7 @@ impl<T> From<T> for PropertyBinding<T> {
 impl From<PropertyBindingKey<ColorF>> for PropertyBindingKey<ColorU> {
     fn from(key: PropertyBindingKey<ColorF>) -> PropertyBindingKey<ColorU> {
         PropertyBindingKey {
-            id: key.id.clone(),
+            id: key.id,
             _phantom: PhantomData,
         }
     }
@@ -480,7 +501,7 @@ impl From<PropertyBindingKey<ColorF>> for PropertyBindingKey<ColorU> {
 impl From<PropertyBindingKey<ColorU>> for PropertyBindingKey<ColorF> {
     fn from(key: PropertyBindingKey<ColorU>) -> PropertyBindingKey<ColorF> {
         PropertyBindingKey {
-            id: key.id.clone(),
+            id: key.id,
             _phantom: PhantomData,
         }
     }
@@ -553,10 +574,11 @@ pub type VoidPtrToSizeFn = unsafe extern "C" fn(ptr: *const c_void) -> usize;
 ///  - Add a new enum variant here.
 ///  - Add the entry in WR_BOOL_PARAMETER_LIST in gfxPlatform.cpp.
 ///  - React to the parameter change anywhere in WebRender where a SetParam message is received.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Parameter {
     Bool(BoolParameter, bool),
     Int(IntParameter, i32),
+    Float(FloatParameter, f32),
 }
 
 /// Boolean configuration option.
@@ -576,11 +598,21 @@ pub enum IntParameter {
     BatchedUploadThreshold = 0,
 }
 
+/// Floating point configuration option.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum FloatParameter {
+    /// The minimum time for the CPU portion of a frame to be considered slow
+    SlowCpuFrameThreshold = 0,
+}
+
+/// Flags to track why we are rendering.
+#[repr(C)]
+#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Default, Deserialize, MallocSizeOf, Serialize)]
+pub struct RenderReasons(u32);
+
 bitflags! {
-    /// Flags to track why we are rendering.
-    #[repr(C)]
-    #[derive(Default, Deserialize, MallocSizeOf, Serialize)]
-    pub struct RenderReasons: u32 {
+    impl RenderReasons: u32 {
         /// Equivalent of empty() for the C++ side.
         const NONE                          = 0;
         const SCENE                         = 1 << 0;
@@ -614,15 +646,27 @@ bitflags! {
     }
 }
 
+impl core::fmt::Debug for RenderReasons {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{:#x}", Self::empty().bits())
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
+    }
+}
+
 impl RenderReasons {
     pub const NUM_BITS: u32 = 17;
 }
 
+/// Flags to enable/disable various builtin debugging tools.
+#[repr(C)]
+#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Default, Deserialize, MallocSizeOf, Serialize)]
+pub struct DebugFlags(u32);
+
 bitflags! {
-    /// Flags to enable/disable various builtin debugging tools.
-    #[repr(C)]
-    #[derive(Default, Deserialize, MallocSizeOf, Serialize)]
-    pub struct DebugFlags: u32 {
+    impl DebugFlags: u32 {
         /// Display the frame profiler on screen.
         const PROFILER_DBG          = 1 << 0;
         /// Display intermediate render targets on screen.
@@ -689,6 +733,20 @@ bitflags! {
         /// Render large blobs with at a smaller size (incorrectly). This is a temporary workaround for
         /// fuzzing.
         const RESTRICT_BLOB_SIZE        = 1 << 28;
+        /// Enable surface promotion logging.
+        const SURFACE_PROMOTION_LOGGING = 1 << 29;
+        /// Show picture caching debug overlay
+        const PICTURE_BORDERS       = 1 << 30;
+    }
+}
+
+impl core::fmt::Debug for DebugFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{:#x}", Self::empty().bits())
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
     }
 }
 

@@ -17,13 +17,11 @@
 #include "nsNetUtil.h"
 #include "nsPromiseFlatString.h"
 #include "nsThreadUtils.h"
-#include "nsStringBuffer.h"
 #include "cert.h"
 #include "nspr.h"
 #include "pk11pub.h"
 #include "certdb.h"
 #include "sechash.h"
-#include "SharedSSLState.h"
 
 #include "nsJSUtils.h"
 
@@ -38,9 +36,6 @@ using namespace mozilla::psm;
 
 NS_IMPL_ISUPPORTS(nsClientAuthRememberService, nsIClientAuthRememberService)
 NS_IMPL_ISUPPORTS(nsClientAuthRemember, nsIClientAuthRememberRecord)
-
-const nsCString nsClientAuthRemember::SentinelValue =
-    "no client certificate"_ns;
 
 NS_IMETHODIMP
 nsClientAuthRemember::GetAsciiHost(/*out*/ nsACString& aAsciiHost) {
@@ -287,12 +282,12 @@ nsresult CheckForPreferredCertificate(const nsACString& aHostName,
 #endif
 
 void nsClientAuthRememberService::Migrate() {
-  MOZ_ASSERT(NS_IsMainThread());
-  static bool migrated = false;
-  if (migrated) {
+  auto migrated = mMigrated.Lock();
+  if (*migrated) {
     return;
   }
-  migrated = true;
+  *migrated = true;
+
   nsTArray<RefPtr<nsIDataStorageItem>> decisions;
   nsresult rv = mClientAuthRememberList->GetAll(decisions);
   if (NS_FAILED(rv)) {
@@ -339,9 +334,6 @@ nsClientAuthRememberService::HasRememberedDecision(
   NS_ENSURE_ARG_POINTER(aRetVal);
   if (aHostName.IsEmpty()) {
     return NS_ERROR_INVALID_ARG;
-  }
-  if (!NS_IsMainThread()) {
-    return NS_ERROR_NOT_SAME_THREAD;
   }
 
   *aRetVal = false;
@@ -431,7 +423,7 @@ bool nsClientAuthRememberService::IsPrivateBrowsingKey(
 
 nsIDataStorage::DataType nsClientAuthRememberService::GetDataStorageType(
     const OriginAttributes& aOriginAttributes) {
-  if (aOriginAttributes.mPrivateBrowsingId > 0) {
+  if (aOriginAttributes.IsPrivateBrowsing()) {
     return nsIDataStorage::DataType::Private;
   }
   return nsIDataStorage::DataType::Persistent;

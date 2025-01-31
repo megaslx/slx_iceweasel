@@ -14,6 +14,7 @@
 #include "nsDOMString.h"
 #include "nsGkAtomConsts.h"
 #include "nsStaticAtomUtils.h"
+#include "nsStringFwd.h"
 
 using namespace mozilla;
 
@@ -37,11 +38,16 @@ nsAtom* nsCSSPseudoElements::GetPseudoAtom(Type aType) {
   return nsGkAtoms::GetAtomByIndex(index);
 }
 
+static bool IsFunctionalPseudo(PseudoStyleType aType) {
+  return aType == PseudoStyleType::highlight ||
+         PseudoStyle::IsNamedViewTransitionPseudoElement(aType);
+}
+
 /* static */
-Maybe<PseudoStyleType> nsCSSPseudoElements::GetPseudoType(
+Maybe<PseudoStyleRequest> nsCSSPseudoElements::ParsePseudoElement(
     const nsAString& aPseudoElement, CSSEnabledState aEnabledState) {
   if (DOMStringIsNull(aPseudoElement) || aPseudoElement.IsEmpty()) {
-    return Some(PseudoStyleType::NotPseudo);
+    return Some(PseudoStyleRequest());
   }
 
   if (aPseudoElement.First() != char16_t(':')) {
@@ -49,15 +55,22 @@ Maybe<PseudoStyleType> nsCSSPseudoElements::GetPseudoType(
   }
 
   // deal with two-colon forms of aPseudoElt
-  nsAString::const_iterator start, end;
-  aPseudoElement.BeginReading(start);
-  aPseudoElement.EndReading(end);
+  const char16_t* start = aPseudoElement.BeginReading();
+  const char16_t* end = aPseudoElement.EndReading();
   NS_ASSERTION(start != end, "aPseudoElement is not empty!");
   ++start;
   bool haveTwoColons = true;
   if (start == end || *start != char16_t(':')) {
     --start;
     haveTwoColons = false;
+  }
+
+  // XXX jjaschke: this parsing algorithm should be replaced by the css parser
+  // for correct handling of all edge cases. See Bug 1845712.
+  const int32_t parameterPosition = aPseudoElement.FindChar('(');
+  const bool hasParameter = parameterPosition != kNotFound;
+  if (hasParameter) {
+    end = start + parameterPosition - 1;
   }
   RefPtr<nsAtom> pseudo = NS_Atomize(Substring(start, end));
   MOZ_ASSERT(pseudo);
@@ -68,11 +81,39 @@ Maybe<PseudoStyleType> nsCSSPseudoElements::GetPseudoType(
     return Nothing();
   }
   auto type = static_cast<Type>(*index);
+  RefPtr<nsAtom> functionalPseudoParameter;
+  if (hasParameter) {
+    if (!IsFunctionalPseudo(type)) {
+      return Nothing();
+    }
+    functionalPseudoParameter =
+        [&aPseudoElement, parameterPosition]() -> already_AddRefed<nsAtom> {
+      const char16_t* start = aPseudoElement.BeginReading();
+      const char16_t* end = aPseudoElement.EndReading();
+      start += parameterPosition + 1;
+      --end;
+      if (*end != ')') {
+        return nullptr;
+      }
+      return NS_Atomize(Substring(start, end));
+    }();
+
+    // The universal selector is pre-defined and should not be a valid name for
+    // a named view-transition pseudo element.
+    if (PseudoStyle::IsNamedViewTransitionPseudoElement(type) &&
+        functionalPseudoParameter == nsGkAtoms::_asterisk) {
+      return Nothing();
+    }
+  }
+
   if (!haveTwoColons &&
       !PseudoElementHasFlags(type, CSS_PSEUDO_ELEMENT_IS_CSS2)) {
     return Nothing();
   }
-  return IsEnabled(type, aEnabledState) ? Some(type) : Nothing();
+  if (IsEnabled(type, aEnabledState)) {
+    return Some(PseudoStyleRequest{type, functionalPseudoParameter});
+  }
+  return Nothing();
 }
 
 /* static */
@@ -83,17 +124,31 @@ bool nsCSSPseudoElements::PseudoElementSupportsUserActionState(
 }
 
 /* static */
-nsString nsCSSPseudoElements::PseudoTypeAsString(Type aPseudoType) {
-  switch (aPseudoType) {
+nsString nsCSSPseudoElements::PseudoRequestAsString(
+    const Request& aPseudoRequest) {
+  switch (aPseudoRequest.mType) {
     case PseudoStyleType::before:
       return u"::before"_ns;
     case PseudoStyleType::after:
       return u"::after"_ns;
     case PseudoStyleType::marker:
       return u"::marker"_ns;
+    case PseudoStyleType::viewTransition:
+      return u"::view-transition"_ns;
+    case PseudoStyleType::viewTransitionGroup:
+      return u"::view-transition-group("_ns +
+             nsAtomString(aPseudoRequest.mIdentifier) + u")"_ns;
+    case PseudoStyleType::viewTransitionImagePair:
+      return u"::view-transition-image-pair("_ns +
+             nsAtomString(aPseudoRequest.mIdentifier) + u")"_ns;
+    case PseudoStyleType::viewTransitionOld:
+      return u"::view-transition-old("_ns +
+             nsAtomString(aPseudoRequest.mIdentifier) + u")"_ns;
+    case PseudoStyleType::viewTransitionNew:
+      return u"::view-transition-new("_ns +
+             nsAtomString(aPseudoRequest.mIdentifier) + u")"_ns;
     default:
-      MOZ_ASSERT(aPseudoType == PseudoStyleType::NotPseudo,
-                 "Unexpected pseudo type");
+      MOZ_ASSERT(aPseudoRequest.IsNotPseudo(), "Unexpected pseudo type");
       return u""_ns;
   }
 }

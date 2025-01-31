@@ -141,6 +141,26 @@ RefPtr<FileSystemSyncAccessHandle> MakeResolution(
   return result;
 }
 
+RefPtr<FileSystemWritableFileStream> MakeResolution(
+    nsIGlobalObject* aGlobal,
+    FileSystemGetWritableFileStreamResponse&& aResponse,
+    const RefPtr<FileSystemWritableFileStream>& /* aReturns */,
+    const FileSystemEntryMetadata& aMetadata,
+    RefPtr<FileSystemManager>& aManager) {
+  auto& properties = aResponse.get_FileSystemWritableFileStreamProperties();
+
+  auto* const actor = static_cast<FileSystemWritableFileStreamChild*>(
+      properties.writableFileStream().AsChild().get());
+
+  QM_TRY_UNWRAP(RefPtr<FileSystemWritableFileStream> result,
+                FileSystemWritableFileStream::Create(
+                    aGlobal, aManager, std::move(properties.streamParams()),
+                    actor, aMetadata),
+                nullptr);
+
+  return result;
+}
+
 RefPtr<File> MakeResolution(nsIGlobalObject* aGlobal,
                             FileSystemGetFileResponse&& aResponse,
                             const RefPtr<File>& /* aResult */,
@@ -239,76 +259,6 @@ void ResolveCallback(FileSystemResolveResponse&& aResponse,
   aPromise->MaybeResolve(JS::NullHandleValue);
 }
 
-// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
-template <>
-void ResolveCallback(FileSystemGetWritableFileStreamResponse&& aResponse,
-                     // NOLINTNEXTLINE(performance-unnecessary-value-param)
-                     RefPtr<Promise> aPromise,
-                     RefPtr<FileSystemManager>& aManager,
-                     const FileSystemEntryMetadata& aMetadata) {
-  using CreatePromise = FileSystemWritableFileStream::CreatePromise;
-  MOZ_ASSERT(aPromise);
-  QM_TRY(OkIf(Promise::PromiseState::Pending == aPromise->State()), QM_VOID);
-
-  if (FileSystemGetWritableFileStreamResponse::Tnsresult == aResponse.type()) {
-    HandleFailedStatus(aResponse.get_nsresult(), aPromise);
-    return;
-  }
-
-  auto& properties = aResponse.get_FileSystemWritableFileStreamProperties();
-
-  auto* const actor = static_cast<FileSystemWritableFileStreamChild*>(
-      properties.writableFileStream().AsChild().get());
-
-  mozilla::ipc::RandomAccessStreamParams params =
-      std::move(properties.streamParams());
-
-  FileSystemEntryMetadata metadata = aMetadata;
-
-  WorkerPrivate* const workerPrivate = GetCurrentThreadWorkerPrivate();
-  RefPtr<StrongWorkerRef> buildWorkerRef =
-      workerPrivate ? StrongWorkerRef::Create(
-                          workerPrivate, "FileSystemWritableFileStream::Create")
-                    : nullptr;
-
-  FileSystemWritableFileStream::Create(aPromise->GetParentObject(), aManager,
-                                       actor, std::move(params),
-                                       std::move(metadata))
-      ->Then(GetCurrentSerialEventTarget(), __func__,
-             [buildWorkerRef,
-              aPromise](CreatePromise::ResolveOrRejectValue&& aValue) {
-               if (aValue.IsResolve()) {
-                 RefPtr<FileSystemWritableFileStream> stream =
-                     aValue.ResolveValue();
-
-                 if (buildWorkerRef) {
-                   RefPtr<StrongWorkerRef> workerRef = StrongWorkerRef::Create(
-                       buildWorkerRef->Private(),
-                       "FileSystemWritableFileStream", [stream]() {
-                         if (stream->IsOpen()) {
-                           // We don't need the promise, we just begin the
-                           // closing process.
-                           Unused << stream->BeginAbort();
-                         }
-                       });
-
-                   stream->SetWorkerRef(std::move(workerRef));
-                 }
-
-                 aPromise->MaybeResolve(stream);
-                 return;
-               }
-
-               if (aValue.IsReject()) {
-                 aPromise->MaybeReject(aValue.RejectValue());
-                 return;
-               }
-
-               aPromise->MaybeRejectWithUnknownError(
-                   "Promise chain resolution is empty");
-             });
-}
-
 template <class TResponse, class TReturns, class... Args,
           std::enable_if_t<std::is_same<TReturns, void>::value, bool> = true>
 mozilla::ipc::ResolveCallback<TResponse> SelectResolveCallback(
@@ -354,6 +304,11 @@ struct BeginRequestFailureCallback {
       : mPromise(std::move(aPromise)) {}
 
   void operator()(nsresult aRv) const {
+    if (aRv == NS_ERROR_ABORT) {
+      mPromise->MaybeRejectWithAbortError(
+          "Abort error when calling GetDirectory");
+      return;
+    }
     if (aRv == NS_ERROR_DOM_SECURITY_ERR) {
       mPromise->MaybeRejectWithSecurityError(
           "Security error when calling GetDirectory");
@@ -503,8 +458,9 @@ void FileSystemRequestHandler::GetWritable(RefPtr<FileSystemManager>& aManager,
   aManager->BeginRequest(
       [request = FileSystemGetWritableRequest(aFile.entryId(), aKeepData),
        onResolve =
-           SelectResolveCallback<FileSystemGetWritableFileStreamResponse, void>(
-               aPromise, aManager, aFile),
+           SelectResolveCallback<FileSystemGetWritableFileStreamResponse,
+                                 RefPtr<FileSystemWritableFileStream>>(
+               aPromise, aFile, aManager),
        onReject = GetRejectCallback(aPromise)](const auto& actor) mutable {
         actor->SendGetWritable(request, std::move(onResolve),
                                std::move(onReject));

@@ -9,7 +9,9 @@ const {
   styleRuleSpec,
 } = require("resource://devtools/shared/specs/style-rule.js");
 
-const { getCSSLexer } = require("resource://devtools/shared/css/lexer.js");
+const {
+  InspectorCSSParserWrapper,
+} = require("resource://devtools/shared/css/lexer.js");
 const TrackChangeEmitter = require("resource://devtools/server/actors/utils/track-change-emitter.js");
 const {
   getRuleText,
@@ -55,6 +57,12 @@ loader.lazyRequireGetter(
   "resource://devtools/server/actors/utils/stylesheets-manager.js",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "DocumentWalker",
+  "devtools/server/actors/inspector/document-walker",
+  true
+);
 
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -67,10 +75,21 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
  * with a special rule type (100).
  */
 class StyleRuleActor extends Actor {
-  constructor(pageStyle, item) {
+  /**
+   *
+   * @param {Object} options
+   * @param {PageStyleActor} options.pageStyle
+   * @param {CSSStyleRule|Element} options.item
+   * @param {Boolean} options.userAdded: Optional boolean to distinguish rules added by the user.
+   * @param {String} options.pseudoElement An optional pseudo-element type in cases when
+   *        the CSS rule applies to a pseudo-element.
+   */
+  constructor({ pageStyle, item, userAdded = false, pseudoElement = null }) {
     super(pageStyle.conn, styleRuleSpec);
     this.pageStyle = pageStyle;
     this.rawStyle = item.style;
+    this._userAdded = userAdded;
+    this._pseudoElement = pseudoElement;
     this._parentSheet = null;
     // Parsed CSS declarations from this.form().declarations used to check CSS property
     // names and values before tracking changes. Using cached values instead of accessing
@@ -78,9 +97,12 @@ class StyleRuleActor extends Actor {
     this._declarations = [];
 
     this._pendingDeclarationChanges = [];
+    this._failedToGetRuleText = false;
 
     if (CSSRule.isInstance(item)) {
       this.type = item.type;
+      this.ruleClassName = ChromeUtils.getClassName(item);
+
       this.rawRule = item;
       this._computeRuleIndex();
       if (this.#isRuleSupported() && this.rawRule.parentStyleSheet) {
@@ -91,6 +113,7 @@ class StyleRuleActor extends Actor {
     } else {
       // Fake a rule
       this.type = ELEMENT_STYLE;
+      this.ruleClassName = ELEMENT_STYLE;
       this.rawNode = item;
       this.rawRule = {
         style: item.style,
@@ -122,18 +145,20 @@ class StyleRuleActor extends Actor {
   // True if this rule supports as-authored styles, meaning that the
   // rule text can be rewritten using setRuleText.
   get canSetRuleText() {
-    return (
-      this.type === ELEMENT_STYLE ||
-      (this._parentSheet &&
-        // If a rule has been modified via CSSOM, then we should fall
-        // back to non-authored editing.
-        // https://bugzilla.mozilla.org/show_bug.cgi?id=1224121
-        !InspectorUtils.hasRulesModifiedByCSSOM(this._parentSheet) &&
-        // Special case about:PreferenceStyleSheet, as it is generated on
-        // the fly and the URI is not registered with the about:handler
-        // https://bugzilla.mozilla.org/show_bug.cgi?id=935803#c37
-        this._parentSheet.href !== "about:PreferenceStyleSheet")
-    );
+    if (this.type === ELEMENT_STYLE) {
+      // Element styles are always editable.
+      return true;
+    }
+    if (!this._parentSheet) {
+      return false;
+    }
+    if (InspectorUtils.hasRulesModifiedByCSSOM(this._parentSheet)) {
+      // If a rule has been modified via CSSOM, then we should fall back to
+      // non-authored editing.
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1224121
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -234,7 +259,7 @@ class StyleRuleActor extends Actor {
       data.ruleIndex = 0;
     } else {
       data.selector =
-        this.type === CSSRule.KEYFRAME_RULE
+        this.ruleClassName === "CSSKeyframeRule"
           ? this.rawRule.keyText
           : this.rawRule.selectorText;
       // Used to differentiate between changes to rules with identical selectors.
@@ -260,6 +285,66 @@ class StyleRuleActor extends Actor {
     return data;
   }
 
+  /**
+   * StyleRuleActor is spawned once per CSS Rule, but will be refreshed based on the
+   * currently selected DOM Element, which is updated when PageStyleActor.getApplied
+   * is called.
+   */
+  get currentlySelectedElement() {
+    let { selectedElement } = this.pageStyle;
+    if (!this._pseudoElement) {
+      return selectedElement;
+    }
+
+    // Otherwise, we can be in one of two cases:
+    // - we are selecting a pseudo element, and that pseudo element is referenced
+    //   by `selectedElement`
+    // - we are selecting the pseudo element "parent", we need to walk down the tree
+    //   from `selectedElemnt` to find the pseudo element.
+    const pseudo = this._pseudoElement.replaceAll(":", "");
+    const nodeName = `_moz_generated_content_${pseudo}`;
+
+    if (selectedElement.nodeName !== nodeName) {
+      const walker = new DocumentWalker(
+        selectedElement,
+        selectedElement.ownerGlobal
+      );
+
+      for (let next = walker.firstChild(); next; next = walker.nextSibling()) {
+        if (next.nodeName === nodeName) {
+          selectedElement = next;
+          break;
+        }
+      }
+    }
+
+    return selectedElement;
+  }
+
+  get currentlySelectedElementComputedStyle() {
+    if (!this._pseudoElement) {
+      return this.pageStyle.cssLogic.computedStyle;
+    }
+
+    const { selectedElement } = this.pageStyle;
+
+    // We can be in one of two cases:
+    // - we are selecting a pseudo element, and that pseudo element is referenced
+    //   by `selectedElement`
+    // - we are selecting the pseudo element "parent".
+    // implementPseudoElement returns the pseudo-element string if this element represents
+    // a pseudo-element, or null otherwise. See https://searchfox.org/mozilla-central/rev/1b90936792b2c71ef931cb1b8d6baff9d825592e/dom/webidl/Element.webidl#102-107
+    const isPseudoElementParentSelected =
+      selectedElement.implementedPseudoElement !== this._pseudoElement;
+
+    return selectedElement.ownerGlobal.getComputedStyle(
+      selectedElement,
+      // If we are selecting the pseudo element parent, we need to pass the pseudo element
+      // to getComputedStyle to actually get the computed style of the pseudo element.
+      isPseudoElementParentSelected ? this._pseudoElement : null
+    );
+  }
+
   getDocument(sheet) {
     if (!sheet.associatedDocument) {
       throw new Error(
@@ -267,41 +352,6 @@ class StyleRuleActor extends Actor {
       );
     }
     return sheet.associatedDocument;
-  }
-
-  /**
-   * When a rule is nested in another non-at-rule (aka CSS Nesting), the client
-   * will need its desugared selector, i.e. the full selector, which includes ancestor
-   * selectors, that is computed by the platform when applying the rule.
-   * To compute it, the parent selector (&) is recursively replaced by the parent
-   * rule selector wrapped in `:is()`.
-   * For example, with the following nested rule: `body { & > main {} }`,
-   * the desugared selector will be `:is(body) > main`.
-   * See https://www.w3.org/TR/css-nesting-1/#nest-selector for more information.
-   *
-   * Returns an array of the desugared selectors. For example, if rule is:
-   *
-   * body {
-   *   & > main, & section {
-   *   }
-   * }
-   *
-   * this will return:
-   *
-   * [
-   *   `:is(body) > main`,
-   *   `:is(body) section`,
-   * ]
-   *
-   * @returns Array<String>
-   */
-  getDesugaredSelectors() {
-    // Cache the desugared selectors as it can be expensive to compute
-    if (!this._desugaredSelectors) {
-      this._desugaredSelectors = CssLogic.getSelectors(this.rawRule, true);
-    }
-
-    return this._desugaredSelectors;
   }
 
   toString() {
@@ -322,9 +372,12 @@ class StyleRuleActor extends Actor {
       },
     };
 
-    const { computeDesugaredSelector, ancestorData } =
-      this._getAncestorDataForForm();
-    form.ancestorData = ancestorData;
+    // This rule was manually added by the user and may be automatically focused by the frontend.
+    if (this._userAdded) {
+      form.userAdded = true;
+    }
+
+    form.ancestorData = this._getAncestorDataForForm();
 
     if (this._parentSheet) {
       form.parentStyleSheet =
@@ -340,11 +393,31 @@ class StyleRuleActor extends Actor {
     // return a promise.  See bug 1205868.
     form.authoredText = this.authoredText;
 
-    switch (this.type) {
-      case CSSRule.STYLE_RULE:
-        form.selectors = CssLogic.getSelectors(this.rawRule);
-        if (computeDesugaredSelector) {
-          form.desugaredSelectors = this.getDesugaredSelectors();
+    switch (this.ruleClassName) {
+      case "CSSNestedDeclarations":
+        form.isNestedDeclarations = true;
+        form.selectors = [];
+        form.selectorsSpecificity = [];
+        form.cssText = this.rawStyle.cssText || "";
+        break;
+      case "CSSStyleRule":
+        form.selectors = [];
+        form.selectorsSpecificity = [];
+
+        for (let i = 0, len = this.rawRule.selectorCount; i < len; i++) {
+          form.selectors.push(this.rawRule.selectorTextAt(i));
+          form.selectorsSpecificity.push(
+            this.rawRule.selectorSpecificityAt(
+              i,
+              /* desugared, so we get the actual specificity */ true
+            )
+          );
+        }
+
+        // Only add the property when there are elements in the array to save up on serialization.
+        const selectorWarnings = this.rawRule.getSelectorWarnings();
+        if (selectorWarnings.length) {
+          form.selectorWarnings = selectorWarnings;
         }
         form.cssText = this.rawStyle.cssText || "";
         break;
@@ -357,17 +430,17 @@ class StyleRuleActor extends Actor {
         form.cssText = this.rawStyle.cssText || "";
         form.authoredText = this.rawNode.getAttribute("style");
         break;
-      case CSSRule.CHARSET_RULE:
+      case "CSSCharsetRule":
         form.encoding = this.rawRule.encoding;
         break;
-      case CSSRule.IMPORT_RULE:
+      case "CSSImportRule":
         form.href = this.rawRule.href;
         break;
-      case CSSRule.KEYFRAMES_RULE:
+      case "CSSKeyframesRule":
         form.cssText = this.rawRule.cssText;
         form.name = this.rawRule.name;
         break;
-      case CSSRule.KEYFRAME_RULE:
+      case "CSSKeyframeRule":
         form.cssText = this.rawStyle.cssText || "";
         form.keyText = this.rawRule.keyText || "";
         break;
@@ -387,8 +460,8 @@ class StyleRuleActor extends Actor {
         cssText,
         true
       );
-      const el = this.pageStyle.selectedElement;
-      const style = this.pageStyle.cssLogic.computedStyle;
+      const el = this.currentlySelectedElement;
+      const style = this.currentlySelectedElementComputedStyle;
 
       // Whether the stylesheet is a user-agent stylesheet. This affects the
       // validity of some properties and property values.
@@ -418,6 +491,11 @@ class StyleRuleActor extends Actor {
       const quirks =
         !userAgent && el && el.ownerDocument.compatMode == "BackCompat";
       const supportsOptions = { userAgent, chrome, quirks };
+
+      const targetDocument =
+        this.pageStyle.inspector.targetActor.window.document;
+      let registeredProperties;
+
       form.declarations = declarations.map(decl => {
         // InspectorUtils.supports only supports the 1-arg version, but that's
         // what we want to do anyways so that we also accept !important in the
@@ -433,6 +511,54 @@ class StyleRuleActor extends Actor {
           `${decl.name}:initial`,
           supportsOptions
         );
+
+        if (SharedCssLogic.isCssVariable(decl.name)) {
+          decl.isCustomProperty = true;
+          decl.computedValue = style.getPropertyValue(decl.name);
+
+          // If the variable is a registered property, we check if the variable is
+          // invalid at computed-value time (e.g. if the declaration value matches
+          // the `syntax` defined in the registered property)
+          if (!registeredProperties) {
+            registeredProperties =
+              InspectorUtils.getCSSRegisteredProperties(targetDocument);
+          }
+          const registeredProperty = registeredProperties.find(
+            prop => prop.name === decl.name
+          );
+          if (
+            registeredProperty &&
+            // For now, we don't handle variable based on top of other variables. This would
+            // require to build some kind of dependency tree and check the validity for
+            // all the leaves.
+            !decl.value.includes("var(") &&
+            !InspectorUtils.valueMatchesSyntax(
+              targetDocument,
+              decl.value,
+              registeredProperty.syntax
+            )
+          ) {
+            // if the value doesn't match the syntax, it's invalid
+            decl.invalidAtComputedValueTime = true;
+            // pass the syntax down to the client so it can easily be used in a warning message
+            decl.syntax = registeredProperty.syntax;
+          }
+
+          // We only compute `inherits` for css variable declarations.
+          // For "regular" declaration, we use `CssPropertiesFront.isInherited`,
+          // which doesn't depend on the state of the document (a given property will
+          // always have the same isInherited value).
+          // CSS variables on the other hand can be registered custom properties (e.g.,
+          // `@property`/`CSS.registerProperty`), with a `inherits` definition that can
+          // be true or false.
+          // As such custom properties can be registered at any time during the page
+          // lifecycle, we always recompute the `inherits` information for CSS variables.
+          decl.inherits = InspectorUtils.isInheritedProperty(
+            this.pageStyle.inspector.window.document,
+            decl.name
+          );
+        }
+
         return decl;
       });
 
@@ -456,15 +582,16 @@ class StyleRuleActor extends Actor {
 
   /**
    *
-   * @returns {Object} Object with the following properties:
-   *          - {Array<Object>} ancestorData: An array of ancestor item data
-   *          - {Boolean} computeDesugaredSelector: true if the rule has a non-at-rule
-   *                      parent rule (i.e. rule is likely to be a nested rule)
+   * @returns {Array<Object>} ancestorData: An array of ancestor item data
    */
   _getAncestorDataForForm() {
     const ancestorData = [];
-    // Flag that will be set to true if the rule has a non-at-rule parent rule
-    let computeDesugaredSelector = false;
+
+    // We don't want to compute ancestor rules for keyframe rule, as they can only be
+    // in @keyframes rules.
+    if (this.ruleClassName === "CSSKeyframeRule") {
+      return ancestorData;
+    }
 
     // Go through all ancestor so we can build an array of all the media queries and
     // layers this rule is in.
@@ -498,15 +625,32 @@ class StyleRuleActor extends Actor {
           type,
           conditionText: rawRule.conditionText,
         });
+      } else if (ruleClassName === "CSSScopeRule") {
+        ancestorData.push({
+          type,
+          start: rawRule.start,
+          end: rawRule.end,
+        });
+      } else if (ruleClassName === "CSSStartingStyleRule") {
+        ancestorData.push({
+          type,
+        });
       } else if (rawRule.selectorText) {
         // All the previous cases where about at-rules; this one is for regular rule
         // that are ancestors because CSS nesting was used.
         // In such case, we want to return the selectorText so it can be displayed in the UI.
-        ancestorData.push({
+        const ancestor = {
           type,
-          selectorText: rawRule.selectorText,
-        });
-        computeDesugaredSelector = true;
+          selectors: CssLogic.getSelectors(rawRule),
+        };
+
+        // Only add the property when there are elements in the array to save up on serialization.
+        const selectorWarnings = rawRule.getSelectorWarnings();
+        if (selectorWarnings.length) {
+          ancestor.selectorWarnings = selectorWarnings;
+        }
+
+        ancestorData.push(ancestor);
       }
     }
 
@@ -546,7 +690,7 @@ class StyleRuleActor extends Actor {
         }
       }
     }
-    return { ancestorData, computeDesugaredSelector };
+    return ancestorData;
   }
 
   /**
@@ -567,35 +711,8 @@ class StyleRuleActor extends Actor {
    * nested rules.
    */
   _computeRuleIndex() {
-    let rule = this.rawRule;
-    const result = [];
-
-    while (rule) {
-      let cssRules = [];
-      if (rule.parentRule) {
-        cssRules = rule.parentRule.cssRules;
-      } else if (rule.parentStyleSheet) {
-        cssRules = rule.parentStyleSheet.cssRules;
-      }
-
-      let found = false;
-      for (let i = 0; i < cssRules.length; i++) {
-        if (rule === cssRules.item(i)) {
-          found = true;
-          result.unshift(i);
-          break;
-        }
-      }
-
-      if (!found) {
-        this._ruleIndex = null;
-        return;
-      }
-
-      rule = rule.parentRule;
-    }
-
-    this._ruleIndex = result;
+    const index = InspectorUtils.getRuleIndex(this.rawRule);
+    this._ruleIndex = index.length ? index : null;
   }
 
   /**
@@ -657,6 +774,7 @@ class StyleRuleActor extends Actor {
     "CSSKeyframesRule",
     "CSSLayerBlockRule",
     "CSSMediaRule",
+    "CSSNestedDeclarations",
     "CSSStyleRule",
     "CSSSupportsRule",
   ]);
@@ -687,22 +805,37 @@ class StyleRuleActor extends Actor {
    */
   async getAuthoredCssText(skipCache = false) {
     if (!this.canSetRuleText || !this.#isRuleSupported()) {
-      return Promise.resolve("");
+      return "";
     }
 
-    if (typeof this.authoredText === "string" && !skipCache) {
-      return Promise.resolve(this.authoredText);
+    if (!skipCache) {
+      if (this._failedToGetRuleText) {
+        return "";
+      }
+      if (typeof this.authoredText === "string") {
+        return this.authoredText;
+      }
     }
 
-    const resourceId =
-      this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
-        this._parentSheet
-      );
-    const cssText = await this.pageStyle.styleSheetsManager.getText(resourceId);
-    const { text } = getRuleText(cssText, this.line, this.column);
-
-    // Cache the result on the rule actor to avoid parsing again next time
-    this.authoredText = text;
+    try {
+      if (this.ruleClassName == "CSSNestedDeclarations") {
+        throw new Error("getRuleText doesn't deal well with bare declarations");
+      }
+      const resourceId =
+        this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
+          this._parentSheet
+        );
+      const cssText =
+        await this.pageStyle.styleSheetsManager.getText(resourceId);
+      const text = getRuleText(cssText, this.line, this.column);
+      // Cache the result on the rule actor to avoid parsing again next time
+      this._failedToGetRuleText = false;
+      this.authoredText = text;
+    } catch (e) {
+      this._failedToGetRuleText = true;
+      this.authoredText = undefined;
+      return "";
+    }
     return this.authoredText;
   }
 
@@ -722,7 +855,7 @@ class StyleRuleActor extends Actor {
   async getRuleText() {
     // Bail out if the rule is not supported or not an element inline style.
     if (!this.#isRuleSupported(true) && this.type !== ELEMENT_STYLE) {
-      return Promise.resolve("");
+      return "";
     }
 
     let ruleBodyText;
@@ -740,9 +873,8 @@ class StyleRuleActor extends Actor {
         this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
           this._parentSheet
         );
-      const stylesheetText = await this.pageStyle.styleSheetsManager.getText(
-        resourceId
-      );
+      const stylesheetText =
+        await this.pageStyle.styleSheetsManager.getText(resourceId);
 
       const [start, end] = getSelectorOffsets(
         stylesheetText,
@@ -754,7 +886,7 @@ class StyleRuleActor extends Actor {
 
     const text = `${selectorText} {${ruleBodyText}}`;
     const { result } = SharedCssLogic.prettifyCSS(text);
-    return Promise.resolve(result);
+    return result;
   }
 
   /**
@@ -793,19 +925,31 @@ class StyleRuleActor extends Actor {
         this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
           this._parentSheet
         );
-      let cssText = await this.pageStyle.styleSheetsManager.getText(resourceId);
 
-      const { offset, text } = getRuleText(cssText, this.line, this.column);
-      cssText =
-        cssText.substring(0, offset) +
-        newText +
-        cssText.substring(offset + text.length);
-
-      await this.pageStyle.styleSheetsManager.setStyleSheetText(
-        resourceId,
-        cssText,
-        { kind: UPDATE_PRESERVING_RULES }
+      const sheetText =
+        await this.pageStyle.styleSheetsManager.getText(resourceId);
+      const cssText = InspectorUtils.replaceBlockRuleBodyTextInStylesheet(
+        sheetText,
+        this.line,
+        this.column,
+        newText
       );
+
+      if (typeof cssText !== "string") {
+        throw new Error(
+          "Error in InspectorUtils.replaceBlockRuleBodyTextInStylesheet"
+        );
+      }
+
+      // setStyleSheetText will parse the stylesheet which can be costly, so only do it
+      // if the text has actually changed.
+      if (sheetText !== newText) {
+        await this.pageStyle.styleSheetsManager.setStyleSheetText(
+          resourceId,
+          cssText,
+          { kind: UPDATE_PRESERVING_RULES }
+        );
+      }
     }
 
     this.authoredText = newText;
@@ -827,11 +971,9 @@ class StyleRuleActor extends Actor {
    * the authored text of a (nested) rule, so all the references are properly updated.
    */
   async updateAncestorRulesAuthoredText() {
-    const promises = [];
-    for (const ancestorRule of this.ancestorRules) {
-      promises.push(ancestorRule.getAuthoredCssText(true));
-    }
-    await Promise.all(promises);
+    return Promise.all(
+      this.ancestorRules.map(rule => rule.getAuthoredCssText(true))
+    );
   }
 
   /**
@@ -927,9 +1069,8 @@ class StyleRuleActor extends Actor {
         this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
           this._parentSheet
         );
-      let authoredText = await this.pageStyle.styleSheetsManager.getText(
-        resourceId
-      );
+      let authoredText =
+        await this.pageStyle.styleSheetsManager.getText(resourceId);
 
       const [startOffset, endOffset] = getSelectorOffsets(
         authoredText,
@@ -1122,9 +1263,6 @@ class StyleRuleActor extends Actor {
       return { ruleProps: null, isMatching: true };
     }
 
-    // Nullify cached desugared selectors as it might be outdated
-    this._desugaredSelectors = null;
-
     // The rule's previous selector is lost after calling _addNewSelector(). Save it now.
     const oldValue = this.rawRule.selectorText;
     let selectorPromise = this._addNewSelector(value, editAuthored);
@@ -1142,7 +1280,7 @@ class StyleRuleActor extends Actor {
     }
 
     return selectorPromise.then(newCssRule => {
-      let ruleProps = null;
+      let entries = null;
       let isMatching = false;
 
       if (newCssRule) {
@@ -1151,19 +1289,24 @@ class StyleRuleActor extends Actor {
           newCssRule
         );
         if (ruleEntry.length === 1) {
-          ruleProps = this.pageStyle.getAppliedProps(node, ruleEntry, {
+          entries = this.pageStyle.getAppliedProps(node, ruleEntry, {
             matchedSelectors: true,
           });
         } else {
-          ruleProps = this.pageStyle.getNewAppliedProps(node, newCssRule);
+          entries = this.pageStyle.getNewAppliedProps(node, newCssRule);
         }
 
-        isMatching = ruleProps.entries.some(
-          ruleProp => !!ruleProp.matchedDesugaredSelectors.length
+        isMatching = entries.some(
+          ruleProp => !!ruleProp.matchedSelectorIndexes.length
         );
       }
 
-      return { ruleProps, isMatching };
+      const result = { isMatching };
+      if (entries) {
+        result.ruleProps = { entries };
+      }
+
+      return result;
     });
   }
 
@@ -1221,8 +1364,8 @@ class StyleRuleActor extends Actor {
   maybeRefresh(forceRefresh) {
     let hasChanged = false;
 
-    const el = this.pageStyle.selectedElement;
-    const style = CssLogic.getComputedStyle(el);
+    const el = this.currentlySelectedElement;
+    const style = this.currentlySelectedElementComputedStyle;
 
     for (const decl of this._declarations) {
       // TODO: convert from Object to Boolean. See Bug 1574471
@@ -1270,23 +1413,20 @@ function getSelectorOffsets(initialText, line, column) {
     line,
     column
   );
-  const lexer = getCSSLexer(text);
+  const lexer = new InspectorCSSParserWrapper(text);
 
   // Search forward for the opening brace.
   let endOffset;
-  while (true) {
-    const token = lexer.nextToken();
-    if (!token) {
-      break;
-    }
-    if (token.tokenType === "symbol" && token.text === "{") {
+  let token;
+  while ((token = lexer.nextToken())) {
+    if (token.tokenType === "CurlyBracketBlock") {
       if (endOffset === undefined) {
         break;
       }
       return [textOffset, textOffset + endOffset];
     }
     // Preserve comments and whitespace just before the "{".
-    if (token.tokenType !== "comment" && token.tokenType !== "whitespace") {
+    if (token.tokenType !== "Comment" && token.tokenType !== "WhiteSpace") {
       endOffset = token.endOffset;
     }
   }

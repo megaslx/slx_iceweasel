@@ -12,13 +12,13 @@ add_setup(async function () {
   for (let i = 0; i < 5; i++) {
     await PlacesTestUtils.addVisits([{ uri: "http://example.com/" }]);
   }
-
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   await SearchTestUtils.installSearchExtension({}, { setAsDefault: true });
   let defaultEngine = Services.search.getEngineByName("Example");
   await Services.search.moveEngine(defaultEngine, 0);
 
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.suggest.quickactions", false]],
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
   });
 
   registerCleanupFunction(async () => {

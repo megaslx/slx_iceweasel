@@ -6,7 +6,6 @@
 
 #include <algorithm>
 
-#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "mojo/core/ports/message_filter.h"
 #include "mozilla/Likely.h"
@@ -67,8 +66,6 @@ void MessageQueue::GetNextMessage(mozilla::UniquePtr<UserMessageEvent>* message,
                    heap_.size() % kHeapShrinkInterval == 0)) {
     heap_.shrink_to_fit();
   }
-
-  next_sequence_num_++;
 }
 
 void MessageQueue::AcceptMessage(mozilla::UniquePtr<UserMessageEvent> message,
@@ -91,6 +88,8 @@ void MessageQueue::TakeAllMessages(
   *messages = std::move(heap_);
   total_queued_bytes_ = 0;
 }
+
+void MessageQueue::MessageProcessed() { next_sequence_num_++; }
 
 }  // namespace ports
 }  // namespace core

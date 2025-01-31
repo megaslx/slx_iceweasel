@@ -8,6 +8,7 @@
 #include "ScriptPreloader-inl.h"
 
 #include "mozilla/Unused.h"
+#include "mozilla/Try.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "nsIFile.h"
 
@@ -33,7 +34,7 @@ Result<Ok, nsresult> AutoMemMap::init(nsIFile* file, int flags, int mode,
                                       PRFileMapProtect prot) {
   MOZ_ASSERT(!fd);
 
-  MOZ_TRY(file->OpenNSPRFileDesc(flags, mode, &fd.rwget()));
+  MOZ_TRY(file->OpenNSPRFileDesc(flags, mode, getter_Transfers(fd)));
 
   return initInternal(prot);
 }
@@ -47,7 +48,7 @@ Result<Ok, nsresult> AutoMemMap::init(const FileDescriptor& file,
 
   auto handle = file.ClonePlatformHandle();
 
-  fd = PR_ImportFile(PROsfd(handle.get()));
+  fd.reset(PR_ImportFile(PROsfd(handle.get())));
   if (!fd) {
     return Err(NS_ERROR_FAILURE);
   }
@@ -78,7 +79,7 @@ Result<Ok, nsresult> AutoMemMap::initInternal(PRFileMapProtect prot,
     size_ = fileInfo.size;
   }
 
-  fileMap = PR_CreateFileMap(fd, 0, prot);
+  fileMap = PR_CreateFileMap(fd.get(), 0, prot);
   if (!fileMap) {
     return Err(NS_ERROR_FAILURE);
   }
@@ -91,49 +92,7 @@ Result<Ok, nsresult> AutoMemMap::initInternal(PRFileMapProtect prot,
   return Ok();
 }
 
-#ifdef XP_WIN
-
-Result<Ok, nsresult> AutoMemMap::initWithHandle(const FileDescriptor& file,
-                                                size_t size,
-                                                PRFileMapProtect prot) {
-  MOZ_ASSERT(!fd);
-  MOZ_ASSERT(!handle_);
-  if (!file.IsValid()) {
-    return Err(NS_ERROR_INVALID_ARG);
-  }
-
-  handle_ = file.ClonePlatformHandle().release();
-
-  MOZ_ASSERT(!addr);
-
-  size_ = size;
-
-  addr = MapViewOfFile(
-      handle_, prot == PR_PROT_READONLY ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS,
-      0, 0, size);
-  if (!addr) {
-    return Err(NS_ERROR_FAILURE);
-  }
-
-  return Ok();
-}
-
-FileDescriptor AutoMemMap::cloneHandle() const {
-  return FileDescriptor(handle_);
-}
-
-#else
-
-Result<Ok, nsresult> AutoMemMap::initWithHandle(const FileDescriptor& file,
-                                                size_t size,
-                                                PRFileMapProtect prot) {
-  MOZ_DIAGNOSTIC_ASSERT(size > 0);
-  return init(file, prot, size);
-}
-
 FileDescriptor AutoMemMap::cloneHandle() const { return cloneFileDescriptor(); }
-
-#endif
 
 void AutoMemMap::reset() {
   if (addr && !persistent_) {
@@ -144,13 +103,7 @@ void AutoMemMap::reset() {
     Unused << NS_WARN_IF(PR_CloseFileMap(fileMap) != PR_SUCCESS);
     fileMap = nullptr;
   }
-#ifdef XP_WIN
-  if (handle_) {
-    CloseHandle(handle_);
-    handle_ = nullptr;
-  }
-#endif
-  fd.dispose();
+  fd = nullptr;
 }
 
 }  // namespace loader

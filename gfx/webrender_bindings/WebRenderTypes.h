@@ -22,10 +22,12 @@
 #include "Units.h"
 #include "nsIWidgetListener.h"
 
+#include <tuple>
+
 namespace mozilla {
 
 enum class StyleBorderStyle : uint8_t;
-enum class StyleBorderImageRepeat : uint8_t;
+enum class StyleBorderImageRepeatKeyword : uint8_t;
 enum class StyleImageRendering : uint8_t;
 
 namespace ipc {
@@ -55,6 +57,8 @@ typedef Maybe<FontInstancePlatformOptions> MaybeFontInstancePlatformOptions;
 struct ExternalImageKeyPair {
   ImageKey key;
   ExternalImageId id;
+
+  auto MutTiedFields() { return std::tie(key, id); }
 };
 
 /* Generate a brand new window id and return it. */
@@ -314,15 +318,6 @@ static inline wr::ColorF ToColorF(const gfx::DeviceColor& color) {
   return c;
 }
 
-static inline wr::ColorU ToColorU(const gfx::DeviceColor& color) {
-  wr::ColorU c;
-  c.r = uint8_t(color.r * 255.0f);
-  c.g = uint8_t(color.g * 255.0f);
-  c.b = uint8_t(color.b * 255.0f);
-  c.a = uint8_t(color.a * 255.0f);
-  return c;
-}
-
 static inline wr::LayoutPoint ToLayoutPoint(
     const mozilla::LayoutDevicePoint& point) {
   wr::LayoutPoint p;
@@ -571,7 +566,7 @@ static inline wr::LayoutSideOffsets ToLayoutSideOffsets(float top, float right,
   return offset;
 }
 
-wr::RepeatMode ToRepeatMode(StyleBorderImageRepeat);
+wr::RepeatMode ToRepeatMode(StyleBorderImageRepeatKeyword);
 
 template <class S, class T>
 static inline wr::WrTransformProperty ToWrTransformProperty(
@@ -676,6 +671,13 @@ struct Vec<uint8_t> final {
   }
 
   void SetEmpty() {
+    // We need to ensure that (data, capacity, length) always remain valid
+    // to be passed to Vec::from_raw_parts. In particular, this requires that
+    // inner.data is always non-null, even for zero-capacity Vecs.
+
+    // Set inner.data to the equivalent of ptr::NonNull::dangling().as_ptr(),
+    // i.e. a non-null value that is aligned with T's alignment, T being u8
+    // here.
     inner.data = (uint8_t*)1;
     inner.capacity = 0;
     inner.length = 0;
@@ -881,24 +883,8 @@ static inline wr::WrColorRange ToWrColorRange(gfx::ColorRange aColorRange) {
 static inline wr::SyntheticItalics DegreesToSyntheticItalics(float aDegrees) {
   wr::SyntheticItalics synthetic_italics;
   synthetic_italics.angle =
-      int16_t(std::min(std::max(aDegrees, -89.0f), 89.0f) * 256.0f);
+      int16_t(std::clamp(aDegrees, -89.0f, 89.0f) * 256.0f);
   return synthetic_italics;
-}
-
-static inline wr::WindowSizeMode ToWrWindowSizeMode(nsSizeMode aSizeMode) {
-  switch (aSizeMode) {
-    case nsSizeMode_Normal:
-      return wr::WindowSizeMode::Normal;
-    case nsSizeMode_Minimized:
-      return wr::WindowSizeMode::Minimized;
-    case nsSizeMode_Maximized:
-      return wr::WindowSizeMode::Maximized;
-    case nsSizeMode_Fullscreen:
-      return wr::WindowSizeMode::Fullscreen;
-    default:
-      MOZ_ASSERT_UNREACHABLE("Tried to convert invalid size mode.");
-      return wr::WindowSizeMode::Invalid;
-  }
 }
 
 static inline wr::APZScrollGeneration ToWrAPZScrollGeneration(
@@ -911,6 +897,8 @@ static inline wr::HasScrollLinkedEffect ToWrHasScrollLinkedEffect(
   return aHasScrollLinkedEffect ? wr::HasScrollLinkedEffect::Yes
                                 : wr::HasScrollLinkedEffect::No;
 }
+
+enum class ExternalImageSource : uint8_t { Unknown = 0, SharedSurfaces, Last };
 
 }  // namespace wr
 }  // namespace mozilla

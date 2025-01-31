@@ -42,7 +42,7 @@
 
 #ifdef NEED_S_ISLNK
 #  if !defined(S_ISLNK) && defined(S_IFLNK)
-#    define S_ISLNK(a) (((a)&S_IFMT) == S_IFLNK)
+#    define S_ISLNK(a) (((a) & S_IFMT) == S_IFLNK)
 #  endif
 #endif
 
@@ -73,8 +73,7 @@ static int mkdirs(char* path, mode_t mode) {
   if (l > 1 && path[l - 1] == '.' && path[l - 2] == '/') path[l - 2] = 0;
 
   while (*path == '/' && path[1] == '/') path++;
-  for (cp = strrchr(path, '/'); cp && cp != path && *(cp - 1) == '/'; cp--)
-    ;
+  for (cp = strrchr(path, '/'); cp && cp != path && *(cp - 1) == '/'; cp--);
   if (cp && cp != path) {
     *cp = '\0';
     if ((lstat(path, &sb) < 0 || !S_ISDIR(sb.st_mode)) &&

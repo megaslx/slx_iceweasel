@@ -22,7 +22,7 @@ JSObject* SVGFEOffsetElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFEOffsetElement::sNumberInfo[2] = {
-    {nsGkAtoms::dx, 0, false}, {nsGkAtoms::dy, 0, false}};
+    {nsGkAtoms::dx, 0}, {nsGkAtoms::dy, 0}};
 
 SVGElement::StringInfo SVGFEOffsetElement::sStringInfo[2] = {
     {nsGkAtoms::result, kNameSpaceID_None, true},
@@ -79,7 +79,7 @@ nsresult SVGFEOffsetElement::BindToTree(BindContext& aCtx, nsINode& aParent) {
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feOffset);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEOffsetElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -87,12 +87,12 @@ nsresult SVGFEOffsetElement::BindToTree(BindContext& aCtx, nsINode& aParent) {
 
 SVGElement::NumberAttributesInfo SVGFEOffsetElement::GetNumberInfo() {
   return NumberAttributesInfo(mNumberAttributes, sNumberInfo,
-                              ArrayLength(sNumberInfo));
+                              std::size(sNumberInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFEOffsetElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

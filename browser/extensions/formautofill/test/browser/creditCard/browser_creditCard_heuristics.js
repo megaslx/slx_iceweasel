@@ -125,6 +125,11 @@ add_setup(async function () {
     ],
   });
 
+  const { FormHistory } = ChromeUtils.importESModule(
+    "resource://gre/modules/FormHistory.sys.mjs"
+  );
+  FormHistory.update({ op: "remove" });
+
   await setStorage(TEST_CREDIT_CARD_1);
 });
 
@@ -137,7 +142,6 @@ add_task(async function test_heuristics() {
 
     await BrowserTestUtils.withNewTab(EMPTY_URL, async function (browser) {
       await SpecialPowers.spawn(browser, [TEST.document], doc => {
-        // eslint-disable-next-line no-unsanitized/property
         content.document.body.innerHTML = doc;
       });
 

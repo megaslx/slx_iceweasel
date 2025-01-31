@@ -11,7 +11,9 @@ ChromeUtils.defineESModuleGetters(this, {
 
 let delayedStartupTimeoutId = null;
 
-function OpenBrowserWindowFromDockMenu(options) {
+function OpenBrowserWindowFromDockMenu(options = {}) {
+  let existingWindow = BrowserWindowTracker.getTopWindow();
+  options.openerWindow = existingWindow || window;
   let win = OpenBrowserWindow(options);
   win.addEventListener(
     "load",
@@ -77,7 +79,7 @@ function nonBrowserWindowStartup() {
     // close, minimize and zoom menu commands as well.
     var hiddenWindowDisabledItems = [
       "cmd_close",
-      "minimizeWindow",
+      "cmd_minimizeWindow",
       "zoomWindow",
     ];
     for (let hiddenWindowDisabledItem of hiddenWindowDisabledItems) {
@@ -132,10 +134,6 @@ function nonBrowserWindowDelayedStartup() {
 
   // initialize the private browsing UI
   gPrivateBrowsingUI.init();
-
-  if (!NimbusFeatures.majorRelease2022.getVariable("firefoxView")) {
-    document.getElementById("menu_openFirefoxView").hidden = true;
-  }
 }
 
 function nonBrowserWindowShutdown() {

@@ -5,8 +5,13 @@
 
 /* import-globals-from head.js */
 
+ChromeUtils.defineESModuleGetters(this, {
+  UrlbarProviderClipboard:
+    "resource:///modules/UrlbarProviderClipboard.sys.mjs",
+});
+
 async function doHeuristicsTest({ trigger, assert }) {
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("x");
 
     await trigger();
@@ -19,7 +24,7 @@ async function doAdaptiveHistoryTest({ trigger, assert }) {
     set: [["browser.urlbar.autoFill", false]],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await PlacesTestUtils.addVisits(["https://example.com/test"]);
     await UrlbarUtils.addToInputHistory("https://example.com/test", "examp");
 
@@ -41,10 +46,30 @@ async function doSearchHistoryTest({ trigger, assert }) {
     ],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await UrlbarTestUtils.formHistory.add(["foofoo", "foobar"]);
 
     await openPopup("foo");
+    await selectRowByURL("http://mochi.test:8888/?terms=foofoo");
+
+    await trigger();
+    await assert();
+  });
+
+  await SpecialPowers.popPrefEnv();
+}
+
+async function doRecentSearchTest({ trigger, assert }) {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.recentsearches.featureGate", true]],
+  });
+
+  await doTest(async () => {
+    await UrlbarTestUtils.formHistory.add([
+      { value: "foofoo", source: Services.search.defaultEngine.name },
+    ]);
+
+    await openPopup("");
     await selectRowByURL("http://mochi.test:8888/?terms=foofoo");
 
     await trigger();
@@ -62,7 +87,7 @@ async function doSearchSuggestTest({ trigger, assert }) {
     ],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("foo");
     await selectRowByURL("http://mochi.test:8888/?terms=foofoo");
 
@@ -76,7 +101,7 @@ async function doSearchSuggestTest({ trigger, assert }) {
 async function doTailSearchSuggestTest({ trigger, assert }) {
   const cleanup = await _useTailSuggestionsEngine();
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("hello");
     await selectRowByProvider("SearchSuggestions");
 
@@ -89,28 +114,32 @@ async function doTailSearchSuggestTest({ trigger, assert }) {
 
 async function doTopPickTest({ trigger, assert }) {
   const cleanupQuickSuggest = await ensureQuickSuggestInit({
-    // eslint-disable-next-line mozilla/valid-lazy
-    config: lazy.QuickSuggestTestUtils.BEST_MATCH_CONFIG,
+    merinoSuggestions: [
+      {
+        title: "Navigational suggestion",
+        url: "https://example.com/navigational-suggestion",
+        provider: "top_picks",
+        is_sponsored: false,
+        score: 0.25,
+        block_id: 0,
+        is_top_pick: true,
+      },
+    ],
   });
 
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.bestMatch.enabled", true]],
-  });
-
-  await doTest(async browser => {
-    await openPopup("sponsored");
-    await selectRowByURL("https://example.com/sponsored");
+  await doTest(async () => {
+    await openPopup("navigational");
+    await selectRowByURL("https://example.com/navigational-suggestion");
 
     await trigger();
     await assert();
   });
 
-  await SpecialPowers.popPrefEnv();
-  cleanupQuickSuggest();
+  await cleanupQuickSuggest();
 }
 
 async function doTopSiteTest({ trigger, assert }) {
-  await doTest(async browser => {
+  await doTest(async () => {
     await addTopSites("https://example.com/");
 
     await showResultByArrowDown();
@@ -121,10 +150,30 @@ async function doTopSiteTest({ trigger, assert }) {
   });
 }
 
+async function doClipboardTest({ trigger, assert }) {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.urlbar.clipboard.featureGate", true],
+      ["browser.urlbar.suggest.clipboard", true],
+    ],
+  });
+  SpecialPowers.clipboardCopyString("https://example.com/clipboard");
+  await doTest(async () => {
+    await showResultByArrowDown();
+    await selectRowByURL("https://example.com/clipboard");
+
+    await trigger();
+    await assert();
+  });
+  SpecialPowers.clipboardCopyString("");
+  UrlbarProviderClipboard.setPreviousClipboardValue("");
+  await SpecialPowers.popPrefEnv();
+}
+
 async function doRemoteTabTest({ trigger, assert }) {
   const remoteTab = await loadRemoteTab("https://example.com");
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("example");
     await selectRowByProvider("RemoteTabs");
 
@@ -139,7 +188,7 @@ async function doAddonTest({ trigger, assert }) {
   const addon = loadOmniboxAddon({ keyword: "omni" });
   await addon.startup();
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("omni test");
 
     await trigger();
@@ -150,7 +199,7 @@ async function doAddonTest({ trigger, assert }) {
 }
 
 async function doGeneralBookmarkTest({ trigger, assert }) {
-  await doTest(async browser => {
+  await doTest(async () => {
     await PlacesUtils.bookmarks.insert({
       parentGuid: PlacesUtils.bookmarks.unfiledGuid,
       url: "https://example.com/bookmark",
@@ -170,7 +219,7 @@ async function doGeneralHistoryTest({ trigger, assert }) {
     set: [["browser.urlbar.autoFill", false]],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await PlacesTestUtils.addVisits("https://example.com/test");
 
     await openPopup("example");
@@ -185,20 +234,16 @@ async function doGeneralHistoryTest({ trigger, assert }) {
 
 async function doSuggestTest({ trigger, assert }) {
   const cleanupQuickSuggest = await ensureQuickSuggestInit();
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.bestMatch.enabled", false]],
-  });
 
-  await doTest(async browser => {
-    await openPopup("nonsponsored");
-    await selectRowByURL("https://example.com/nonsponsored");
+  await doTest(async () => {
+    await openPopup("wikipedia");
+    await selectRowByURL("https://example.com/wikipedia");
 
     await trigger();
     await assert();
   });
 
-  await SpecialPowers.popPrefEnv();
-  cleanupQuickSuggest();
+  await cleanupQuickSuggest();
 }
 
 async function doAboutPageTest({ trigger, assert }) {
@@ -206,7 +251,7 @@ async function doAboutPageTest({ trigger, assert }) {
     set: [["browser.urlbar.maxRichResults", 3]],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("about:");
     await selectRowByURL("about:robots");
 
@@ -222,11 +267,45 @@ async function doSuggestedIndexTest({ trigger, assert }) {
     set: [["browser.urlbar.unitConversion.enabled", true]],
   });
 
-  await doTest(async browser => {
+  await doTest(async () => {
     await openPopup("1m to cm");
     await selectRowByProvider("UnitConversion");
 
     await trigger();
+    await assert();
+  });
+
+  await SpecialPowers.popPrefEnv();
+}
+
+async function doRestrictKeywordsTest({ trigger, assert }) {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.searchRestrictKeywords.featureGate", true]],
+  });
+
+  await doTest(async () => {
+    await openPopup("@");
+
+    let totalResults = await UrlbarTestUtils.getResultCount(window);
+    let restrictSymbols = Object.values(UrlbarTokenizer.RESTRICT);
+
+    for (let i = 0; i < totalResults; i++) {
+      let details = await UrlbarTestUtils.getDetailsOfResultAt(window, i);
+      let symbol = details.result.payload.keyword;
+      let keyword = details.result.payload.l10nRestrictKeywords
+        ?.at(0)
+        .toLowerCase();
+
+      if (restrictSymbols.includes(symbol)) {
+        let rowToSelect = await UrlbarTestUtils.waitForAutocompleteResultAt(
+          window,
+          i
+        );
+
+        await trigger(rowToSelect, keyword);
+        await openPopup("@");
+      }
+    }
     await assert();
   });
 
@@ -273,7 +352,6 @@ async function _useTailSuggestionsEngine() {
     search_url: `http://localhost:${httpServer.identity.primaryPort}/search`,
     suggest_url: `http://localhost:${httpServer.identity.primaryPort}/suggest`,
     suggest_url_get_params: "?q={searchTerms}",
-    search_form: `http://localhost:${httpServer.identity.primaryPort}/search?q={searchTerms}`,
   });
 
   const tailEngine = Services.search.getEngineByName(engineName);

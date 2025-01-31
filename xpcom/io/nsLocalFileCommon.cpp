@@ -6,6 +6,7 @@
 
 #include "nsLocalFile.h"  // includes platform-specific headers
 
+#include "mozilla/Try.h"
 #include "nsString.h"
 #include "nsCOMPtr.h"
 #include "nsReadableUtils.h"
@@ -42,6 +43,8 @@ const char* const sExecutableExts[] = {
   ".app",         // executable application
   ".application", // from bug 348763
   ".appref-ms",   // ClickOnce link
+  ".appx",
+  ".appxbundle",
   ".asp",
   ".atloc",       // Appletalk Location
   ".bas",
@@ -70,6 +73,7 @@ const char* const sExecutableExts[] = {
 #endif
   ".js",
   ".jse",
+  ".library-ms",  // Windows Library Files
   ".lnk",
   ".mad",         // Access Module Shortcut
   ".maf",         // Access
@@ -96,6 +100,8 @@ const char* const sExecutableExts[] = {
   ".msh2xml",     // Microsoft Shell
   ".mshxml",      // Microsoft Shell
   ".msi",
+  ".msix",
+  ".msixbundle",
   ".msp",
   ".mst",
   ".ops",         // Office Profile Settings
@@ -135,9 +141,34 @@ const char* const sExecutableExts[] = {
   ".wsc",
   ".wsf",
   ".wsh",
-  ".xll"         // MS Excel dynamic link library
+  ".xll",         // MS Excel dynamic link library
+  ".xrm-ms"
     // clang-format on
 };
+
+nsresult NS_NewLocalFileWithFile(nsIFile* aFile, nsIFile** aResult) {
+  nsCOMPtr<nsIFile> file = new nsLocalFile();
+  MOZ_TRY(file->InitWithFile(aFile));
+  file.forget(aResult);
+  return NS_OK;
+}
+
+nsresult NS_NewLocalFileWithRelativeDescriptor(nsIFile* aFromFile,
+                                               const nsACString& aRelativeDesc,
+                                               nsIFile** aResult) {
+  nsCOMPtr<nsIFile> file = new nsLocalFile();
+  MOZ_TRY(file->SetRelativeDescriptor(aFromFile, aRelativeDesc));
+  file.forget(aResult);
+  return NS_OK;
+}
+
+nsresult NS_NewLocalFileWithPersistentDescriptor(
+    const nsACString& aPersistentDescriptor, nsIFile** aResult) {
+  nsCOMPtr<nsIFile> file = new nsLocalFile();
+  MOZ_TRY(file->SetPersistentDescriptor(aPersistentDescriptor));
+  file.forget(aResult);
+  return NS_OK;
+}
 
 #if !defined(MOZ_WIDGET_COCOA) && !defined(XP_WIN)
 NS_IMETHODIMP

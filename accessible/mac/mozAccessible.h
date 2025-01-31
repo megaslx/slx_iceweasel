@@ -207,7 +207,16 @@ enum CheckedState {
 - (NSString*)moxARIALive;
 
 // override
+- (NSNumber*)moxARIAPosInSet;
+
+// override
+- (NSNumber*)moxARIASetSize;
+
+// override
 - (NSString*)moxARIARelevant;
+
+// override
+- (NSString*)moxPlaceholderValue;
 
 // override
 - (id)moxTitleUIElement;
@@ -235,6 +244,9 @@ enum CheckedState {
 
 // override
 - (id)moxFocusableAncestor;
+
+// override
+- (NSString*)moxLanguage;
 
 #ifndef RELEASE_OR_BETA
 // override

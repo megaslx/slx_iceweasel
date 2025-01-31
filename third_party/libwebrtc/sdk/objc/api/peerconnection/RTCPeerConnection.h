@@ -10,7 +10,7 @@
 
 #import <Foundation/Foundation.h>
 
-#import "RTCMacros.h"
+#import "sdk/objc/base/RTCMacros.h"
 
 @class RTC_OBJC_TYPE(RTCConfiguration);
 @class RTC_OBJC_TYPE(RTCDataChannel);
@@ -82,9 +82,8 @@ typedef NS_ENUM(NSInteger, RTCStatsOutputLevel) {
   RTCStatsOutputLevelDebug,
 };
 
-typedef void (^RTCCreateSessionDescriptionCompletionHandler)(RTC_OBJC_TYPE(RTCSessionDescription) *
-                                                                 _Nullable sdp,
-                                                             NSError *_Nullable error);
+typedef void (^RTCCreateSessionDescriptionCompletionHandler)(
+    RTC_OBJC_TYPE(RTCSessionDescription) *_Nullable sdp, NSError *_Nullable error);
 
 typedef void (^RTCSetSessionDescriptionCompletionHandler)(NSError *_Nullable error);
 

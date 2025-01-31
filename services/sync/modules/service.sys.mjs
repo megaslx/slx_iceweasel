@@ -67,30 +67,33 @@ const fxAccounts = getFxAccountsSingleton();
 
 function getEngineModules() {
   let result = {
-    Addons: { module: "addons.js", symbol: "AddonsEngine" },
-    Password: { module: "passwords.js", symbol: "PasswordEngine" },
-    Prefs: { module: "prefs.js", symbol: "PrefsEngine" },
+    Addons: { module: "addons.sys.mjs", symbol: "AddonsEngine" },
+    Password: { module: "passwords.sys.mjs", symbol: "PasswordEngine" },
+    Prefs: { module: "prefs.sys.mjs", symbol: "PrefsEngine" },
   };
   if (AppConstants.MOZ_APP_NAME != "thunderbird") {
-    result.Bookmarks = { module: "bookmarks.js", symbol: "BookmarksEngine" };
-    result.Form = { module: "forms.js", symbol: "FormEngine" };
-    result.History = { module: "history.js", symbol: "HistoryEngine" };
-    result.Tab = { module: "tabs.js", symbol: "TabEngine" };
+    result.Bookmarks = {
+      module: "bookmarks.sys.mjs",
+      symbol: "BookmarksEngine",
+    };
+    result.Form = { module: "forms.sys.mjs", symbol: "FormEngine" };
+    result.History = { module: "history.sys.mjs", symbol: "HistoryEngine" };
+    result.Tab = { module: "tabs.sys.mjs", symbol: "TabEngine" };
   }
   if (Svc.PrefBranch.getBoolPref("engine.addresses.available", false)) {
     result.Addresses = {
-      module: "resource://autofill/FormAutofillSync.jsm",
+      module: "resource://autofill/FormAutofillSync.sys.mjs",
       symbol: "AddressesEngine",
     };
   }
   if (Svc.PrefBranch.getBoolPref("engine.creditcards.available", false)) {
     result.CreditCards = {
-      module: "resource://autofill/FormAutofillSync.jsm",
+      module: "resource://autofill/FormAutofillSync.sys.mjs",
       symbol: "CreditCardsEngine",
     };
   }
   result["Extension-Storage"] = {
-    module: "extension-storage.js",
+    module: "extension-storage.sys.mjs",
     controllingPref: "webextensions.storage.sync.kinto",
     whenTrue: "ExtensionStorageEngineKinto",
     whenFalse: "ExtensionStorageEngineBridge",
@@ -426,7 +429,7 @@ Sync11Service.prototype = {
       Svc.PrefBranch.getPrefType("registerEngines") !=
       Ci.nsIPrefBranch.PREF_INVALID
     ) {
-      engines = Svc.PrefBranch.getCharPref("registerEngines").split(",");
+      engines = Svc.PrefBranch.getStringPref("registerEngines").split(",");
       this._log.info("Registering custom set of engines", engines);
     } else {
       // default is all engines.
@@ -434,7 +437,7 @@ Sync11Service.prototype = {
     }
 
     let declined = [];
-    let pref = Svc.PrefBranch.getCharPref("declinedEngines", null);
+    let pref = Svc.PrefBranch.getStringPref("declinedEngines", null);
     if (pref) {
       declined = pref.split(",");
     }
@@ -455,7 +458,7 @@ Sync11Service.prototype = {
         modInfo.module = "resource://services-sync/engines/" + modInfo.module;
       }
       try {
-        let ns = ChromeUtils.import(modInfo.module);
+        let ns = ChromeUtils.importESModule(modInfo.module);
         if (modInfo.symbol) {
           let symbol = modInfo.symbol;
           if (!(symbol in ns)) {
@@ -1006,7 +1009,7 @@ Sync11Service.prototype = {
     this._ignorePrefObserver = false;
     this.clusterURL = null;
 
-    Svc.PrefBranch.setCharPref("lastversion", WEAVE_VERSION);
+    Svc.PrefBranch.setStringPref("lastversion", WEAVE_VERSION);
 
     try {
       this.identity.finalize();
@@ -1300,7 +1303,7 @@ Sync11Service.prototype = {
       Utils.mpLocked()
     ) {
       reason = kSyncMasterPasswordLocked;
-    } else if (Svc.PrefBranch.getCharPref("firstSync", null) == "notReady") {
+    } else if (Svc.PrefBranch.getStringPref("firstSync", null) == "notReady") {
       reason = kFirstSyncChoiceNotMade;
     } else if (!Async.isAppReady()) {
       reason = kFirefoxShuttingDown;
@@ -1477,9 +1480,6 @@ Sync11Service.prototype = {
    */
   async wipeServer(collections) {
     let response;
-    let histogram = Services.telemetry.getHistogramById(
-      "WEAVE_WIPE_SERVER_SUCCEEDED"
-    );
     if (!collections) {
       // Strip the trailing slash.
       let res = this.resource(this.storageURL.slice(0, -1));
@@ -1488,7 +1488,6 @@ Sync11Service.prototype = {
         response = await res.delete();
       } catch (ex) {
         this._log.debug("Failed to wipe server", ex);
-        histogram.add(false);
         throw ex;
       }
       if (response.status != 200 && response.status != 404) {
@@ -1498,10 +1497,8 @@ Sync11Service.prototype = {
             " response for " +
             this.storageURL
         );
-        histogram.add(false);
         throw response;
       }
-      histogram.add(true);
       return response.headers["x-weave-timestamp"];
     }
 
@@ -1512,7 +1509,6 @@ Sync11Service.prototype = {
         response = await this.resource(url).delete();
       } catch (ex) {
         this._log.debug("Failed to wipe '" + name + "' collection", ex);
-        histogram.add(false);
         throw ex;
       }
 
@@ -1523,7 +1519,6 @@ Sync11Service.prototype = {
             " response for " +
             url
         );
-        histogram.add(false);
         throw response;
       }
 
@@ -1531,7 +1526,6 @@ Sync11Service.prototype = {
         timestamp = response.headers["x-weave-timestamp"];
       }
     }
-    histogram.add(true);
     return timestamp;
   },
 

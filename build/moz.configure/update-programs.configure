@@ -4,11 +4,14 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+
 # Updater
 # ==============================================================
-@depends(build_project)
-def updater_default(build_project):
-    return build_project != "mobile/android"
+@depends(build_project, target)
+def updater_default(build_project, target):
+    if build_project == "tools/update-programs":
+        return True
+    return build_project != "mobile/android" and target.os != "iOS"
 
 
 option(
@@ -54,6 +57,22 @@ set_config(
     depends_if("--enable-unverified-updates")(lambda _: True),
 )
 
+option(env="MAR_CHANNEL_ID", nargs=1, help="MAR channel identifier")
+
+set_config(
+    "MAR_CHANNEL_ID",
+    depends_if("MAR_CHANNEL_ID")(lambda channel: channel[0]),
+)
+
+option(
+    env="ACCEPTED_MAR_CHANNEL_IDS", nargs="+", help="Accepted MAR channel identifiers"
+)
+
+set_config(
+    "ACCEPTED_MAR_CHANNEL_IDS",
+    depends_if("ACCEPTED_MAR_CHANNEL_IDS")(lambda channels: ",".join(channels)),
+)
+
 # Use NSS for MAR signatures even on platforms where system libraries are
 # supported (currently Windows and macOS).
 # ==============================================================
@@ -63,7 +82,7 @@ can_toggle_nss_mar = target_is_windows | target_is_osx
 option(
     "--enable-nss-mar",
     when=can_toggle_nss_mar,
-    help="Enable using NSS to check MAR signatures instead of system crypto.",
+    help="Enable using NSS to check MAR signatures instead of system crypto",
 )
 
 
@@ -182,7 +201,10 @@ set_config("MOZ_DEFAULT_BROWSER_AGENT", default_agent_flag)
 # ==============================================================================
 @depends(target, build_project)
 def notification_server_default(target, build_project):
-    return target.os == "WINNT" and build_project == "browser"
+    return target.os == "WINNT" and build_project in (
+        "browser",
+        "comm/mail",
+    )
 
 
 option(

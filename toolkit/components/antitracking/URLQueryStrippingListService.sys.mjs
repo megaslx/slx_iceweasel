@@ -8,11 +8,15 @@ ChromeUtils.defineESModuleGetters(lazy, {
   RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
 });
 
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
 const COLLECTION_NAME = "query-stripping";
 const SHARED_DATA_KEY = "URLQueryStripping";
 const PREF_STRIP_LIST_NAME = "privacy.query_stripping.strip_list";
 const PREF_ALLOW_LIST_NAME = "privacy.query_stripping.allow_list";
 const PREF_TESTING_ENABLED = "privacy.query_stripping.testing";
+const PREF_STRIP_IS_TEST =
+  "privacy.query_stripping.strip_on_share.enableTestMode";
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () => {
   return console.createInstance({
@@ -21,10 +25,15 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () => {
   });
 });
 
-// Lazy getter for the strip-on-share strip list.
-ChromeUtils.defineLazyGetter(lazy, "StripOnShareList", async () => {
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "testStripOnShare",
+  PREF_STRIP_IS_TEST
+);
+
+async function fetchList(fileName) {
   let response = await fetch(
-    "chrome://global/content/antitracking/StripOnShare.json"
+    "chrome://global/content/antitracking/" + fileName
   );
   if (!response.ok) {
     lazy.logger.error(
@@ -35,7 +44,56 @@ ChromeUtils.defineLazyGetter(lazy, "StripOnShareList", async () => {
     );
   }
   return response.json();
+}
+
+// Lazy getter for the strip-on-share strip list.
+ChromeUtils.defineLazyGetter(lazy, "StripOnShareList", async () => {
+  let [stripOnShareList, stripOnShareLGPLParams] = await Promise.all([
+    fetchList("StripOnShare.json"),
+    fetchList("StripOnShareLGPL.json"),
+  ]);
+
+  if (!stripOnShareList || !stripOnShareLGPLParams) {
+    lazy.logger.error("Error strip-on-share strip list were not loaded");
+    throw new Error("Error fetching strip-on-share strip list were not loaded");
+  }
+
+  // Combines the mozilla licensed strip on share param
+  // list and the LGPL licensed strip on share param list
+  return combineAndParseLists(stripOnShareList, [stripOnShareLGPLParams]);
 });
+
+function combineAndParseLists(mainList, arrOfLists) {
+  arrOfLists.forEach(additionalList => {
+    for (let key in additionalList) {
+      if (Object.hasOwn(mainList, key)) {
+        mainList[key].queryParams.push(...additionalList[key].queryParams);
+
+        mainList[key].topLevelSites.push(...additionalList[key].topLevelSites);
+      } else {
+        mainList[key] = additionalList[key];
+      }
+    }
+  });
+
+  for (let key in mainList) {
+    mainList[key].queryParams = mainList[key].queryParams.map(param =>
+      param.toLowerCase()
+    );
+
+    mainList[key].topLevelSites = mainList[key].topLevelSites.map(param =>
+      param.toLowerCase()
+    );
+
+    // Removes duplicates topLevelSites
+    mainList[key].topLevelSites = [...new Set(mainList[key].topLevelSites)];
+
+    // Removes duplicates queryParams
+    mainList[key].queryParams = [...new Set(mainList[key].queryParams)];
+  }
+
+  return mainList;
+}
 
 export class URLQueryStrippingListService {
   classId = Components.ID("{afff16f0-3fd2-4153-9ccd-c6d9abd879e4}");
@@ -44,6 +102,7 @@ export class URLQueryStrippingListService {
   #isInitialized = false;
   #pendingInit = null;
   #initResolver;
+  #stripOnShareTestList = null;
 
   #rs;
   #onSyncCallback;
@@ -67,6 +126,19 @@ export class URLQueryStrippingListService {
       data: { current },
     } = event;
     this._onRemoteSettingsUpdate(current);
+  }
+
+  async testSetList(testList) {
+    this.#stripOnShareTestList = combineAndParseLists(testList, []);
+    await this._notifyStripOnShareObservers();
+  }
+
+  testHasStripOnShareObservers() {
+    return !!this.stripOnShareObservers.size;
+  }
+
+  testHasQPSObservers() {
+    return !!this.observers.size;
   }
 
   async #init() {
@@ -118,11 +190,11 @@ export class URLQueryStrippingListService {
     }
 
     // Get the list from pref.
-    this._onPrefUpdate(
+    await this._onPrefUpdate(
       PREF_STRIP_LIST_NAME,
       Services.prefs.getStringPref(PREF_STRIP_LIST_NAME, "")
     );
-    this._onPrefUpdate(
+    await this._onPrefUpdate(
       PREF_ALLOW_LIST_NAME,
       Services.prefs.getStringPref(PREF_ALLOW_LIST_NAME, "")
     );
@@ -195,7 +267,7 @@ export class URLQueryStrippingListService {
     this._notifyObservers();
   }
 
-  _onPrefUpdate(pref, value) {
+  async _onPrefUpdate(pref, value) {
     switch (pref) {
       case PREF_STRIP_LIST_NAME:
         this.prefStripList = new Set(value ? value.split(" ") : []);
@@ -211,7 +283,7 @@ export class URLQueryStrippingListService {
     }
 
     this._notifyObservers();
-    this._notifyStripOnShareObservers();
+    await this._notifyStripOnShareObservers();
   }
 
   _getListFromSharedData() {
@@ -253,19 +325,30 @@ export class URLQueryStrippingListService {
 
   async _notifyStripOnShareObservers(observer) {
     this.stripOnShareParams = await lazy.StripOnShareList;
+
+    // Changing to different test list allows us to test
+    // site specific params as the websites that current have
+    // site specific params cannot be opened in a test env
+    if (lazy.testStripOnShare) {
+      this.stripOnShareParams = this.#stripOnShareTestList;
+    }
+
     if (!this.stripOnShareParams) {
       lazy.logger.error("StripOnShare list is undefined");
       return;
     }
+
     // Add the qps params to the global rules of the strip-on-share list.
     let qpsParams = [...this.prefStripList, ...this.remoteStripList].map(
       param => param.toLowerCase()
     );
+
     this.stripOnShareParams.global.queryParams.push(...qpsParams);
     // Getting rid of duplicates.
     this.stripOnShareParams.global.queryParams = [
       ...new Set(this.stripOnShareParams.global.queryParams),
     ];
+
     // Build an array of StripOnShareRules.
     let rules = Object.values(this.stripOnShareParams);
     let stringifiedRules = [];

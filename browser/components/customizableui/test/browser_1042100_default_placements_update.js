@@ -148,9 +148,11 @@ function test() {
         "back-button",
         "forward-button",
         "stop-reload-button",
+        "vertical-spacer",
         "urlbar-container",
         "downloads-button",
         "fxa-toolbar-menu-button",
+        "reset-pbm-toolbar-button",
       ],
       "Nav-bar placements should be correct."
     );
@@ -162,6 +164,7 @@ function test() {
 
   // Finally, test the downloads and fxa avatar button migrations work.
   let oldNavbarPlacements = [
+    "vertical-spacer",
     "urlbar-container",
     "customizableui-special-spring3",
     "search-container",
@@ -176,7 +179,11 @@ function test() {
   CustomizableUIInternal._updateForNewVersion();
   Assert.deepEqual(
     getSavedStatePlacements("nav-bar"),
-    oldNavbarPlacements.concat(["downloads-button", "fxa-toolbar-menu-button"]),
+    oldNavbarPlacements.concat([
+      "downloads-button",
+      "fxa-toolbar-menu-button",
+      "reset-pbm-toolbar-button",
+    ]),
     "Downloads button inserted in navbar"
   );
   Assert.deepEqual(
@@ -194,11 +201,16 @@ function test() {
   CustomizableUIInternal._updateForNewVersion();
   Assert.deepEqual(
     getSavedStatePlacements("nav-bar"),
-    oldNavbarPlacements.concat(["downloads-button", "fxa-toolbar-menu-button"]),
+    oldNavbarPlacements.concat([
+      "downloads-button",
+      "fxa-toolbar-menu-button",
+      "reset-pbm-toolbar-button",
+    ]),
     "Downloads button reinserted in navbar"
   );
 
   oldNavbarPlacements = [
+    "vertical-spacer",
     "urlbar-container",
     "customizableui-special-spring3",
     "search-container",
@@ -212,12 +224,14 @@ function test() {
   });
   CustomizableUIInternal._updateForNewVersion();
   let expectedNavbarPlacements = [
+    "vertical-spacer",
     "urlbar-container",
     "customizableui-special-spring3",
     "search-container",
     "downloads-button",
     "other-widget",
     "fxa-toolbar-menu-button",
+    "reset-pbm-toolbar-button",
   ];
   Assert.deepEqual(
     getSavedStatePlacements("nav-bar"),

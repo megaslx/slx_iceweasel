@@ -18,19 +18,43 @@ async function run_test() {
 
   let log = getUpdateDirFile(FILE_UPDATE_LOG);
   writeFile(log, "Last Update Log");
+  log = getUpdateDirFile(FILE_UPDATE_ELEVATED_LOG);
+  writeFile(log, "Last Update Elevated Log");
 
-  standardInit();
+  await standardInit();
 
   Assert.ok(
-    !gUpdateManager.downloadingUpdate,
+    !(await gUpdateManager.getDownloadingUpdate()),
     "there should not be a downloading update"
   );
-  Assert.ok(!gUpdateManager.readyUpdate, "there should not be a ready update");
+  Assert.ok(
+    !(await gUpdateManager.getReadyUpdate()),
+    "there should not be a ready update"
+  );
+  const history = await gUpdateManager.getHistory();
   Assert.equal(
-    gUpdateManager.getUpdateCount(),
+    history.length,
     1,
     "the update manager update count" + MSG_SHOULD_EQUAL
   );
+
+  // As of Bug 1642039, updateInstalledAtStartup returns a promise
+  // instead of being an attribute. Therefore we cannot directly
+  // compare it with history[0] which is a XPCOM wrapped object.
+  history[0]
+    .QueryInterface(Ci.nsIWritablePropertyBag)
+    .setProperty("cleanupSuccessLogMoveTestValue", "value1");
+
+  Assert.equal(
+    (await gUpdateManager.updateInstalledAtStartup())
+      .QueryInterface(Ci.nsIWritablePropertyBag)
+      .getProperty("cleanupSuccessLogMoveTestValue"),
+    history[0]
+      .QueryInterface(Ci.nsIWritablePropertyBag)
+      .getProperty("cleanupSuccessLogMoveTestValue"),
+    "the update installed at startup should be the update from the history"
+  );
+
   await waitForUpdateXMLFiles();
 
   let cancelations = Services.prefs.getIntPref(PREF_APP_UPDATE_CANCELATIONS, 0);
@@ -43,6 +67,9 @@ async function run_test() {
   log = getUpdateDirFile(FILE_UPDATE_LOG);
   Assert.ok(!log.exists(), MSG_SHOULD_NOT_EXIST);
 
+  log = getUpdateDirFile(FILE_UPDATE_ELEVATED_LOG);
+  Assert.ok(!log.exists(), MSG_SHOULD_NOT_EXIST);
+
   log = getUpdateDirFile(FILE_LAST_UPDATE_LOG);
   Assert.ok(log.exists(), MSG_SHOULD_EXIST);
   Assert.equal(
@@ -51,11 +78,32 @@ async function run_test() {
     "the last update log contents" + MSG_SHOULD_EQUAL
   );
 
+  log = getUpdateDirFile(FILE_LAST_UPDATE_ELEVATED_LOG);
+  Assert.ok(log.exists(), MSG_SHOULD_EXIST);
+  Assert.equal(
+    readFile(log),
+    "Last Update Elevated Log",
+    "the last update elevated log contents" + MSG_SHOULD_EQUAL
+  );
+
   log = getUpdateDirFile(FILE_BACKUP_UPDATE_LOG);
+  Assert.ok(!log.exists(), MSG_SHOULD_NOT_EXIST);
+
+  log = getUpdateDirFile(FILE_BACKUP_UPDATE_ELEVATED_LOG);
   Assert.ok(!log.exists(), MSG_SHOULD_NOT_EXIST);
 
   let dir = getUpdateDirFile(DIR_PATCH);
   Assert.ok(dir.exists(), MSG_SHOULD_EXIST);
 
-  doTestFinish();
+  // Simulate the browser restarting by rerunning update initialization.
+  await reloadUpdateManagerData();
+  await testPostUpdateProcessing();
+
+  Assert.equal(
+    await gUpdateManager.updateInstalledAtStartup(),
+    null,
+    "updateInstalledAtStartup should be cleared on next browser start"
+  );
+
+  await doTestFinish();
 }

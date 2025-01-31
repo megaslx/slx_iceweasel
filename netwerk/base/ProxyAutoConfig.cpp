@@ -455,7 +455,10 @@ class JSContextWrapper {
 
     JS::RealmOptions options;
     options.creationOptions().setNewCompartmentInSystemZone();
-    options.behaviors().setClampAndJitterTime(false);
+    options.behaviors()
+        .setClampAndJitterTime(false)
+        .setReduceTimerPrecisionCallerType(
+            RTPCallerTypeToToken(RTPCallerType::Normal));
     mGlobal = JS_NewGlobalObject(mContext, &sGlobalClass, nullptr,
                                  JS::DontFireOnNewGlobalHook, options);
     if (!mGlobal) {
@@ -875,7 +878,7 @@ RemoteProxyAutoConfig::~RemoteProxyAutoConfig() = default;
 nsresult RemoteProxyAutoConfig::Init(nsIThread* aPACThread) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  SocketProcessParent* socketProcessParent =
+  RefPtr<SocketProcessParent> socketProcessParent =
       SocketProcessParent::GetSingleton();
   if (!socketProcessParent) {
     return NS_ERROR_NOT_AVAILABLE;
@@ -884,8 +887,8 @@ nsresult RemoteProxyAutoConfig::Init(nsIThread* aPACThread) {
   ipc::Endpoint<PProxyAutoConfigParent> parent;
   ipc::Endpoint<PProxyAutoConfigChild> child;
   nsresult rv = PProxyAutoConfig::CreateEndpoints(
-      base::GetCurrentProcId(), socketProcessParent->OtherPid(), &parent,
-      &child);
+      ipc::EndpointProcInfo::Current(),
+      socketProcessParent->OtherEndpointProcInfo(), &parent, &child);
   if (NS_FAILED(rv)) {
     return rv;
   }

@@ -421,6 +421,8 @@ typedef enum {
     SDP_MAX_PLAYBACK_RATE,
     SDP_APT,
     SDP_RTX_TIME,
+    SDP_LEVEL_IDX,
+    SDP_TIER,
     SDP_MAX_FMTP_PARAM,
     SDP_FMTP_PARAM_UNKNOWN
 } sdp_fmtp_codec_param_e;
@@ -559,7 +561,7 @@ typedef enum sdp_srtp_crypto_suite_t_ {
 #define SDP_MAX_LONG_STRING_LEN 4096 /* Max len for long SDP strings */
 #define SDP_MAX_STRING_LEN      256  /* Max len for SDP string       */
 #define SDP_MAX_SHORT_STRING_LEN      12  /* Max len for a short SDP string  */
-#define SDP_MAX_PAYLOAD_TYPES   23  /* Max payload types in m= line */
+#define SDP_MAX_PAYLOAD_TYPES   30  /* Max payload types in m= line */
 #define SDP_TOKEN_LEN           2   /* Len of <token>=              */
 #define SDP_CURRENT_VERSION     0   /* Current default SDP version  */
 #define SDP_MAX_PORT_PARAMS     4   /* Max m= port params - x/x/x/x */
@@ -735,6 +737,14 @@ typedef struct sdp_fmtp {
 
     /* RFC 5109 Section 4.2 for specifying redundant encodings */
     uint8_t              redundant_encodings[SDP_FMTP_MAX_REDUNDANT_ENCODINGS];
+
+    /* av1 */
+    uint8_t              av1_profile;
+    tinybool             av1_has_profile;
+    uint8_t              av1_level_idx;
+    tinybool             av1_has_level_idx;
+    uint8_t              av1_tier;
+    tinybool             av1_has_tier;
 
     /* RFC 2833 Section 3.9 (4733) for specifying support DTMF tones:
        The list of values consists of comma-separated elements, which

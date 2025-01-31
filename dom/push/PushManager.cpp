@@ -14,7 +14,6 @@
 #include "mozilla/dom/PushManagerBinding.h"
 #include "mozilla/dom/PushSubscription.h"
 #include "mozilla/dom/PushSubscriptionOptionsBinding.h"
-#include "mozilla/dom/PushUtil.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ServiceWorker.h"
 #include "mozilla/dom/WorkerRunnable.h"
@@ -92,7 +91,7 @@ nsresult GetSubscriptionParams(nsIPushSubscription* aSubscription,
   return NS_OK;
 }
 
-class GetSubscriptionResultRunnable final : public WorkerRunnable {
+class GetSubscriptionResultRunnable final : public WorkerThreadRunnable {
  public:
   GetSubscriptionResultRunnable(WorkerPrivate* aWorkerPrivate,
                                 RefPtr<PromiseWorkerProxy>&& aProxy,
@@ -102,7 +101,7 @@ class GetSubscriptionResultRunnable final : public WorkerRunnable {
                                 nsTArray<uint8_t>&& aRawP256dhKey,
                                 nsTArray<uint8_t>&& aAuthSecret,
                                 nsTArray<uint8_t>&& aAppServerKey)
-      : WorkerRunnable(aWorkerPrivate),
+      : WorkerThreadRunnable("GetSubscriptionResultRunnable"),
         mProxy(std::move(aProxy)),
         mStatus(aStatus),
         mEndpoint(aEndpoint),
@@ -113,13 +112,11 @@ class GetSubscriptionResultRunnable final : public WorkerRunnable {
         mAppServerKey(std::move(aAppServerKey)) {}
 
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
-    {
-      MutexAutoLock lock(mProxy->Lock());
-      if (mProxy->CleanedUp()) {
-        return true;
-      }
+    RefPtr<Promise> promise = mProxy->GetWorkerPromise();
+    // Once Worker had already started shutdown, workerPromise would be nullptr
+    if (!promise) {
+      return true;
     }
-    RefPtr<Promise> promise = mProxy->WorkerPromise();
     if (NS_SUCCEEDED(mStatus)) {
       if (mEndpoint.IsEmpty()) {
         promise->MaybeResolve(JS::NullHandleValue);
@@ -185,7 +182,7 @@ class GetSubscriptionCallback final : public nsIPushSubscriptionCallback {
         worker, std::move(mProxy), aStatus, endpoint, mScope,
         std::move(mExpirationTime), std::move(rawP256dhKey),
         std::move(authSecret), std::move(appServerKey));
-    if (!r->Dispatch()) {
+    if (!r->Dispatch(worker)) {
       return NS_ERROR_UNEXPECTED;
     }
 
@@ -294,11 +291,11 @@ class GetSubscriptionRunnable final : public Runnable {
   nsTArray<uint8_t> mAppServerKey;
 };
 
-class PermissionResultRunnable final : public WorkerRunnable {
+class PermissionResultRunnable final : public WorkerThreadRunnable {
  public:
   PermissionResultRunnable(PromiseWorkerProxy* aProxy, nsresult aStatus,
                            PermissionState aState)
-      : WorkerRunnable(aProxy->GetWorkerPrivate()),
+      : WorkerThreadRunnable("PermissionResultRunnable"),
         mProxy(aProxy),
         mStatus(aStatus),
         mState(aState) {
@@ -308,8 +305,10 @@ class PermissionResultRunnable final : public WorkerRunnable {
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
-
-    RefPtr<Promise> promise = mProxy->WorkerPromise();
+    RefPtr<Promise> promise = mProxy->GetWorkerPromise();
+    if (!promise) {
+      return true;
+    }
     if (NS_SUCCEEDED(mStatus)) {
       promise->MaybeResolve(mState);
     } else {
@@ -351,7 +350,7 @@ class PermissionStateRunnable final : public Runnable {
 
     // This can fail if the worker thread is already shutting down, but there's
     // nothing we can do in that case.
-    Unused << NS_WARN_IF(!r->Dispatch());
+    Unused << NS_WARN_IF(!r->Dispatch(mProxy->GetWorkerPrivate()));
 
     return NS_OK;
   }
@@ -417,7 +416,42 @@ already_AddRefed<PushManager> PushManager::Constructor(GlobalObject& aGlobal,
 }
 
 bool PushManager::IsEnabled(JSContext* aCx, JSObject* aGlobal) {
-  return StaticPrefs::dom_push_enabled() && ServiceWorkerVisible(aCx, aGlobal);
+  return StaticPrefs::dom_push_enabled() && ServiceWorkersEnabled(aCx, aGlobal);
+}
+
+// https://w3c.github.io/push-api/#dom-pushmanager-supportedcontentencodings
+void PushManager::GetSupportedContentEncodings(
+    GlobalObject& aGlobal, JS::MutableHandle<JSObject*> aEncodings,
+    ErrorResult& aRv) {
+  JSContext* cx = aGlobal.Context();
+
+  nsTArray<nsString> encodings{u"aes128gcm"_ns};
+  if (StaticPrefs::dom_push_indicate_aesgcm_support_enabled()) {
+    // The spec does not define orders, but Chrome is returning ["aes128gcm",
+    // "aesgcm"] and there are a bunch of code like below, which is copypasted
+    // from Minishlink/web-push-php-example endorsed by
+    // web-push-libs/web-push-php. Which means practically the preferred
+    // algorithm should go to the first place.
+    //
+    // (PushManager.supportedContentEncodings || ['aesgcm'])[0];
+    encodings.AppendElement(u"aesgcm"_ns);
+  }
+
+  JS::Rooted<JS::Value> encodingsValue(cx);
+  if (!ToJSValue(cx, encodings, &encodingsValue)) {
+    if (JS_IsThrowingOutOfMemory(cx)) {
+      MOZ_CRASH("Out of memory");
+    } else {
+      aRv.NoteJSContextException(cx);
+      return;
+    }
+  };
+  JS::Rooted<JSObject*> object(cx, &encodingsValue.toObject());
+  if (!JS_FreezeObject(cx, object)) {
+    aRv.NoteJSContextException(cx);
+    return;
+  }
+  aEncodings.set(object);
 }
 
 already_AddRefed<Promise> PushManager::Subscribe(
@@ -522,18 +556,10 @@ nsresult PushManager::NormalizeAppServerKey(
       return NS_ERROR_DOM_INVALID_CHARACTER_ERR;
     }
     aAppServerKey = decodedKey;
-  } else if (aSource.IsArrayBuffer()) {
-    if (!PushUtil::CopyArrayBufferToArray(aSource.GetAsArrayBuffer(),
-                                          aAppServerKey)) {
-      return NS_ERROR_DOM_PUSH_INVALID_KEY_ERR;
-    }
-  } else if (aSource.IsArrayBufferView()) {
-    if (!PushUtil::CopyArrayBufferViewToArray(aSource.GetAsArrayBufferView(),
-                                              aAppServerKey)) {
-      return NS_ERROR_DOM_PUSH_INVALID_KEY_ERR;
-    }
   } else {
-    MOZ_CRASH("Uninitialized union: expected string, buffer, or view");
+    if (!AppendTypedArrayDataTo(aSource, aAppServerKey)) {
+      return NS_ERROR_DOM_PUSH_INVALID_KEY_ERR;
+    }
   }
   if (aAppServerKey.IsEmpty()) {
     return NS_ERROR_DOM_PUSH_INVALID_KEY_ERR;

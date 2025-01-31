@@ -14,6 +14,9 @@ pub enum PseudoElement {
         ${pseudo.capitalized_pseudo()}(thin_vec::ThinVec<Atom>),
         % elif pseudo.pseudo_ident == "highlight":
         ${pseudo.capitalized_pseudo()}(AtomIdent),
+        % elif pseudo.is_named_view_transition_pseudo():
+        /// <pt-name-selector> = '*' | <custom-ident>
+        ${pseudo.capitalized_pseudo()}(AtomIdent),
         % else:
         ${pseudo.capitalized_pseudo()},
         % endif
@@ -130,15 +133,26 @@ impl PseudoElement {
 
     /// Construct a pseudo-element from a `PseudoStyleType`.
     #[inline]
-    pub fn from_pseudo_type(type_: PseudoStyleType) -> Option<Self> {
+    pub fn from_pseudo_type(type_: PseudoStyleType, functional_pseudo_parameter: Option<AtomIdent>) -> Option<Self> {
         match type_ {
             % for pseudo in PSEUDOS:
             % if pseudo.is_simple_pseudo_element():
                 PseudoStyleType::${pseudo.pseudo_ident} => {
+                    debug_assert!(functional_pseudo_parameter.is_none());
                     Some(${pseudo_element_variant(pseudo)})
+                },
+            % elif pseudo.is_named_view_transition_pseudo():
+                PseudoStyleType::${pseudo.pseudo_ident} => {
+                    functional_pseudo_parameter.map(PseudoElement::${pseudo.capitalized_pseudo()})
                 },
             % endif
             % endfor
+            PseudoStyleType::highlight => {
+                match functional_pseudo_parameter {
+                    Some(p) => Some(PseudoElement::Highlight(p)),
+                    None => None
+                }
+            }
             _ => None,
         }
     }
@@ -150,7 +164,7 @@ impl PseudoElement {
             % for pseudo in PSEUDOS:
             % if pseudo.is_tree_pseudo_element():
                 PseudoElement::${pseudo.capitalized_pseudo()}(..) => PseudoStyleType::XULTree,
-            % elif pseudo.pseudo_ident == "highlight":
+            % elif pseudo.pseudo_ident == "highlight" or pseudo.is_named_view_transition_pseudo():
                 PseudoElement::${pseudo.capitalized_pseudo()}(..) => PseudoStyleType::${pseudo.pseudo_ident},
             % else:
                 PseudoElement::${pseudo.capitalized_pseudo()} => PseudoStyleType::${pseudo.pseudo_ident},
@@ -192,41 +206,29 @@ impl PseudoElement {
         // We don't need to support tree pseudos because functional
         // pseudo-elements needs arguments, and thus should be created
         // via other methods.
-        match_ignore_ascii_case! { name,
-            % for pseudo in SIMPLE_PSEUDOS:
-            "${pseudo.value[1:]}" => {
-                return Some(${pseudo_element_variant(pseudo)})
-            },
-            % endfor
-            // Alias some legacy prefixed pseudos to their standardized name at parse time:
-            "-moz-selection" => {
-                return Some(PseudoElement::Selection);
-            },
-            "-moz-placeholder" => {
-                return Some(PseudoElement::Placeholder);
-            },
-            "-moz-list-bullet" | "-moz-list-number" => {
-                return Some(PseudoElement::Marker);
-            },
-            // Compat aliases for some `::-webkit-` pseudo-elements.
-            "-webkit-slider-runnable-track" if static_prefs::pref!("layout.css.webkit-range-pseudos.enabled") => {
-                return Some(PseudoElement::MozRangeTrack);
-            },
-            "-webkit-slider-thumb" if static_prefs::pref!("layout.css.webkit-range-pseudos.enabled") => {
-                return Some(PseudoElement::MozRangeThumb);
-            },
-            _ => {
-                if starts_with_ignore_ascii_case(name, "-moz-tree-") {
-                    return PseudoElement::tree_pseudo_element(name, Default::default())
-                }
-                const WEBKIT_PREFIX: &str = "-webkit-";
-                if allow_unkown_webkit && starts_with_ignore_ascii_case(name, WEBKIT_PREFIX) {
-                    let part = string_as_ascii_lowercase(&name[WEBKIT_PREFIX.len()..]);
-                    return Some(PseudoElement::UnknownWebkit(part.into()));
-                }
+        ascii_case_insensitive_phf_map! {
+            pseudo -> PseudoElement = {
+                % for pseudo in SIMPLE_PSEUDOS:
+                "${pseudo.value[1:]}" => ${pseudo_element_variant(pseudo)},
+                % endfor
+                // Alias some legacy prefixed pseudos to their standardized name at parse time:
+                "-moz-selection" => PseudoElement::Selection,
+                "-moz-placeholder" => PseudoElement::Placeholder,
+                "-moz-list-bullet" => PseudoElement::Marker,
+                "-moz-list-number" => PseudoElement::Marker,
             }
         }
-
+        if let Some(p) = pseudo::get(name) {
+            return Some(p.clone());
+        }
+        if starts_with_ignore_ascii_case(name, "-moz-tree-") {
+            return PseudoElement::tree_pseudo_element(name, Default::default())
+        }
+        const WEBKIT_PREFIX: &str = "-webkit-";
+        if allow_unkown_webkit && starts_with_ignore_ascii_case(name, WEBKIT_PREFIX) {
+            let part = string_as_ascii_lowercase(&name[WEBKIT_PREFIX.len()..]);
+            return Some(PseudoElement::UnknownWebkit(part.into()));
+        }
         None
     }
 
@@ -245,6 +247,47 @@ impl PseudoElement {
         % endfor
         None
     }
+
+    /// Returns true if this pseudo-element matches the given selector.
+    pub fn matches(&self, pseudo_selector: &PseudoElement) -> bool {
+        if *self == *pseudo_selector {
+            return true;
+        }
+
+        if std::mem::discriminant(self) != std::mem::discriminant(pseudo_selector) {
+            return false;
+        }
+
+        match (self, pseudo_selector) {
+            (
+                &Self::ViewTransitionGroup(ref _name),
+                &Self::ViewTransitionGroup(ref selector_name),
+            )
+            | (
+                &Self::ViewTransitionImagePair(ref _name),
+                &Self::ViewTransitionImagePair(ref selector_name),
+            )
+            | (
+                &Self::ViewTransitionOld(ref _name),
+                &Self::ViewTransitionOld(ref selector_name),
+            )
+            | (
+                &Self::ViewTransitionNew(ref _name),
+                &Self::ViewTransitionNew(ref selector_name),
+            ) => {
+                // Named view transition pseudos accept the universal selector as the name, so we
+                // check it first.
+                // https://drafts.csswg.org/css-view-transitions-1/#named-view-transition-pseudo
+                if selector_name.0 == atom!("*") {
+                    return true;
+                }
+                // We don't need to check if `*_name == *selector_name` here because we already
+                // check if the enums are equal above.
+                false
+            },
+            _ => false,
+        }
+    }
 }
 
 impl ToCss for PseudoElement {
@@ -252,7 +295,21 @@ impl ToCss for PseudoElement {
         dest.write_char(':')?;
         match *self {
             % for pseudo in (p for p in PSEUDOS if p.pseudo_ident != "highlight"):
+            %if pseudo.is_named_view_transition_pseudo():
+                PseudoElement::${pseudo.capitalized_pseudo()}(ref name) => {
+                    dest.write_str("${pseudo.value}(")?;
+                    if name.0 == atom!("*") {
+                        // serialize_atom_identifier() may serialize "*" as "\*", so we handle it
+                        // separately.
+                        dest.write_char('*')?;
+                    } else {
+                        serialize_atom_identifier(name, dest)?;
+                    }
+                    dest.write_char(')')?;
+                }
+            %else:
                 ${pseudo_element_variant(pseudo)} => dest.write_str("${pseudo.value}")?,
+            %endif
             % endfor
             PseudoElement::Highlight(ref name) => {
                 dest.write_str(":highlight(")?;

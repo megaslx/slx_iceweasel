@@ -1,29 +1,32 @@
 //! State relating to validating a WebAssembly module.
 //!
+
+mod canonical;
+pub(crate) use canonical::InternRecGroup;
+
+use self::arc::MaybeOwned;
 use super::{
     check_max, combine_type_sizes,
     operators::{ty_to_str, OperatorValidator, OperatorValidatorAllocations},
-    types::{EntityType, Type, TypeAlloc, TypeId, TypeList},
+    types::{CoreTypeId, EntityType, RecGroupId, TypeAlloc, TypeList},
 };
-use crate::limits::*;
-use crate::readers::Inherits;
-use crate::validator::core::arc::MaybeOwned;
 use crate::{
-    BinaryReaderError, ConstExpr, Data, DataKind, Element, ElementKind, ExternalKind, FuncType,
-    Global, GlobalType, HeapType, MemoryType, RefType, Result, StorageType, StructuralType,
-    SubType, Table, TableInit, TableType, TagType, TypeRef, ValType, VisitOperator, WasmFeatures,
+    limits::*, BinaryReaderError, ConstExpr, Data, DataKind, Element, ElementKind, ExternalKind,
+    FuncType, Global, GlobalType, HeapType, MemoryType, RecGroup, RefType, Result, SubType, Table,
+    TableInit, TableType, TagType, TypeRef, UnpackedIndex, ValType, VisitOperator, WasmFeatures,
     WasmModuleResources,
 };
-use indexmap::IndexMap;
-use std::mem;
-use std::{collections::HashSet, sync::Arc};
+use crate::{prelude::*, CompositeInnerType};
+use alloc::sync::Arc;
+use core::mem;
 
 // Section order for WebAssembly modules.
 //
 // Component sections are unordered and allow for duplicates,
 // so this isn't used for components.
-#[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, Default, PartialOrd, Ord, PartialEq, Eq, Debug)]
 pub enum Order {
+    #[default]
     Initial,
     Type,
     Import,
@@ -38,12 +41,6 @@ pub enum Order {
     DataCount,
     Code,
     Data,
-}
-
-impl Default for Order {
-    fn default() -> Order {
-        Order::Initial
-    }
 }
 
 #[derive(Default)]
@@ -129,13 +126,13 @@ impl ModuleState {
 
     pub fn add_global(
         &mut self,
-        global: Global,
+        mut global: Global,
         features: &WasmFeatures,
         types: &TypeList,
         offset: usize,
     ) -> Result<()> {
         self.module
-            .check_global_type(&global.ty, features, offset)?;
+            .check_global_type(&mut global.ty, features, types, offset)?;
         self.check_const_expr(&global.init_expr, global.ty.content_type, features, types)?;
         self.module.assert_mut().globals.push(global.ty);
         Ok(())
@@ -143,12 +140,13 @@ impl ModuleState {
 
     pub fn add_table(
         &mut self,
-        table: Table<'_>,
+        mut table: Table<'_>,
         features: &WasmFeatures,
         types: &TypeList,
         offset: usize,
     ) -> Result<()> {
-        self.module.check_table_type(&table.ty, features, offset)?;
+        self.module
+            .check_table_type(&mut table.ty, features, types, offset)?;
 
         match &table.init {
             TableInit::RefNull => {
@@ -157,7 +155,7 @@ impl ModuleState {
                 }
             }
             TableInit::Expr(expr) => {
-                if !features.function_references {
+                if !features.function_references() {
                     bail!(
                         offset,
                         "tables with expression initializers require \
@@ -192,18 +190,17 @@ impl ModuleState {
 
     pub fn add_element_segment(
         &mut self,
-        e: Element,
+        mut e: Element,
         features: &WasmFeatures,
         types: &TypeList,
         offset: usize,
     ) -> Result<()> {
         // the `funcref` value type is allowed all the way back to the MVP, so
         // don't check it here
-        let element_ty = match &e.items {
+        let element_ty = match &mut e.items {
             crate::ElementItems::Functions(_) => RefType::FUNC,
             crate::ElementItems::Expressions(ty, _) => {
-                self.module
-                    .check_value_type(ValType::Ref(*ty), features, offset)?;
+                self.module.check_ref_type(ty, features, offset)?;
                 *ty
             }
         };
@@ -214,11 +211,7 @@ impl ModuleState {
                 offset_expr,
             } => {
                 let table = self.module.table_at(table_index.unwrap_or(0), offset)?;
-                if !self.module.matches(
-                    ValType::Ref(element_ty),
-                    ValType::Ref(table.element_type),
-                    types,
-                ) {
+                if !types.reftype_is_subtype(element_ty, table.element_type) {
                     return Err(BinaryReaderError::new(
                         format!(
                             "type mismatch: invalid element type `{}` for table type `{}`",
@@ -229,10 +222,10 @@ impl ModuleState {
                     ));
                 }
 
-                self.check_const_expr(&offset_expr, ValType::I32, features, types)?;
+                self.check_const_expr(&offset_expr, table.index_type(), features, types)?;
             }
             ElementKind::Passive | ElementKind::Declared => {
-                if !features.bulk_memory {
+                if !features.bulk_memory() {
                     return Err(BinaryReaderError::new(
                         "bulk memory must be enabled",
                         offset,
@@ -292,6 +285,7 @@ impl ModuleState {
                 types,
                 module: &mut self.module,
             },
+            features,
         };
 
         let mut ops = expr.get_operators_reader();
@@ -314,6 +308,7 @@ impl ModuleState {
             ops: OperatorValidator,
             resources: OperatorValidatorResources<'a>,
             order: Order,
+            features: &'a WasmFeatures,
         }
 
         impl VisitConstOperator<'_> {
@@ -321,12 +316,43 @@ impl ModuleState {
                 self.ops.with_resources(&self.resources, self.offset)
             }
 
-            fn validate_extended_const(&mut self) -> Result<()> {
-                if self.ops.features.extended_const {
+            fn validate_extended_const(&mut self, op: &str) -> Result<()> {
+                if self.ops.features.extended_const() {
                     Ok(())
                 } else {
                     Err(BinaryReaderError::new(
-                        "constant expression required: non-constant operator",
+                        format!(
+                            "constant expression required: non-constant operator: {}",
+                            op
+                        ),
+                        self.offset,
+                    ))
+                }
+            }
+
+            fn validate_gc(&mut self, op: &str) -> Result<()> {
+                if self.features.gc() {
+                    Ok(())
+                } else {
+                    Err(BinaryReaderError::new(
+                        format!(
+                            "constant expression required: non-constant operator: {}",
+                            op
+                        ),
+                        self.offset,
+                    ))
+                }
+            }
+
+            fn validate_shared_everything_threads(&mut self, op: &str) -> Result<()> {
+                if self.features.shared_everything_threads() {
+                    Ok(())
+                } else {
+                    Err(BinaryReaderError::new(
+                        format!(
+                            "constant expression required: non-constant operator: {}",
+                            op
+                        ),
                         self.offset,
                     ))
                 }
@@ -335,7 +361,8 @@ impl ModuleState {
             fn validate_global(&mut self, index: u32) -> Result<()> {
                 let module = &self.resources.module;
                 let global = module.global_at(index, self.offset)?;
-                if index >= module.num_imported_globals {
+
+                if index >= module.num_imported_globals && !self.features.gc() {
                     return Err(BinaryReaderError::new(
                         "constant expression required: global.get of locally defined global",
                         self.offset,
@@ -381,7 +408,7 @@ impl ModuleState {
         }
 
         macro_rules! define_visit_operator {
-            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+            ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
                 $(
                     #[allow(unused_variables)]
                     fn $visit(&mut self $($(,$arg: $argty)*)?) -> Self::Output {
@@ -416,28 +443,59 @@ impl ModuleState {
 
             // These are valid const expressions when the extended-const proposal is enabled.
             (@visit $self:ident visit_i32_add) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i32.add")?;
                 $self.validator().visit_i32_add()
             }};
             (@visit $self:ident visit_i32_sub) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i32.sub")?;
                 $self.validator().visit_i32_sub()
             }};
             (@visit $self:ident visit_i32_mul) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i32.mul")?;
                 $self.validator().visit_i32_mul()
             }};
             (@visit $self:ident visit_i64_add) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i64.add")?;
                 $self.validator().visit_i64_add()
             }};
             (@visit $self:ident visit_i64_sub) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i64.sub")?;
                 $self.validator().visit_i64_sub()
             }};
             (@visit $self:ident visit_i64_mul) => {{
-                $self.validate_extended_const()?;
+                $self.validate_extended_const("i64.mul")?;
                 $self.validator().visit_i64_mul()
+            }};
+
+            // These are valid const expressions with the gc proposal is
+            // enabled.
+            (@visit $self:ident visit_struct_new $type_index:ident) => {{
+                $self.validate_gc("struct.new")?;
+                $self.validator().visit_struct_new($type_index)
+            }};
+            (@visit $self:ident visit_struct_new_default $type_index:ident) => {{
+                $self.validate_gc("struct.new_default")?;
+                $self.validator().visit_struct_new_default($type_index)
+            }};
+            (@visit $self:ident visit_array_new $type_index:ident) => {{
+                $self.validate_gc("array.new")?;
+                $self.validator().visit_array_new($type_index)
+            }};
+            (@visit $self:ident visit_array_new_default $type_index:ident) => {{
+                $self.validate_gc("array.new_default")?;
+                $self.validator().visit_array_new_default($type_index)
+            }};
+            (@visit $self:ident visit_array_new_fixed $type_index:ident $n:ident) => {{
+                $self.validate_gc("array.new_fixed")?;
+                $self.validator().visit_array_new_fixed($type_index, $n)
+            }};
+            (@visit $self:ident visit_ref_i31) => {{
+                $self.validate_gc("ref.i31")?;
+                $self.validator().visit_ref_i31()
+            }};
+            (@visit $self:ident visit_ref_i31_shared) => {{
+                $self.validate_shared_everything_threads("ref.i31_shared")?;
+                $self.validator().visit_ref_i31_shared()
             }};
 
             // `global.get` is a valid const expression for imported, immutable
@@ -455,7 +513,7 @@ impl ModuleState {
 
             (@visit $self:ident $op:ident $($args:tt)*) => {{
                 Err(BinaryReaderError::new(
-                    "constant expression required: non-constant operator",
+                    format!("constant expression required: non-constant operator: {}", stringify!($op)),
                     $self.offset,
                 ))
             }}
@@ -469,13 +527,14 @@ impl ModuleState {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Module {
     // This is set once the code section starts.
     // `WasmModuleResources` implementations use the snapshot to
     // enable parallel validation of functions.
     pub snapshot: Option<Arc<TypeList>>,
     // Stores indexes into the validator's types list.
-    pub types: Vec<TypeId>,
+    pub types: Vec<CoreTypeId>,
     pub tables: Vec<TableType>,
     pub memories: Vec<MemoryType>,
     pub globals: Vec<GlobalType>,
@@ -483,8 +542,8 @@ pub(crate) struct Module {
     pub data_count: Option<u32>,
     // Stores indexes into `types`.
     pub functions: Vec<u32>,
-    pub tags: Vec<TypeId>,
-    pub function_references: HashSet<u32>,
+    pub tags: Vec<CoreTypeId>,
+    pub function_references: Set<u32>,
     pub imports: IndexMap<(String, String), Vec<EntityType>>,
     pub exports: IndexMap<String, EntityType>,
     pub type_size: u32,
@@ -493,128 +552,34 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub fn add_type(
+    pub(crate) fn add_types(
         &mut self,
-        ty: SubType,
+        rec_group: RecGroup,
         features: &WasmFeatures,
         types: &mut TypeAlloc,
         offset: usize,
         check_limit: bool,
     ) -> Result<()> {
         if check_limit {
-            check_max(self.types.len(), 1, MAX_WASM_TYPES, "types", offset)?;
-        }
-        let ty = self.check_subtype(ty, features, types, offset)?;
-
-        let id = types.push_ty(ty);
-        self.types.push(id);
-        Ok(())
-    }
-
-    fn check_subtype(
-        &mut self,
-        ty: SubType,
-        features: &WasmFeatures,
-        types: &mut TypeAlloc,
-        offset: usize,
-    ) -> Result<Type> {
-        if !features.gc && (ty.is_final || ty.supertype_idx.is_some()) {
-            return Err(BinaryReaderError::new(
-                "gc proposal must be enabled to use subtypes",
+            check_max(
+                self.types.len(),
+                rec_group.types().len() as u32,
+                MAX_WASM_TYPES,
+                "types",
                 offset,
-            ));
+            )?;
         }
-
-        self.check_structural_type(&ty.structural_type, features, offset)?;
-
-        if let Some(type_index) = ty.supertype_idx {
-            // Check the supertype exists, is not final, and the subtype matches it.
-            match self.type_at(types, type_index, offset)? {
-                Type::Sub(st) => {
-                    if !&ty.inherits(st, &|idx| self.subtype_at(types, idx, offset).unwrap()) {
-                        return Err(BinaryReaderError::new(
-                            "subtype must match supertype",
-                            offset,
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(BinaryReaderError::new(
-                        "supertype must be a non-final subtype itself",
-                        offset,
-                    ));
-                }
-            };
-        }
-
-        Ok(Type::Sub(ty))
-    }
-
-    fn subtype_at<'a>(&self, types: &'a TypeList, idx: u32, offset: usize) -> Result<&'a SubType> {
-        match self.type_at(types, idx, offset)? {
-            Type::Sub(ty) => Ok(ty),
-            _ => bail!(
-                offset,
-                "subtype with index {idx} not found, offset: {offset}"
-            ),
-        }
-    }
-
-    fn check_structural_type(
-        &mut self,
-        ty: &StructuralType,
-        features: &WasmFeatures,
-        offset: usize,
-    ) -> Result<()> {
-        match ty {
-            StructuralType::Func(t) => {
-                for ty in t.params().iter().chain(t.results()) {
-                    self.check_value_type(*ty, features, offset)?;
-                }
-                if t.results().len() > 1 && !features.multi_value {
-                    return Err(BinaryReaderError::new(
-                        "func type returns multiple values but the multi-value feature is not enabled",
-                        offset,
-                    ));
-                }
-            }
-            StructuralType::Array(t) => {
-                if !features.gc {
-                    return Err(BinaryReaderError::new(
-                        "array indexed types not supported without the gc feature",
-                        offset,
-                    ));
-                }
-                match t.0.element_type {
-                    StorageType::I8 | StorageType::I16 => {}
-                    StorageType::Val(value_type) => {
-                        self.check_value_type(value_type, features, offset)?;
-                    }
-                };
-            }
-            StructuralType::Struct(t) => {
-                if !features.gc {
-                    return Err(BinaryReaderError::new(
-                        "struct indexed types not supported without the gc feature",
-                        offset,
-                    ));
-                }
-                for ty in t.fields.iter() {
-                    self.check_storage_type(ty.element_type, features, offset)?;
-                }
-            }
-        }
-        Ok(())
+        self.canonicalize_and_intern_rec_group(features, types, rec_group, offset)
     }
 
     pub fn add_import(
         &mut self,
-        import: crate::Import,
+        mut import: crate::Import,
         features: &WasmFeatures,
         types: &TypeList,
         offset: usize,
     ) -> Result<()> {
-        let entity = self.check_type_ref(&import.ty, features, types, offset)?;
+        let entity = self.check_type_ref(&mut import.ty, features, types, offset)?;
 
         let (len, max, desc) = match import.ty {
             TypeRef::Func(type_index) => {
@@ -635,7 +600,7 @@ impl Module {
                 (self.tags.len(), MAX_WASM_TAGS, "tags")
             }
             TypeRef::Global(ty) => {
-                if !features.mutable_global && ty.mutable {
+                if !features.mutable_global() && ty.mutable {
                     return Err(BinaryReaderError::new(
                         "mutable global support is not enabled",
                         offset,
@@ -649,7 +614,7 @@ impl Module {
 
         check_max(len, 0, max, desc, offset)?;
 
-        self.type_size = combine_type_sizes(self.type_size, entity.type_size(), offset)?;
+        self.type_size = combine_type_sizes(self.type_size, entity.info(types).size(), offset)?;
 
         self.imports
             .entry((import.module.to_string(), import.name.to_string()))
@@ -666,8 +631,9 @@ impl Module {
         features: &WasmFeatures,
         offset: usize,
         check_limit: bool,
+        types: &TypeList,
     ) -> Result<()> {
-        if !features.mutable_global {
+        if !features.mutable_global() {
             if let EntityType::Global(global_type) = ty {
                 if global_type.mutable {
                     return Err(BinaryReaderError::new(
@@ -682,7 +648,7 @@ impl Module {
             check_max(self.exports.len(), 1, MAX_WASM_EXPORTS, "exports", offset)?;
         }
 
-        self.type_size = combine_type_sizes(self.type_size, ty.type_size(), offset)?;
+        self.type_size = combine_type_sizes(self.type_size, ty.info(types).size(), offset)?;
 
         match self.exports.insert(name.to_string(), ty) {
             Some(_) => Err(format_err!(
@@ -722,15 +688,9 @@ impl Module {
         Ok(())
     }
 
-    pub fn type_id_at(&self, idx: u32, offset: usize) -> Result<TypeId> {
-        self.types
-            .get(idx as usize)
-            .copied()
-            .ok_or_else(|| format_err!(offset, "unknown type {idx}: type index out of bounds"))
-    }
-
-    fn type_at<'a>(&self, types: &'a TypeList, idx: u32, offset: usize) -> Result<&'a Type> {
-        self.type_id_at(idx, offset).map(|type_id| &types[type_id])
+    fn sub_type_at<'a>(&self, types: &'a TypeList, idx: u32, offset: usize) -> Result<&'a SubType> {
+        let id = self.type_id_at(idx, offset)?;
+        Ok(&types[id])
     }
 
     fn func_type_at<'a>(
@@ -739,18 +699,19 @@ impl Module {
         types: &'a TypeList,
         offset: usize,
     ) -> Result<&'a FuncType> {
-        match &types[self.type_id_at(type_index, offset)?] {
-            Type::Sub(SubType {
-                structural_type: StructuralType::Func(f),
-                ..
-            }) => Ok(f),
+        match &self
+            .sub_type_at(types, type_index, offset)?
+            .composite_type
+            .inner
+        {
+            CompositeInnerType::Func(f) => Ok(f),
             _ => bail!(offset, "type index {type_index} is not a function type"),
         }
     }
 
     pub fn check_type_ref(
         &self,
-        type_ref: &TypeRef,
+        type_ref: &mut TypeRef,
         features: &WasmFeatures,
         types: &TypeList,
         offset: usize,
@@ -761,7 +722,7 @@ impl Module {
                 EntityType::Func(self.types[*type_index as usize])
             }
             TypeRef::Table(t) => {
-                self.check_table_type(t, features, offset)?;
+                self.check_table_type(t, features, types, offset)?;
                 EntityType::Table(*t)
             }
             TypeRef::Memory(t) => {
@@ -773,7 +734,7 @@ impl Module {
                 EntityType::Tag(self.types[t.func_type_idx as usize])
             }
             TypeRef::Global(t) => {
-                self.check_global_type(t, features, offset)?;
+                self.check_global_type(t, features, types, offset)?;
                 EntityType::Global(*t)
             }
         })
@@ -781,23 +742,48 @@ impl Module {
 
     fn check_table_type(
         &self,
-        ty: &TableType,
+        ty: &mut TableType,
         features: &WasmFeatures,
+        types: &TypeList,
         offset: usize,
     ) -> Result<()> {
-        // the `funcref` value type is allowed all the way back to the MVP, so
-        // don't check it here
+        // The `funcref` value type is allowed all the way back to the MVP, so
+        // don't check it here.
         if ty.element_type != RefType::FUNCREF {
-            self.check_value_type(ValType::Ref(ty.element_type), features, offset)?
+            self.check_ref_type(&mut ty.element_type, features, offset)?
+        }
+
+        if ty.table64 && !features.memory64() {
+            return Err(BinaryReaderError::new(
+                "memory64 must be enabled for 64-bit tables",
+                offset,
+            ));
         }
 
         self.check_limits(ty.initial, ty.maximum, offset)?;
-        if ty.initial > MAX_WASM_TABLE_ENTRIES as u32 {
+        if ty.initial > MAX_WASM_TABLE_ENTRIES as u64 {
             return Err(BinaryReaderError::new(
                 "minimum table size is out of bounds",
                 offset,
             ));
         }
+
+        if ty.shared {
+            if !features.shared_everything_threads() {
+                return Err(BinaryReaderError::new(
+                    "shared tables require the shared-everything-threads proposal",
+                    offset,
+                ));
+            }
+
+            if !types.reftype_is_shared(ty.element_type) {
+                return Err(BinaryReaderError::new(
+                    "shared tables must have a shared element type",
+                    offset,
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -808,21 +794,47 @@ impl Module {
         offset: usize,
     ) -> Result<()> {
         self.check_limits(ty.initial, ty.maximum, offset)?;
+        let (page_size, page_size_log2) = if let Some(page_size_log2) = ty.page_size_log2 {
+            if !features.custom_page_sizes() {
+                return Err(BinaryReaderError::new(
+                    "the custom page sizes proposal must be enabled to \
+                     customize a memory's page size",
+                    offset,
+                ));
+            }
+            // Currently 2**0 and 2**16 are the only valid page sizes, but this
+            // may be relaxed to allow any power of two in the future.
+            if page_size_log2 != 0 && page_size_log2 != 16 {
+                return Err(BinaryReaderError::new("invalid custom page size", offset));
+            }
+            let page_size = 1_u64 << page_size_log2;
+            debug_assert!(page_size.is_power_of_two());
+            debug_assert!(page_size == DEFAULT_WASM_PAGE_SIZE || page_size == 1);
+            (page_size, page_size_log2)
+        } else {
+            let page_size_log2 = 16;
+            debug_assert_eq!(DEFAULT_WASM_PAGE_SIZE, 1 << page_size_log2);
+            (DEFAULT_WASM_PAGE_SIZE, page_size_log2)
+        };
         let (true_maximum, err) = if ty.memory64 {
-            if !features.memory64 {
+            if !features.memory64() {
                 return Err(BinaryReaderError::new(
                     "memory64 must be enabled for 64-bit memories",
                     offset,
                 ));
             }
             (
-                MAX_WASM_MEMORY64_PAGES,
-                "memory size must be at most 2**48 pages",
+                max_wasm_memory64_pages(page_size),
+                format!(
+                    "memory size must be at most 2**{} pages",
+                    64 - page_size_log2
+                ),
             )
         } else {
+            let max = max_wasm_memory32_pages(page_size);
             (
-                MAX_WASM_MEMORY32_PAGES,
-                "memory size must be at most 65536 pages (4GiB)",
+                max,
+                format!("memory size must be at most {max} pages (4GiB)"),
             )
         };
         if ty.initial > true_maximum {
@@ -834,7 +846,7 @@ impl Module {
             }
         }
         if ty.shared {
-            if !features.threads {
+            if !features.threads() {
                 return Err(BinaryReaderError::new(
                     "threads must be enabled for shared memories",
                     offset,
@@ -850,6 +862,7 @@ impl Module {
         Ok(())
     }
 
+    #[cfg(feature = "component-model")]
     pub(crate) fn imports_for_module_type(
         &self,
         offset: usize,
@@ -870,63 +883,54 @@ impl Module {
             .collect::<Result<_>>()
     }
 
-    fn check_storage_type(
+    fn check_value_type(
         &self,
-        ty: StorageType,
+        ty: &mut ValType,
         features: &WasmFeatures,
         offset: usize,
     ) -> Result<()> {
-        match ty {
-            StorageType::I8 | StorageType::I16 => {}
-            StorageType::Val(value_type) => {
-                self.check_value_type(value_type, features, offset)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn check_value_type(&self, ty: ValType, features: &WasmFeatures, offset: usize) -> Result<()> {
-        match features.check_value_type(ty) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(BinaryReaderError::new(e, offset)),
-        }?;
         // The above only checks the value type for features.
         // We must check it if it's a reference.
         match ty {
-            ValType::Ref(rt) => {
-                self.check_ref_type(rt, offset)?;
-            }
-            _ => (),
+            ValType::Ref(rt) => self.check_ref_type(rt, features, offset),
+            _ => features
+                .check_value_type(*ty)
+                .map_err(|e| BinaryReaderError::new(e, offset)),
         }
+    }
+
+    fn check_ref_type(
+        &self,
+        ty: &mut RefType,
+        features: &WasmFeatures,
+        offset: usize,
+    ) -> Result<()> {
+        features
+            .check_ref_type(*ty)
+            .map_err(|e| BinaryReaderError::new(e, offset))?;
+        let mut hty = ty.heap_type();
+        self.check_heap_type(&mut hty, offset)?;
+        *ty = RefType::new(ty.is_nullable(), hty).unwrap();
         Ok(())
     }
 
-    fn check_ref_type(&self, ty: RefType, offset: usize) -> Result<()> {
-        // Check that the heap type is valid
-        match ty.heap_type() {
-            HeapType::Func
-            | HeapType::Extern
-            | HeapType::Any
-            | HeapType::None
-            | HeapType::NoExtern
-            | HeapType::NoFunc
-            | HeapType::Eq
-            | HeapType::Struct
-            | HeapType::Array
-            | HeapType::I31 => (),
-            HeapType::Indexed(type_index) => {
-                // Just check that the index is valid
-                self.type_id_at(type_index, offset)?;
+    fn check_heap_type(&self, ty: &mut HeapType, offset: usize) -> Result<()> {
+        // Check that the heap type is valid.
+        let type_index = match ty {
+            HeapType::Abstract { .. } => return Ok(()),
+            HeapType::Concrete(type_index) => type_index,
+        };
+        match type_index {
+            UnpackedIndex::Module(idx) => {
+                let id = self.type_id_at(*idx, offset)?;
+                *type_index = UnpackedIndex::Id(id);
+                Ok(())
             }
+            // Types at this stage should not be canonicalized. All
+            // canonicalized types should already be validated meaning they
+            // shouldn't be double-checked here again.
+            UnpackedIndex::RecGroup(_) | UnpackedIndex::Id(_) => unreachable!(),
         }
-        Ok(())
-    }
-
-    /// Check that a value of type ty1 is assignable to a variable / table element of type ty2.
-    /// E.g. a non-nullable reference can be assigned to a nullable reference, but not vice versa.
-    /// Or an indexed func ref is assignable to a generic func ref, but not vice versa.
-    pub(crate) fn matches(&self, ty1: ValType, ty2: ValType, types: &TypeList) -> bool {
-        ty1.inherits(&ty2, &|idx| self.subtype_at(types, idx, 0).unwrap())
     }
 
     fn check_tag_type(
@@ -936,14 +940,14 @@ impl Module {
         types: &TypeList,
         offset: usize,
     ) -> Result<()> {
-        if !features.exceptions {
+        if !features.exceptions() {
             return Err(BinaryReaderError::new(
                 "exceptions proposal not enabled",
                 offset,
             ));
         }
         let ty = self.func_type_at(ty.func_type_idx, types, offset)?;
-        if !ty.results().is_empty() {
+        if !ty.results().is_empty() && !features.stack_switching() {
             return Err(BinaryReaderError::new(
                 "invalid exception type: non-empty tag result type",
                 offset,
@@ -954,11 +958,27 @@ impl Module {
 
     fn check_global_type(
         &self,
-        ty: &GlobalType,
+        ty: &mut GlobalType,
         features: &WasmFeatures,
+        types: &TypeList,
         offset: usize,
     ) -> Result<()> {
-        self.check_value_type(ty.content_type, features, offset)
+        self.check_value_type(&mut ty.content_type, features, offset)?;
+        if ty.shared {
+            if !features.shared_everything_threads() {
+                return Err(BinaryReaderError::new(
+                    "shared globals require the shared-everything-threads proposal",
+                    offset,
+                ));
+            }
+            if !types.valtype_is_shared(ty.content_type) {
+                return Err(BinaryReaderError::new(
+                    "shared globals must have a shared value type",
+                    offset,
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn check_limits<T>(&self, initial: T, maximum: Option<T>, offset: usize) -> Result<()>
@@ -977,7 +997,7 @@ impl Module {
     }
 
     pub fn max_tables(&self, features: &WasmFeatures) -> usize {
-        if features.reference_types {
+        if features.reference_types() {
             MAX_WASM_TABLES
         } else {
             1
@@ -985,7 +1005,7 @@ impl Module {
     }
 
     pub fn max_memories(&self, features: &WasmFeatures) -> usize {
-        if features.multi_memory {
+        if features.multi_memory() {
             MAX_WASM_MEMORIES
         } else {
             1
@@ -1079,6 +1099,23 @@ impl Module {
     }
 }
 
+impl InternRecGroup for Module {
+    fn add_type_id(&mut self, id: CoreTypeId) {
+        self.types.push(id);
+    }
+
+    fn type_id_at(&self, idx: u32, offset: usize) -> Result<CoreTypeId> {
+        self.types
+            .get(idx as usize)
+            .copied()
+            .ok_or_else(|| format_err!(offset, "unknown type {idx}: type index out of bounds"))
+    }
+
+    fn types_len(&self) -> u32 {
+        u32::try_from(self.types.len()).unwrap()
+    }
+}
+
 impl Default for Module {
     fn default() -> Self {
         Self {
@@ -1107,8 +1144,6 @@ struct OperatorValidatorResources<'a> {
 }
 
 impl WasmModuleResources for OperatorValidatorResources<'_> {
-    type FuncType = crate::FuncType;
-
     fn table_at(&self, at: u32) -> Option<TableType> {
         self.module.tables.get(at as usize).cloned()
     }
@@ -1117,36 +1152,51 @@ impl WasmModuleResources for OperatorValidatorResources<'_> {
         self.module.memories.get(at as usize).cloned()
     }
 
-    fn tag_at(&self, at: u32) -> Option<&Self::FuncType> {
-        Some(self.types[*self.module.tags.get(at as usize)?].unwrap_func())
+    fn tag_at(&self, at: u32) -> Option<&FuncType> {
+        let type_id = *self.module.tags.get(at as usize)?;
+        Some(self.types[type_id].unwrap_func())
     }
 
     fn global_at(&self, at: u32) -> Option<GlobalType> {
         self.module.globals.get(at as usize).cloned()
     }
 
-    fn func_type_at(&self, at: u32) -> Option<&Self::FuncType> {
-        Some(self.types[*self.module.types.get(at as usize)?].unwrap_func())
+    fn sub_type_at(&self, at: u32) -> Option<&SubType> {
+        let id = *self.module.types.get(at as usize)?;
+        Some(&self.types[id])
+    }
+
+    fn sub_type_at_id(&self, at: CoreTypeId) -> &SubType {
+        &self.types[at]
+    }
+
+    fn type_id_of_function(&self, at: u32) -> Option<CoreTypeId> {
+        let type_index = self.module.functions.get(at as usize)?;
+        self.module.types.get(*type_index as usize).copied()
     }
 
     fn type_index_of_function(&self, at: u32) -> Option<u32> {
-        self.module.functions.get(at as usize).cloned()
+        self.module.functions.get(at as usize).copied()
     }
 
-    fn type_of_function(&self, at: u32) -> Option<&Self::FuncType> {
-        self.func_type_at(self.type_index_of_function(at)?)
+    fn check_heap_type(&self, t: &mut HeapType, offset: usize) -> Result<()> {
+        self.module.check_heap_type(t, offset)
     }
 
-    fn check_value_type(&self, t: ValType, features: &WasmFeatures, offset: usize) -> Result<()> {
-        self.module.check_value_type(t, features, offset)
+    fn top_type(&self, heap_type: &HeapType) -> HeapType {
+        self.types.top_type(heap_type)
     }
 
     fn element_type_at(&self, at: u32) -> Option<RefType> {
         self.module.element_types.get(at as usize).cloned()
     }
 
-    fn matches(&self, t1: ValType, t2: ValType) -> bool {
-        self.module.matches(t1, t2, self.types)
+    fn is_subtype(&self, a: ValType, b: ValType) -> bool {
+        self.types.valtype_is_subtype(a, b)
+    }
+
+    fn is_shared(&self, ty: RefType) -> bool {
+        self.types.reftype_is_shared(ty)
     }
 
     fn element_count(&self) -> u32 {
@@ -1164,11 +1214,10 @@ impl WasmModuleResources for OperatorValidatorResources<'_> {
 
 /// The implementation of [`WasmModuleResources`] used by
 /// [`Validator`](crate::Validator).
+#[derive(Debug)]
 pub struct ValidatorResources(pub(crate) Arc<Module>);
 
 impl WasmModuleResources for ValidatorResources {
-    type FuncType = crate::FuncType;
-
     fn table_at(&self, at: u32) -> Option<TableType> {
         self.0.tables.get(at as usize).cloned()
     }
@@ -1177,36 +1226,57 @@ impl WasmModuleResources for ValidatorResources {
         self.0.memories.get(at as usize).cloned()
     }
 
-    fn tag_at(&self, at: u32) -> Option<&Self::FuncType> {
-        Some(self.0.snapshot.as_ref().unwrap()[*self.0.tags.get(at as usize)?].unwrap_func())
+    fn tag_at(&self, at: u32) -> Option<&FuncType> {
+        let id = *self.0.tags.get(at as usize)?;
+        let types = self.0.snapshot.as_ref().unwrap();
+        match &types[id].composite_type.inner {
+            CompositeInnerType::Func(f) => Some(f),
+            _ => None,
+        }
     }
 
     fn global_at(&self, at: u32) -> Option<GlobalType> {
         self.0.globals.get(at as usize).cloned()
     }
 
-    fn func_type_at(&self, at: u32) -> Option<&Self::FuncType> {
-        Some(self.0.snapshot.as_ref().unwrap()[*self.0.types.get(at as usize)?].unwrap_func())
+    fn sub_type_at(&self, at: u32) -> Option<&SubType> {
+        let id = *self.0.types.get(at as usize)?;
+        let types = self.0.snapshot.as_ref().unwrap();
+        Some(&types[id])
+    }
+
+    fn sub_type_at_id(&self, at: CoreTypeId) -> &SubType {
+        let types = self.0.snapshot.as_ref().unwrap();
+        &types[at]
+    }
+
+    fn type_id_of_function(&self, at: u32) -> Option<CoreTypeId> {
+        let type_index = *self.0.functions.get(at as usize)?;
+        self.0.types.get(type_index as usize).copied()
     }
 
     fn type_index_of_function(&self, at: u32) -> Option<u32> {
-        self.0.functions.get(at as usize).cloned()
+        self.0.functions.get(at as usize).copied()
     }
 
-    fn type_of_function(&self, at: u32) -> Option<&Self::FuncType> {
-        self.func_type_at(self.type_index_of_function(at)?)
+    fn check_heap_type(&self, t: &mut HeapType, offset: usize) -> Result<()> {
+        self.0.check_heap_type(t, offset)
     }
 
-    fn check_value_type(&self, t: ValType, features: &WasmFeatures, offset: usize) -> Result<()> {
-        self.0.check_value_type(t, features, offset)
+    fn top_type(&self, heap_type: &HeapType) -> HeapType {
+        self.0.snapshot.as_ref().unwrap().top_type(heap_type)
     }
 
     fn element_type_at(&self, at: u32) -> Option<RefType> {
         self.0.element_types.get(at as usize).cloned()
     }
 
-    fn matches(&self, t1: ValType, t2: ValType) -> bool {
-        self.0.matches(t1, t2, self.0.snapshot.as_ref().unwrap())
+    fn is_subtype(&self, a: ValType, b: ValType) -> bool {
+        self.0.snapshot.as_ref().unwrap().valtype_is_subtype(a, b)
+    }
+
+    fn is_shared(&self, ty: RefType) -> bool {
+        self.0.snapshot.as_ref().unwrap().reftype_is_shared(ty)
     }
 
     fn element_count(&self) -> u32 {
@@ -1233,8 +1303,8 @@ const _: () = {
 };
 
 mod arc {
-    use std::ops::Deref;
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use core::ops::Deref;
 
     enum Inner<T> {
         Owned(T),
@@ -1276,7 +1346,7 @@ mod arc {
                 return;
             }
 
-            let inner = std::mem::replace(&mut self.inner, Inner::Empty);
+            let inner = core::mem::replace(&mut self.inner, Inner::Empty);
             let x = match inner {
                 Inner::Owned(x) => x,
                 _ => Self::unreachable(),

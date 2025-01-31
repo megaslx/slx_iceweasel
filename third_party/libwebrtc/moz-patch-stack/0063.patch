@@ -1,76 +1,78 @@
-From: Michael Froman <mjfroman@mac.com>
-Date: Thu, 19 May 2022 15:32:32 -0500
-Subject: Bug 1772380 - Build 1766646 - (fix-c89fdd716c) fixes for the
- refactored PlatformThread API;r?mjf
+From: Andreas Pehrson <apehrson@mozilla.com>
+Date: Mon, 12 Dec 2022 15:47:00 +0000
+Subject: Bug 1451394 - Expose mac camera capture backend in .gn and switch it
+ to gecko libyuv. r=webrtc-reviewers,mjf
 
+Differential Revision: https://phabricator.services.mozilla.com/D163682
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/b0658888969395dca938597783c8a377b9bea209
 ---
- .../video_capture/linux/device_info_v4l2.cc   | 20 ++++++-------------
- .../video_capture/linux/device_info_v4l2.h    |  3 +--
- 2 files changed, 7 insertions(+), 16 deletions(-)
+ BUILD.gn     | 4 ++++
+ sdk/BUILD.gn | 6 ++++++
+ 2 files changed, 10 insertions(+)
 
-diff --git a/modules/video_capture/linux/device_info_v4l2.cc b/modules/video_capture/linux/device_info_v4l2.cc
-index e8abcdda78..7651dd6651 100644
---- a/modules/video_capture/linux/device_info_v4l2.cc
-+++ b/modules/video_capture/linux/device_info_v4l2.cc
-@@ -133,11 +133,6 @@ int DeviceInfoV4l2::ProcessInotifyEvents()
-     return 0;
- }
- 
--void DeviceInfoV4l2::InotifyEventThread(void* obj)
--{
--    static_cast<DeviceInfoLinux*> (obj)->InotifyProcess();
--}
--
- void DeviceInfoV4l2::InotifyProcess()
- {
-     _fd_v4l = inotify_init();
-@@ -163,16 +158,14 @@ void DeviceInfoV4l2::InotifyProcess()
- 
- DeviceInfoV4l2::DeviceInfoV4l2() : DeviceInfoImpl()
- #ifdef WEBRTC_LINUX
--    , _inotifyEventThread(new rtc::PlatformThread(
--                            InotifyEventThread, this, "InotifyEventThread"))
-     , _isShutdown(false)
- #endif
- {
- #ifdef WEBRTC_LINUX
--    if (_inotifyEventThread)
--    {
--        _inotifyEventThread->Start();
--    }
-+  _inotifyEventThread = rtc::PlatformThread::SpawnJoinable(
-+      [this] {
-+        InotifyProcess();
-+      }, "InotifyEventThread");
- #endif
- }
- 
-@@ -184,9 +177,8 @@ DeviceInfoV4l2::~DeviceInfoV4l2() {
- #ifdef WEBRTC_LINUX
-     _isShutdown = true;
- 
--    if (_inotifyEventThread) {
--        _inotifyEventThread->Stop();
--        _inotifyEventThread = nullptr;
-+    if (!_inotifyEventThread.empty()) {
-+      _inotifyEventThread.Finalize();
+diff --git a/BUILD.gn b/BUILD.gn
+index 7d3005cbe3..946de50dc2 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -636,6 +636,10 @@ if (!build_with_chromium) {
+       ]
      }
- #endif
+ 
++    if (build_with_mozilla && is_mac) {
++      deps += [ "sdk:videocapture_objc" ]
++    }
++
+     if (rtc_enable_protobuf) {
+       deps += [ "logging:rtc_event_log_proto" ]
+     }
+diff --git a/sdk/BUILD.gn b/sdk/BUILD.gn
+index 27fb4adada..fce3ca62ff 100644
+--- a/sdk/BUILD.gn
++++ b/sdk/BUILD.gn
+@@ -527,6 +527,7 @@ if (is_ios || is_mac) {
+       }
+     }
+ 
++    if (!build_with_mozilla) {
+     rtc_library("videosource_objc") {
+       sources = [
+         "objc/api/peerconnection/RTCVideoSource+Private.h",
+@@ -556,6 +557,7 @@ if (is_ios || is_mac) {
+         ":used_from_extension",
+       ]
+     }
++    }
+ 
+     rtc_library("videoframebuffer_objc") {
+       visibility = [ "*" ]
+@@ -588,6 +590,7 @@ if (is_ios || is_mac) {
+       ]
+     }
+ 
++    if (!build_with_mozilla) {
+     rtc_library("metal_objc") {
+       visibility = [ "*" ]
+       allow_poison = [
+@@ -649,6 +652,7 @@ if (is_ios || is_mac) {
+         ":videoframebuffer_objc",
+       ]
+     }
++    }
+ 
+     rtc_library("videocapture_objc") {
+       visibility = [ "*" ]
+@@ -677,6 +681,7 @@ if (is_ios || is_mac) {
+       ]
+     }
+ 
++    if (!build_with_mozilla) {
+     rtc_library("videocodec_objc") {
+       visibility = [ "*" ]
+       configs += [ "..:no_global_constructors" ]
+@@ -1765,5 +1770,6 @@ if (is_ios || is_mac) {
+         "VideoToolbox.framework",
+       ]
+     }
++    }
+   }
  }
-diff --git a/modules/video_capture/linux/device_info_v4l2.h b/modules/video_capture/linux/device_info_v4l2.h
-index 119cb07ab8..0bec3eb765 100644
---- a/modules/video_capture/linux/device_info_v4l2.h
-+++ b/modules/video_capture/linux/device_info_v4l2.h
-@@ -60,8 +60,7 @@ class DeviceInfoV4l2 : public DeviceInfoImpl {
-   int EventCheck(int fd);
-   int HandleEvents(int fd);
-   int ProcessInotifyEvents();
--  std::unique_ptr<rtc::PlatformThread> _inotifyEventThread;
--  static void InotifyEventThread(void*);
-+  rtc::PlatformThread _inotifyEventThread;
-   void InotifyProcess();
-   int _fd_v4l, _fd_dev, _wd_v4l, _wd_dev; /* accessed on InotifyEventThread thread */
-   std::atomic<bool> _isShutdown;
--- 
-2.34.1
-

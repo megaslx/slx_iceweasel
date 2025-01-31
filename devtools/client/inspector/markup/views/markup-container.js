@@ -75,24 +75,25 @@ MarkupContainer.prototype = {
     this.elt.container = this;
 
     this._onMouseDown = this._onMouseDown.bind(this);
+    this._onClick = this._onClick.bind(this);
     this._onToggle = this._onToggle.bind(this);
     this._onKeyDown = this._onKeyDown.bind(this);
+    this._eventListenersAbortController = new this.win.AbortController();
 
     // Binding event listeners
-    this.elt.addEventListener("mousedown", this._onMouseDown);
-    this.elt.addEventListener("dblclick", this._onToggle);
+    const eventConfig = { signal: this._eventListenersAbortController.signal };
+    this.elt.addEventListener("mousedown", this._onMouseDown, eventConfig);
+    this.elt.addEventListener("click", this._onClick, eventConfig);
+    this.elt.addEventListener("dblclick", this._onToggle, eventConfig);
     if (this.expander) {
-      this.expander.addEventListener("click", this._onToggle);
+      this.expander.addEventListener("click", this._onToggle, eventConfig);
     }
 
     // Marking the node as shown or hidden
     this.updateIsDisplayed();
 
     if (node.isShadowRoot) {
-      this.markup.telemetry.scalarSet(
-        "devtools.shadowdom.shadow_root_displayed",
-        true
-      );
+      Glean.devtoolsShadowdom.shadowRootDisplayed.set(true);
     }
   },
 
@@ -362,10 +363,7 @@ MarkupContainer.prototype = {
     }
 
     if (this.node.isShadowRoot) {
-      this.markup.telemetry.scalarSet(
-        "devtools.shadowdom.shadow_root_expanded",
-        true
-      );
+      Glean.devtoolsShadowdom.shadowRootExpanded.set(true);
     }
   },
 
@@ -555,7 +553,7 @@ MarkupContainer.prototype = {
     this.markup.navigate(this);
     // Make container tabbable descendants tabbable and focus in.
     this.canFocus = true;
-    this.focus();
+    this.focus({ fromMouseEvent: true });
     event.stopPropagation();
 
     // Preventing the default behavior will avoid the body to gain focus on
@@ -578,11 +576,7 @@ MarkupContainer.prototype = {
 
     // Follow attribute links if middle or meta click.
     if (isMiddleClick || isMetaClick) {
-      const link = target.dataset.link;
-      const type = target.dataset.type;
-      // Make container tabbable descendants not tabbable (by default).
-      this.canFocus = false;
-      this.markup.followAttributeLink(type, link);
+      this._openAttributeLink(target.dataset.type, target.dataset.link);
       return;
     }
 
@@ -592,6 +586,40 @@ MarkupContainer.prototype = {
       this._dragStartY = event.pageY;
       this.markup._draggedContainer = this;
     }
+  },
+
+  _onClick(event) {
+    const { target } = event;
+    if (target.nodeName !== "button") {
+      return;
+    }
+
+    // We only care about handling click/keyboard activation for buttons inside
+    // "link" attributes (e.g. the "select node" button)
+    const closestLinkEl = target.closest("[data-link]");
+    if (!closestLinkEl) {
+      return;
+    }
+
+    this._openAttributeLink(
+      closestLinkEl.dataset.type,
+      closestLinkEl.dataset.link
+    );
+    event.stopPropagation();
+  },
+
+  /**
+   * Open a "link" found in a node's attribute in the markup-view
+   *
+   * @param {String} type: A node-attribute-parser.js ATTRIBUTE_TYPES
+   * @param {String} link: A "link" as returned by the `parseAttribute` function from
+   *                 node-attribute-parser.js . This can be an actual URL, but could be
+   *                 something else (e.g. an element id).
+   */
+  _openAttributeLink(type, link) {
+    // Make container tabbable descendants not tabbable (by default).
+    this.canFocus = false;
+    this.markup.followAttributeLink(type, link);
   },
 
   /**
@@ -787,12 +815,26 @@ MarkupContainer.prototype = {
 
   /**
    * Try to put keyboard focus on the current editor.
+   *
+   * @param {Object} options
+   * @param {Boolean} options.fromMouseEvent: Set to true if this is called from a mouse event.
    */
-  focus() {
+  focus({ fromMouseEvent = false } = {}) {
     // Elements with tabindex of -1 are not focusable.
     const focusable = this.editor.elt.querySelector("[tabindex='0']");
     if (focusable) {
-      focusable.focus();
+      if (fromMouseEvent) {
+        // When focus is coming from a mouse event:
+        // - prevent :focus-visible to be applied to the element
+        // - don't scroll element into view, as this could change the horizontal scroll,
+        //   and the element is already visible since the user clicked on it.
+        Services.focus.setFocus(
+          focusable,
+          Services.focus.FLAG_NOSHOWRING | Services.focus.FLAG_NOSCROLL
+        );
+      } else {
+        focusable.focus();
+      }
     }
   },
 
@@ -834,8 +876,9 @@ MarkupContainer.prototype = {
    */
   destroy() {
     // Remove event listeners
-    this.elt.removeEventListener("mousedown", this._onMouseDown);
-    this.elt.removeEventListener("dblclick", this._onToggle);
+    if (this._eventListenersAbortController) {
+      this._eventListenersAbortController.abort();
+    }
     this.tagLine.removeEventListener("keydown", this._onKeyDown, true);
 
     if (this.markup._draggedContainer === this) {
@@ -844,10 +887,7 @@ MarkupContainer.prototype = {
 
     this.win = null;
     this.htmlElt = null;
-
-    if (this.expander) {
-      this.expander.removeEventListener("click", this._onToggle);
-    }
+    this._eventListenersAbortController = null;
 
     // Recursively destroy children containers
     let firstChild = this.children.firstChild;

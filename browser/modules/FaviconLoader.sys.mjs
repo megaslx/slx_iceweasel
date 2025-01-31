@@ -6,7 +6,6 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   DeferredTask: "resource://gre/modules/DeferredTask.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
 });
 
 const STREAM_SEGMENT_SIZE = 4096;
@@ -154,7 +153,7 @@ class FaviconLoad {
   }
 
   load() {
-    this._deferred = lazy.PromiseUtils.defer();
+    this._deferred = Promise.withResolvers();
 
     // Clear the references when we succeed or fail.
     let cleanup = () => {
@@ -189,7 +188,7 @@ class FaviconLoad {
     this.channel.cancel(Cr.NS_BINDING_ABORTED);
   }
 
-  onStartRequest(request) {}
+  onStartRequest() {}
 
   onDataAvailable(request, inputStream, offset, count) {
     this.stream.writeFrom(inputStream, count);
@@ -544,10 +543,12 @@ class IconLoader {
       this.actor.sendAsyncMessage("Link:SetIcon", {
         pageURL: iconInfo.pageUri.spec,
         originalURL: iconInfo.iconUri.spec,
-        canUseForTab: !iconInfo.isRichIcon,
         expiration: undefined,
         iconURL: iconInfo.iconUri.spec,
-        canStoreIcon: iconInfo.beforePageShow,
+        canStoreIcon:
+          iconInfo.beforePageShow && iconInfo.iconUri.schemeIs("data"),
+        beforePageShow: iconInfo.beforePageShow,
+        isRichIcon: iconInfo.isRichIcon,
       });
       return;
     }
@@ -555,7 +556,7 @@ class IconLoader {
     // Let the main process that a tab icon is possibly coming.
     this.actor.sendAsyncMessage("Link:LoadingIcon", {
       originalURL: iconInfo.iconUri.spec,
-      canUseForTab: !iconInfo.isRichIcon,
+      isRichIcon: iconInfo.isRichIcon,
     });
 
     try {
@@ -565,10 +566,11 @@ class IconLoader {
       this.actor.sendAsyncMessage("Link:SetIcon", {
         pageURL: iconInfo.pageUri.spec,
         originalURL: iconInfo.iconUri.spec,
-        canUseForTab: !iconInfo.isRichIcon,
         expiration,
         iconURL: dataURL,
         canStoreIcon,
+        beforePageShow: iconInfo.beforePageShow,
+        isRichIcon: iconInfo.isRichIcon,
       });
     } catch (e) {
       if (e.result != Cr.NS_BINDING_ABORTED) {
@@ -579,7 +581,7 @@ class IconLoader {
         // Used mainly for tests currently.
         this.actor.sendAsyncMessage("Link:SetFailedIcon", {
           originalURL: iconInfo.iconUri.spec,
-          canUseForTab: !iconInfo.isRichIcon,
+          isRichIcon: iconInfo.isRichIcon,
         });
       }
     } finally {

@@ -19,7 +19,7 @@
 /**
  * Native Win32 Application shell wrapper
  */
-class nsAppShell : public nsBaseAppShell {
+class nsAppShell final : public nsBaseAppShell {
  public:
   nsAppShell()
       : mEventWnd(nullptr),
@@ -28,6 +28,8 @@ class nsAppShell : public nsBaseAppShell {
             "nsAppShell::mLastNativeEventScheduledMutex") {}
   typedef mozilla::TimeStamp TimeStamp;
   typedef mozilla::Mutex Mutex;
+
+  static bool PrecacheEventWindow();
 
   nsresult Init();
   void DoProcessMoreGeckoEvents();
@@ -49,6 +51,9 @@ class nsAppShell : public nsBaseAppShell {
   static LRESULT CALLBACK EventWindowProc(HWND, UINT, WPARAM, LPARAM);
 
  protected:
+  static HWND StaticCreateEventWindow();
+  static HWND sPrecachedEventWnd;
+  nsresult InitEventWindow();
   HWND mEventWnd;
   bool mNativeCallbackPending;
 

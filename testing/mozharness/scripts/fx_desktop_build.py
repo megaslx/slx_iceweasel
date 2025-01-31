@@ -1,16 +1,11 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """fx_desktop_build.py.
 
 script harness to build nightly firefox within Mozilla's build environment
 and developer machines alike
-
-author: Jordan Lund
-
 """
 
 import os
@@ -51,7 +46,7 @@ class FxDesktopBuild(BuildScript, object):
                 # jobs have a minimal `hg pull`.
                 "clone_upstream_url": "https://hg.mozilla.org/mozilla-unified",
                 "repo_base": "https://hg.mozilla.org",
-                "build_resources_path": "%(upload_path)s/build_resources.json",
+                "profile_build_resources_path": "%(upload_path)s/profile_build_resources.json",
                 "nightly_promotion_branches": ["mozilla-central", "mozilla-aurora"],
                 # try will overwrite these
                 "clone_with_purge": False,

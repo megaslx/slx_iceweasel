@@ -14,6 +14,7 @@ import tempfile
 import traceback
 import zipfile
 from collections import namedtuple
+from urllib.request import urlopen
 
 import mozfile
 import mozinfo
@@ -290,7 +291,7 @@ class CrashInfo(object):
             self.remove_symbols = True
             self.logger.info("Downloading symbols from: %s" % self.symbols_path)
             # Get the symbols and write them to a temporary zipfile
-            data = six.moves.urllib.request.urlopen(self.symbols_path)
+            data = urlopen(self.symbols_path)
             with tempfile.TemporaryFile() as symbols_file:
                 symbols_file.write(data.read())
                 # extract symbols to a temporary directory (which we'll delete after
@@ -304,12 +305,22 @@ class CrashInfo(object):
         """List of tuple (path_to_dump_file, path_to_extra_file) for each dump
         file in self.dump_directory. The extra files may not exist."""
         if self._dump_files is None:
-            self._dump_files = [
-                (path, os.path.splitext(path)[0] + ".extra")
-                for path in reversed(
-                    sorted(glob.glob(os.path.join(self.dump_directory, "*.dmp")))
-                )
-            ]
+            paths = [self.dump_directory]
+            if mozinfo.isWin:
+                # Add the hard-coded paths used for minidumps recorded by
+                # Windows Error Reporting in automation
+                paths += [
+                    "C:\\error-dumps\\",
+                    "Z:\\error-dumps\\",
+                ]
+            self._dump_files = []
+            for path in paths:
+                self._dump_files += [
+                    (minidump_path, os.path.splitext(minidump_path)[0] + ".extra")
+                    for minidump_path in reversed(
+                        sorted(glob.glob(os.path.join(path, "*.dmp")))
+                    )
+                ]
             max_dumps = 10
             if len(self._dump_files) > max_dumps:
                 self.logger.warning(
@@ -376,7 +387,10 @@ class CrashInfo(object):
 
             # Fallback to the symbols server for unknown symbols on automation
             # (mostly for system libraries).
-            if "MOZ_AUTOMATION" in os.environ:
+            if (
+                "MOZ_AUTOMATION" in os.environ
+                or "MOZ_STACKWALK_SYMBOLS_SERVER" in os.environ
+            ):
                 command.append("--symbols-url=https://symbols.mozilla.org/")
 
             with tempfile.TemporaryDirectory() as json_dir:
@@ -411,21 +425,20 @@ class CrashInfo(object):
                     signature = processed_crash.get("signature")
                     pid = processed_crash.get("pid")
 
-        else:
-            if not self.stackwalk_binary:
-                errors.append(
-                    "MINIDUMP_STACKWALK not set, can't process dump. Either set "
-                    "MINIDUMP_STACKWALK or use mach bootstrap --no-system-changes "
-                    "to install minidump-stackwalk."
-                )
-            elif self.stackwalk_binary and not os.path.exists(self.stackwalk_binary):
-                errors.append(
-                    "MINIDUMP_STACKWALK binary not found: %s. Use mach bootstrap "
-                    "--no-system-changes to install minidump-stackwalk."
-                    % self.stackwalk_binary
-                )
-            elif not os.access(self.stackwalk_binary, os.X_OK):
-                errors.append("This user cannot execute the MINIDUMP_STACKWALK binary.")
+        elif not self.stackwalk_binary:
+            errors.append(
+                "MINIDUMP_STACKWALK not set, can't process dump. Either set "
+                "MINIDUMP_STACKWALK or use mach bootstrap --no-system-changes "
+                "to install minidump-stackwalk."
+            )
+        elif self.stackwalk_binary and not os.path.exists(self.stackwalk_binary):
+            errors.append(
+                "MINIDUMP_STACKWALK binary not found: %s. Use mach bootstrap "
+                "--no-system-changes to install minidump-stackwalk."
+                % self.stackwalk_binary
+            )
+        elif not os.access(self.stackwalk_binary, os.X_OK):
+            errors.append("This user cannot execute the MINIDUMP_STACKWALK binary.")
 
         if os.path.exists(extra):
             annotations = self._parse_extra_file(extra)
@@ -535,7 +548,7 @@ class CrashInfo(object):
             except OSError:
                 pass
 
-        shutil.move(path, self.dump_save_path)
+        shutil.copy(path, self.dump_save_path)
         self.logger.info(
             "Saved minidump as {}".format(
                 os.path.join(self.dump_save_path, os.path.basename(path))
@@ -543,7 +556,7 @@ class CrashInfo(object):
         )
 
         if os.path.isfile(extra):
-            shutil.move(extra, self.dump_save_path)
+            shutil.copy(extra, self.dump_save_path)
             self.logger.info(
                 "Saved app info as {}".format(
                     os.path.join(self.dump_save_path, os.path.basename(extra))
@@ -757,7 +770,6 @@ if mozinfo.isWin:
             logger.warning(
                 "kill_pid(): unable to get handle for pid %d: %d" % (pid, err)
             )
-
 
 else:
 

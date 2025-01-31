@@ -4,16 +4,15 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::convert::TryFrom;
 use std::fs;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -97,7 +96,7 @@ pub struct EventDatabase {
     /// The in-memory list of events
     event_stores: RwLock<HashMap<String, Vec<StoredEvent>>>,
     /// A lock to be held when doing operations on the filesystem
-    file_lock: RwLock<()>,
+    file_lock: Mutex<()>,
 }
 
 impl EventDatabase {
@@ -114,7 +113,7 @@ impl EventDatabase {
         Ok(Self {
             path,
             event_stores: RwLock::new(HashMap::new()),
-            file_lock: RwLock::new(()),
+            file_lock: Mutex::new(()),
         })
     }
 
@@ -188,7 +187,13 @@ impl EventDatabase {
                         ..Default::default()
                     };
                     let startup = get_iso_time_string(glean.start_time(), TimeUnit::Minute);
-                    let extra = [("glean.startup.date".into(), startup)].into();
+                    let mut extra: HashMap<String, String> =
+                        [("glean.startup.date".into(), startup)].into();
+                    if glean.with_timestamps() {
+                        let now = Utc::now();
+                        let precise_timestamp = now.timestamp_millis() as u64;
+                        extra.insert("glean_timestamp".to_string(), precise_timestamp.to_string());
+                    }
                     self.record(
                         glean,
                         &glean_restarted.into(),
@@ -215,7 +220,7 @@ impl EventDatabase {
         // a lock on `event_stores`.
         // This is a potential lock-order-inversion.
         let mut db = self.event_stores.write().unwrap(); // safe unwrap, only error case is poisoning
-        let _lock = self.file_lock.write().unwrap(); // safe unwrap, only error case is poisoning
+        let _lock = self.file_lock.lock().unwrap(); // safe unwrap, only error case is poisoning
 
         for entry in fs::read_dir(&self.path)? {
             let entry = entry?;
@@ -279,7 +284,11 @@ impl EventDatabase {
         {
             let mut db = self.event_stores.write().unwrap(); // safe unwrap, only error case is poisoning
             for store_name in meta.inner.send_in_pings.iter() {
-                let store = db.entry(store_name.to_string()).or_insert_with(Vec::new);
+                if !glean.is_ping_enabled(store_name) {
+                    continue;
+                }
+
+                let store = db.entry(store_name.to_string()).or_default();
                 let execution_counter = CounterMetric::new(CommonMetricData {
                     name: "execution_counter".into(),
                     category: store_name.into(),
@@ -321,7 +330,7 @@ impl EventDatabase {
     /// * `store_name` - The name of the store.
     /// * `event_json` - The event content, as a single-line JSON-encoded string.
     fn write_event_to_disk(&self, store_name: &str, event_json: &str) {
-        let _lock = self.file_lock.write().unwrap(); // safe unwrap, only error case is poisoning
+        let _lock = self.file_lock.lock().unwrap(); // safe unwrap, only error case is poisoning
         if let Err(err) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -450,7 +459,7 @@ impl EventDatabase {
                     .event
                     .extra
                     .as_ref()
-                    .map_or(false, |extra| extra.is_empty())
+                    .is_some_and(|extra| extra.is_empty())
                 {
                     // Small optimization to save us sending empty dicts.
                     event.event.extra = None;
@@ -571,7 +580,7 @@ impl EventDatabase {
                 .unwrap() // safe unwrap, only error case is poisoning
                 .remove(&store_name.to_string());
 
-            let _lock = self.file_lock.write().unwrap(); // safe unwrap, only error case is poisoning
+            let _lock = self.file_lock.lock().unwrap(); // safe unwrap, only error case is poisoning
             if let Err(err) = fs::remove_file(self.path.join(store_name)) {
                 match err.kind() {
                     std::io::ErrorKind::NotFound => {
@@ -591,7 +600,7 @@ impl EventDatabase {
         self.event_stores.write().unwrap().clear();
 
         // safe unwrap, only error case is poisoning
-        let _lock = self.file_lock.write().unwrap();
+        let _lock = self.file_lock.lock().unwrap();
         std::fs::remove_dir_all(&self.path)?;
         create_dir_all(&self.path)?;
 
@@ -632,8 +641,8 @@ impl EventDatabase {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::test_get_num_recorded_errors;
     use crate::tests::new_glean;
-    use crate::{test_get_num_recorded_errors, CommonMetricData};
     use chrono::{TimeZone, Timelike};
 
     #[test]
@@ -753,7 +762,7 @@ mod test {
         let (mut glean, dir) = new_glean(None);
         let db = EventDatabase::new(dir.path()).unwrap();
 
-        let test_storage = "test-storage";
+        let test_storage = "store1";
         let test_category = "category";
         let test_name = "name";
         let test_timestamp = 2;
@@ -894,7 +903,7 @@ mod test {
             },
             execution_counter: None,
         };
-        let timestamps = vec![20, 40, 200];
+        let timestamps = [20, 40, 200];
         let not_glean_restarted = StoredEvent {
             event: RecordedEvent {
                 timestamp: timestamps[0],
@@ -970,8 +979,8 @@ mod test {
 
         // This scenario represents a run of three events followed by an hour between runs,
         // followed by one final event.
-        let timestamps = vec![20, 40, 200, 12];
-        let ecs = vec![0, 1];
+        let timestamps = [20, 40, 200, 12];
+        let ecs = [0, 1];
         let some_hour = 16;
         let startup_date = FixedOffset::east(0)
             .ymd(2022, 11, 24)
@@ -1095,8 +1104,8 @@ mod test {
 
         // This scenario represents a run of two events followed by negative one hours between runs,
         // followed by two more events.
-        let timestamps = vec![20, 40, 12, 200];
-        let ecs = vec![0, 1];
+        let timestamps = [20, 40, 12, 200];
+        let ecs = [0, 1];
         let some_hour = 10;
         let startup_date = FixedOffset::east(0)
             .ymd(2022, 11, 25)

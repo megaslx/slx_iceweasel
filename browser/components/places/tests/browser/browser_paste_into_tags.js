@@ -4,8 +4,8 @@
 
 "use strict";
 
-const TEST_URL = Services.io.newURI("http://example.com/");
-const MOZURISPEC = Services.io.newURI("http://mozilla.com/");
+const TEST_URL = Services.io.newURI("https://example.com/");
+const MOZURISPEC = Services.io.newURI("https://mozilla.com/");
 
 add_task(async function () {
   let organizer = await promiseLibrary();
@@ -59,7 +59,7 @@ add_task(async function () {
 
   // check to see if the history node is tagged!
   tags = PlacesUtils.tagging.getTagsForURI(MOZURISPEC);
-  ok(tags.length == 1, "history node is tagged: " + tags.length);
+  Assert.equal(tags.length, 1, "history node is tagged: " + tags.length);
 
   // check if a bookmark was created
   let bookmarks = [];

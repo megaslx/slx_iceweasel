@@ -12,6 +12,7 @@
 #include "nsTArray.h"
 #include "nsCOMArray.h"
 
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/PFilePickerChild.h"
 #include "mozilla/dom/UnionTypes.h"
 
@@ -21,7 +22,7 @@ class nsPIDOMWindowInner;
 
 /**
   This class creates a proxy file picker to be used in content processes.
-  The file picker just collects the initialization data and when Show() is
+  The file picker just collects the initialization data and when Open() is
   called, remotes everything to the chrome process which in turn can show a
   platform specific file picker.
 */
@@ -33,8 +34,8 @@ class nsFilePickerProxy : public nsBaseFilePicker,
   NS_DECL_ISUPPORTS
 
   // nsIFilePicker (less what's in nsBaseFilePicker)
-  NS_IMETHOD Init(mozIDOMWindowProxy* aParent, const nsAString& aTitle,
-                  nsIFilePicker::Mode aMode) override;
+  NS_IMETHOD Init(mozilla::dom::BrowsingContext* aBrowsingContext,
+                  const nsAString& aTitle, nsIFilePicker::Mode aMode) override;
   NS_IMETHOD AppendFilter(const nsAString& aTitle,
                           const nsAString& aFilter) override;
   NS_IMETHOD GetCapture(nsIFilePicker::CaptureTarget* aCapture) override;
@@ -63,7 +64,6 @@ class nsFilePickerProxy : public nsBaseFilePicker,
  private:
   ~nsFilePickerProxy();
   void InitNative(nsIWidget*, const nsAString&) override;
-  nsresult Show(nsIFilePicker::ResultCode* aReturn) override;
   nsresult ResolveSpecialDirectory(const nsAString& aSpecialDirectory) override;
 
   void ActorDestroy(ActorDestroyReason aWhy) override;

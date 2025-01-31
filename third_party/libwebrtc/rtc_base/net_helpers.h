@@ -12,7 +12,7 @@
 #define RTC_BASE_NET_HELPERS_H_
 
 #if defined(WEBRTC_POSIX)
-#include <sys/socket.h>
+#include <sys/socket.h>  // IWYU pragma: export
 #elif WEBRTC_WIN
 #include <winsock2.h>  // NOLINT
 
@@ -28,9 +28,6 @@ namespace rtc {
 // the windows-native versions of these.
 const char* inet_ntop(int af, const void* src, char* dst, socklen_t size);
 int inet_pton(int af, absl::string_view src, void* dst);
-
-RTC_EXPORT bool HasIPv4Enabled();
-RTC_EXPORT bool HasIPv6Enabled();
 
 }  // namespace rtc
 

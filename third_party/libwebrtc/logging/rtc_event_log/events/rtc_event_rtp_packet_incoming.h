@@ -23,7 +23,7 @@
 #include "api/array_view.h"
 #include "api/rtc_event_log/rtc_event.h"
 #include "logging/rtc_event_log/events/logged_rtp_rtcp.h"
-#include "logging/rtc_event_log/events/rtc_event_field_encoding_parser.h"
+#include "logging/rtc_event_log/events/rtc_event_log_parse_status.h"
 #include "modules/rtp_rtcp/source/rtp_packet.h"
 
 namespace webrtc {
@@ -55,6 +55,10 @@ class RtcEventRtpPacketIncoming final : public RtcEvent {
   template <typename ExtensionTrait, typename... Args>
   bool GetExtension(Args&&... args) const {
     return packet_.GetExtension<ExtensionTrait>(std::forward<Args>(args)...);
+  }
+  template <typename ExtensionTrait>
+  rtc::ArrayView<const uint8_t> GetRawExtension() const {
+    return packet_.GetRawExtension<ExtensionTrait>();
   }
   template <typename ExtensionTrait>
   bool HasExtension() const {

@@ -64,7 +64,7 @@ def full_configuration():
 
     host - WebDriver server host.
     port -  WebDriver server port.
-    capabilites - Capabilites passed when creating the WebDriver session
+    capabilities - Capabilities passed when creating the WebDriver session
     timeout_multiplier - Multiplier for timeout values
     webdriver - Dict with keys `binary`: path to webdriver binary, and
                 `args`: Additional command line arguments passed to the webdriver
@@ -106,6 +106,43 @@ async def reset_current_session_if_necessary(caps):
             else:
                 _current_session.end()
             _current_session = None
+
+
+@pytest.fixture()
+def screen_size(session):
+    """Return the size (width/height) of the screen."""
+    return tuple(session.execute_script("""
+        return [
+            screen.width,
+            screen.height,
+        ];
+        """))
+
+
+@pytest.fixture()
+def available_screen_size(session):
+    """Return the effective available screen size (width/height).
+
+    This is size which excludes any fixed window manager elements like menu
+    bars, and the dock on MacOS.
+    """
+    return tuple(session.execute_script("""
+        return [
+            screen.availWidth,
+            screen.availHeight,
+        ];
+        """))
+
+
+@pytest.fixture()
+def minimal_screen_position(session):
+    """Return the minimal position (x/y) a window can be positioned at."""
+    return tuple(session.execute_script("""
+        return [
+            screen.availLeft,
+            screen.availTop,
+        ];
+        """))
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -200,8 +237,13 @@ def current_session():
 
 
 @pytest.fixture
+def target_platform(configuration):
+    return configuration["target_platform"]
+
+
+@pytest.fixture
 def url(server_config):
-    def url(path, protocol="http", domain="", subdomain="", query="", fragment=""):
+    def url(path, protocol="https", domain="", subdomain="", query="", fragment=""):
         domain = server_config["domains"][domain][subdomain]
         port = server_config["ports"][protocol][0]
         host = "{0}:{1}".format(domain, port)

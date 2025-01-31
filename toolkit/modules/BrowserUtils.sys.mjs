@@ -13,6 +13,68 @@ ChromeUtils.defineESModuleGetters(lazy, {
   Region: "resource://gre/modules/Region.sys.mjs",
 });
 
+ChromeUtils.defineLazyGetter(lazy, "CatManListenerManager", () => {
+  const CatManListenerManager = {
+    cachedModules: {},
+    cachedListeners: {},
+    // All 3 category manager notifications will have the category name
+    // as the `data` part of the observer notification.
+    observe(_subject, _topic, categoryName) {
+      delete this.cachedListeners[categoryName];
+    },
+    /**
+     * Fetch and parse category manager consumers for a given category name.
+     * Will use cachedListeners for the given category name if they exist.
+     */
+    getListeners(categoryName) {
+      if (Object.hasOwn(this.cachedListeners, categoryName)) {
+        return this.cachedListeners[categoryName];
+      }
+      let rv = Array.from(
+        Services.catMan.enumerateCategory(categoryName),
+        ({ data: module, value }) => {
+          try {
+            let [objName, method] = value.split(".");
+            if (!Object.hasOwn(this.cachedModules, module)) {
+              this.cachedModules[module] = ChromeUtils.importESModule(module);
+            }
+            let fn = async (...args) => {
+              try {
+                // This await doesn't do much as the caller won't await us,
+                // but means we can catch and report any exceptions.
+                await this.cachedModules[module][objName][method](...args);
+              } catch (ex) {
+                console.error(
+                  `Error in processing ${categoryName} for ${objName}`
+                );
+                console.error(ex);
+              }
+            };
+            return fn;
+          } catch (ex) {
+            console.error(
+              `Error processing category manifest for ${module}: ${value}`,
+              ex
+            );
+            return null;
+          }
+        }
+      );
+      // Remove any null entries.
+      rv = rv.filter(l => !!l);
+      this.cachedListeners[categoryName] = rv;
+      return rv;
+    },
+  };
+  Services.obs.addObserver(
+    CatManListenerManager,
+    "xpcom-category-entry-removed"
+  );
+  Services.obs.addObserver(CatManListenerManager, "xpcom-category-entry-added");
+  Services.obs.addObserver(CatManListenerManager, "xpcom-category-cleared");
+  return CatManListenerManager;
+});
+
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
   "INVALID_SHAREABLE_SCHEMES",
@@ -107,7 +169,9 @@ export var BrowserUtils = {
   canFindInPage(location) {
     return (
       !location.startsWith("about:preferences") &&
-      !location.startsWith("about:logins")
+      !location.startsWith("about:settings") &&
+      !location.startsWith("about:logins") &&
+      !location.startsWith("about:firefoxview")
     );
   },
 
@@ -156,12 +220,13 @@ export var BrowserUtils = {
   formatURIForDisplay(uri, options = {}) {
     let { showInsecureHTTP = false } = options;
     switch (uri.scheme) {
-      case "view-source":
+      case "view-source": {
         let innerURI = uri.spec.substring("view-source:".length);
         return this.formatURIStringForDisplay(innerURI, options);
+      }
       case "http":
       // Fall through.
-      case "https":
+      case "https": {
         let host = uri.displayHostPort;
         if (!showInsecureHTTP && host.startsWith("www.")) {
           host = Services.eTLD.getSchemelessSite(uri);
@@ -170,6 +235,7 @@ export var BrowserUtils = {
           return "http://" + host;
         }
         return host;
+      }
       case "about":
         return "about:" + uri.filePath;
       case "blob":
@@ -187,12 +253,13 @@ export var BrowserUtils = {
        * logic (shows just "(data)", localized). */
       case "data":
         return lazy.gLocalization.formatValueSync("browser-utils-url-data");
-      case "moz-extension":
+      case "moz-extension": {
         let policy = WebExtensionPolicy.getByURI(uri);
         return lazy.gLocalization.formatValueSync(
           "browser-utils-url-extension",
           { extension: policy?.name.trim() || uri.spec }
         );
+      }
       case "chrome":
       case "resource":
       case "jar":
@@ -363,6 +430,9 @@ export var BrowserUtils = {
 
     // Don't do anything special with right-mouse clicks.  They're probably clicks on context menu items.
 
+    // See also nsWindowWatcher::GetWindowOpenLocation in
+    // toolkit/components/windowwatcher/nsWindowWatcher.cpp
+
     var metaKey = AppConstants.platform == "macosx" ? meta : ctrl;
     if (metaKey || (middle && middleUsesTabs)) {
       return shift ? "tabshifted" : "tab";
@@ -397,6 +467,22 @@ export var BrowserUtils = {
       tempEvent = tempEvent.sourceEvent;
     }
     return aEvent;
+  },
+
+  /**
+   * Invoke all the category manager consumers of a given JS consumer.
+   * Similar to the (C++-only) NS_CreateServicesFromCategory in that it'll
+   * abstract away the actual work of invoking the modules/services.
+   * Different in that it's JS-only and will invoke methods in modules
+   * instead of using XPCOM services.
+   */
+  callModulesFromCategory(categoryName, ...args) {
+    for (let listener of lazy.CatManListenerManager.getListeners(
+      categoryName
+    )) {
+      // Note that we deliberately do not await anything here.
+      listener(...args);
+    }
   },
 
   /**
@@ -502,15 +588,31 @@ let PromoInfo = {
     enabledPref: "browser.vpn_promo.enabled",
     lazyStringSetPrefs: {
       supportedRegions: {
-        name: "browser.contentblocking.report.vpn_region",
-        default: "us,ca,nz,sg,my,gb,de,fr",
+        name: "browser.contentblocking.report.vpn_regions",
+        default:
+          "as,at,au,bd,be,bg,br,ca,ch,cl,co,cy,cz,de,dk,ee,eg,es,fi,fr,gb,gg,gr,hr,hu,id,ie,im,in,io,it,je,ke,kr,lt,lu,lv,ma,mp,mt,mx,my,ng,nl,no,nz,pl,pr,pt,ro,sa,se,sg,si,sk,sn,th,tr,tw,ua,ug,uk,um,us,vg,vi,vn,za",
       },
       disallowedRegions: {
         name: "browser.vpn_promo.disallowed_regions",
-        default: "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr,ua",
+        default: "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr",
       },
     },
-    illegalRegions: ["cn", "kp", "tm"],
+    //See https://github.com/search?q=repo%3Amozilla%2Fbedrock+VPN_EXCLUDED_COUNTRY_CODES&type=code
+    illegalRegions: [
+      "ae",
+      "by",
+      "cn",
+      "cu",
+      "iq",
+      "ir",
+      "kp",
+      "om",
+      "ru",
+      "sd",
+      "sy",
+      "tm",
+      "tr",
+    ],
   },
   [BrowserUtils.PromoType.FOCUS]: {
     enabledPref: "browser.promo.focus.enabled",

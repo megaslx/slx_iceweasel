@@ -237,7 +237,7 @@ interface Node : EventTarget {
   [CEReactions] attribute DOMString? textContent;
   [CEReactions] undefined normalize();
 
-  [CEReactions, NewObject] Node cloneNode(optional boolean deep = false);
+  [CEReactions, NewObject] Node cloneNode(optional boolean subtree = false);
   boolean isEqualNode(Node? otherNode);
   boolean isSameNode(Node? otherNode); // legacy alias of ===
 
@@ -291,7 +291,7 @@ interface Document : Node {
   [NewObject] Comment createComment(DOMString data);
   [NewObject] ProcessingInstruction createProcessingInstruction(DOMString target, DOMString data);
 
-  [CEReactions, NewObject] Node importNode(Node node, optional boolean deep = false);
+  [CEReactions, NewObject] Node importNode(Node node, optional boolean subtree = false);
   [CEReactions] Node adoptNode(Node node);
 
   [NewObject] Attr createAttribute(DOMString localName);
@@ -339,6 +339,8 @@ interface ShadowRoot : DocumentFragment {
   readonly attribute ShadowRootMode mode;
   readonly attribute boolean delegatesFocus;
   readonly attribute SlotAssignmentMode slotAssignment;
+  readonly attribute boolean clonable;
+  readonly attribute boolean serializable;
   readonly attribute Element host;
   attribute EventHandler onslotchange;
 };
@@ -396,6 +398,8 @@ dictionary ShadowRootInit {
   required ShadowRootMode mode;
   boolean delegatesFocus = false;
   SlotAssignmentMode slotAssignment = "named";
+  boolean clonable = false;
+  boolean serializable = false;
 };
 
 [Exposed=Window,

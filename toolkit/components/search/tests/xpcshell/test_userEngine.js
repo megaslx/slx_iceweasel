@@ -7,9 +7,8 @@
 
 "use strict";
 
-add_task(async function setup() {
+add_setup(async function () {
   Services.fog.initializeFOG();
-  await AddonTestUtils.promiseStartupManager();
   await Services.search.init();
 });
 

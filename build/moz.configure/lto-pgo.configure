@@ -10,6 +10,14 @@ llvm_profdata = check_prog(
     "LLVM_PROFDATA", ["llvm-profdata"], allow_missing=True, paths=clang_search_path
 )
 
+
+@depends_if(llvm_profdata)
+@checking("whether llvm-profdata supports 'order' subcommand")
+def llvm_profdata_order(profdata):
+    retcode, _, _ = get_cmd_output(profdata, "order", "--help")
+    return retcode == 0
+
+
 option(
     "--enable-profile-generate",
     env="MOZ_PROFILE_GENERATE",
@@ -18,19 +26,14 @@ option(
     help="Build a PGO instrumented binary",
 )
 
-imply_option("MOZ_PGO", depends_if("--enable-profile-generate")(lambda _: True))
+enable_profile_generate = depends_if("--enable-profile-generate")(lambda _: True)
 
-set_config(
-    "MOZ_PROFILE_GENERATE", depends_if("--enable-profile-generate")(lambda _: True)
-)
 
-set_define(
-    "MOZ_PROFILE_GENERATE", depends_if("--enable-profile-generate")(lambda _: True)
-)
+imply_option("MOZ_PGO", enable_profile_generate)
 
-add_old_configure_assignment(
-    "MOZ_PROFILE_GENERATE", 1, when="--enable-profile-generate"
-)
+set_config("MOZ_PROFILE_GENERATE", enable_profile_generate)
+
+set_define("MOZ_PROFILE_GENERATE", enable_profile_generate)
 
 option(
     "--enable-profile-use",
@@ -39,16 +42,18 @@ option(
     choices=("cross",),
     help="Use a generated profile during the build",
 )
+enable_profile_use = depends_if("--enable-profile-use")(lambda _: True)
+
+imply_option("MOZ_PGO", enable_profile_use)
+set_config("MOZ_PROFILE_USE", enable_profile_use)
+
 
 option(
     "--with-pgo-profile-path",
-    help="Path to the directory with unmerged profile data to use during the build",
+    help="Path to the directory with unmerged profile data to use during the build"
+    ", or to a merged profdata file",
     nargs=1,
 )
-
-imply_option("MOZ_PGO", depends_if("--enable-profile-use")(lambda _: True))
-
-set_config("MOZ_PROFILE_USE", depends_if("--enable-profile-use")(lambda _: True))
 
 
 @depends(
@@ -79,9 +84,47 @@ def pgo_profile_path(path, pgo_use, profdata, build_env):
 set_config("PGO_PROFILE_PATH", pgo_profile_path)
 
 
-@depends(c_compiler, pgo_profile_path, target_is_windows)
+@depends(
+    "--enable-profile-use",
+    pgo_profile_path,
+    llvm_profdata,
+    llvm_profdata_order,
+    build_environment,
+)
+def orderfile_path(profile_use, path, profdata, profdata_order, build_env):
+    if not profile_use:
+        return None
+
+    if not profdata_order:
+        return None
+
+    topobjdir = build_env.topobjdir
+
+    orderfile = os.path.join(topobjdir, "orderfile.txt")
+    check_cmd_output(profdata, "order", path, "-o", orderfile)
+    return orderfile
+
+
+pgo_temporal = c_compiler.try_compile(
+    flags=["-fprofile-generate", "-mllvm", "-pgo-temporal-instrumentation"],
+    check_msg="whether the C compiler supports temporal instrumentation",
+    when="--enable-profile-generate",
+)
+
+
+@depends(
+    c_compiler,
+    select_linker,
+    target,
+    pgo_profile_path,
+    orderfile_path,
+    target_is_windows,
+    pgo_temporal,
+)
 @imports("multiprocessing")
-def pgo_flags(compiler, profdata, target_is_windows):
+def pgo_flags(
+    compiler, linker, target, profdata, orderfile, target_is_windows, pgo_temporal
+):
     if compiler.type == "gcc":
         return namespace(
             gen_cflags=["-fprofile-generate"],
@@ -98,7 +141,30 @@ def pgo_flags(compiler, profdata, target_is_windows):
         else:
             gen_ldflags = ["-fprofile-generate"]
 
+        use_ldflags = []
+        if orderfile:
+            if compiler.type == "clang-cl":
+                use_ldflags += [
+                    "-ORDER:@" + orderfile,
+                    "/ignore:4037",  # Disable warn missing order symbol
+                ]
+            elif linker.KIND == "ld64" or (linker.KIND == "lld" and target.os == "OSX"):
+                use_ldflags += ["-Wl,-order_file", orderfile]
+            elif linker.KIND == "lld":
+                use_ldflags += [
+                    "-Wl,--symbol-ordering-file",
+                    orderfile,
+                    "-Wl,--no-warn-symbol-ordering",
+                ]
+
+        if use_ldflags:
+            log.info("Activating PGO-based orderfile")
+
         gen_cflags = [prefix + "-fprofile-generate"]
+
+        if pgo_temporal:
+            gen_cflags += ["-mllvm", "-pgo-temporal-instrumentation"]
+
         if target_is_windows:
             # native llvm-profdata.exe on Windows can't read profile data
             # if name compression is enabled (which cross-compiling enables
@@ -114,7 +180,7 @@ def pgo_flags(compiler, profdata, target_is_windows):
                 # come in via -Wbackend-plugin, so disable those too.
                 "-Wno-error=backend-plugin",
             ],
-            use_ldflags=[],
+            use_ldflags=use_ldflags,
         )
 
 
@@ -173,7 +239,7 @@ option(
 option(
     env="MOZ_LD64_KNOWN_GOOD",
     nargs=1,
-    help="Indicate that ld64 is free of symbol aliasing bugs.",
+    help="Indicate that ld64 is free of symbol aliasing bugs",
 )
 
 imply_option("MOZ_LD64_KNOWN_GOOD", depends_if("MOZ_AUTOMATION")(lambda _: True))
@@ -249,7 +315,6 @@ def lto(
 
     if (
         target.kernel == "Darwin"
-        and target.os == "OSX"
         and "cross" in values
         and select_linker.KIND == "ld64"
         and not ld64_known_good
@@ -308,8 +373,11 @@ def lto(
         # recommends this as the "generic 64-bit specific x86 processor model":
         #
         # https://github.com/llvm/llvm-project/blob/e7694f34ab6a12b8bb480cbfcb396d0a64fe965f/llvm/lib/Target/X86/X86.td#L1165-L1187
+        # https://github.com/llvm/llvm-project/blob/e7694f34ab6a12b8bb480cbfcb396d0a64fe965f/llvm/lib/Target/X86/X86.td#L1008-L1022
         if target.cpu == "x86_64":
-            ldflags.append("-mllvm:-mcpu=x86-64")
+            ldflags.append("-mllvm:-mcpu=nocona")
+            ldflags.append("-mllvm:-enable-ext-tsp-block-placement=1")
+            ldflags.append("-mllvm:-disable-auto-upgrade-debug-info")
         # We do not need special flags for arm64.  Hooray for fixed-length
         # instruction sets.
     else:
@@ -325,7 +393,7 @@ def lto(
     # (For hot functions, PGO will put a multiplier on this limit.)
     if target.os == "WINNT":
         ldflags.append("-mllvm:-import-instr-limit=10")
-    elif target.os == "OSX":
+    elif target.kernel == "Darwin":
         ldflags.append("-Wl,-mllvm,-import-instr-limit=10")
     elif c_compiler.type == "clang":
         ldflags.append("-Wl,-plugin-opt=-import-instr-limit=10")
@@ -339,7 +407,7 @@ def lto(
                 ldflags.append("-opt:ltonewpassmanager")
             if c_compiler.version >= "12.0.0":
                 ldflags.append("-mllvm:-import-hot-multiplier=30")
-        elif target.os == "OSX":
+        elif target.kernel == "Darwin":
             ldflags.append("-Wl,-mllvm,-import-hot-multiplier=30")
         else:
             if c_compiler.version < "13.0.0":
@@ -360,11 +428,19 @@ def lto(
     )
 
 
-add_old_configure_assignment("MOZ_LTO", lto.enabled)
+@depends(
+    dso_flags,
+    when=building_with_gnu_compatible_cc
+    & gcc_use_gnu_ld
+    & ~developer_options
+    & ~enable_profile_generate,
+)
+def remove_dead_symbols(dso_flags):
+    dso_flags.ldopts.append("-Wl,--gc-sections")
+
+
 set_config("MOZ_LTO", lto.enabled)
 set_define("MOZ_LTO", lto.enabled)
 set_config("MOZ_LTO_CFLAGS", lto.cflags)
 set_config("MOZ_LTO_LDFLAGS", lto.ldflags)
 set_config("MOZ_LTO_RUST_CROSS", lto.rust_lto)
-add_old_configure_assignment("MOZ_LTO_CFLAGS", lto.cflags)
-add_old_configure_assignment("MOZ_LTO_LDFLAGS", lto.ldflags)

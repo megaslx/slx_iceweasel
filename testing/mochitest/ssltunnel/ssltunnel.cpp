@@ -24,7 +24,6 @@
 #include "prenv.h"
 #include "prnetdb.h"
 #include "prtpool.h"
-#include "nsAlgorithm.h"
 #include "nss.h"
 #include "keyhi.h"
 #include "ssl.h"
@@ -38,8 +37,8 @@ using namespace mozilla::psm;
 using std::string;
 using std::vector;
 
-#define IS_DELIM(m, c) ((m)[(c) >> 3] & (1 << ((c)&7)))
-#define SET_DELIM(m, c) ((m)[(c) >> 3] |= (1 << ((c)&7)))
+#define IS_DELIM(m, c) ((m)[(c) >> 3] & (1 << ((c) & 7)))
+#define SET_DELIM(m, c) ((m)[(c) >> 3] |= (1 << ((c) & 7)))
 #define DELIM_TABLE_SIZE 32
 
 // You can set the level of logging by env var SSLTUNNEL_LOG_LEVEL=n, where n
@@ -204,8 +203,8 @@ const uint32_t MAX_THREADS = 100;
 const uint32_t DEFAULT_STACKSIZE = (512 * 1024);
 
 // global data
-string nssconfigdir;
-vector<server_info_t> servers;
+MOZ_RUNINIT string nssconfigdir;
+MOZ_RUNINIT vector<server_info_t> servers;
 PRNetAddr remote_addr;
 PRNetAddr websocket_server;
 PRThreadPool* threads = nullptr;
@@ -476,10 +475,15 @@ bool AdjustWebSocketLocation(relayBuffer& buffer, connection_info_t* ci) {
   assert(buffer.margin());
   buffer.buffertail[1] = '\0';
 
-  char* wsloc = strstr(buffer.bufferhead, "Sec-WebSocket-Location:");
-  if (!wsloc) return true;
+  char* wsloc_header = strstr(buffer.bufferhead, "Sec-WebSocket-Location:");
+  if (!wsloc_header) {
+    return true;
+  }
   // advance pointer to the start of the hostname
-  wsloc = strstr(wsloc, "ws://");
+  char* wsloc = strstr(wsloc_header, "ws://");
+  if (!wsloc) {
+    wsloc = strstr(wsloc_header, "wss://");
+  }
   if (!wsloc) return false;
   wsloc += 5;
   // find the end of the hostname
@@ -914,10 +918,10 @@ void HandleConnection(void* data) {
               buffers[s2].compact();
             }
           }
-        }                 // PR_POLL_WRITE handling
+        }  // PR_POLL_WRITE handling
         LOG_END_BLOCK();  // end the log
-      }                   // for...
-    }                     // while, poll
+      }  // for...
+    }  // while, poll
   } else
     client_error = true;
 

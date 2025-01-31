@@ -17,7 +17,6 @@
 #include "gfxPoint.h"
 #include "gfxRect.h"
 #include "mozilla/gfx/Rect.h"
-#include "nsAlgorithm.h"
 #include "nsChangeHint.h"
 #include "nsColor.h"
 #include "nsCOMPtr.h"
@@ -258,9 +257,8 @@ class SVGUtils final {
   /*
    * Returns whether the frame is transformed and what those transforms are.
    */
-  static bool IsSVGTransformed(const nsIFrame* aFrame,
-                               gfx::Matrix* aOwnTransform,
-                               gfx::Matrix* aFromParentTransform);
+  static bool GetParentSVGTransforms(const nsIFrame* aFrame,
+                                     gfx::Matrix* aFromParentTransform);
 
   /**
    * Notify the descendants of aFrame of a change to one of their ancestors
@@ -346,6 +344,12 @@ class SVGUtils final {
     // For a frame with a clip-path, if this flag is set then the result
     // will not be clipped to the bbox of the content inside the clip-path.
     eDoNotClipToBBoxOfContentInsideClipPath = 1 << 10,
+    // For some cases, e.g. when using transform-box: stroke-box, we may have
+    // the cyclical dependency if any of the elements in the subtree has
+    // non-scaling-stroke. In this case, we should break it and use
+    // transform-box:fill-box instead.
+    // https://github.com/w3c/csswg-drafts/issues/9640
+    eAvoidCycleIfNonScalingStroke = 1 << 11,
   };
   /**
    * This function in primarily for implementing the SVG DOM function getBBox()
@@ -418,6 +422,12 @@ class SVGUtils final {
                                            gfxMatrix* aUserToOuterSVG);
 
   /**
+   * We need to track whether content has non-scaling-stroke because we can't
+   * asynchronously animate it with a scaling transform.
+   */
+  static void UpdateNonScalingStrokeStateBit(nsIFrame* aFrame);
+
+  /**
    * Compute the maximum possible device space stroke extents of a path given
    * the path's device space path extents, its stroke style and its ctm.
    *
@@ -442,8 +452,7 @@ class SVGUtils final {
    * the range of valid integers.
    */
   static int32_t ClampToInt(double aVal) {
-    return NS_lround(
-        std::max(double(INT32_MIN), std::min(double(INT32_MAX), aVal)));
+    return NS_lround(std::clamp(aVal, double(INT32_MIN), double(INT32_MAX)));
   }
 
   /**
@@ -505,6 +514,13 @@ class SVGUtils final {
                : AntialiasMode::SUBPIXEL;
   }
 
+  static AntialiasMode ToAntialiasMode(StyleShapeRendering aShapeRendering) {
+    return (aShapeRendering == StyleShapeRendering::Optimizespeed ||
+            aShapeRendering == StyleShapeRendering::Crispedges)
+               ? AntialiasMode::NONE
+               : AntialiasMode::SUBPIXEL;
+  }
+
   /**
    * Render a SVG glyph.
    * @param aElement the SVG glyph element to render
@@ -534,29 +550,68 @@ class SVGUtils final {
                                const gfxMatrix& aToCanvas,
                                const nsPresContext* presContext);
 
-  struct MaskUsage {
-    bool shouldGenerateMaskLayer;
-    bool shouldGenerateClipMaskLayer;
-    bool shouldApplyClipPath;
-    bool shouldApplyBasicShapeOrPath;
-    float opacity;
+  struct MaskUsage;
+  static MaskUsage DetermineMaskUsage(const nsIFrame* aFrame,
+                                      bool aHandleOpacity);
 
-    MaskUsage()
-        : shouldGenerateMaskLayer(false),
-          shouldGenerateClipMaskLayer(false),
-          shouldApplyClipPath(false),
-          shouldApplyBasicShapeOrPath(false),
-          opacity(0.0) {}
+  struct MOZ_STACK_CLASS MaskUsage {
+    friend MaskUsage SVGUtils::DetermineMaskUsage(const nsIFrame* aFrame,
+                                                  bool aHandleOpacity);
 
-    bool shouldDoSomething() {
-      return shouldGenerateMaskLayer || shouldGenerateClipMaskLayer ||
-             shouldApplyClipPath || shouldApplyBasicShapeOrPath ||
-             opacity != 1.0;
+    bool ShouldGenerateMaskLayer() const { return mShouldGenerateMaskLayer; }
+
+    bool ShouldGenerateClipMaskLayer() const {
+      return mShouldGenerateClipMaskLayer;
     }
-  };
 
-  static void DetermineMaskUsage(const nsIFrame* aFrame, bool aHandleOpacity,
-                                 MaskUsage& aUsage);
+    bool ShouldGenerateLayer() const {
+      return mShouldGenerateMaskLayer || mShouldGenerateClipMaskLayer;
+    }
+
+    bool ShouldGenerateMask() const {
+      return mShouldGenerateMaskLayer || mShouldGenerateClipMaskLayer ||
+             !IsOpaque();
+    }
+
+    bool ShouldApplyClipPath() const { return mShouldApplyClipPath; }
+
+    bool HasSVGClip() const {
+      return mShouldGenerateClipMaskLayer || mShouldApplyClipPath;
+    }
+
+    bool ShouldApplyBasicShapeOrPath() const {
+      return mShouldApplyBasicShapeOrPath;
+    }
+
+    bool IsSimpleClipShape() const { return mIsSimpleClipShape; }
+
+    bool IsOpaque() const { return mOpacity == 1.0f; }
+
+    bool IsTransparent() const { return mOpacity == 0.0f; }
+
+    float Opacity() const { return mOpacity; }
+
+    bool UsingMaskOrClipPath() const {
+      return mShouldGenerateMaskLayer || mShouldGenerateClipMaskLayer ||
+             mShouldApplyClipPath || mShouldApplyBasicShapeOrPath;
+    }
+
+    bool ShouldDoSomething() const {
+      return mShouldGenerateMaskLayer || mShouldGenerateClipMaskLayer ||
+             mShouldApplyClipPath || mShouldApplyBasicShapeOrPath ||
+             mOpacity != 1.0f;
+    }
+
+   private:
+    MaskUsage() = default;
+
+    float mOpacity = 0.0f;
+    bool mShouldGenerateMaskLayer = false;
+    bool mShouldGenerateClipMaskLayer = false;
+    bool mShouldApplyClipPath = false;
+    bool mShouldApplyBasicShapeOrPath = false;
+    bool mIsSimpleClipShape = false;
+  };
 
   static float ComputeOpacity(const nsIFrame* aFrame, bool aHandleOpacity);
 
@@ -567,14 +622,6 @@ class SVGUtils final {
    * its usual dev pixels to SVG user units/CSS px to keep the SVG code happy.
    */
   static gfxMatrix GetCSSPxToDevPxMatrix(const nsIFrame* aNonSVGFrame);
-
-  /**
-   * It is a replacement of
-   * SVGElement::PrependLocalTransformsTo(eUserSpaceToParent).
-   * If no CSS transform is involved, they should behave exactly the same;
-   * if there are CSS transforms, this one will take them into account
-   * while SVGElement::PrependLocalTransformsTo won't.
-   */
   static gfxMatrix GetTransformMatrixInUserSpace(const nsIFrame* aFrame);
 };
 

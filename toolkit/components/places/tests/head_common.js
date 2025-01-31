@@ -41,13 +41,12 @@ ChromeUtils.defineESModuleGetters(this, {
   PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
   PlacesTransactions: "resource://gre/modules/PlacesTransactions.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
   Sqlite: "resource://gre/modules/Sqlite.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   TestUtils: "resource://testing-common/TestUtils.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(this, "SMALLPNG_DATA_URI", function () {
+ChromeUtils.defineLazyGetter(this, "SMALLPNG_DATA_URI", function () {
   return NetUtil.newURI(
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAA" +
       "AAAA6fptVAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg=="
@@ -55,7 +54,7 @@ XPCOMUtils.defineLazyGetter(this, "SMALLPNG_DATA_URI", function () {
 });
 const SMALLPNG_DATA_LEN = 67;
 
-XPCOMUtils.defineLazyGetter(this, "SMALLSVG_DATA_URI", function () {
+ChromeUtils.defineLazyGetter(this, "SMALLSVG_DATA_URI", function () {
   return NetUtil.newURI(
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5" +
       "3My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxs" +
@@ -67,7 +66,7 @@ XPCOMUtils.defineLazyGetter(this, "SMALLSVG_DATA_URI", function () {
   );
 });
 
-XPCOMUtils.defineLazyGetter(this, "PlacesFrecencyRecalculator", () => {
+ChromeUtils.defineLazyGetter(this, "PlacesFrecencyRecalculator", () => {
   return Cc["@mozilla.org/places/frecency-recalculator;1"].getService(
     Ci.nsIObserver
   ).wrappedJSObject;
@@ -170,7 +169,6 @@ function readFileData(aFile) {
   }
   return bytes;
 }
-
 /**
  * Reads the data from the named file, verifying the expected file length.
  *
@@ -188,6 +186,20 @@ function readFileOfLength(aFileName, aExpectedLength) {
 }
 
 /**
+ * Reads the data from the specified nsIFile, then returns it as data URL.
+ *
+ * @param file
+ *        The nsIFile to read from.
+ * @param mimeType
+ *        The mime type of the file content.
+ * @return Promise that retunes data URL.
+ */
+async function readFileDataAsDataURL(file, mimeType) {
+  const data = readFileData(file);
+  return PlacesTestUtils.fileDataToDataURL(data, mimeType);
+}
+
+/**
  * Returns the base64-encoded version of the given string.  This function is
  * similar to window.btoa, but is available to xpcshell tests also.
  *
@@ -201,7 +213,7 @@ function base64EncodeString(aString) {
   var stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  stream.setData(aString, aString.length);
+  stream.setByteStringData(aString);
   var encoder = Cc["@mozilla.org/scriptablebase64encoder;1"].createInstance(
     Ci.nsIScriptableBase64Encoder
   );
@@ -372,8 +384,7 @@ function promiseTopicObserved(aTopic) {
     ) {
       Services.obs.removeObserver(observe, aObsTopic);
       resolve([aObsSubject, aObsData]);
-    },
-    aTopic);
+    }, aTopic);
   });
 }
 
@@ -732,21 +743,21 @@ function sortBy(array, prop) {
  * @param [optional] forceReload
  *        Whether to enforce reloading the icon.
  */
-function setFaviconForPage(page, icon, forceReload = true) {
+async function setFaviconForPage(page, icon, forceReload = true) {
   let pageURI =
     page instanceof Ci.nsIURI ? page : NetUtil.newURI(new URL(page).href);
   let iconURI =
     icon instanceof Ci.nsIURI ? icon : NetUtil.newURI(new URL(icon).href);
-  return new Promise(resolve => {
-    PlacesUtils.favicons.setAndFetchFaviconForPage(
-      pageURI,
-      iconURI,
-      forceReload,
-      PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-      resolve,
-      Services.scriptSecurityManager.getSystemPrincipal()
-    );
-  });
+
+  let dataURL;
+  if (!forceReload) {
+    dataURL = await PlacesTestUtils.getFaviconDataURLFromDB(iconURI);
+  }
+  if (!dataURL) {
+    dataURL = await PlacesTestUtils.getFaviconDataURLFromNetwork(iconURI);
+  }
+
+  await PlacesUtils.favicons.setFaviconForPage(pageURI, iconURI, dataURL);
 }
 
 function getFaviconUrlForPage(page, width = 0) {

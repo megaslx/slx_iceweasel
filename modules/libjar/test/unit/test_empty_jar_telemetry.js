@@ -67,7 +67,7 @@ Listener.prototype = {
       do_throw(ex);
     }
   },
-  onStartRequest(request) {
+  onStartRequest() {
     this.gotStartRequest = true;
   },
   onStopRequest(request, status) {
@@ -93,12 +93,11 @@ function makeChan() {
 add_task(async function test_empty_jar_file_async() {
   var chan = makeChan();
 
-  Services.telemetry.setEventRecordingEnabled("zero_byte_load", true);
   Services.telemetry.clearEvents();
 
   await new Promise(resolve => {
     chan.asyncOpen(
-      new Listener(function (l) {
+      new Listener(function () {
         Assert.ok(chan.contentLength == 0);
         resolve();
       })
@@ -127,7 +126,6 @@ add_task(async function test_empty_jar_file_async() {
 add_task(async function test_empty_jar_file_sync() {
   var chan = makeChan();
 
-  Services.telemetry.setEventRecordingEnabled("zero_byte_load", true);
   Services.telemetry.clearEvents();
 
   await new Promise(resolve => {

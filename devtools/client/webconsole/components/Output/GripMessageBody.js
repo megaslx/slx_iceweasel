@@ -19,8 +19,7 @@ const {
 const actions = require("resource://devtools/client/webconsole/actions/index.js");
 
 loader.lazyGetter(this, "objectInspector", function () {
-  return require("resource://devtools/client/shared/components/reps/index.js")
-    .objectInspector;
+  return require("resource://devtools/client/shared/components/object-inspector/index.js");
 });
 
 loader.lazyGetter(this, "MODE", function () {
@@ -81,7 +80,7 @@ function GripMessageBody(props) {
     maybeScrollToBottom,
     setExpanded,
     customFormat,
-    onCmdCtrlClick: (node, { depth, event, focused, expanded }) => {
+    onCmdCtrlClick: node => {
       const front = objectInspector.utils.node.getFront(node);
       if (front) {
         dispatch(actions.showObjectInSidebar(front));

@@ -72,14 +72,19 @@ class MPRISServiceHandler final : public dom::MediaControlKeySource {
 
   const char* Identity() const;
   const char* DesktopEntry() const;
-  bool PressKey(dom::MediaControlKey aKey) const;
+  bool PressKey(const dom::MediaControlAction& aAction) const;
 
   void SetMediaMetadata(const dom::MediaMetadataBase& aMetadata) override;
   GVariant* GetMetadataAsGVariant() const;
 
   void SetSupportedMediaKeys(const MediaKeysArray& aSupportedKeys) override;
 
+  void SetPositionState(const Maybe<dom::PositionState>& aState) override;
+  double GetPositionSeconds() const;
+
   bool IsMediaKeySupported(dom::MediaControlKey aKey) const;
+
+  void OwnName(GDBusConnection* aConnection);
 
  private:
   ~MPRISServiceHandler();
@@ -108,6 +113,8 @@ class MPRISServiceHandler final : public dom::MediaControlKeySource {
   // A bitmask indicating what keys are enabled
   uint32_t mSupportedKeys = 0;
 
+  Maybe<dom::PositionState> mPositionState;
+
   class MPRISMetadata : public dom::MediaMetadataBase {
    public:
     MPRISMetadata() = default;
@@ -117,6 +124,7 @@ class MPRISServiceHandler final : public dom::MediaControlKeySource {
       mTitle = aMetadata.mTitle;
       mArtist = aMetadata.mArtist;
       mAlbum = aMetadata.mAlbum;
+      mUrl = aMetadata.mUrl;
       mArtwork = aMetadata.mArtwork;
     }
     void Clear() {
@@ -166,7 +174,7 @@ class MPRISServiceHandler final : public dom::MediaControlKeySource {
   static void OnBusAcquiredStatic(GDBusConnection* aConnection,
                                   const gchar* aName, gpointer aUserData);
 
-  void EmitEvent(dom::MediaControlKey aKey) const;
+  void EmitEvent(const dom::MediaControlAction& aAction) const;
 
   bool EmitMetadataChanged() const;
 
@@ -179,6 +187,12 @@ class MPRISServiceHandler final : public dom::MediaControlKeySource {
   bool EmitPropertiesChangedSignal(GVariant* aParameters) const;
 
   void ClearMetadata();
+
+  RefPtr<GCancellable> mDBusGetCancellable;
+
+  nsCString mServiceName;
+  void SetServiceName(const char* aName);
+  const char* GetServiceName();
 };
 
 }  // namespace widget

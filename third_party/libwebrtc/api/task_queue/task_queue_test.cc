@@ -9,15 +9,21 @@
  */
 #include "api/task_queue/task_queue_test.h"
 
+#include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/string_view.h"
+#include "api/ref_count.h"
 #include "api/task_queue/task_queue_base.h"
+#include "api/task_queue/task_queue_factory.h"
 #include "api/units/time_delta.h"
 #include "rtc_base/event.h"
 #include "rtc_base/ref_counter.h"
 #include "rtc_base/time_utils.h"
+#include "test/gtest.h"
 
 namespace webrtc {
 namespace {
@@ -177,14 +183,35 @@ TEST_P(TaskQueueTest, PostedUnexecutedClosureDestroyedOnTaskQueue) {
       CreateTaskQueue(factory, "PostedUnexecutedClosureDestroyedOnTaskQueue");
   TaskQueueBase* queue_ptr = queue.get();
   queue->PostTask([] { SleepFor(TimeDelta::Millis(100)); });
-  // Give the task queue a chance to start executing the first lambda.
+  //  Give the task queue a chance to start executing the first lambda.
   SleepFor(TimeDelta::Millis(10));
-  // Then ensure the next lambda (which is likely not executing yet) is
-  // destroyed in the task queue context when the queue is deleted.
-  auto cleanup = absl::Cleanup(
-      [queue_ptr] { EXPECT_EQ(queue_ptr, TaskQueueBase::Current()); });
+  rtc::Event finished;
+  //  Then ensure the next lambda (which is likely not executing yet) is
+  //  destroyed in the task queue context when the queue is deleted.
+  auto cleanup = absl::Cleanup([queue_ptr, &finished] {
+    EXPECT_EQ(queue_ptr, TaskQueueBase::Current());
+    finished.Set();
+  });
   queue->PostTask([cleanup = std::move(cleanup)] {});
   queue = nullptr;
+  finished.Wait(TimeDelta::Seconds(1));
+}
+
+TEST_P(TaskQueueTest, PostedClosureDestroyedOnTaskQueue) {
+  std::unique_ptr<webrtc::TaskQueueFactory> factory = GetParam()(nullptr);
+  auto queue = CreateTaskQueue(factory, "PostedClosureDestroyedOnTaskQueue");
+  TaskQueueBase* queue_ptr = queue.get();
+  rtc::Event finished;
+  auto cleanup = absl::Cleanup([queue_ptr, &finished] {
+    EXPECT_EQ(queue_ptr, TaskQueueBase::Current());
+    finished.Set();
+  });
+  // The cleanup task may or may not have had time to execute when the task
+  // queue is destroyed. Regardless, the task should be destroyed on the
+  // queue.
+  queue->PostTask([cleanup = std::move(cleanup)] {});
+  queue = nullptr;
+  finished.Wait(TimeDelta::Seconds(1));
 }
 
 TEST_P(TaskQueueTest, PostedExecutedClosureDestroyedOnTaskQueue) {
@@ -198,7 +225,7 @@ TEST_P(TaskQueueTest, PostedExecutedClosureDestroyedOnTaskQueue) {
                      EXPECT_EQ(queue_ptr, TaskQueueBase::Current());
                      finished.Set();
                    })] {});
-  finished.Wait(rtc::Event::kForever);
+  finished.Wait(TimeDelta::Seconds(1));
 }
 
 TEST_P(TaskQueueTest, PostAndReuse) {
@@ -247,7 +274,7 @@ TEST_P(TaskQueueTest, PostALot) {
     explicit BlockingCounter(int initial_count) : count_(initial_count) {}
 
     void DecrementCount() {
-      if (count_.DecRef() == rtc::RefCountReleaseStatus::kDroppedLastRef) {
+      if (count_.DecRef() == webrtc::RefCountReleaseStatus::kDroppedLastRef) {
         event_.Set();
       }
     }

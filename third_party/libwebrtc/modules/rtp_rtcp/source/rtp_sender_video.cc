@@ -13,41 +13,68 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <algorithm>
-#include <limits>
+#include <cstdint>
 #include <memory>
-#include <string>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/match.h"
+#include "absl/types/variant.h"
+#include "api/array_view.h"
 #include "api/crypto/frame_encryptor_interface.h"
+#include "api/field_trials_view.h"
+#include "api/make_ref_counted.h"
+#include "api/media_types.h"
 #include "api/transport/rtp/dependency_descriptor.h"
-#include "modules/remote_bitrate_estimator/test/bwe_test_logging.h"
+#include "api/units/data_rate.h"
+#include "api/units/frequency.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "api/video/encoded_image.h"
+#include "api/video/video_codec_type.h"
+#include "api/video/video_content_type.h"
+#include "api/video/video_frame_type.h"
+#include "api/video/video_layers_allocation.h"
+#include "api/video/video_rotation.h"
+#include "api/video/video_timing.h"
+#include "common_video/corruption_detection_converters.h"
+#include "common_video/corruption_detection_message.h"
+#include "common_video/frame_instrumentation_data.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/absolute_capture_time_sender.h"
-#include "modules/rtp_rtcp/source/byte_io.h"
+#include "modules/rtp_rtcp/source/corruption_detection_extension.h"
 #include "modules/rtp_rtcp/source/rtp_dependency_descriptor_extension.h"
 #include "modules/rtp_rtcp/source/rtp_descriptor_authentication.h"
 #include "modules/rtp_rtcp/source/rtp_format.h"
+#include "modules/rtp_rtcp/source/rtp_generic_frame_descriptor.h"
 #include "modules/rtp_rtcp/source/rtp_generic_frame_descriptor_extension.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "modules/rtp_rtcp/source/rtp_packet_to_send.h"
+#include "modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.h"
+#include "modules/rtp_rtcp/source/rtp_video_header.h"
 #include "modules/rtp_rtcp/source/rtp_video_layers_allocation_extension.h"
-#include "modules/rtp_rtcp/source/time_util.h"
+#include "modules/rtp_rtcp/source/video_fec_generator.h"
+#include "modules/video_coding/codecs/h264/include/h264_globals.h"
+#include "modules/video_coding/codecs/interface/common_constants.h"
+#include "modules/video_coding/codecs/vp8/include/vp8_globals.h"
+#include "modules/video_coding/codecs/vp9/include/vp9_globals.h"
+#include "rtc_base/buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/experiments/field_trial_parser.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/trace_event.h"
+#include "rtc_base/race_checker.h"
+#include "rtc_base/synchronization/mutex.h"
+#include "system_wrappers/include/ntp_time.h"
 
 namespace webrtc {
 
 namespace {
 constexpr size_t kRedForFecHeaderLength = 1;
-constexpr int64_t kMaxUnretransmittableFrameIntervalMs = 33 * 4;
-constexpr char kIncludeCaptureClockOffset[] =
-    "WebRTC-IncludeCaptureClockOffset";
+constexpr TimeDelta kMaxUnretransmittableFrameInterval =
+    TimeDelta::Millis(33 * 4);
 
 void BuildRedPayload(const RtpPacketToSend& media_packet,
                      RtpPacketToSend* red_packet) {
@@ -90,46 +117,33 @@ bool IsBaseLayer(const RTPVideoHeader& video_header) {
       // TODO(kron): Implement logic for H264 once WebRTC supports temporal
       // layers for H264.
       break;
+    case kVideoCodecH265:
+      // TODO(bugs.webrtc.org/13485): Implement logic for H265 once WebRTC
+      // supports temporal layers for H265.
+      break;
     default:
       break;
   }
   return true;
 }
 
-[[maybe_unused]] const char* FrameTypeToString(VideoFrameType frame_type) {
-  switch (frame_type) {
-    case VideoFrameType::kEmptyFrame:
-      return "empty";
-    case VideoFrameType::kVideoFrameKey:
-      return "video_key";
-    case VideoFrameType::kVideoFrameDelta:
-      return "video_delta";
-    default:
-      RTC_DCHECK_NOTREACHED();
-      return "";
-  }
-}
-
-bool IsNoopDelay(const VideoPlayoutDelay& delay) {
-  return delay.min_ms == -1 && delay.max_ms == -1;
-}
-
-absl::optional<VideoPlayoutDelay> LoadVideoPlayoutDelayOverride(
+std::optional<VideoPlayoutDelay> LoadVideoPlayoutDelayOverride(
     const FieldTrialsView* key_value_config) {
   RTC_DCHECK(key_value_config);
-  FieldTrialOptional<int> playout_delay_min_ms("min_ms", absl::nullopt);
-  FieldTrialOptional<int> playout_delay_max_ms("max_ms", absl::nullopt);
+  FieldTrialOptional<int> playout_delay_min_ms("min_ms", std::nullopt);
+  FieldTrialOptional<int> playout_delay_max_ms("max_ms", std::nullopt);
   ParseFieldTrial({&playout_delay_max_ms, &playout_delay_min_ms},
                   key_value_config->Lookup("WebRTC-ForceSendPlayoutDelay"));
   return playout_delay_max_ms && playout_delay_min_ms
-             ? absl::make_optional<VideoPlayoutDelay>(*playout_delay_min_ms,
-                                                      *playout_delay_max_ms)
-             : absl::nullopt;
+             ? std::make_optional<VideoPlayoutDelay>(
+                   TimeDelta::Millis(*playout_delay_min_ms),
+                   TimeDelta::Millis(*playout_delay_max_ms))
+             : std::nullopt;
 }
 
 // Some packets can be skipped and the stream can still be decoded. Those
 // packets are less likely to be retransmitted if they are lost.
-bool PacketWillLikelyBeRequestedForRestransmitionIfLost(
+bool PacketWillLikelyBeRequestedForRestransmissionIfLost(
     const RTPVideoHeader& video_header) {
   return IsBaseLayer(video_header) &&
          !(video_header.generic.has_value()
@@ -151,13 +165,12 @@ RTPSenderVideo::RTPSenderVideo(const Config& config)
       last_rotation_(kVideoRotation_0),
       transmit_color_space_next_frame_(false),
       send_allocation_(SendVideoLayersAllocation::kDontSend),
-      current_playout_delay_{-1, -1},
       playout_delay_pending_(false),
       forced_playout_delay_(LoadVideoPlayoutDelayOverride(config.field_trials)),
       red_payload_type_(config.red_payload_type),
       fec_type_(config.fec_type),
       fec_overhead_bytes_(config.fec_overhead_bytes),
-      packetization_overhead_bitrate_(1000, RateStatistics::kBpsScale),
+      post_encode_overhead_bitrate_(/*max_window_size=*/TimeDelta::Seconds(1)),
       frame_encryptor_(config.frame_encryptor),
       require_frame_encryption_(config.require_frame_encryption),
       generic_descriptor_auth_experiment_(!absl::StartsWith(
@@ -170,13 +183,11 @@ RTPSenderVideo::RTPSenderVideo(const Config& config)
                     this,
                     config.frame_transformer,
                     rtp_sender_->SSRC(),
-                    rtp_sender_->Csrcs(),
                     rtp_sender_->Rid(),
                     config.task_queue_factory)
               : nullptr),
-      include_capture_clock_offset_(!absl::StartsWith(
-          config.field_trials->Lookup(kIncludeCaptureClockOffset),
-          "Disabled")) {
+      enable_av1_even_split_(
+          config.field_trials->IsEnabled("WebRTC-Video-AV1EvenPayloadSizes")) {
   if (frame_transformer_delegate_)
     frame_transformer_delegate_->Init();
 }
@@ -188,7 +199,7 @@ RTPSenderVideo::~RTPSenderVideo() {
 
 void RTPSenderVideo::LogAndSendToNetwork(
     std::vector<std::unique_ptr<RtpPacketToSend>> packets,
-    size_t unpacketized_payload_size) {
+    size_t encoder_output_size) {
   {
     MutexLock lock(&stats_mutex_);
     size_t packetized_payload_size = 0;
@@ -199,10 +210,9 @@ void RTPSenderVideo::LogAndSendToNetwork(
     }
     // AV1 and H264 packetizers may produce less packetized bytes than
     // unpacketized.
-    if (packetized_payload_size >= unpacketized_payload_size) {
-      packetization_overhead_bitrate_.Update(
-          packetized_payload_size - unpacketized_payload_size,
-          clock_->TimeInMilliseconds());
+    if (packetized_payload_size >= encoder_output_size) {
+      post_encode_overhead_bitrate_.Update(
+          packetized_payload_size - encoder_output_size, clock_->CurrentTime());
     }
   }
 
@@ -227,6 +237,11 @@ size_t RTPSenderVideo::FecPacketOverhead() const {
     }
   }
   return overhead;
+}
+
+void RTPSenderVideo::SetRetransmissionSetting(int32_t retransmission_settings) {
+  RTC_DCHECK_RUNS_SERIALIZED(&send_checker_);
+  retransmission_settings_ = retransmission_settings;
 }
 
 void RTPSenderVideo::SetVideoStructure(
@@ -362,8 +377,8 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
     packet->SetExtension<VideoTimingExtension>(video_header.video_timing);
 
   // If transmitted, add to all packets; ack logic depends on this.
-  if (playout_delay_pending_) {
-    packet->SetExtension<PlayoutDelayLimits>(current_playout_delay_);
+  if (playout_delay_pending_ && current_playout_delay_.has_value()) {
+    packet->SetExtension<PlayoutDelayLimits>(*current_playout_delay_);
   }
 
   if (first_packet && video_header.absolute_capture_time.has_value()) {
@@ -434,8 +449,8 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
               video_header.generic->frame_id - dep);
         }
 
-        uint8_t spatial_bimask = 1 << video_header.generic->spatial_index;
-        generic_descriptor.SetSpatialLayersBitmask(spatial_bimask);
+        uint8_t spatial_bitmask = 1 << video_header.generic->spatial_index;
+        generic_descriptor.SetSpatialLayersBitmask(spatial_bitmask);
 
         generic_descriptor.SetTemporalLayer(
             video_header.generic->temporal_index);
@@ -455,7 +470,7 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
       first_packet &&
       send_allocation_ != SendVideoLayersAllocation::kDontSend &&
       (video_header.frame_type == VideoFrameType::kVideoFrameKey ||
-       PacketWillLikelyBeRequestedForRestransmitionIfLost(video_header))) {
+       PacketWillLikelyBeRequestedForRestransmissionIfLost(video_header))) {
     VideoLayersAllocation allocation = allocation_.value();
     allocation.resolution_and_frame_rate_is_valid =
         send_allocation_ == SendVideoLayersAllocation::kSendWithResolution;
@@ -466,32 +481,40 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
     packet->SetExtension<VideoFrameTrackingIdExtension>(
         *video_header.video_frame_tracking_id);
   }
+
+  if (last_packet && video_header.frame_instrumentation_data) {
+    std::optional<CorruptionDetectionMessage> message;
+    if (const auto* data = absl::get_if<FrameInstrumentationData>(
+            &(*video_header.frame_instrumentation_data))) {
+      message =
+          ConvertFrameInstrumentationDataToCorruptionDetectionMessage(*data);
+    } else if (const auto* sync_data =
+                   absl::get_if<FrameInstrumentationSyncData>(
+                       &(*video_header.frame_instrumentation_data))) {
+      message = ConvertFrameInstrumentationSyncDataToCorruptionDetectionMessage(
+          *sync_data);
+    } else {
+      RTC_DCHECK_NOTREACHED();
+    }
+
+    if (message.has_value()) {
+      packet->SetExtension<CorruptionDetectionExtension>(*message);
+    } else {
+      RTC_LOG(LS_WARNING) << "Failed to convert frame instrumentation data to "
+                             "corruption detection message.";
+    }
+  }
 }
 
-bool RTPSenderVideo::SendVideo(
-    int payload_type,
-    absl::optional<VideoCodecType> codec_type,
-    uint32_t rtp_timestamp,
-    int64_t capture_time_ms,
-    rtc::ArrayView<const uint8_t> payload,
-    RTPVideoHeader video_header,
-    absl::optional<int64_t> expected_retransmission_time_ms) {
-  return SendVideo(payload_type, codec_type, rtp_timestamp, capture_time_ms,
-                   payload, video_header, expected_retransmission_time_ms,
-                   /*csrcs=*/{});
-}
-
-bool RTPSenderVideo::SendVideo(
-    int payload_type,
-    absl::optional<VideoCodecType> codec_type,
-    uint32_t rtp_timestamp,
-    int64_t capture_time_ms,
-    rtc::ArrayView<const uint8_t> payload,
-    RTPVideoHeader video_header,
-    absl::optional<int64_t> expected_retransmission_time_ms,
-    std::vector<uint32_t> csrcs) {
-  TRACE_EVENT_ASYNC_STEP1("webrtc", "Video", capture_time_ms, "Send", "type",
-                          FrameTypeToString(video_header.frame_type));
+bool RTPSenderVideo::SendVideo(int payload_type,
+                               std::optional<VideoCodecType> codec_type,
+                               uint32_t rtp_timestamp,
+                               Timestamp capture_time,
+                               rtc::ArrayView<const uint8_t> payload,
+                               size_t encoder_output_size,
+                               RTPVideoHeader video_header,
+                               TimeDelta expected_retransmission_time,
+                               std::vector<uint32_t> csrcs) {
   RTC_CHECK_RUNS_SERIALIZED(&send_checker_);
 
   if (video_header.frame_type == VideoFrameType::kEmptyFrame)
@@ -511,15 +534,15 @@ bool RTPSenderVideo::SendVideo(
   }
   const uint8_t temporal_id = GetTemporalId(video_header);
   // TODO(bugs.webrtc.org/10714): retransmission_settings_ should generally be
-  // replaced by expected_retransmission_time_ms.has_value().
+  // replaced by expected_retransmission_time.IsFinite().
   const bool allow_retransmission =
-      expected_retransmission_time_ms.has_value() &&
+      expected_retransmission_time.IsFinite() &&
       AllowRetransmission(temporal_id, retransmission_settings,
-                          *expected_retransmission_time_ms);
+                          expected_retransmission_time);
 
   MaybeUpdateCurrentPlayoutDelay(video_header);
   if (video_header.frame_type == VideoFrameType::kVideoFrameKey) {
-    if (!IsNoopDelay(current_playout_delay_)) {
+    if (current_playout_delay_.has_value()) {
       // Force playout delay on key-frames, if set.
       playout_delay_pending_ = true;
     }
@@ -551,41 +574,32 @@ bool RTPSenderVideo::SendVideo(
     packet_capacity -= rtp_sender_->RtxPacketOverhead();
   }
 
-  absl::optional<Timestamp> capture_time;
-  if (capture_time_ms > 0) {
-    capture_time = Timestamp::Millis(capture_time_ms);
-  }
-
-  rtp_sender_->SetCsrcs(std::move(csrcs));
-
   std::unique_ptr<RtpPacketToSend> single_packet =
-      rtp_sender_->AllocatePacket();
+      rtp_sender_->AllocatePacket(csrcs);
   RTC_DCHECK_LE(packet_capacity, single_packet->capacity());
   single_packet->SetPayloadType(payload_type);
   single_packet->SetTimestamp(rtp_timestamp);
-  if (capture_time)
-    single_packet->set_capture_time(*capture_time);
+  if (capture_time.IsFinite())
+    single_packet->set_capture_time(capture_time);
 
   // Construct the absolute capture time extension if not provided.
   if (!video_header.absolute_capture_time.has_value() &&
-      capture_time.has_value()) {
+      capture_time.IsFinite()) {
     video_header.absolute_capture_time.emplace();
     video_header.absolute_capture_time->absolute_capture_timestamp =
         Int64MsToUQ32x32(
-            clock_->ConvertTimestampToNtpTime(*capture_time).ToMs());
-    if (include_capture_clock_offset_) {
-      video_header.absolute_capture_time->estimated_capture_clock_offset = 0;
-    }
+            clock_->ConvertTimestampToNtpTime(capture_time).ToMs());
+    video_header.absolute_capture_time->estimated_capture_clock_offset = 0;
   }
 
   // Let `absolute_capture_time_sender_` decide if the extension should be sent.
   if (video_header.absolute_capture_time.has_value()) {
     video_header.absolute_capture_time =
         absolute_capture_time_sender_.OnSendPacket(
-            AbsoluteCaptureTimeSender::GetSource(single_packet->Ssrc(),
-                                                 single_packet->Csrcs()),
+            AbsoluteCaptureTimeSender::GetSource(single_packet->Ssrc(), csrcs),
             single_packet->Timestamp(), kVideoPayloadTypeFrequency,
-            video_header.absolute_capture_time->absolute_capture_timestamp,
+            NtpTime(
+                video_header.absolute_capture_time->absolute_capture_timestamp),
             video_header.absolute_capture_time->estimated_capture_clock_offset);
   }
 
@@ -603,6 +617,8 @@ bool RTPSenderVideo::SendVideo(
     // Disable attaching dependency descriptor to delta packets (including
     // non-first packet of a key frame) when it wasn't attached to a key frame,
     // as dependency descriptor can't be usable in such case.
+    // This can also happen when the descriptor is larger than 15 bytes and
+    // two-byte header extensions are not negotiated using extmap-allow-mixed.
     RTC_LOG(LS_WARNING) << "Disable dependency descriptor because failed to "
                            "attach it to a key frame.";
     video_structure_ = nullptr;
@@ -676,8 +692,8 @@ bool RTPSenderVideo::SendVideo(
            "one is required since require_frame_encryptor is set";
   }
 
-  std::unique_ptr<RtpPacketizer> packetizer =
-      RtpPacketizer::Create(codec_type, payload, limits, video_header);
+  std::unique_ptr<RtpPacketizer> packetizer = RtpPacketizer::Create(
+      codec_type, payload, limits, video_header, enable_av1_even_split_);
 
   const size_t num_packets = packetizer->NumPackets();
 
@@ -753,7 +769,7 @@ bool RTPSenderVideo::SendVideo(
     }
   }
 
-  LogAndSendToNetwork(std::move(rtp_packets), payload.size());
+  LogAndSendToNetwork(std::move(rtp_packets), encoder_output_size);
 
   // Update details about the last sent frame.
   last_rotation_ = video_header.rotation;
@@ -767,7 +783,7 @@ bool RTPSenderVideo::SendVideo(
   }
 
   if (video_header.frame_type == VideoFrameType::kVideoFrameKey ||
-      PacketWillLikelyBeRequestedForRestransmitionIfLost(video_header)) {
+      PacketWillLikelyBeRequestedForRestransmissionIfLost(video_header)) {
     // This frame will likely be delivered, no need to populate playout
     // delay extensions until it changes again.
     playout_delay_pending_ = false;
@@ -777,47 +793,44 @@ bool RTPSenderVideo::SendVideo(
     send_allocation_ = SendVideoLayersAllocation::kDontSend;
   }
 
-  TRACE_EVENT_ASYNC_END1("webrtc", "Video", capture_time_ms, "timestamp",
-                         rtp_timestamp);
   return true;
 }
 
-bool RTPSenderVideo::SendEncodedImage(
-    int payload_type,
-    absl::optional<VideoCodecType> codec_type,
-    uint32_t rtp_timestamp,
-    const EncodedImage& encoded_image,
-    RTPVideoHeader video_header,
-    absl::optional<int64_t> expected_retransmission_time_ms) {
+bool RTPSenderVideo::SendEncodedImage(int payload_type,
+                                      std::optional<VideoCodecType> codec_type,
+                                      uint32_t rtp_timestamp,
+                                      const EncodedImage& encoded_image,
+                                      RTPVideoHeader video_header,
+                                      TimeDelta expected_retransmission_time) {
   if (frame_transformer_delegate_) {
     // The frame will be sent async once transformed.
     return frame_transformer_delegate_->TransformFrame(
         payload_type, codec_type, rtp_timestamp, encoded_image, video_header,
-        expected_retransmission_time_ms);
+        expected_retransmission_time);
   }
   return SendVideo(payload_type, codec_type, rtp_timestamp,
-                   encoded_image.capture_time_ms_, encoded_image, video_header,
-                   expected_retransmission_time_ms, rtp_sender_->Csrcs());
+                   encoded_image.CaptureTime(), encoded_image,
+                   encoded_image.size(), video_header,
+                   expected_retransmission_time, /*csrcs=*/{});
 }
 
-uint32_t RTPSenderVideo::PacketizationOverheadBps() const {
+DataRate RTPSenderVideo::PostEncodeOverhead() const {
   MutexLock lock(&stats_mutex_);
-  return packetization_overhead_bitrate_.Rate(clock_->TimeInMilliseconds())
-      .value_or(0);
+  return post_encode_overhead_bitrate_.Rate(clock_->CurrentTime())
+      .value_or(DataRate::Zero());
 }
 
 bool RTPSenderVideo::AllowRetransmission(
     uint8_t temporal_id,
     int32_t retransmission_settings,
-    int64_t expected_retransmission_time_ms) {
+    TimeDelta expected_retransmission_time) {
   if (retransmission_settings == kRetransmitOff)
     return false;
 
   MutexLock lock(&stats_mutex_);
   // Media packet storage.
   if ((retransmission_settings & kConditionallyRetransmitHigherLayers) &&
-      UpdateConditionalRetransmit(temporal_id,
-                                  expected_retransmission_time_ms)) {
+      UpdateConditionalRetransmit(temporal_id, expected_retransmission_time)) {
     retransmission_settings |= kRetransmitHigherLayers;
   }
 
@@ -850,39 +863,37 @@ uint8_t RTPSenderVideo::GetTemporalId(const RTPVideoHeader& header) {
 
 bool RTPSenderVideo::UpdateConditionalRetransmit(
     uint8_t temporal_id,
-    int64_t expected_retransmission_time_ms) {
-  int64_t now_ms = clock_->TimeInMilliseconds();
+    TimeDelta expected_retransmission_time) {
+  Timestamp now = clock_->CurrentTime();
   // Update stats for any temporal layer.
   TemporalLayerStats* current_layer_stats =
       &frame_stats_by_temporal_layer_[temporal_id];
-  current_layer_stats->frame_rate_fp1000s.Update(1, now_ms);
-  int64_t tl_frame_interval = now_ms - current_layer_stats->last_frame_time_ms;
-  current_layer_stats->last_frame_time_ms = now_ms;
+  current_layer_stats->frame_rate.Update(now);
+  TimeDelta tl_frame_interval = now - current_layer_stats->last_frame_time;
+  current_layer_stats->last_frame_time = now;
 
   // Conditional retransmit only applies to upper layers.
   if (temporal_id != kNoTemporalIdx && temporal_id > 0) {
-    if (tl_frame_interval >= kMaxUnretransmittableFrameIntervalMs) {
+    if (tl_frame_interval >= kMaxUnretransmittableFrameInterval) {
       // Too long since a retransmittable frame in this layer, enable NACK
       // protection.
       return true;
     } else {
       // Estimate when the next frame of any lower layer will be sent.
-      const int64_t kUndefined = std::numeric_limits<int64_t>::max();
-      int64_t expected_next_frame_time = kUndefined;
+      Timestamp expected_next_frame_time = Timestamp::PlusInfinity();
       for (int i = temporal_id - 1; i >= 0; --i) {
         TemporalLayerStats* stats = &frame_stats_by_temporal_layer_[i];
-        absl::optional<uint32_t> rate = stats->frame_rate_fp1000s.Rate(now_ms);
-        if (rate) {
-          int64_t tl_next = stats->last_frame_time_ms + 1000000 / *rate;
-          if (tl_next - now_ms > -expected_retransmission_time_ms &&
+        std::optional<Frequency> rate = stats->frame_rate.Rate(now);
+        if (rate > Frequency::Zero()) {
+          Timestamp tl_next = stats->last_frame_time + 1 / *rate;
+          if (tl_next - now > -expected_retransmission_time &&
               tl_next < expected_next_frame_time) {
             expected_next_frame_time = tl_next;
           }
         }
       }
 
-      if (expected_next_frame_time == kUndefined ||
-          expected_next_frame_time - now_ms > expected_retransmission_time_ms) {
+      if (expected_next_frame_time - now > expected_retransmission_time) {
         // The next frame in a lower layer is expected at a later time (or
         // unable to tell due to lack of data) than a retransmission is
         // estimated to be able to arrive, so allow this packet to be nacked.
@@ -896,47 +907,12 @@ bool RTPSenderVideo::UpdateConditionalRetransmit(
 
 void RTPSenderVideo::MaybeUpdateCurrentPlayoutDelay(
     const RTPVideoHeader& header) {
-  VideoPlayoutDelay requested_delay =
-      forced_playout_delay_.value_or(header.playout_delay);
+  std::optional<VideoPlayoutDelay> requested_delay =
+      forced_playout_delay_.has_value() ? forced_playout_delay_
+                                        : header.playout_delay;
 
-  if (IsNoopDelay(requested_delay)) {
+  if (!requested_delay.has_value()) {
     return;
-  }
-
-  if (requested_delay.min_ms > PlayoutDelayLimits::kMaxMs ||
-      requested_delay.max_ms > PlayoutDelayLimits::kMaxMs) {
-    RTC_DLOG(LS_ERROR)
-        << "Requested playout delay values out of range, ignored";
-    return;
-  }
-  if (requested_delay.max_ms != -1 &&
-      requested_delay.min_ms > requested_delay.max_ms) {
-    RTC_DLOG(LS_ERROR) << "Requested playout delay values out of order";
-    return;
-  }
-
-  if (!playout_delay_pending_) {
-    current_playout_delay_ = requested_delay;
-    playout_delay_pending_ = true;
-    return;
-  }
-
-  if ((requested_delay.min_ms == -1 ||
-       requested_delay.min_ms == current_playout_delay_.min_ms) &&
-      (requested_delay.max_ms == -1 ||
-       requested_delay.max_ms == current_playout_delay_.max_ms)) {
-    // No change, ignore.
-    return;
-  }
-
-  if (requested_delay.min_ms == -1) {
-    RTC_DCHECK_GE(requested_delay.max_ms, 0);
-    requested_delay.min_ms =
-        std::min(current_playout_delay_.min_ms, requested_delay.max_ms);
-  }
-  if (requested_delay.max_ms == -1) {
-    requested_delay.max_ms =
-        std::max(current_playout_delay_.max_ms, requested_delay.min_ms);
   }
 
   current_playout_delay_ = requested_delay;

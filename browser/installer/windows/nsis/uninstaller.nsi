@@ -55,6 +55,9 @@ Var RefreshRequested
 ; MigrateTaskBarShortcut and is not intended to be used here.
 ; See Bug 1329869 for more.
 Var AddTaskbarSC
+; Will be the registry hive that we are going to write things like class keys
+; into. This will generally be HKLM if running with elevation, otherwise HKCU.
+Var RegHive
 
 ; Other included files may depend upon these includes!
 ; The following includes are provided by NSIS.
@@ -425,6 +428,15 @@ Section "Uninstall"
   Var /GLOBAL UnusedExecCatchReturn
   ExecWait '"$INSTDIR\${FileMainEXE}" --backgroundtask uninstall' $UnusedExecCatchReturn
 
+  ; Uninstall the default browser agent scheduled task and all other scheduled
+  ; tasks registered by Firefox.
+  ; This also removes the registry entries that the WDBA creates.
+  ; One of the scheduled tasks that this will remove is the Background Update
+  ; Task. Ideally, this will eventually be changed so that it doesn't rely on
+  ; the WDBA. See Bug 1710143.
+  ExecWait '"$INSTDIR\default-browser-agent.exe" uninstall $AppUserModelID'
+  ${RemoveDefaultBrowserAgentShortcut}
+
   ; Delete the app exe to prevent launching the app while we are uninstalling.
   ClearErrors
   ${DeleteFile} "$INSTDIR\${FileMainEXE}"
@@ -466,11 +478,11 @@ Section "Uninstall"
   ClearErrors
   WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
   ${If} ${Errors}
-    StrCpy $TmpVal "HKCU" ; used primarily for logging
+    StrCpy $RegHive "HKCU"
   ${Else}
     SetShellVarContext all  ; Set SHCTX to HKLM
     DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
-    StrCpy $TmpVal "HKLM" ; used primarily for logging
+    StrCpy $RegHive "HKLM"
     ${un.RegCleanMain} "Software\Mozilla"
     ${un.RegCleanUninstall}
     ${un.DeleteShortcuts}
@@ -510,6 +522,16 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "Software\Clients\StartMenuInternet\${AppRegName}-$AppUserModelID"
   DeleteRegValue HKCU "Software\RegisteredApplications" "${AppRegName}-$AppUserModelID"
+
+  ; Clean up "launch on login" registry key for this installation.
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Mozilla-${AppName}-$AppUserModelID"
+
+  ; Remove FirefoxBridge extension protocol handlers
+  Push $1
+  ${un.GetLongPath} "$INSTDIR\${FileMainEXE}" $1
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox-bridge"
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox-private-bridge"
+  Pop $1
 
   ; Remove old protocol handler and StartMenuInternet keys without install path
   ; hashes, but only if they're for this installation.  We've never supported
@@ -644,15 +666,6 @@ Section "Uninstall"
     DeleteRegKey HKCU "Software\Classes\CLSID\$0"
   ${EndIf}
 
-  ; Uninstall the default browser agent scheduled task and all other scheduled
-  ; tasks registered by Firefox.
-  ; This also removes the registry entries that the WDBA creates.
-  ; One of the scheduled tasks that this will remove is the Background Update
-  ; Task. Ideally, this will eventually be changed so that it doesn't rely on
-  ; the WDBA. See Bug 1710143.
-  ExecWait '"$INSTDIR\default-browser-agent.exe" uninstall $AppUserModelID'
-  ${RemoveDefaultBrowserAgentShortcut}
-
   ${un.RemovePrecompleteEntries} "false"
 
   ${If} ${FileExists} "$INSTDIR\defaults\pref\channel-prefs.js"
@@ -675,9 +688,6 @@ Section "Uninstall"
   ${EndIf}
   ${If} ${FileExists} "$INSTDIR\postSigningData"
     Delete /REBOOTOK "$INSTDIR\postSigningData"
-  ${EndIf}
-  ${If} ${FileExists} "$INSTDIR\zoneIdProvenanceData"
-    Delete /REBOOTOK "$INSTDIR\zoneIdProvenanceData"
   ${EndIf}
 
   ; Explicitly remove empty webapprt dir in case it exists (bug 757978).

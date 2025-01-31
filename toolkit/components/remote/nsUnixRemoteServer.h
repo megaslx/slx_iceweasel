@@ -9,11 +9,12 @@
 #define __nsUnixRemoteServer_h__
 
 #include "nsStringFwd.h"
+#include "mozilla/Span.h"
 
 #ifdef IS_BIG_ENDIAN
-#  define TO_LITTLE_ENDIAN32(x)                           \
-    ((((x)&0xff000000) >> 24) | (((x)&0x00ff0000) >> 8) | \
-     (((x)&0x0000ff00) << 8) | (((x)&0x000000ff) << 24))
+#  define TO_LITTLE_ENDIAN32(x)                               \
+    ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >> 8) | \
+     (((x) & 0x0000ff00) << 8) | (((x) & 0x000000ff) << 24))
 #else
 #  define TO_LITTLE_ENDIAN32(x) (x)
 #endif
@@ -22,7 +23,8 @@ class nsUnixRemoteServer {
  protected:
   void SetStartupTokenOrTimestamp(const nsACString& aStartupToken,
                                   uint32_t aTimestamp);
-  const char* HandleCommandLine(const char* aBuffer, uint32_t aTimestamp);
+  const char* HandleCommandLine(mozilla::Span<const char> aBuffer,
+                                uint32_t aTimestamp);
 };
 
 #endif  // __nsGTKRemoteService_h__

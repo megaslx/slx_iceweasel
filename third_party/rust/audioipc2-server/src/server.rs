@@ -13,9 +13,10 @@ use audioipc::messages::{
 };
 use audioipc::shm::SharedMem;
 use audioipc::{ipccore, rpccore, sys, PlatformHandle};
+use cubeb::InputProcessingParams;
 use cubeb_core as cubeb;
 use cubeb_core::ffi;
-use std::convert::{From, TryInto};
+use std::convert::TryInto;
 use std::ffi::CStr;
 use std::mem::size_of;
 use std::os::raw::{c_long, c_void};
@@ -154,16 +155,15 @@ struct CubebContextState {
     context: cubeb::Result<cubeb::Context>,
 }
 
-thread_local!(static CONTEXT_KEY: RefCell<Option<CubebContextState>> = RefCell::new(None));
+thread_local!(static CONTEXT_KEY: RefCell<Option<CubebContextState>> = const { RefCell::new(None) });
 
 fn cubeb_init_from_context_params() -> cubeb::Result<cubeb::Context> {
     let params = super::G_CUBEB_CONTEXT_PARAMS.lock().unwrap();
     let context_name = Some(params.context_name.as_c_str());
     let backend_name = params.backend_name.as_deref();
     let r = cubeb::Context::init(context_name, backend_name);
-    r.map_err(|e| {
+    r.inspect_err(|e| {
         info!("cubeb::Context::init failed r={:?}", e);
-        e
     })
 }
 
@@ -258,6 +258,11 @@ impl ServerStreamCallbacks {
                 self.shm.get_size()
             );
             return cubeb::ffi::CUBEB_ERROR.try_into().unwrap();
+        }
+
+        if nframes == 0 {
+            // Optimization: skip the RPC call when there are no frames.
+            return 0;
         }
 
         let r = self.data_callback_rpc.call(CallbackReq::Data {
@@ -509,6 +514,11 @@ impl CubebServer {
                 .map(ClientMessage::ContextPreferredSampleRate)
                 .unwrap_or_else(error),
 
+            ServerMessage::ContextGetSupportedInputProcessingParams => context
+                .supported_input_processing_params()
+                .map(|params| ClientMessage::ContextSupportedInputProcessingParams(params.bits()))
+                .unwrap_or_else(error),
+
             ServerMessage::ContextGetDeviceEnumeration(device_type) => context
                 .enumerate_devices(cubeb::DeviceType::from_bits_truncate(device_type))
                 .map(|devices| {
@@ -584,6 +594,18 @@ impl CubebServer {
                 .current_device()
                 .map(|device| ClientMessage::StreamCurrentDevice(Device::from(device)))
                 .unwrap_or_else(error),
+
+            ServerMessage::StreamSetInputMute(stm_tok, mute) => try_stream!(self, stm_tok)
+                .set_input_mute(mute)
+                .map(|_| ClientMessage::StreamInputMuteSet)
+                .unwrap_or_else(error),
+
+            ServerMessage::StreamSetInputProcessingParams(stm_tok, params) => {
+                try_stream!(self, stm_tok)
+                    .set_input_processing_params(InputProcessingParams::from_bits_truncate(params))
+                    .map(|_| ClientMessage::StreamInputProcessingParamsSet)
+                    .unwrap_or_else(error)
+            }
 
             ServerMessage::StreamRegisterDeviceChangeCallback(stm_tok, enable) => {
                 try_stream!(self, stm_tok)

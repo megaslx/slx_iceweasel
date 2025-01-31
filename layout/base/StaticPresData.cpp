@@ -117,7 +117,7 @@ void LangGroupFontPrefs::Initialize(nsStaticAtom* aLangGroupAtom) {
     &mDefaultSystemUiFont,
   };
   // clang-format on
-  static_assert(MOZ_ARRAY_LENGTH(fontTypes) == size_t(DefaultFont::COUNT),
+  static_assert(std::size(fontTypes) == size_t(DefaultFont::COUNT),
                 "FontTypes array count is not correct");
 
   // Get attributes specific to each generic font. We do not get the user's
@@ -188,7 +188,7 @@ void LangGroupFontPrefs::Initialize(nsStaticAtom* aLangGroupAtom) {
     Preferences::GetCString(pref.get(), cvalue);
     if (!cvalue.IsEmpty()) {
       font->sizeAdjust =
-          StyleFontSizeAdjust::ExHeight((float)atof(cvalue.get()));
+          StyleFontSizeAdjust::ExHeight(float(atof(cvalue.get())));
     }
 
 #ifdef DEBUG_rbs

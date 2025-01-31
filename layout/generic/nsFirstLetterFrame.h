@@ -9,43 +9,39 @@
 
 /* rendering object for CSS :first-letter pseudo-element */
 
-#include "mozilla/Attributes.h"
 #include "nsContainerFrame.h"
 
-class nsFirstLetterFrame final : public nsContainerFrame {
+class nsFirstLetterFrame : public nsContainerFrame {
  public:
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS(nsFirstLetterFrame)
 
-  explicit nsFirstLetterFrame(ComputedStyle* aStyle,
-                              nsPresContext* aPresContext)
+  nsFirstLetterFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
+                     ClassID aClassID)
+      : nsContainerFrame(aStyle, aPresContext, aClassID) {}
+
+  nsFirstLetterFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
       : nsContainerFrame(aStyle, aPresContext, kClassID) {}
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) final;
 
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
-  void SetInitialChildList(ChildListID aListID,
-                           nsFrameList&& aChildList) override;
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) final;
+  void SetInitialChildList(ChildListID aListID, nsFrameList&& aChildList) final;
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const final;
 #endif
 
   bool IsFloating() const { return HasAnyStateBits(NS_FRAME_OUT_OF_FLOW); }
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    if (!IsFloating()) aFlags = aFlags & ~(nsIFrame::eLineParticipant);
-    return nsContainerFrame::IsFrameOfType(aFlags &
-                                           ~(nsIFrame::eBidiInlineContainer));
-  }
+  nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                         mozilla::IntrinsicISizeType aType) final;
 
-  virtual nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetPrefISize(gfxContext* aRenderingContext) override;
-  virtual void AddInlineMinISize(gfxContext* aRenderingContext,
-                                 InlineMinISizeData* aData) override;
-  virtual void AddInlinePrefISize(gfxContext* aRenderingContext,
-                                  InlinePrefISizeData* aData) override;
+  void AddInlineMinISize(const mozilla::IntrinsicSizeInput& aInput,
+                         InlineMinISizeData* aData) final;
+  void AddInlinePrefISize(const mozilla::IntrinsicSizeInput& aInput,
+                          InlinePrefISizeData* aData) final;
 
   SizeComputationResult ComputeSize(
       gfxContext* aRenderingContext, mozilla::WritingMode aWM,
@@ -53,22 +49,21 @@ class nsFirstLetterFrame final : public nsContainerFrame {
       const mozilla::LogicalSize& aMargin,
       const mozilla::LogicalSize& aBorderPadding,
       const mozilla::StyleSizeOverrides& aSizeOverrides,
-      mozilla::ComputeSizeFlags aFlags) override;
+      mozilla::ComputeSizeFlags aFlags) final;
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
+              const ReflowInput& aReflowInput, nsReflowStatus& aStatus) final;
 
-  virtual bool CanContinueTextRun() const override;
-  Maybe<nscoord> GetNaturalBaselineBOffset(
-      mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
-      BaselineExportContext) const override;
-  virtual LogicalSides GetLogicalSkipSides() const override;
+  bool CanContinueTextRun() const final;
+  Maybe<nscoord> GetNaturalBaselineBOffset(mozilla::WritingMode aWM,
+                                           BaselineSharingGroup aBaselineGroup,
+                                           BaselineExportContext) const final;
+  LogicalSides GetLogicalSkipSides() const final;
 
-  // override of nsFrame method
-  virtual nsresult GetChildFrameContainingOffset(
-      int32_t inContentOffset, bool inHint, int32_t* outFrameContentOffset,
-      nsIFrame** outChildFrame) override;
+  // final of nsFrame method
+  nsresult GetChildFrameContainingOffset(int32_t inContentOffset, bool inHint,
+                                         int32_t* outFrameContentOffset,
+                                         nsIFrame** outChildFrame) final;
 
   nscoord GetFirstLetterBaseline() const { return mBaseline; }
 
@@ -80,6 +75,12 @@ class nsFirstLetterFrame final : public nsContainerFrame {
                                            nsIFrame** aContinuation,
                                            bool aIsFluid);
 
+  // Create a new continuation for the first-letter frame (to hold text that
+  // is not part of the first-letter range), and move any frames after aFrame
+  // to it; if there are none, create a new text continuation there instead.
+  // Returns the first text frame of the new continuation.
+  nsTextFrame* CreateContinuationForFramesAfter(nsTextFrame* aFrame);
+
   // Whether to use tight glyph bounds for a floating first-letter frame,
   // or "loose" bounds based on font metrics rather than individual glyphs.
   bool UseTightBounds() const;
@@ -88,6 +89,15 @@ class nsFirstLetterFrame final : public nsContainerFrame {
   nscoord mBaseline;
 
   void DrainOverflowFrames(nsPresContext* aPresContext);
+};
+
+class nsFloatingFirstLetterFrame : public nsFirstLetterFrame {
+ public:
+  NS_DECL_QUERYFRAME
+  NS_DECL_FRAMEARENA_HELPERS(nsFloatingFirstLetterFrame)
+
+  nsFloatingFirstLetterFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
+      : nsFirstLetterFrame(aStyle, aPresContext, kClassID) {}
 };
 
 #endif /* nsFirstLetterFrame_h__ */

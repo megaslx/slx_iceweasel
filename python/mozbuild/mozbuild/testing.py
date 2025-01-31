@@ -41,18 +41,13 @@ TEST_MANIFESTS = dict(
     FIREFOX_UI_FUNCTIONAL=("firefox-ui-functional", "firefox-ui", ".", False),
     FIREFOX_UI_UPDATE=("firefox-ui-update", "firefox-ui", ".", False),
     PYTHON_UNITTEST=("python", "python", ".", False),
-    CRAMTEST=("cram", "cram", ".", False),
     TELEMETRY_TESTS_CLIENT=(
         "telemetry-tests-client",
         "toolkit/components/telemetry/tests/marionette/",
         ".",
         False,
     ),
-    # marionette tests are run from the srcdir
-    # TODO(ato): make packaging work as for other test suites
     MARIONETTE=("marionette", "marionette", ".", False),
-    MARIONETTE_UNIT=("marionette", "marionette", ".", False),
-    MARIONETTE_WEBAPI=("marionette", "marionette", ".", False),
     MOCHITEST=("mochitest", "testing/mochitest", "tests", True),
     MOCHITEST_CHROME=("chrome", "testing/mochitest", "chrome", True),
     WEBRTC_SIGNALLING_TEST=("steeplechase", "steeplechase", ".", True),
@@ -124,7 +119,6 @@ class SupportFilesConverter(object):
         for field, seen in self._fields:
             value = test.get(field, "")
             for pattern in value.split():
-
                 # We track uniqueness locally (per test) where duplicates are forbidden,
                 # and globally, where they are permitted. If a support file appears multiple
                 # times for a single test, there are unnecessary entries in the manifest. But

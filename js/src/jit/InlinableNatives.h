@@ -9,6 +9,14 @@
 
 #include <stdint.h>  // For uint16_t
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+#  define INLINABLE_EXPLICIT_RESOURCE_MANAGEMENENT_LIST(_) \
+    _(IntrinsicGuardToAsyncDisposableStack)                \
+    _(IntrinsicGuardToDisposableStack)
+#else
+#  define INLINABLE_EXPLICIT_RESOURCE_MANAGEMENENT_LIST(_)
+#endif
+
 #ifdef FUZZING_JS_FUZZILLI
 #  define INLINABLE_NATIVE_FUZZILLI_LIST(_) _(FuzzilliHash)
 #else
@@ -34,7 +42,9 @@
   _(AtomicsOr)                                     \
   _(AtomicsXor)                                    \
   _(AtomicsIsLockFree)                             \
+  _(AtomicsPause)                                  \
                                                    \
+  _(BigInt)                                        \
   _(BigIntAsIntN)                                  \
   _(BigIntAsUintN)                                 \
                                                    \
@@ -46,6 +56,7 @@
   _(DataViewGetUint16)                             \
   _(DataViewGetInt32)                              \
   _(DataViewGetUint32)                             \
+  _(DataViewGetFloat16)                            \
   _(DataViewGetFloat32)                            \
   _(DataViewGetFloat64)                            \
   _(DataViewGetBigInt64)                           \
@@ -56,23 +67,40 @@
   _(DataViewSetUint16)                             \
   _(DataViewSetInt32)                              \
   _(DataViewSetUint32)                             \
+  _(DataViewSetFloat16)                            \
   _(DataViewSetFloat32)                            \
   _(DataViewSetFloat64)                            \
   _(DataViewSetBigInt64)                           \
   _(DataViewSetBigUint64)                          \
+                                                   \
+  _(DateGetTime)                                   \
+  _(DateGetFullYear)                               \
+  _(DateGetMonth)                                  \
+  _(DateGetDate)                                   \
+  _(DateGetDay)                                    \
+  _(DateGetHours)                                  \
+  _(DateGetMinutes)                                \
+  _(DateGetSeconds)                                \
                                                    \
   _(FunctionBind)                                  \
                                                    \
   _(IntlGuardToCollator)                           \
   _(IntlGuardToDateTimeFormat)                     \
   _(IntlGuardToDisplayNames)                       \
+  _(IntlGuardToDurationFormat)                     \
   _(IntlGuardToListFormat)                         \
   _(IntlGuardToNumberFormat)                       \
   _(IntlGuardToPluralRules)                        \
   _(IntlGuardToRelativeTimeFormat)                 \
+  _(IntlGuardToSegmenter)                          \
+  _(IntlGuardToSegments)                           \
+  _(IntlGuardToSegmentIterator)                    \
                                                    \
+  _(MapConstructor)                                \
+  _(MapDelete)                                     \
   _(MapGet)                                        \
   _(MapHas)                                        \
+  _(MapSet)                                        \
                                                    \
   _(MathAbs)                                       \
   _(MathFloor)                                     \
@@ -88,6 +116,7 @@
   _(MathRandom)                                    \
   _(MathImul)                                      \
   _(MathFRound)                                    \
+  _(MathF16Round)                                  \
   _(MathSin)                                       \
   _(MathTan)                                       \
   _(MathCos)                                       \
@@ -118,26 +147,39 @@
                                                    \
   _(RegExpMatcher)                                 \
   _(RegExpSearcher)                                \
+  _(RegExpSearcherLastLimit)                       \
+  _(RegExpHasCaptureGroups)                        \
   _(IsRegExpObject)                                \
   _(IsPossiblyWrappedRegExpObject)                 \
   _(RegExpPrototypeOptimizable)                    \
   _(RegExpInstanceOptimizable)                     \
   _(GetFirstDollarIndex)                           \
                                                    \
+  _(SetConstructor)                                \
+  _(SetDelete)                                     \
   _(SetHas)                                        \
+  _(SetAdd)                                        \
+  _(SetSize)                                       \
                                                    \
   _(String)                                        \
   _(StringToString)                                \
   _(StringValueOf)                                 \
   _(StringCharCodeAt)                              \
+  _(StringCodePointAt)                             \
   _(StringFromCharCode)                            \
   _(StringFromCodePoint)                           \
   _(StringCharAt)                                  \
+  _(StringAt)                                      \
+  _(StringIncludes)                                \
   _(StringIndexOf)                                 \
+  _(StringLastIndexOf)                             \
   _(StringStartsWith)                              \
   _(StringEndsWith)                                \
   _(StringToLowerCase)                             \
   _(StringToUpperCase)                             \
+  _(StringTrim)                                    \
+  _(StringTrimStart)                               \
+  _(StringTrimEnd)                                 \
                                                    \
   _(IntrinsicStringReplaceString)                  \
   _(IntrinsicStringSplitString)                    \
@@ -146,6 +188,7 @@
   _(ObjectCreate)                                  \
   _(ObjectIs)                                      \
   _(ObjectIsPrototypeOf)                           \
+  _(ObjectKeys)                                    \
   _(ObjectToString)                                \
                                                    \
   _(TestBailout)                                   \
@@ -203,6 +246,7 @@
   _(IntrinsicIsTypedArray)                         \
   _(IntrinsicIsPossiblyWrappedTypedArray)          \
   _(IntrinsicTypedArrayLength)                     \
+  _(IntrinsicTypedArrayLengthZeroOnOutOfBounds)    \
   _(IntrinsicPossiblyWrappedTypedArrayLength)      \
   _(IntrinsicRegExpBuiltinExec)                    \
   _(IntrinsicRegExpBuiltinExecForTest)             \
@@ -211,6 +255,9 @@
   _(IntrinsicTypedArrayByteOffset)                 \
   _(IntrinsicTypedArrayElementSize)                \
                                                    \
+  _(IntrinsicThisTimeValue)                        \
+                                                   \
+  INLINABLE_EXPLICIT_RESOURCE_MANAGEMENENT_LIST(_) \
   INLINABLE_NATIVE_FUZZILLI_LIST(_)
 
 struct JSClass;

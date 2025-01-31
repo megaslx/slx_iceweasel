@@ -100,15 +100,13 @@ class MakeBackend(CommonBackend):
                         ret.append("%s: %s" % (tier, stub_file))
             for output in outputs:
                 ret.append("%s: %s ;" % (output, stub_file))
-                ret.append("GARBAGE += %s" % output)
-            ret.append("GARBAGE += %s" % stub_file)  				
             ret.append("EXTRA_MDDEPEND_FILES += %s" % dep_file)
 
             ret.append(
                 (
                     """{stub}: {script}{inputs}{backend}{force}
 \t$(REPORT_BUILD)
-\t$(call py_action,file_generate,{locale}{script} """  # wrap for E501
+\t$(call py_action,file_generate {output},{locale}{script} """  # wrap for E501
                     """{method} {output} {dep_file} {stub}{inputs}{flags})
 \t@$(TOUCH) $@
 """
@@ -117,9 +115,11 @@ class MakeBackend(CommonBackend):
                     output=first_output,
                     dep_file=dep_file,
                     inputs=" " + " ".join(inputs) if inputs else "",
-                    flags=" " + " ".join(shell_quote(f) for f in obj.flags)
-                    if obj.flags
-                    else "",
+                    flags=(
+                        " " + " ".join(shell_quote(f) for f in obj.flags)
+                        if obj.flags
+                        else ""
+                    ),
                     backend=" " + extra_dependencies if extra_dependencies else "",
                     # Locale repacks repack multiple locales from a single configured objdir,
                     # so standard mtime dependencies won't work properly when the build is re-run

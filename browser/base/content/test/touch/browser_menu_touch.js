@@ -111,9 +111,9 @@ async function openAndCheckCustomizationUIMenu(target) {
   menu.hidePopup();
 }
 
-// Ensure that we can run touch events properly for windows [10]
+// Ensure that we can run touch events properly for windows
 add_setup(async function () {
-  let isWindows = AppConstants.isPlatformAndVersionAtLeast("win", "10.0");
+  let isWindows = AppConstants.platform == "win";
   await SpecialPowers.pushPrefEnv({
     set: [["apz.test.fails_with_native_injection", isWindows]],
   });
@@ -186,13 +186,6 @@ add_task(async function test_overflow_panel_touch() {
 
 // Test the list all tabs menu.
 add_task(async function test_list_all_tabs_touch() {
-  // Force the menu button to be shown.
-  let tabs = document.getElementById("tabbrowser-tabs");
-  if (!tabs.hasAttribute("overflow")) {
-    tabs.setAttribute("overflow", true);
-    registerCleanupFunction(() => tabs.removeAttribute("overflow"));
-  }
-
   let target = document.getElementById("alltabs-button");
   await openAndCheckCustomizationUIMenu(target);
 });

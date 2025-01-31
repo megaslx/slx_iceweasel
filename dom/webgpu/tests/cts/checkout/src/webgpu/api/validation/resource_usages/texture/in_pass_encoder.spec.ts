@@ -5,24 +5,31 @@ Texture Usages Validation Tests in Render Pass and Compute Pass.
 import { makeTestGroup } from '../../../../../common/framework/test_group.js';
 import { pp } from '../../../../../common/util/preprocessor.js';
 import { assert } from '../../../../../common/util/util.js';
+import { GPUConst } from '../../../../constants.js';
 import {
   kDepthStencilFormats,
   kDepthStencilFormatResolvedAspect,
   kTextureFormatInfo,
-} from '../../../../capability_info.js';
-import { GPUConst } from '../../../../constants.js';
+} from '../../../../format_info.js';
 import { ValidationTest } from '../../validation_test.js';
 
-type TextureBindingType = 'sampled-texture' | 'multisampled-texture' | 'writeonly-storage-texture';
+type TextureBindingType =
+  | 'sampled-texture'
+  | 'multisampled-texture'
+  | 'writeonly-storage-texture'
+  | 'readonly-storage-texture'
+  | 'readwrite-storage-texture';
 const kTextureBindingTypes = [
   'sampled-texture',
   'multisampled-texture',
   'writeonly-storage-texture',
+  'readonly-storage-texture',
+  'readwrite-storage-texture',
 ] as const;
 
 const SIZE = 32;
 class TextureUsageTracking extends ValidationTest {
-  createTexture(
+  createTestTexture(
     options: {
       width?: number;
       height?: number;
@@ -39,11 +46,11 @@ class TextureUsageTracking extends ValidationTest {
       arrayLayerCount = 1,
       mipLevelCount = 1,
       sampleCount = 1,
-      format = 'rgba8unorm',
+      format = 'r32float',
       usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     } = options;
 
-    return this.device.createTexture({
+    return this.createTextureTracked({
       size: { width, height, depthOrArrayLayers: arrayLayerCount },
       mipLevelCount,
       sampleCount,
@@ -74,6 +81,14 @@ class TextureUsageTracking extends ValidationTest {
       case 'writeonly-storage-texture':
         assert(format !== undefined);
         entry = { storageTexture: { access: 'write-only', format, viewDimension } };
+        break;
+      case 'readonly-storage-texture':
+        assert(format !== undefined);
+        entry = { storageTexture: { access: 'read-only', format, viewDimension } };
+        break;
+      case 'readwrite-storage-texture':
+        assert(format !== undefined);
+        entry = { storageTexture: { access: 'read-write', format, viewDimension } };
         break;
     }
 
@@ -107,7 +122,7 @@ class TextureUsageTracking extends ValidationTest {
     depthStencilFormat?: GPUTextureFormat
   ) {
     const bundleEncoder = this.device.createRenderBundleEncoder({
-      colorFormats: ['rgba8unorm'],
+      colorFormats: ['r32float'],
       depthStencilFormat,
     });
     bundleEncoder.setBindGroup(binding, bindGroup);
@@ -129,16 +144,21 @@ class TextureUsageTracking extends ValidationTest {
   }
 
   /**
-   * Create two bind groups. Resource usages conflict between these two bind groups. But resource
-   * usage inside each bind group doesn't conflict.
+   * Create two bind groups with one texture view.
    */
-  makeConflictingBindGroups() {
-    const view = this.createTexture({
+  makeTwoBindGroupsWithOneTextureView(usage1: TextureBindingType, usage2: TextureBindingType) {
+    const view = this.createTestTexture({
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }).createView();
     const bindGroupLayouts = [
-      this.createBindGroupLayout(0, 'sampled-texture', '2d'),
-      this.createBindGroupLayout(0, 'writeonly-storage-texture', '2d', { format: 'rgba8unorm' }),
+      this.createBindGroupLayout(0, usage1, '2d', {
+        sampleType: 'unfilterable-float',
+        format: 'r32float',
+      }),
+      this.createBindGroupLayout(0, usage2, '2d', {
+        sampleType: 'unfilterable-float',
+        format: 'r32float',
+      }),
     ];
     return {
       bindGroupLayouts,
@@ -156,7 +176,9 @@ class TextureUsageTracking extends ValidationTest {
   }
 
   testValidationScope(
-    compute: boolean
+    compute: boolean,
+    usage1: TextureBindingType,
+    usage2: TextureBindingType
   ): {
     bindGroup0: GPUBindGroup;
     bindGroup1: GPUBindGroup;
@@ -164,12 +186,15 @@ class TextureUsageTracking extends ValidationTest {
     pass: GPURenderPassEncoder | GPUComputePassEncoder;
     pipeline: GPURenderPipeline | GPUComputePipeline;
   } {
-    const { bindGroupLayouts, bindGroups } = this.makeConflictingBindGroups();
+    const { bindGroupLayouts, bindGroups } = this.makeTwoBindGroupsWithOneTextureView(
+      usage1,
+      usage2
+    );
 
     const encoder = this.device.createCommandEncoder();
     const pass = compute
       ? encoder.beginComputePass()
-      : this.beginSimpleRenderPass(encoder, this.createTexture().createView());
+      : this.beginSimpleRenderPass(encoder, this.createTestTexture().createView());
 
     // Create pipeline. Note that bindings unused in pipeline should be validated too.
     const pipelineLayout = this.device.createPipelineLayout({
@@ -177,7 +202,7 @@ class TextureUsageTracking extends ValidationTest {
     });
     const pipeline = compute
       ? this.createNoOpComputePipeline(pipelineLayout)
-      : this.createNoOpRenderPipeline(pipelineLayout);
+      : this.createNoOpRenderPipeline(pipelineLayout, 'r32float');
     return {
       bindGroup0: bindGroups[0],
       bindGroup1: bindGroups[1],
@@ -234,15 +259,52 @@ g.test('subresources_and_binding_types_combination_for_color')
   .params(u =>
     u
       .combine('compute', [false, true])
-      .combineWithParams([
-        { _usageOK: true, type0: 'sampled-texture', type1: 'sampled-texture' },
-        { _usageOK: false, type0: 'sampled-texture', type1: 'writeonly-storage-texture' },
-        { _usageOK: false, type0: 'sampled-texture', type1: 'render-target' },
-        // Race condition upon multiple writable storage texture is valid.
-        { _usageOK: true, type0: 'writeonly-storage-texture', type1: 'writeonly-storage-texture' },
-        { _usageOK: false, type0: 'writeonly-storage-texture', type1: 'render-target' },
-        { _usageOK: false, type0: 'render-target', type1: 'render-target' },
-      ] as const)
+      .expandWithParams(
+        p =>
+          [
+            { _usageOK: true, type0: 'sampled-texture', type1: 'sampled-texture' },
+            { _usageOK: false, type0: 'sampled-texture', type1: 'writeonly-storage-texture' },
+            { _usageOK: true, type0: 'sampled-texture', type1: 'readonly-storage-texture' },
+            { _usageOK: false, type0: 'sampled-texture', type1: 'readwrite-storage-texture' },
+            { _usageOK: false, type0: 'sampled-texture', type1: 'render-target' },
+            // Race condition upon multiple writable storage texture is valid.
+            // For p.compute === true, fails at pass.dispatch because aliasing exists.
+            {
+              _usageOK: !p.compute,
+              type0: 'writeonly-storage-texture',
+              type1: 'writeonly-storage-texture',
+            },
+            {
+              _usageOK: true,
+              type0: 'readonly-storage-texture',
+              type1: 'readonly-storage-texture',
+            },
+            {
+              _usageOK: !p.compute,
+              type0: 'readwrite-storage-texture',
+              type1: 'readwrite-storage-texture',
+            },
+            {
+              _usageOK: false,
+              type0: 'readonly-storage-texture',
+              type1: 'writeonly-storage-texture',
+            },
+            {
+              _usageOK: false,
+              type0: 'readonly-storage-texture',
+              type1: 'readwrite-storage-texture',
+            },
+            {
+              _usageOK: false,
+              type0: 'writeonly-storage-texture',
+              type1: 'readwrite-storage-texture',
+            },
+            { _usageOK: false, type0: 'readonly-storage-texture', type1: 'render-target' },
+            { _usageOK: false, type0: 'writeonly-storage-texture', type1: 'render-target' },
+            { _usageOK: false, type0: 'readwrite-storage-texture', type1: 'render-target' },
+            { _usageOK: false, type0: 'render-target', type1: 'render-target' },
+          ] as const
+      )
       .beginSubcases()
       .combine('binding0InBundle', [false, true])
       .combine('binding1InBundle', [false, true])
@@ -422,7 +484,12 @@ g.test('subresources_and_binding_types_combination_for_color')
       _resourceSuccess,
     } = t.params;
 
-    const texture = t.createTexture({
+    t.skipIf(
+      t.isCompatibility,
+      'multiple views of the same texture in a single draw/dispatch are not supported in compat, nor are sub ranges of layers'
+    );
+
+    const texture = t.createTestTexture({
       arrayLayerCount: TOTAL_LAYERS,
       mipLevelCount: TOTAL_LEVELS,
       usage:
@@ -448,6 +515,17 @@ g.test('subresources_and_binding_types_combination_for_color')
       baseArrayLayer: baseLayer1,
       arrayLayerCount: layerCount1,
     });
+
+    const viewsAreSame =
+      dimension0 === dimension1 &&
+      layerCount0 === layerCount1 &&
+      BASE_LEVEL === baseLevel1 &&
+      levelCount0 === levelCount1 &&
+      BASE_LAYER === baseLayer1 &&
+      layerCount0 === layerCount1;
+    if (!viewsAreSame && t.isCompatibility) {
+      t.skip('different views of same texture are not supported in compatibility mode');
+    }
 
     const encoder = t.device.createCommandEncoder();
     if (type0 === 'render-target') {
@@ -475,14 +553,18 @@ g.test('subresources_and_binding_types_combination_for_color')
         ? encoder.beginComputePass()
         : t.beginSimpleRenderPass(
             encoder,
-            type1 === 'render-target' ? view1 : t.createTexture().createView()
+            type1 === 'render-target' ? view1 : t.createTestTexture().createView()
           );
 
       const bgls: GPUBindGroupLayout[] = [];
       // Create bind groups. Set bind groups in pass directly or set bind groups in bundle.
-      const storageTextureFormat0 = type0 === 'sampled-texture' ? undefined : 'rgba8unorm';
+      const storageTextureFormat0 = type0 === 'sampled-texture' ? undefined : 'r32float';
+      const sampleType0 = type0 === 'sampled-texture' ? 'unfilterable-float' : undefined;
 
-      const bgl0 = t.createBindGroupLayout(0, type0, dimension0, { format: storageTextureFormat0 });
+      const bgl0 = t.createBindGroupLayout(0, type0, dimension0, {
+        format: storageTextureFormat0,
+        sampleType: sampleType0,
+      });
       const bindGroup0 = t.device.createBindGroup({
         layout: bgl0,
         entries: [{ binding: 0, resource: view0 }],
@@ -496,10 +578,11 @@ g.test('subresources_and_binding_types_combination_for_color')
         pass.setBindGroup(0, bindGroup0);
       }
       if (type1 !== 'render-target') {
-        const storageTextureFormat1 = type1 === 'sampled-texture' ? undefined : 'rgba8unorm';
-
+        const storageTextureFormat1 = type1 === 'sampled-texture' ? undefined : 'r32float';
+        const sampleType1 = type1 === 'sampled-texture' ? 'unfilterable-float' : undefined;
         const bgl1 = t.createBindGroupLayout(1, type1, dimension1, {
           format: storageTextureFormat1,
+          sampleType: sampleType1,
         });
         const bindGroup1 = t.device.createBindGroup({
           layout: bgl1,
@@ -590,8 +673,8 @@ g.test('subresources_and_binding_types_combination_for_aspect')
       .unless(
         // Can't sample a multiplanar texture without selecting an aspect.
         p =>
-          kTextureFormatInfo[p.format].depth &&
-          kTextureFormatInfo[p.format].stencil &&
+          !!kTextureFormatInfo[p.format].depth &&
+          !!kTextureFormatInfo[p.format].stencil &&
           ((p.aspect0 === 'all' && p.type0 === 'sampled-texture') ||
             (p.aspect1 === 'all' && p.type1 === 'sampled-texture'))
       )
@@ -611,8 +694,8 @@ g.test('subresources_and_binding_types_combination_for_aspect')
           // Depth-stencil attachment views must encompass all aspects of the texture. Invalid
           // cases are for depth-stencil textures when the aspect is not 'all'.
           p.type1 === 'render-target' &&
-          kTextureFormatInfo[p.format].depth &&
-          kTextureFormatInfo[p.format].stencil &&
+          !!kTextureFormatInfo[p.format].depth &&
+          !!kTextureFormatInfo[p.format].stencil &&
           p.aspect1 !== 'all'
       )
   )
@@ -636,7 +719,9 @@ g.test('subresources_and_binding_types_combination_for_aspect')
       _usageSuccess,
     } = t.params;
 
-    const texture = t.createTexture({
+    t.skipIf(t.isCompatibility, 'sub ranges of layers are not supported in compat mode');
+
+    const texture = t.createTestTexture({
       arrayLayerCount: TOTAL_LAYERS,
       mipLevelCount: TOTAL_LEVELS,
       format,
@@ -674,7 +759,7 @@ g.test('subresources_and_binding_types_combination_for_aspect')
       : encoder.beginRenderPass({
           colorAttachments: [
             {
-              view: t.createTexture({ width: size, height: size }).createView(),
+              view: t.createTestTexture({ width: size, height: size }).createView(),
               clearValue: { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
               loadOp: 'clear',
               storeOp: 'store',
@@ -683,10 +768,10 @@ g.test('subresources_and_binding_types_combination_for_aspect')
           depthStencilAttachment: depthStencilFormat
             ? {
                 view: view1,
-                depthStoreOp: view1HasDepth ? 'discard' : undefined,
                 depthLoadOp: view1HasDepth ? 'load' : undefined,
-                stencilStoreOp: view1HasStencil ? 'discard' : undefined,
+                depthStoreOp: view1HasDepth ? 'discard' : undefined,
                 stencilLoadOp: view1HasStencil ? 'load' : undefined,
+                stencilStoreOp: view1HasStencil ? 'discard' : undefined,
               }
             : undefined,
         });
@@ -765,21 +850,33 @@ g.test('shader_stages_and_visibility,storage_write')
         GPUConst.ShaderStage.COMPUTE,
       ])
       .combine('writeVisibility', [0, GPUConst.ShaderStage.FRAGMENT, GPUConst.ShaderStage.COMPUTE])
+      .combine('readEntry', [
+        { texture: { sampleType: 'unfilterable-float' } },
+        { storageTexture: { access: 'read-only', format: 'r32float' } },
+      ] as const)
+      .combine('storageWriteAccess', ['write-only', 'read-write'] as const)
   )
   .fn(t => {
-    const { compute, readVisibility, writeVisibility, secondUseConflicts } = t.params;
+    const {
+      compute,
+      readEntry,
+      storageWriteAccess,
+      readVisibility,
+      writeVisibility,
+      secondUseConflicts,
+    } = t.params;
 
     const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING;
-    const view = t.createTexture({ usage }).createView();
-    const view2 = secondUseConflicts ? view : t.createTexture({ usage }).createView();
+    const view = t.createTestTexture({ usage }).createView();
+    const view2 = secondUseConflicts ? view : t.createTestTexture({ usage }).createView();
 
     const bgl = t.device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: readVisibility, texture: {} },
+        { binding: 0, visibility: readVisibility, ...readEntry },
         {
           binding: 1,
           visibility: writeVisibility,
-          storageTexture: { access: 'write-only', format: 'rgba8unorm' },
+          storageTexture: { access: storageWriteAccess, format: 'r32float' },
         },
       ],
     });
@@ -804,7 +901,7 @@ g.test('shader_stages_and_visibility,storage_write')
       );
       pass.end();
     } else {
-      const pass = t.beginSimpleRenderPass(encoder, t.createTexture().createView());
+      const pass = t.beginSimpleRenderPass(encoder, t.createTestTexture().createView());
       pass.setBindGroup(0, bindGroup);
       pass.end();
     }
@@ -834,19 +931,23 @@ g.test('shader_stages_and_visibility,attachment_write')
         GPUConst.ShaderStage.FRAGMENT,
         GPUConst.ShaderStage.COMPUTE,
       ])
+      .combine('readEntry', [
+        { texture: { sampleType: 'unfilterable-float' } },
+        { storageTexture: { access: 'read-only', format: 'r32float' } },
+      ] as const)
   )
   .fn(t => {
-    const { readVisibility, secondUseConflicts } = t.params;
+    const { readVisibility, readEntry, secondUseConflicts } = t.params;
 
-    // writeonly-storage-texture binding type is not supported in vertex stage. So, this test
-    // uses writeonly-storage-texture binding as writable binding upon the same subresource if
-    // vertex stage is not included. Otherwise, it uses output attachment instead.
-    const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT;
+    const usage =
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.RENDER_ATTACHMENT |
+      GPUTextureUsage.STORAGE_BINDING;
 
-    const view = t.createTexture({ usage }).createView();
-    const view2 = secondUseConflicts ? view : t.createTexture({ usage }).createView();
+    const view = t.createTestTexture({ usage }).createView();
+    const view2 = secondUseConflicts ? view : t.createTestTexture({ usage }).createView();
     const bgl = t.device.createBindGroupLayout({
-      entries: [{ binding: 0, visibility: readVisibility, texture: {} }],
+      entries: [{ binding: 0, visibility: readVisibility, ...readEntry }],
     });
     const bindGroup = t.device.createBindGroup({
       layout: bgl,
@@ -881,21 +982,29 @@ g.test('replaced_binding')
       .combine('compute', [false, true])
       .combine('callDrawOrDispatch', [false, true])
       .combine('entry', [
-        { texture: {} },
-        { storageTexture: { access: 'write-only', format: 'rgba8unorm' } },
+        { texture: { sampleType: 'unfilterable-float' } },
+        { storageTexture: { access: 'read-only', format: 'r32float' } },
+        { storageTexture: { access: 'write-only', format: 'r32float' } },
+        { storageTexture: { access: 'read-write', format: 'r32float' } },
       ] as const)
   )
   .fn(t => {
     const { compute, callDrawOrDispatch, entry } = t.params;
 
-    const sampledView = t.createTexture().createView();
+    const sampledView = t.createTestTexture().createView();
     const sampledStorageView = t
-      .createTexture({ usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING })
+      .createTestTexture({
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      })
       .createView();
 
     // Create bindGroup0. It has two bindings. These two bindings use different views/subresources.
     const bglEntries0: GPUBindGroupLayoutEntry[] = [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       {
         binding: 1,
         visibility: GPUShaderStage.FRAGMENT,
@@ -913,18 +1022,22 @@ g.test('replaced_binding')
 
     // Create bindGroup1. It has one binding, which use the same view/subresource of a binding in
     // bindGroup0. So it may or may not conflicts with that binding in bindGroup0.
-    const bindGroup1 = t.createBindGroup(0, sampledStorageView, 'sampled-texture', '2d', undefined);
+    const bindGroup1 = t.createBindGroup(0, sampledStorageView, 'sampled-texture', '2d', {
+      sampleType: 'unfilterable-float',
+    });
 
     const encoder = t.device.createCommandEncoder();
     const pass = compute
       ? encoder.beginComputePass()
-      : t.beginSimpleRenderPass(encoder, t.createTexture().createView());
+      : t.beginSimpleRenderPass(encoder, t.createTestTexture().createView());
 
     // Set bindGroup0 and bindGroup1. bindGroup0 is replaced by bindGroup1 in the current pass.
     // But bindings in bindGroup0 should be validated too.
     pass.setBindGroup(0, bindGroup0);
     if (callDrawOrDispatch) {
-      const pipeline = compute ? t.createNoOpComputePipeline() : t.createNoOpRenderPipeline();
+      const pipeline = compute
+        ? t.createNoOpComputePipeline()
+        : t.createNoOpRenderPipeline('auto', 'r32float');
       t.setPipeline(pass, pipeline);
       t.issueDrawOrDispatch(pass);
     }
@@ -934,7 +1047,9 @@ g.test('replaced_binding')
     // MAINTENANCE_TODO: If the Compatible Usage List
     // (https://gpuweb.github.io/gpuweb/#compatible-usage-list) gets programmatically defined in
     // capability_info, use it here, instead of this logic, for clarity.
-    let success = entry.storageTexture?.access !== 'write-only';
+    let success =
+      entry.storageTexture?.access !== 'write-only' &&
+      entry.storageTexture?.access !== 'read-write';
     // Replaced bindings should not be validated in compute pass, because validation only occurs
     // inside dispatchWorkgroups() which only looks at the current resource usages.
     success ||= compute;
@@ -964,7 +1079,9 @@ g.test('bindings_in_bundle')
             case 'multisampled-texture':
             case 'sampled-texture':
               return 'TEXTURE_BINDING' as const;
+            case 'readonly-storage-texture':
             case 'writeonly-storage-texture':
+            case 'readwrite-storage-texture':
               return 'STORAGE_BINDING' as const;
             case 'render-target':
               return 'RENDER_ATTACHMENT' as const;
@@ -999,15 +1116,8 @@ g.test('bindings_in_bundle')
       )
   )
   .fn(t => {
-    const {
-      binding0InBundle,
-      binding1InBundle,
-      type0,
-      type1,
-      _usage0,
-      _usage1,
-      _sampleCount,
-    } = t.params;
+    const { binding0InBundle, binding1InBundle, type0, type1, _usage0, _usage1, _sampleCount } =
+      t.params;
 
     // Two bindings are attached to the same texture view.
     const usage =
@@ -1015,7 +1125,7 @@ g.test('bindings_in_bundle')
         ? GPUTextureUsage[_usage0] | GPUTextureUsage[_usage1] | GPUTextureUsage.RENDER_ATTACHMENT
         : GPUTextureUsage[_usage0] | GPUTextureUsage[_usage1];
     const view = t
-      .createTexture({
+      .createTestTexture({
         usage,
         sampleCount: _sampleCount,
       })
@@ -1023,12 +1133,18 @@ g.test('bindings_in_bundle')
 
     const bindGroups: GPUBindGroup[] = [];
     if (type0 !== 'render-target') {
-      const binding0TexFormat = type0 === 'sampled-texture' ? undefined : 'rgba8unorm';
-      bindGroups[0] = t.createBindGroup(0, view, type0, '2d', { format: binding0TexFormat });
+      const binding0TexFormat = type0 === 'sampled-texture' ? undefined : 'r32float';
+      bindGroups[0] = t.createBindGroup(0, view, type0, '2d', {
+        format: binding0TexFormat,
+        sampleType: 'unfilterable-float',
+      });
     }
     if (type1 !== 'render-target') {
-      const binding1TexFormat = type1 === 'sampled-texture' ? undefined : 'rgba8unorm';
-      bindGroups[1] = t.createBindGroup(1, view, type1, '2d', { format: binding1TexFormat });
+      const binding1TexFormat = type1 === 'sampled-texture' ? undefined : 'r32float';
+      bindGroups[1] = t.createBindGroup(1, view, type1, '2d', {
+        format: binding1TexFormat,
+        sampleType: 'unfilterable-float',
+      });
     }
 
     const encoder = t.device.createCommandEncoder();
@@ -1036,7 +1152,9 @@ g.test('bindings_in_bundle')
     // As a result, only one binding's type is 'render-target' at most.
     const pass = t.beginSimpleRenderPass(
       encoder,
-      type0 === 'render-target' || type1 === 'render-target' ? view : t.createTexture().createView()
+      type0 === 'render-target' || type1 === 'render-target'
+        ? view
+        : t.createTestTexture().createView()
     );
 
     const bindingsInBundle: boolean[] = [binding0InBundle, binding1InBundle];
@@ -1046,7 +1164,7 @@ g.test('bindings_in_bundle')
       // 'render-target').
       if (bindingsInBundle[i]) {
         const bundleEncoder = t.device.createRenderBundleEncoder({
-          colorFormats: ['rgba8unorm'],
+          colorFormats: ['r32float'],
         });
         bundleEncoder.setBindGroup(i, bindGroups[i]);
         const bundleInPass = bundleEncoder.finish();
@@ -1062,6 +1180,7 @@ g.test('bindings_in_bundle')
       switch (t) {
         case 'sampled-texture':
         case 'multisampled-texture':
+        case 'readonly-storage-texture':
           return true;
         default:
           return false;
@@ -1073,7 +1192,8 @@ g.test('bindings_in_bundle')
       success = true;
     }
 
-    if (type0 === 'writeonly-storage-texture' && type1 === 'writeonly-storage-texture') {
+    // Writable storage textures (write-only and read-write storage textures) cannot be aliased.
+    if (type0 === type1) {
       success = true;
     }
 
@@ -1094,6 +1214,8 @@ g.test('unused_bindings_in_pipeline')
   .params(u =>
     u
       .combine('compute', [false, true])
+      .combine('readOnlyUsage', ['sampled-texture', 'readonly-storage-texture'] as const)
+      .combine('writableUsage', ['writeonly-storage-texture', 'readwrite-storage-texture'] as const)
       .combine('useBindGroup0', [false, true])
       .combine('useBindGroup1', [false, true])
       .combine('setBindGroupsOrder', ['common', 'reversed'] as const)
@@ -1103,41 +1225,51 @@ g.test('unused_bindings_in_pipeline')
   .fn(t => {
     const {
       compute,
+      readOnlyUsage,
+      writableUsage,
       useBindGroup0,
       useBindGroup1,
       setBindGroupsOrder,
       setPipeline,
       callDrawOrDispatch,
     } = t.params;
+    if (writableUsage === 'readwrite-storage-texture') {
+      t.skipIfLanguageFeatureNotSupported('readonly_and_readwrite_storage_textures');
+    }
+
     const view = t
-      .createTexture({ usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING })
+      .createTestTexture({
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+      })
       .createView();
-    const bindGroup0 = t.createBindGroup(0, view, 'sampled-texture', '2d', {
-      format: 'rgba8unorm',
+    const bindGroup0 = t.createBindGroup(0, view, readOnlyUsage, '2d', {
+      sampleType: 'unfilterable-float',
+      format: 'r32float',
     });
-    const bindGroup1 = t.createBindGroup(0, view, 'writeonly-storage-texture', '2d', {
-      format: 'rgba8unorm',
+    const bindGroup1 = t.createBindGroup(0, view, writableUsage, '2d', {
+      format: 'r32float',
     });
 
+    const writeAccess = writableUsage === 'writeonly-storage-texture' ? 'write' : 'read_write';
     const wgslVertex = `@vertex fn main() -> @builtin(position) vec4<f32> {
   return vec4<f32>();
 }`;
     const wgslFragment = pp`
       ${pp._if(useBindGroup0)}
-      @group(0) @binding(0) var image0 : texture_storage_2d<rgba8unorm, write>;
+      @group(0) @binding(0) var image0 : texture_storage_2d<r32float, ${writeAccess}>;
       ${pp._endif}
       ${pp._if(useBindGroup1)}
-      @group(1) @binding(0) var image1 : texture_storage_2d<rgba8unorm, write>;
+      @group(1) @binding(0) var image1 : texture_storage_2d<r32float, ${writeAccess}>;
       ${pp._endif}
       @fragment fn main() {}
     `;
 
     const wgslCompute = pp`
       ${pp._if(useBindGroup0)}
-      @group(0) @binding(0) var image0 : texture_storage_2d<rgba8unorm, write>;
+      @group(0) @binding(0) var image0 : texture_storage_2d<r32float, ${writeAccess}>;
       ${pp._endif}
       ${pp._if(useBindGroup1)}
-      @group(1) @binding(0) var image1 : texture_storage_2d<rgba8unorm, write>;
+      @group(1) @binding(0) var image1 : texture_storage_2d<r32float, ${writeAccess}>;
       ${pp._endif}
       @compute @workgroup_size(1) fn main() {}
     `;
@@ -1165,7 +1297,7 @@ g.test('unused_bindings_in_pipeline')
               code: wgslFragment,
             }),
             entryPoint: 'main',
-            targets: [{ format: 'rgba8unorm', writeMask: 0 }],
+            targets: [{ format: 'r32float', writeMask: 0 }],
           },
           primitive: { topology: 'triangle-list' },
         });
@@ -1176,7 +1308,7 @@ g.test('unused_bindings_in_pipeline')
       : encoder.beginRenderPass({
           colorAttachments: [
             {
-              view: t.createTexture().createView(),
+              view: t.createTestTexture().createView(),
               clearValue: { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
               loadOp: 'clear',
               storeOp: 'store',
@@ -1221,14 +1353,28 @@ g.test('scope,dispatch')
   .params(u =>
     u
       .combine('dispatch', ['none', 'direct', 'indirect'])
+      .expandWithParams(
+        p =>
+          [
+            { usage1: 'sampled-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'sampled-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'writeonly-storage-texture', usage2: 'readwrite-storage-texture' },
+          ] as const
+      )
       .beginSubcases()
       .expand('setBindGroup0', p => (p.dispatch ? [true] : [false, true]))
       .expand('setBindGroup1', p => (p.dispatch ? [true] : [false, true]))
   )
   .fn(t => {
-    const { dispatch, setBindGroup0, setBindGroup1 } = t.params;
+    const { dispatch, usage1, usage2, setBindGroup0, setBindGroup1 } = t.params;
 
-    const { bindGroup0, bindGroup1, encoder, pass, pipeline } = t.testValidationScope(true);
+    const { bindGroup0, bindGroup1, encoder, pass, pipeline } = t.testValidationScope(
+      true,
+      usage1,
+      usage2
+    );
     assert(pass instanceof GPUComputePassEncoder);
     t.setPipeline(pass, pipeline);
 
@@ -1241,7 +1387,7 @@ g.test('scope,dispatch')
         break;
       case 'indirect':
         {
-          const indirectBuffer = t.device.createBuffer({ size: 4, usage: GPUBufferUsage.INDIRECT });
+          const indirectBuffer = t.createBufferTracked({ size: 4, usage: GPUBufferUsage.INDIRECT });
           pass.dispatchWorkgroupsIndirect(indirectBuffer, 0);
         }
         break;
@@ -1249,9 +1395,12 @@ g.test('scope,dispatch')
 
     pass.end();
 
-    t.expectValidationError(() => {
-      encoder.finish();
-    }, dispatch !== 'none' && setBindGroup0 && setBindGroup1);
+    t.expectValidationError(
+      () => {
+        encoder.finish();
+      },
+      dispatch !== 'none' && setBindGroup0 && setBindGroup1
+    );
   });
 
 g.test('scope,basic,render')
@@ -1265,11 +1414,21 @@ g.test('scope,basic,render')
     u //
       .combine('setBindGroup0', [false, true])
       .combine('setBindGroup1', [false, true])
+      .expandWithParams(
+        p =>
+          [
+            { usage1: 'sampled-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'sampled-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'writeonly-storage-texture', usage2: 'readwrite-storage-texture' },
+          ] as const
+      )
   )
   .fn(t => {
-    const { setBindGroup0, setBindGroup1 } = t.params;
+    const { setBindGroup0, setBindGroup1, usage1, usage2 } = t.params;
 
-    const { bindGroup0, bindGroup1, encoder, pass } = t.testValidationScope(false);
+    const { bindGroup0, bindGroup1, encoder, pass } = t.testValidationScope(false, usage1, usage2);
     assert(pass instanceof GPURenderPassEncoder);
 
     if (setBindGroup0) pass.setBindGroup(0, bindGroup0);
@@ -1289,11 +1448,22 @@ g.test('scope,pass_boundary,compute')
     boundary in between. This should always be valid.
     `
   )
-  .paramsSubcasesOnly(u => u.combine('splitPass', [false, true]))
+  .paramsSubcasesOnly(u =>
+    u.combine('splitPass', [false, true]).expandWithParams(
+      p =>
+        [
+          { usage1: 'sampled-texture', usage2: 'writeonly-storage-texture' },
+          { usage1: 'sampled-texture', usage2: 'readwrite-storage-texture' },
+          { usage1: 'readonly-storage-texture', usage2: 'writeonly-storage-texture' },
+          { usage1: 'readonly-storage-texture', usage2: 'readwrite-storage-texture' },
+          { usage1: 'writeonly-storage-texture', usage2: 'readwrite-storage-texture' },
+        ] as const
+    )
+  )
   .fn(t => {
-    const { splitPass } = t.params;
+    const { splitPass, usage1, usage2 } = t.params;
 
-    const { bindGroupLayouts, bindGroups } = t.makeConflictingBindGroups();
+    const { bindGroupLayouts, bindGroups } = t.makeTwoBindGroupsWithOneTextureView(usage1, usage2);
 
     const encoder = t.device.createCommandEncoder();
 
@@ -1336,26 +1506,38 @@ g.test('scope,pass_boundary,render')
     u //
       .combine('splitPass', [false, true])
       .combine('draw', [false, true])
+      .expandWithParams(
+        p =>
+          [
+            { usage1: 'sampled-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'sampled-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'writeonly-storage-texture' },
+            { usage1: 'readonly-storage-texture', usage2: 'readwrite-storage-texture' },
+            { usage1: 'writeonly-storage-texture', usage2: 'readwrite-storage-texture' },
+          ] as const
+      )
   )
   .fn(t => {
-    const { splitPass, draw } = t.params;
+    const { splitPass, draw, usage1, usage2 } = t.params;
 
-    const { bindGroupLayouts, bindGroups } = t.makeConflictingBindGroups();
+    const { bindGroupLayouts, bindGroups } = t.makeTwoBindGroupsWithOneTextureView(usage1, usage2);
 
     const encoder = t.device.createCommandEncoder();
 
     const pipelineUsingBG0 = t.createNoOpRenderPipeline(
       t.device.createPipelineLayout({
         bindGroupLayouts: [bindGroupLayouts[0]],
-      })
+      }),
+      'r32float'
     );
     const pipelineUsingBG1 = t.createNoOpRenderPipeline(
       t.device.createPipelineLayout({
         bindGroupLayouts: [bindGroupLayouts[1]],
-      })
+      }),
+      'r32float'
     );
 
-    const attachment = t.createTexture().createView();
+    const attachment = t.createTestTexture().createView();
 
     let pass = t.beginSimpleRenderPass(encoder, attachment);
     pass.setPipeline(pipelineUsingBG0);

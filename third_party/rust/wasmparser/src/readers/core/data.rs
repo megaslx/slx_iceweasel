@@ -14,7 +14,7 @@
  */
 
 use crate::{BinaryReader, BinaryReaderError, ConstExpr, FromReader, Result, SectionLimited};
-use std::ops::Range;
+use core::ops::Range;
 
 /// Represents a data segment in a core WebAssembly module.
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ pub struct Data<'a> {
 }
 
 /// The kind of data segment.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub enum DataKind<'a> {
     /// The data segment is passive.
     Passive,
@@ -84,9 +84,7 @@ impl<'a> FromReader<'a> for Data<'a> {
             }
         };
 
-        let data = reader.read_reader(
-            "unexpected end of section or function: data segment extends past end of the section",
-        )?;
+        let data = reader.read_reader()?;
         Ok(Data {
             kind,
             data: data.remaining_buffer(),

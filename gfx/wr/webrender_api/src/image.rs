@@ -54,6 +54,26 @@ impl BlobImageKey {
     }
 }
 
+/// An opaque identifier describing a snapshot image registered with WebRender.
+/// This is used as a handle to reference snapshot images, and can be used as an
+/// image in display items.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, PeekPoke)]
+pub struct SnapshotImageKey(pub ImageKey);
+
+impl SnapshotImageKey {
+    /// Interpret this snapshot image as an image for a display item.
+    pub fn as_image(self) -> ImageKey {
+        self.0
+    }
+}
+
+impl Default for SnapshotImageKey {
+    fn default() -> Self {
+        SnapshotImageKey(ImageKey::DUMMY)
+    }
+}
+
 /// An arbitrary identifier for an external image provided by the
 /// application. It must be a unique identifier for each external
 /// image.
@@ -74,8 +94,9 @@ pub enum ExternalImageSource<'a> {
 /// The data that an external client should provide about
 /// an external image. For instance, if providing video frames,
 /// the application could call wr.render() whenever a new
-/// video frame is ready. Note that the UV coords are supplied
-/// in texel-space!
+/// video frame is ready. Note that the UV coords are either normalized or
+/// unnormalized depending on the value of normalized_uvs in the corresponding
+/// ExternalImageData.
 pub struct ExternalImage<'a> {
     /// UV coordinates for the image.
     pub uv: TexelRect,
@@ -117,6 +138,10 @@ pub enum ImageBufferKind {
     /// understand, particularly YUV. See
     /// https://www.khronos.org/registry/OpenGL/extensions/OES/OES_EGL_image_external.txt
     TextureExternal = 2,
+    /// External texture which is forced to be converted from YUV to RGB using BT709 colorspace.
+    /// This maps to GL_TEXTURE_EXTERNAL_OES in OpenGL, using the EXT_YUV_TARGET extension.
+    /// https://registry.khronos.org/OpenGL/extensions/EXT/EXT_YUV_target.txt
+    TextureExternalBT709 = 3,
 }
 
 /// Storage format identifier for externally-managed images.
@@ -140,6 +165,8 @@ pub struct ExternalImageData {
     pub channel_index: u8,
     /// Storage format identifier.
     pub image_type: ExternalImageType,
+    /// Whether UV coordinates used with this image are normalized.
+    pub normalized_uvs: bool,
 }
 
 /// Specifies the format of a series of pixels, in driver terms.
@@ -187,9 +214,10 @@ impl ImageFormat {
 
 /// Specifies the color depth of an image. Currently only used for YUV images.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
 pub enum ColorDepth {
     /// 8 bits image (most common)
+    #[default]
     Color8,
     /// 10 bits image
     Color10,
@@ -197,12 +225,6 @@ pub enum ColorDepth {
     Color12,
     /// 16 bits image
     Color16,
-}
-
-impl Default for ColorDepth {
-    fn default() -> Self {
-        ColorDepth::Color8
-    }
 }
 
 impl ColorDepth {
@@ -229,7 +251,7 @@ impl ColorDepth {
 
 bitflags! {
     /// Various flags that are part of an image descriptor.
-    #[derive(Deserialize, Serialize)]
+    #[derive(Debug, Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Deserialize, Serialize)]
     pub struct ImageDescriptorFlags: u32 {
         /// Whether this image is opaque, or has an alpha channel. Avoiding blending
         /// for opaque surfaces is an important optimization.
@@ -417,7 +439,8 @@ pub trait AsyncBlobImageRasterizer : Send {
     fn rasterize(
         &mut self,
         requests: &[BlobImageParams],
-        low_priority: bool
+        low_priority: bool,
+        tile_pool: &mut crate::BlobTilePool,
     ) -> Vec<(BlobImageRequest, BlobImageResult)>;
 }
 

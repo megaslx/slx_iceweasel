@@ -263,7 +263,7 @@ assertEq(e.tbl1.get(1), null);
 assertEq(e.tbl1.get(2), e.tbl1.get(2));
 assertEq(e.tbl1.get(2)(), 2);
 assertEq(e.tbl1.get(3), null);
-assertErrorMessage(() => e.tbl1.get(4), RangeError, /bad Table get index/);
+assertErrorMessage(() => e.tbl1.get(4), RangeError, /bad Table get address/);
 assertEq(e.tbl1.get(1), null);
 e.tbl1.set(1, e.f3);
 assertEq(e.tbl1.get(1), e.f3);
@@ -389,7 +389,7 @@ assertEq(e4.baz, e4.tbl.get(2));
 
 var code1 = wasmTextToBinary('(module (func $exp (param i64) (result i64) (i64.add (local.get 0) (i64.const 10))) (export "exp" (func $exp)))');
 var e1 = new Instance(new Module(code1)).exports;
-var code2 = wasmTextToBinary('(module (import "a" "b" (func $i (param i64) (result i64))) (func $f (result i32) (i32.wrap/i64 (call $i (i64.const 42)))) (export "f" (func $f)))');
+var code2 = wasmTextToBinary('(module (import "a" "b" (func $i (param i64) (result i64))) (func $f (result i32) (i32.wrap_i64 (call $i (i64.const 42)))) (export "f" (func $f)))');
 var e2 = new Instance(new Module(code2), {a:{b:e1.exp}}).exports;
 assertEq(e2.f(), 52);
 
@@ -401,9 +401,10 @@ wasmFailValidateText('(module (export "a" (memory 0)))', /exported memory index 
 wasmFailValidateText('(module (export "a" (table 0)))', /exported table index out of bounds/);
 
 // Default memory/table rules
-
-wasmFailValidateText('(module (import "a" "b" (memory 1 1)) (memory 1 1))', /already have default memory/);
-wasmFailValidateText('(module (import "a" "b" (memory 1 1)) (import "x" "y" (memory 2 2)))', /already have default memory/);
+if (!wasmMultiMemoryEnabled()) {
+    wasmFailValidateText('(module (import "a" "b" (memory 1 1)) (memory 1 1))', /already have default memory/);
+    wasmFailValidateText('(module (import "a" "b" (memory 1 1)) (import "x" "y" (memory 2 2)))', /already have default memory/);
+}
 
 // Data segments on imports
 

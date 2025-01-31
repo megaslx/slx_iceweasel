@@ -19,10 +19,12 @@ pub const FLATTEN: Symbol = Symbol("flatten");
 pub const FROM: Symbol = Symbol("from");
 pub const GETTER: Symbol = Symbol("getter");
 pub const INTO: Symbol = Symbol("into");
+pub const NON_EXHAUSTIVE: Symbol = Symbol("non_exhaustive");
 pub const OTHER: Symbol = Symbol("other");
 pub const REMOTE: Symbol = Symbol("remote");
 pub const RENAME: Symbol = Symbol("rename");
 pub const RENAME_ALL: Symbol = Symbol("rename_all");
+pub const RENAME_ALL_FIELDS: Symbol = Symbol("rename_all_fields");
 pub const REPR: Symbol = Symbol("repr");
 pub const SERDE: Symbol = Symbol("serde");
 pub const SERIALIZE: Symbol = Symbol("serialize");
@@ -44,7 +46,7 @@ impl PartialEq<Symbol> for Ident {
     }
 }
 
-impl<'a> PartialEq<Symbol> for &'a Ident {
+impl PartialEq<Symbol> for &Ident {
     fn eq(&self, word: &Symbol) -> bool {
         *self == word.0
     }
@@ -56,7 +58,7 @@ impl PartialEq<Symbol> for Path {
     }
 }
 
-impl<'a> PartialEq<Symbol> for &'a Path {
+impl PartialEq<Symbol> for &Path {
     fn eq(&self, word: &Symbol) -> bool {
         self.is_ident(word.0)
     }

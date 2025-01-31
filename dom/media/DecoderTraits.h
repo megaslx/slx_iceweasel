@@ -52,16 +52,8 @@ class DecoderTraits {
   // vice versa.
   static bool IsSupportedInVideoDocument(const nsACString& aType);
 
-  // Convenience function that returns false if MOZ_FMP4 is not defined,
-  // otherwise defers to MP4Decoder::IsSupportedType().
-  static bool IsMP4SupportedType(const MediaContainerType& aType,
-                                 DecoderDoctorDiagnostics* aDiagnostics);
-
   // Returns true if aType is MIME type of hls.
   static bool IsHttpLiveStreamingType(const MediaContainerType& aType);
-
-  // Returns true if aType is matroska type.
-  static bool IsMatroskaType(const MediaContainerType& aType);
 
   // Returns an array of all TrackInfo objects described by this type.
   static nsTArray<UniquePtr<TrackInfo>> GetTracksInfo(

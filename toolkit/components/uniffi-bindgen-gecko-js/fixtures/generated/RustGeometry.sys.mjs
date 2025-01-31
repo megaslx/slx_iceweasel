@@ -153,6 +153,20 @@ class ArrayBufferDataStream {
       this.pos += size;
       return value;
     }
+
+    readBytes() {
+      const size = this.readInt32();
+      const bytes = new Uint8Array(this.dataView.buffer, this.pos, size);
+      this.pos += size;
+      return bytes
+    }
+
+    writeBytes(uint8Array) {
+      this.writeUint32(uint8Array.length);
+      value.forEach((elt) => {
+        dataStream.writeUint8(elt);
+      })
+    }
 }
 
 function handleRustResult(result, liftCallback, liftErrCallback) {
@@ -164,9 +178,8 @@ function handleRustResult(result, liftCallback, liftErrCallback) {
             throw liftErrCallback(result.data);
 
         case "internal-error":
-            let message = result.internalErrorMessage;
-            if (message) {
-                throw new UniFFIInternalError(message);
+            if (result.data) {
+                throw new UniFFIInternalError(FfiConverterString.lift(result.data));
             } else {
                 throw new UniFFIInternalError("Unknown error");
             }
@@ -273,8 +286,11 @@ export class FfiConverterString extends FfiConverter {
     }
 }
 
+/**
+ * Line
+ */
 export class Line {
-    constructor(start,end) {
+    constructor({ start, end } = {}) {
         try {
             FfiConverterTypePoint.checkType(start)
         } catch (e) {
@@ -291,9 +307,16 @@ export class Line {
             }
             throw e;
         }
+        /**
+         * @type {Point}
+         */
         this.start = start;
+        /**
+         * @type {Point}
+         */
         this.end = end;
     }
+
     equals(other) {
         return (
             this.start.equals(other.start) &&
@@ -305,10 +328,10 @@ export class Line {
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeLine extends FfiConverterArrayBuffer {
     static read(dataStream) {
-        return new Line(
-            FfiConverterTypePoint.read(dataStream), 
-            FfiConverterTypePoint.read(dataStream)
-        );
+        return new Line({
+            start: FfiConverterTypePoint.read(dataStream),
+            end: FfiConverterTypePoint.read(dataStream),
+        });
     }
     static write(dataStream, value) {
         FfiConverterTypePoint.write(dataStream, value.start);
@@ -324,6 +347,9 @@ export class FfiConverterTypeLine extends FfiConverterArrayBuffer {
 
     static checkType(value) {
         super.checkType(value);
+        if (!(value instanceof Line)) {
+            throw new UniFFITypeError(`Expected 'Line', found '${typeof value}'`);
+        }
         try {
             FfiConverterTypePoint.checkType(value.start);
         } catch (e) {
@@ -343,8 +369,11 @@ export class FfiConverterTypeLine extends FfiConverterArrayBuffer {
     }
 }
 
+/**
+ * Point
+ */
 export class Point {
-    constructor(coordX,coordY) {
+    constructor({ coordX, coordY } = {}) {
         try {
             FfiConverterF64.checkType(coordX)
         } catch (e) {
@@ -361,9 +390,16 @@ export class Point {
             }
             throw e;
         }
+        /**
+         * @type {number}
+         */
         this.coordX = coordX;
+        /**
+         * @type {number}
+         */
         this.coordY = coordY;
     }
+
     equals(other) {
         return (
             this.coordX == other.coordX &&
@@ -375,10 +411,10 @@ export class Point {
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypePoint extends FfiConverterArrayBuffer {
     static read(dataStream) {
-        return new Point(
-            FfiConverterF64.read(dataStream), 
-            FfiConverterF64.read(dataStream)
-        );
+        return new Point({
+            coordX: FfiConverterF64.read(dataStream),
+            coordY: FfiConverterF64.read(dataStream),
+        });
     }
     static write(dataStream, value) {
         FfiConverterF64.write(dataStream, value.coordX);
@@ -394,6 +430,9 @@ export class FfiConverterTypePoint extends FfiConverterArrayBuffer {
 
     static checkType(value) {
         super.checkType(value);
+        if (!(value instanceof Point)) {
+            throw new UniFFITypeError(`Expected 'Point', found '${typeof value}'`);
+        }
         try {
             FfiConverterF64.checkType(value.coordX);
         } catch (e) {
@@ -454,6 +493,10 @@ export class FfiConverterOptionalTypePoint extends FfiConverterArrayBuffer {
 
 
 
+/**
+ * gradient
+ * @returns {number}
+ */
 export function gradient(ln) {
 
         const liftResult = (result) => FfiConverterF64.lift(result);
@@ -467,8 +510,8 @@ export function gradient(ln) {
                 }
                 throw e;
             }
-            return UniFFIScaffolding.callAsync(
-                18, // geometry:uniffi_geometry_fn_func_gradient
+            return UniFFIScaffolding.callAsyncWrapper(
+                127, // geometry:uniffi_uniffi_geometry_fn_func_gradient
                 FfiConverterTypeLine.lower(ln),
             )
         }
@@ -479,6 +522,10 @@ export function gradient(ln) {
         }
 }
 
+/**
+ * intersection
+ * @returns {?Point}
+ */
 export function intersection(ln1,ln2) {
 
         const liftResult = (result) => FfiConverterOptionalTypePoint.lift(result);
@@ -500,8 +547,8 @@ export function intersection(ln1,ln2) {
                 }
                 throw e;
             }
-            return UniFFIScaffolding.callAsync(
-                19, // geometry:uniffi_geometry_fn_func_intersection
+            return UniFFIScaffolding.callAsyncWrapper(
+                128, // geometry:uniffi_uniffi_geometry_fn_func_intersection
                 FfiConverterTypeLine.lower(ln1),
                 FfiConverterTypeLine.lower(ln2),
             )

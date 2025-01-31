@@ -55,7 +55,7 @@ pub const MTLResourceStorageModeMask: NSUInteger = 0xf << MTLResourceStorageMode
 pub const MTLResourceHazardTrackingModeShift: NSUInteger = 8;
 pub const MTLResourceHazardTrackingModeMask: NSUInteger = 0x3 << MTLResourceHazardTrackingModeShift;
 
-bitflags! {
+bitflags::bitflags! {
     /// See <https://developer.apple.com/documentation/metal/mtlresourceoptions>
     #[allow(non_upper_case_globals)]
     #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,7 +77,7 @@ bitflags! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// Options that describe how a graphics or compute function uses an argument buffer’s resource.
     ///
     /// Enabling certain options for certain resources determines whether the Metal driver should
@@ -177,12 +177,6 @@ impl ResourceRef {
 
     /// Only available on macos(10.13), ios(10.0)
     pub fn is_aliasable(&self) -> bool {
-        unsafe {
-            match msg_send![self, isAliasable] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isAliasable] }
     }
 }

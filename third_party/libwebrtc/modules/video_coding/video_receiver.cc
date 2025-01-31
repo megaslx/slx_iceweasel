@@ -18,15 +18,15 @@
 #include "api/video_codecs/video_codec.h"
 #include "api/video_codecs/video_decoder.h"
 #include "modules/video_coding/decoder_database.h"
+#include "modules/video_coding/deprecated/jitter_buffer.h"
 #include "modules/video_coding/deprecated/packet.h"
+#include "modules/video_coding/deprecated/receiver.h"
 #include "modules/video_coding/encoded_frame.h"
 #include "modules/video_coding/generic_decoder.h"
 #include "modules/video_coding/include/video_coding.h"
 #include "modules/video_coding/include/video_coding_defines.h"
 #include "modules/video_coding/internal_defines.h"
-#include "modules/video_coding/jitter_buffer.h"
 #include "modules/video_coding/media_opt_util.h"
-#include "modules/video_coding/receiver.h"
 #include "modules/video_coding/timing/timing.h"
 #include "modules/video_coding/video_coding_impl.h"
 #include "rtc_base/checks.h"
@@ -44,7 +44,10 @@ VideoReceiver::VideoReceiver(Clock* clock,
     : clock_(clock),
       _timing(timing),
       _receiver(_timing, clock_, field_trials),
-      _decodedFrameCallback(_timing, clock_, field_trials),
+      _decodedFrameCallback(_timing,
+                            clock_,
+                            field_trials,
+                            /*corruption_score_calculator=*/nullptr),
       _frameTypeCallback(nullptr),
       _packetRequestCallback(nullptr),
       _scheduleKeyRequest(false),

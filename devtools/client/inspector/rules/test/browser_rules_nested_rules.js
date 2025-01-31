@@ -47,8 +47,6 @@ const TEST_URI = `
 `;
 
 add_task(async function () {
-  await pushPref("layout.css.nesting.enabled", true);
-
   await addTab(
     "https://example.com/document-builder.sjs?html=" +
       encodeURIComponent(TEST_URI)
@@ -59,7 +57,7 @@ add_task(async function () {
   checkRuleViewContent(view, [
     { selector: "element", ancestorRulesData: null, declarations: [] },
     {
-      selector: `&`,
+      selector: ``,
       // prettier-ignore
       ancestorRulesData: [
         `body {`,
@@ -95,7 +93,7 @@ add_task(async function () {
   checkRuleViewContent(view, [
     { selector: "element", ancestorRulesData: null, declarations: [] },
     {
-      selector: `.foo`,
+      selector: `& .foo`,
       // prettier-ignore
       ancestorRulesData: [
         `body {`,
@@ -110,7 +108,7 @@ add_task(async function () {
   checkRuleViewContent(view, [
     { selector: "element", ancestorRulesData: null, declarations: [] },
     {
-      selector: `#bar`,
+      selector: `& #bar`,
       // prettier-ignore
       ancestorRulesData: [
         `body {`,
@@ -140,7 +138,7 @@ add_task(async function () {
   checkRuleViewContent(view, [
     { selector: "element", ancestorRulesData: null, declarations: [] },
     {
-      selector: `[href]`,
+      selector: `& [href]`,
       ancestorRulesData: [
         `body {`,
         `  @media screen {`,
@@ -167,7 +165,7 @@ function checkRuleViewContent(view, expectedRules) {
 
     const ruleInView = rulesInView[i];
     const selector = ruleInView.querySelector(
-      ".ruleview-selectorcontainer"
+      ".ruleview-selectors-container"
     ).innerText;
     is(selector, expectedRule.selector, `Expected selector for ${selector}`);
 

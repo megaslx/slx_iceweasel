@@ -10,21 +10,22 @@ define(function (require, exports, module) {
   const {
     button,
     span,
-  } = require("devtools/client/shared/vendor/react-dom-factories");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
   // Utils
   const {
+    appendRTLClassNameIfNeeded,
     wrapRender,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
   const {
     rep: StringRep,
     isLongString,
-  } = require("devtools/client/shared/components/reps/reps/string");
+  } = require("resource://devtools/client/shared/components/reps/reps/string.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
-  const nodeConstants = require("devtools/client/shared/components/reps/shared/dom-node-constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
+  const nodeConstants = require("resource://devtools/client/shared/components/reps/shared/dom-node-constants.js");
 
   const MAX_ATTRIBUTE_LENGTH = 50;
 
@@ -165,7 +166,7 @@ define(function (require, exports, module) {
 
     const nodeNameElement = span(
       {
-        className: "tag-name",
+        className: appendRTLClassNameIfNeeded("tag-name", nodeName),
       },
       nodeName
     );
@@ -179,7 +180,7 @@ define(function (require, exports, module) {
       attributeKeys.splice(attributeKeys.indexOf("id"), 1);
       attributeKeys.unshift("id");
     }
-    const attributeElements = attributeKeys.reduce((arr, name, i, keys) => {
+    const attributeElements = attributeKeys.reduce((arr, name) => {
       const value = attributes[name];
 
       let title = isLongString(value) ? value.initial : value;
@@ -189,7 +190,12 @@ define(function (require, exports, module) {
 
       const attribute = span(
         {},
-        span({ className: "attrName" }, name),
+        span(
+          {
+            className: appendRTLClassNameIfNeeded("attrName", name),
+          },
+          name
+        ),
         span({ className: "attrEqual" }, "="),
         StringRep({
           className: "attrValue",
@@ -216,7 +222,9 @@ define(function (require, exports, module) {
     // Initialize elements array
     const elements = [
       {
-        config: { className: "tag-name" },
+        config: {
+          className: appendRTLClassNameIfNeeded("tag-name", nodeName),
+        },
         content: nodeName,
       },
     ];
@@ -224,7 +232,9 @@ define(function (require, exports, module) {
     // Push ID element
     if (attributes.id) {
       elements.push({
-        config: { className: "attrName" },
+        config: {
+          className: appendRTLClassNameIfNeeded("attrName", attributes.id),
+        },
         content: `#${attributes.id}`,
       });
     }
@@ -237,7 +247,9 @@ define(function (require, exports, module) {
         .map(cls => `.${cls}`)
         .join("");
       elements.push({
-        config: { className: "attrName" },
+        config: {
+          className: appendRTLClassNameIfNeeded("attrName", elementClasses),
+        },
         content: elementClasses,
       });
     }

@@ -25,7 +25,7 @@ add_test(function test_udp_message_raw_data() {
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let rawData = new Uint8Array(HELLO_WORLD.length);
@@ -52,13 +52,13 @@ add_test(function test_udp_send_stream() {
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  stream.setData(HELLO_WORLD, HELLO_WORLD.length);
+  stream.setByteStringData(HELLO_WORLD);
   socket.sendBinaryStream("127.0.0.1", socket.port, stream);
 });
 
@@ -80,7 +80,7 @@ add_test(function test_udp_message_zero_length() {
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let rawData = new Uint8Array(EMPTY_MESSAGE.length);

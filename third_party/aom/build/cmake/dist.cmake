@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, Alliance for Open Media. All rights reserved
+# Copyright (c) 2017, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and the
 # Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License was
@@ -17,8 +17,8 @@ function(listify_string in_string out_string)
   set(${out_string} "${${out_string}}" PARENT_SCOPE)
 endfunction()
 
-set(REQUIRED_ARGS "AOM_ROOT" "AOM_CONFIG_DIR" "AOM_DIST_DIR"
-    "AOM_DIST_INCLUDES" "AOM_DIST_LIBS" "ENABLE_DOCS")
+set(REQUIRED_ARGS "AOM_ROOT" "AOM_CONFIG_DIR" "AOM_DIST_DIR" "AOM_DIST_INCLUDES"
+                  "AOM_DIST_LIBS" "ENABLE_DOCS")
 
 foreach(arg ${REQUIRED_ARGS})
   if("${${arg}}" STREQUAL "")

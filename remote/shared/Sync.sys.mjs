@@ -18,6 +18,9 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () =>
 /**
  * Throttle until the `window` has performed an animation frame.
  *
+ * The animation frame is requested after the main thread has processed
+ * all the already queued-up runnables.
+ *
  * @param {ChromeWindow} win
  *     Window to request the animation frame from.
  *
@@ -25,17 +28,15 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () =>
  */
 export function AnimationFramePromise(win) {
   const animationFramePromise = new Promise(resolve => {
-    win.requestAnimationFrame(resolve);
+    executeSoon(() => {
+      win.requestAnimationFrame(resolve);
+    });
   });
 
-  // Abort if the underlying window gets closed
-  const windowClosedPromise = new PollPromise(resolve => {
-    if (win.closed) {
-      resolve();
-    }
-  });
+  // Abort if the underlying window is no longer active (closed, BFCache)
+  const unloadPromise = new EventPromise(win, "pagehide");
 
-  return Promise.race([animationFramePromise, windowClosedPromise]);
+  return Promise.race([animationFramePromise, unloadPromise]);
 }
 
 /**
@@ -238,6 +239,9 @@ export function executeSoon(fn) {
  * @param {Condition} func
  *     Function to run off the main thread.
  * @param {object=} options
+ * @param {string=} options.errorMessage
+ *     Message to use to send a warning if ``timeout`` is over.
+ *     Defaults to `PollPromise timed out`.
  * @param {number=} options.timeout
  *     Desired timeout if wanted.  If 0 or less than the runtime evaluation
  *     time of ``func``, ``func`` is guaranteed to run at least once.
@@ -257,8 +261,14 @@ export function executeSoon(fn) {
  * @throws {RangeError}
  *     If `timeout` or `interval` are not unsigned integers.
  */
-export function PollPromise(func, { timeout = null, interval = 10 } = {}) {
+export function PollPromise(func, options = {}) {
+  const {
+    errorMessage = "PollPromise timed out",
+    interval = 10,
+    timeout = null,
+  } = options;
   const timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+  let didTimeOut = false;
 
   if (typeof func != "function") {
     throw new TypeError();
@@ -298,6 +308,7 @@ export function PollPromise(func, { timeout = null, interval = 10 } = {}) {
             typeof end != "undefined" &&
             (start == end || new Date().getTime() >= end)
           ) {
+            didTimeOut = true;
             resolve(rejected);
           }
         })
@@ -311,6 +322,9 @@ export function PollPromise(func, { timeout = null, interval = 10 } = {}) {
     timer.init(evalFn, interval, TYPE_REPEATING_SLACK);
   }).then(
     res => {
+      if (didTimeOut) {
+        lazy.logger.warn(`${errorMessage} after ${timeout} ms`);
+      }
       timer.cancel();
       return res;
     },

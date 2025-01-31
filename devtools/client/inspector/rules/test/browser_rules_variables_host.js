@@ -35,7 +35,7 @@ add_task(async function () {
   await selectNode("#host", inspector);
   let selector = getRuleViewRuleEditor(view, 1).selectorText;
   is(
-    selector.querySelector(".ruleview-selector-matched").textContent,
+    selector.querySelector(".matched").textContent,
     ":host",
     ":host should be matched."
   );
@@ -50,7 +50,7 @@ add_task(async function () {
 
   selector = getRuleViewRuleEditor(view, 3).selectorText;
   is(
-    selector.querySelector(".ruleview-selector-matched").textContent,
+    selector.querySelector(".matched").textContent,
     ":host",
     ":host should be matched."
   );
@@ -60,16 +60,16 @@ add_task(async function () {
     view,
     "span",
     "color"
-  ).valueSpan.querySelector(".ruleview-variable");
+  ).valueSpan.querySelector(".inspector-variable");
   is(setColor.textContent, "--test-color", "--test-color is set correctly");
   is(
     setColor.dataset.variable,
-    "--test-color = red",
+    "red",
     "--test-color's dataset.variable is set correctly"
   );
   const previewTooltip = await assertShowPreviewTooltip(view, setColor);
   ok(
-    previewTooltip.panel.textContent.includes("--test-color = red"),
+    previewTooltip.panel.textContent.includes("red"),
     "CSS variable preview tooltip shows the expected CSS variable"
   );
   await assertTooltipHiddenOnMouseOut(previewTooltip, setColor);

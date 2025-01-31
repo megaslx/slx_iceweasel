@@ -102,7 +102,7 @@ class AttrArray {
   // called when a mapped attribute is changed (regardless of connectedness).
   bool MarkAsPendingPresAttributeEvaluation() {
     // It'd be great to be able to assert that mImpl is non-null or we're the
-    // <body> element.
+    // <body> or <svg> elements.
     if (MOZ_UNLIKELY(!mImpl) && !GrowBy(1)) {
       return false;
     }
@@ -192,9 +192,12 @@ class AttrArray {
   AttrArray(const AttrArray& aOther) = delete;
   AttrArray& operator=(const AttrArray& aOther) = delete;
 
- private:
   bool GrowBy(uint32_t aGrowSize);
+  bool GrowTo(uint32_t aCapacity);
 
+  void Clear() { mImpl = nullptr; }
+
+ private:
   // Tries to create an attribute, growing the buffer if needed, with the given
   // name and value.
   //

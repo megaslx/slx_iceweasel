@@ -1,6 +1,6 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 ##
-## Copyright (c) 2016, Alliance for Open Media. All rights reserved
+## Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ##
 ## This source code is subject to the terms of the BSD 2 Clause License and
 ## the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -108,7 +108,7 @@ def main(bits=15, first_token=1):
   for q in range(1, 256):
     parray = get_quantized_spareto(q / 256., beta, bits, first_token)
     assert parray.sum() == 2**bits
-    print '{', ', '.join('%d' % i for i in parray), '},'
+    print('{', ', '.join('%d' % i for i in parray), '},')
 
 
 if __name__ == '__main__':

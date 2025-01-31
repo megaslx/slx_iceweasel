@@ -1,6 +1,7 @@
 export const description = `Validation tests for the interpolate attribute`;
 
 import { makeTestGroup } from '../../../../common/framework/test_group.js';
+import { keysOf } from '../../../../common/util/data_tables.js';
 import { ShaderValidationTest } from '../shader_validation_test.js';
 
 import { generateShader } from './util.js';
@@ -10,7 +11,12 @@ export const g = makeTestGroup(ShaderValidationTest);
 // List of valid interpolation attributes.
 const kValidInterpolationAttributes = new Set([
   '',
+  '@interpolate(perspective)',
+  '@interpolate(perspective, center)',
+  '@interpolate(perspective, centroid)',
   '@interpolate(flat)',
+  '@interpolate(flat, first)',
+  '@interpolate(flat, either)',
   '@interpolate(perspective)',
   '@interpolate(perspective, center)',
   '@interpolate(perspective, centroid)',
@@ -36,12 +42,18 @@ g.test('type_and_sampling')
         'center', // Invalid as first param
         'centroid', // Invalid as first param
         'sample', // Invalid as first param
+        'first', // Invalid as first param
+        'either', // Invalid as first param
       ] as const)
+      // vertex output must include a position builtin, so must use a struct
+      .filter(t => !(t.stage === 'vertex' && t.use_struct === false))
       .combine('sampling', [
         '',
         'center',
         'centroid',
         'sample',
+        'first',
+        'either',
         'flat', // Invalid as second param
         'perspective', // Invalid as second param
         'linear', // Invalid as second param
@@ -49,10 +61,6 @@ g.test('type_and_sampling')
       .beginSubcases()
   )
   .fn(t => {
-    if (t.params.stage === 'vertex' && t.params.use_struct === false) {
-      t.skip('vertex output must include a position builtin, so must use a struct');
-    }
-
     let interpolate = '';
     if (t.params.type !== '' || t.params.sampling !== '') {
       interpolate = '@interpolate(';
@@ -71,7 +79,6 @@ g.test('type_and_sampling')
       io: t.params.io,
       use_struct: t.params.use_struct,
     });
-
     t.expectCompileResult(kValidInterpolationAttributes.has(interpolate), code);
   });
 
@@ -94,7 +101,7 @@ g.test('require_location')
     }
 
     const code = generateShader({
-      attribute: t.params.attribute + `@interpolate(flat)`,
+      attribute: t.params.attribute + `@interpolate(flat, either)`,
       type: 'vec4<f32>',
       stage: t.params.stage,
       io: t.params.stage === 'fragment' ? 'in' : 'out',
@@ -126,7 +133,8 @@ g.test('integral_types')
       use_struct: t.params.use_struct,
     });
 
-    t.expectCompileResult(t.params.attribute === '@interpolate(flat)', code);
+    const expectSuccess = t.params.attribute.startsWith('@interpolate(flat');
+    t.expectCompileResult(expectSuccess, code);
   });
 
 g.test('duplicate')
@@ -134,11 +142,84 @@ g.test('duplicate')
   .params(u => u.combine('attr', ['', '@interpolate(flat)'] as const))
   .fn(t => {
     const code = generateShader({
-      attribute: `@location(0) @interpolate(flat) ${t.params.attr}`,
+      attribute: `@location(0) @interpolate(flat, either) ${t.params.attr}`,
       type: 'vec4<f32>',
       stage: 'fragment',
       io: 'in',
       use_struct: false,
     });
     t.expectCompileResult(t.params.attr === '', code);
+  });
+
+const kValidationTests: { [key: string]: { src: string; pass: boolean } } = {
+  valid: {
+    src: `@interpolate(perspective)`,
+    pass: true,
+  },
+  no_space: {
+    src: `@interpolate(perspective,center)`,
+    pass: true,
+  },
+  trailing_comma_one_arg: {
+    src: `@interpolate(flat,)`,
+    pass: true,
+  },
+  trailing_comma_two_arg: {
+    src: `@interpolate(perspective, center,)`,
+    pass: true,
+  },
+  newline: {
+    src: '@\ninterpolate(perspective)',
+    pass: true,
+  },
+  comment: {
+    src: `@/* comment */interpolate(perspective)`,
+    pass: true,
+  },
+
+  no_params: {
+    src: `@interpolate()`,
+    pass: false,
+  },
+  missing_left_paren: {
+    src: `@interpolate perspective)`,
+    pass: false,
+  },
+  missing_value_and_left_paren: {
+    src: `@interpolate)`,
+    pass: false,
+  },
+  missing_right_paren: {
+    src: `@interpolate(perspective`,
+    pass: false,
+  },
+  missing_parens: {
+    src: `@interpolate`,
+    pass: false,
+  },
+  missing_comma: {
+    src: `@interpolate(perspective center)`,
+    pass: false,
+  },
+  numeric: {
+    src: `@interpolate(1)`,
+    pass: false,
+  },
+  numeric_second_param: {
+    src: `@interpolate(perspective, 1)`,
+    pass: false,
+  },
+};
+
+g.test('interpolation_validation')
+  .desc(`Test validation of interpolation`)
+  .params(u => u.combine('attr', keysOf(kValidationTests)))
+  .fn(t => {
+    const code = `
+@vertex fn main(${kValidationTests[t.params.attr].src} @location(0) b: f32) ->
+    @builtin(position) vec4<f32> {
+  return vec4f(0);
+}`;
+    const expectSuccess = kValidationTests[t.params.attr].pass;
+    t.expectCompileResult(expectSuccess, code);
   });

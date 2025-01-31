@@ -17,15 +17,15 @@
 
 namespace mozilla::ipc {
 
-base::SharedMemory* IdleSchedulerParent::sActiveChildCounter = nullptr;
+MOZ_RUNINIT RefPtr<SharedMemory> IdleSchedulerParent::sActiveChildCounter =
+    nullptr;
 std::bitset<NS_IDLE_SCHEDULER_COUNTER_ARRAY_LENGHT>
     IdleSchedulerParent::sInUseChildCounters;
-LinkedList<IdleSchedulerParent> IdleSchedulerParent::sIdleAndGCRequests;
+MOZ_RUNINIT LinkedList<IdleSchedulerParent>
+    IdleSchedulerParent::sIdleAndGCRequests;
 int32_t IdleSchedulerParent::sMaxConcurrentIdleTasksInChildProcesses = 1;
 uint32_t IdleSchedulerParent::sMaxConcurrentGCs = 1;
 uint32_t IdleSchedulerParent::sActiveGCs = 0;
-bool IdleSchedulerParent::sRecordGCTelemetry = false;
-uint32_t IdleSchedulerParent::sNumWaitingGC = 0;
 uint32_t IdleSchedulerParent::sChildProcessesRunningPrioritizedOperation = 0;
 uint32_t IdleSchedulerParent::sChildProcessesAlive = 0;
 nsITimer* IdleSchedulerParent::sStarvationPreventer = nullptr;
@@ -105,13 +105,12 @@ void IdleSchedulerParent::CalculateNumIdleTasks() {
   // On one and two processor (or hardware thread) systems this will
   // allow one concurrent idle task.
   sMaxConcurrentIdleTasksInChildProcesses = int32_t(std::max(sNumCPUs, 1u));
-  sMaxConcurrentGCs =
-      std::min(std::max(sNumCPUs / sPrefConcurrentGCsCPUDivisor, 1u),
-               sPrefConcurrentGCsMax);
+  sMaxConcurrentGCs = std::clamp(sNumCPUs / sPrefConcurrentGCsCPUDivisor, 1u,
+                                 sPrefConcurrentGCsMax);
 
-  if (sActiveChildCounter && sActiveChildCounter->memory()) {
+  if (sActiveChildCounter && sActiveChildCounter->Memory()) {
     static_cast<Atomic<int32_t>*>(
-        sActiveChildCounter->memory())[NS_IDLE_SCHEDULER_INDEX_OF_CPU_COUNTER] =
+        sActiveChildCounter->Memory())[NS_IDLE_SCHEDULER_INDEX_OF_CPU_COUNTER] =
         static_cast<int32_t>(sMaxConcurrentIdleTasksInChildProcesses);
   }
   IdleSchedulerParent::Schedule(nullptr);
@@ -122,13 +121,13 @@ IdleSchedulerParent::~IdleSchedulerParent() {
   // that is the case.
   if (mChildId) {
     sInUseChildCounters[mChildId] = false;
-    if (sActiveChildCounter && sActiveChildCounter->memory() &&
+    if (sActiveChildCounter && sActiveChildCounter->Memory() &&
         static_cast<Atomic<int32_t>*>(
-            sActiveChildCounter->memory())[mChildId]) {
+            sActiveChildCounter->Memory())[mChildId]) {
       --static_cast<Atomic<int32_t>*>(
           sActiveChildCounter
-              ->memory())[NS_IDLE_SCHEDULER_INDEX_OF_ACTIVITY_COUNTER];
-      static_cast<Atomic<int32_t>*>(sActiveChildCounter->memory())[mChildId] =
+              ->Memory())[NS_IDLE_SCHEDULER_INDEX_OF_ACTIVITY_COUNTER];
+      static_cast<Atomic<int32_t>*>(sActiveChildCounter->Memory())[mChildId] =
           0;
     }
   }
@@ -156,7 +155,6 @@ IdleSchedulerParent::~IdleSchedulerParent() {
   sChildProcessesAlive--;
   if (sChildProcessesAlive == 0) {
     MOZ_ASSERT(sIdleAndGCRequests.isEmpty());
-    delete sActiveChildCounter;
     sActiveChildCounter = nullptr;
 
     if (sStarvationPreventer) {
@@ -180,24 +178,23 @@ IPCResult IdleSchedulerParent::RecvInitForIdleUse(
   // Create a shared memory object which is shared across all the relevant
   // processes.
   if (!sActiveChildCounter) {
-    sActiveChildCounter = new base::SharedMemory();
+    sActiveChildCounter = MakeRefPtr<SharedMemory>();
     size_t shmemSize = NS_IDLE_SCHEDULER_COUNTER_ARRAY_LENGHT * sizeof(int32_t);
     if (sActiveChildCounter->Create(shmemSize) &&
         sActiveChildCounter->Map(shmemSize)) {
-      memset(sActiveChildCounter->memory(), 0, shmemSize);
+      memset(sActiveChildCounter->Memory(), 0, shmemSize);
       sInUseChildCounters[NS_IDLE_SCHEDULER_INDEX_OF_ACTIVITY_COUNTER] = true;
       sInUseChildCounters[NS_IDLE_SCHEDULER_INDEX_OF_CPU_COUNTER] = true;
       static_cast<Atomic<int32_t>*>(
           sActiveChildCounter
-              ->memory())[NS_IDLE_SCHEDULER_INDEX_OF_CPU_COUNTER] =
+              ->Memory())[NS_IDLE_SCHEDULER_INDEX_OF_CPU_COUNTER] =
           static_cast<int32_t>(sMaxConcurrentIdleTasksInChildProcesses);
     } else {
-      delete sActiveChildCounter;
       sActiveChildCounter = nullptr;
     }
   }
-  Maybe<SharedMemoryHandle> activeCounter;
-  if (SharedMemoryHandle handle =
+  Maybe<SharedMemory::Handle> activeCounter;
+  if (SharedMemory::Handle handle =
           sActiveChildCounter ? sActiveChildCounter->CloneHandle() : nullptr) {
     activeCounter.emplace(std::move(handle));
   }
@@ -214,7 +211,7 @@ IPCResult IdleSchedulerParent::RecvInitForIdleUse(
   // If there wasn't an empty item, we'll fallback to 0.
   mChildId = unusedId;
 
-  aResolve(std::tuple<mozilla::Maybe<SharedMemoryHandle>&&, const uint32_t&>(
+  aResolve(std::tuple<mozilla::Maybe<SharedMemory::Handle>&&, const uint32_t&>(
       std::move(activeCounter), mChildId));
   return IPC_OK();
 }
@@ -287,8 +284,6 @@ IPCResult IdleSchedulerParent::RecvRequestGC(RequestGCResolver&& aResolver) {
     sIdleAndGCRequests.insertBack(this);
   }
 
-  sRecordGCTelemetry = true;
-  sNumWaitingGC++;
   Schedule(nullptr);
   return IPC_OK();
 }
@@ -302,7 +297,6 @@ IPCResult IdleSchedulerParent::RecvStartedGC() {
   sActiveGCs++;
 
   if (mRequestingGC) {
-    sNumWaitingGC--;
     // We have to respond to the request before dropping it, even though the
     // content process is already doing the GC.
     mRequestingGC.value()(true);
@@ -310,7 +304,6 @@ IPCResult IdleSchedulerParent::RecvStartedGC() {
     if (!IsWaitingForIdle()) {
       remove();
     }
-    sRecordGCTelemetry = true;
   }
 
   return IPC_OK();
@@ -320,7 +313,6 @@ IPCResult IdleSchedulerParent::RecvDoneGC() {
   MOZ_ASSERT(mDoingGC);
   sActiveGCs--;
   mDoingGC = false;
-  sRecordGCTelemetry = true;
   Schedule(nullptr);
   return IPC_OK();
 }
@@ -329,7 +321,7 @@ int32_t IdleSchedulerParent::ActiveCount() {
   if (sActiveChildCounter) {
     return (static_cast<Atomic<int32_t>*>(
         sActiveChildCounter
-            ->memory())[NS_IDLE_SCHEDULER_INDEX_OF_ACTIVITY_COUNTER]);
+            ->Memory())[NS_IDLE_SCHEDULER_INDEX_OF_ACTIVITY_COUNTER]);
   }
   return 0;
 }
@@ -365,9 +357,6 @@ void IdleSchedulerParent::SendMayGC() {
   mRequestingGC = Nothing();
   mDoingGC = true;
   sActiveGCs++;
-  sRecordGCTelemetry = true;
-  MOZ_ASSERT(sNumWaitingGC > 0);
-  sNumWaitingGC--;
 }
 
 void IdleSchedulerParent::Schedule(IdleSchedulerParent* aRequester) {
@@ -423,11 +412,6 @@ void IdleSchedulerParent::Schedule(IdleSchedulerParent* aRequester) {
 
   if (!sIdleAndGCRequests.isEmpty() && HasSpareCycles(activeCount)) {
     EnsureStarvationTimer();
-  }
-
-  if (sRecordGCTelemetry) {
-    sRecordGCTelemetry = false;
-    Telemetry::Accumulate(Telemetry::GC_WAIT_FOR_IDLE_COUNT, sNumWaitingGC);
   }
 }
 

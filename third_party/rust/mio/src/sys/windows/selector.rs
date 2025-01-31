@@ -10,8 +10,9 @@ cfg_net! {
     use crate::Interest;
 }
 
-use miow::iocp::{CompletionPort, CompletionStatus};
+use super::iocp::{CompletionPort, CompletionStatus};
 use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::io;
 use std::marker::PhantomPinned;
 use std::os::windows::io::RawSocket;
@@ -21,11 +22,11 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use winapi::shared::ntdef::NT_SUCCESS;
-use winapi::shared::ntdef::{HANDLE, PVOID};
-use winapi::shared::ntstatus::STATUS_CANCELLED;
-use winapi::shared::winerror::{ERROR_INVALID_HANDLE, ERROR_IO_PENDING, WAIT_TIMEOUT};
-use winapi::um::minwinbase::OVERLAPPED;
+
+use windows_sys::Win32::Foundation::{
+    ERROR_INVALID_HANDLE, ERROR_IO_PENDING, HANDLE, STATUS_CANCELLED, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 #[derive(Debug)]
 struct AfdGroup {
@@ -49,7 +50,7 @@ impl AfdGroup {
 }
 
 cfg_io_source! {
-    const POLL_GROUP__MAX_GROUP_SIZE: usize = 32;
+    const POLL_GROUP_MAX_GROUP_SIZE: usize = 32;
 
     impl AfdGroup {
         pub fn acquire(&self) -> io::Result<Arc<Afd>> {
@@ -58,7 +59,7 @@ cfg_io_source! {
                 self._alloc_afd_group(&mut afd_group)?;
             } else {
                 // + 1 reference in Vec
-                if Arc::strong_count(afd_group.last().unwrap()) > POLL_GROUP__MAX_GROUP_SIZE  {
+                if Arc::strong_count(afd_group.last().unwrap()) > POLL_GROUP_MAX_GROUP_SIZE  {
                     self._alloc_afd_group(&mut afd_group)?;
                 }
             }
@@ -141,7 +142,7 @@ impl SockState {
             /* No poll operation is pending; start one. */
             self.poll_info.exclusive = 0;
             self.poll_info.number_of_handles = 1;
-            *unsafe { self.poll_info.timeout.QuadPart_mut() } = std::i64::MAX;
+            self.poll_info.timeout = i64::MAX;
             self.poll_info.handles[0].handle = self.base_socket as HANDLE;
             self.poll_info.handles[0].status = 0;
             self.poll_info.handles[0].events = self.user_evts | afd::POLL_LOCAL_CLOSE;
@@ -204,9 +205,9 @@ impl SockState {
         unsafe {
             if self.delete_pending {
                 return None;
-            } else if self.iosb.u.Status == STATUS_CANCELLED {
+            } else if self.iosb.Anonymous.Status == STATUS_CANCELLED {
                 /* The poll request was cancelled by CancelIoEx. */
-            } else if !NT_SUCCESS(self.iosb.u.Status) {
+            } else if self.iosb.Anonymous.Status < 0 {
                 /* The overlapped request itself failed in an unexpected way. */
                 afd_events = afd::POLL_CONNECT_FAIL;
             } else if self.poll_info.number_of_handles < 1 {
@@ -295,7 +296,7 @@ impl Drop for SockState {
 
 /// Converts the pointer to a `SockState` into a raw pointer.
 /// To revert see `from_overlapped`.
-fn into_overlapped(sock_state: Pin<Arc<Mutex<SockState>>>) -> PVOID {
+fn into_overlapped(sock_state: Pin<Arc<Mutex<SockState>>>) -> *mut c_void {
     let overlapped_ptr: *const Mutex<SockState> =
         unsafe { Arc::into_raw(Pin::into_inner_unchecked(sock_state)) };
     overlapped_ptr as *mut _
@@ -316,7 +317,7 @@ fn from_overlapped(ptr: *mut OVERLAPPED) -> Pin<Arc<Mutex<SockState>>> {
 #[cfg(debug_assertions)]
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-/// Windows implementaion of `sys::Selector`
+/// Windows implementation of `sys::Selector`
 ///
 /// Edge-triggered event notification is simulated by resetting internal event flag of each socket state `SockState`
 /// and setting all events back by intercepting all requests that could cause `io::ErrorKind::WouldBlock` happening.
@@ -327,8 +328,6 @@ pub struct Selector {
     #[cfg(debug_assertions)]
     id: usize,
     pub(super) inner: Arc<SelectorInner>,
-    #[cfg(debug_assertions)]
-    has_waker: AtomicBool,
 }
 
 impl Selector {
@@ -340,8 +339,6 @@ impl Selector {
                 #[cfg(debug_assertions)]
                 id,
                 inner: Arc::new(inner),
-                #[cfg(debug_assertions)]
-                has_waker: AtomicBool::new(false),
             }
         })
     }
@@ -351,8 +348,6 @@ impl Selector {
             #[cfg(debug_assertions)]
             id: self.id,
             inner: Arc::clone(&self.inner),
-            #[cfg(debug_assertions)]
-            has_waker: AtomicBool::new(self.has_waker.load(Ordering::Acquire)),
         })
     }
 
@@ -362,11 +357,6 @@ impl Selector {
     /// can poll IOCP at a time.
     pub fn select(&mut self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         self.inner.select(events, timeout)
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn register_waker(&self) -> bool {
-        self.has_waker.swap(true, Ordering::AcqRel)
     }
 
     pub(super) fn clone_port(&self) -> Arc<CompletionPort> {
@@ -534,9 +524,12 @@ impl SelectorInner {
 cfg_io_source! {
     use std::mem::size_of;
     use std::ptr::null_mut;
-    use winapi::um::mswsock;
-    use winapi::um::winsock2::WSAGetLastError;
-    use winapi::um::winsock2::{WSAIoctl, SOCKET_ERROR};
+
+    use windows_sys::Win32::Networking::WinSock::{
+        WSAGetLastError, WSAIoctl, SIO_BASE_HANDLE, SIO_BSP_HANDLE,
+        SIO_BSP_HANDLE_POLL, SIO_BSP_HANDLE_SELECT, SOCKET_ERROR,
+    };
+
 
     impl SelectorInner {
         fn register(
@@ -640,7 +633,7 @@ cfg_io_source! {
                 ioctl,
                 null_mut(),
                 0,
-                &mut base_socket as *mut _ as PVOID,
+                &mut base_socket as *mut _ as *mut c_void,
                 size_of::<RawSocket>() as u32,
                 &mut bytes,
                 null_mut(),
@@ -655,7 +648,7 @@ cfg_io_source! {
     }
 
     fn get_base_socket(raw_socket: RawSocket) -> io::Result<RawSocket> {
-        let res = try_get_base_socket(raw_socket, mswsock::SIO_BASE_HANDLE);
+        let res = try_get_base_socket(raw_socket, SIO_BASE_HANDLE);
         if let Ok(base_socket) = res {
             return Ok(base_socket);
         }
@@ -666,9 +659,9 @@ cfg_io_source! {
         // However, at least one known LSP deliberately breaks it, so we try
         // some alternative IOCTLs, starting with the most appropriate one.
         for &ioctl in &[
-            mswsock::SIO_BSP_HANDLE_SELECT,
-            mswsock::SIO_BSP_HANDLE_POLL,
-            mswsock::SIO_BSP_HANDLE,
+            SIO_BSP_HANDLE_SELECT,
+            SIO_BSP_HANDLE_POLL,
+            SIO_BSP_HANDLE,
         ] {
             if let Ok(base_socket) = try_get_base_socket(raw_socket, ioctl) {
                 // Since we know now that we're dealing with an LSP (otherwise

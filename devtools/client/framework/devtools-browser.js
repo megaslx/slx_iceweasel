@@ -84,8 +84,8 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
    * of there
    */
   // used by browser-sets.inc, command
-  async toggleToolboxCommand(gBrowser, startTime) {
-    const toolbox = await gDevTools.getToolboxForTab(gBrowser.selectedTab);
+  toggleToolboxCommand(gBrowser, startTime) {
+    const toolbox = gDevTools.getToolboxForTab(gBrowser.selectedTab);
 
     // If a toolbox exists, using toggle from the Main window :
     // - should close a docked toolbox
@@ -136,9 +136,9 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
   },
 
   /**
-   * This function makes sure that the "devtoolstheme" attribute is set on the browser
-   * window to make it possible to change colors on elements in the browser (like the
-   * splitter between the toolbox and web content).
+   * This function makes sure that the "devtoolstheme" attribute is set on the
+   * browser window to make it possible to change colors on elements in the
+   * browser (like the splitter between the toolbox and web content).
    */
   updateDevtoolsThemeAttribute(win) {
     // Set an attribute on root element of each window to make it possible
@@ -147,13 +147,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
     if (devtoolsTheme != "dark") {
       devtoolsTheme = "light";
     }
-
-    // Style the splitter between the toolbox and page content.  This used to
-    // set the attribute on the browser's root node but that regressed tpaint:
-    // bug 1331449.
-    win.document
-      .getElementById("appcontent")
-      .setAttribute("devtoolstheme", devtoolsTheme);
+    win.document.documentElement.setAttribute("devtoolstheme", devtoolsTheme);
   },
 
   observe(subject, topic, prefName) {
@@ -210,7 +204,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
     }
 
     const tab = win.gBrowser.selectedTab;
-    const toolbox = await gDevTools.getToolboxForTab(tab);
+    const toolbox = gDevTools.getToolboxForTab(tab);
     const toolDefinition = gDevTools.getToolDefinition(toolId);
 
     if (
@@ -278,14 +272,11 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
     // Otherwise implement all other key shortcuts individually here
     switch (key.id) {
       case "toggleToolbox":
-        await gDevToolsBrowser.toggleToolboxCommand(window.gBrowser, startTime);
+        gDevToolsBrowser.toggleToolboxCommand(window.gBrowser, startTime);
         break;
       case "toggleToolboxF12":
         if (Services.prefs.getBoolPref(DEVTOOLS_F12_ENABLED_PREF, true)) {
-          await gDevToolsBrowser.toggleToolboxCommand(
-            window.gBrowser,
-            startTime
-          );
+          gDevToolsBrowser.toggleToolboxCommand(window.gBrowser, startTime);
         }
         break;
       case "browserToolbox":
@@ -303,17 +294,11 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
         });
         break;
       case "javascriptTracingToggle":
-        const toolbox = await gDevTools.getToolboxForTab(
-          window.gBrowser.selectedTab
-        );
+        const toolbox = gDevTools.getToolboxForTab(window.gBrowser.selectedTab);
         if (!toolbox) {
           break;
         }
-        const dbg = await toolbox.getPanel("jsdebugger");
-        if (!dbg) {
-          break;
-        }
-        dbg.toggleJavascriptTracing();
+        await toolbox.commands.tracerCommand.toggle();
         break;
     }
   },
@@ -359,8 +344,11 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
     if (gDevToolsBrowser._trackedBrowserWindows.has(win)) {
       return;
     }
+    if (!win.document.getElementById("menuWebDeveloperPopup")) {
+      // Menus etc. set up here are browser specific.
+      return;
+    }
     gDevToolsBrowser._trackedBrowserWindows.add(win);
-
     BrowserMenus.addMenus(win.document);
 
     this.updateCommandAvailability(win);

@@ -55,15 +55,11 @@ const EXPECTED_SPONSORED_URLBAR_RESULT = {
     descriptionL10n: { id: "urlbar-result-action-sponsored" },
     helpUrl: QuickSuggest.HELP_URL,
     helpL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-learn-more-about-firefox-suggest"
-        : "firefox-suggest-urlbar-learn-more",
+      id: "urlbar-result-menu-learn-more-about-firefox-suggest",
     },
-    isBlockable: UrlbarPrefs.get("quickSuggestBlockingEnabled"),
+    isBlockable: true,
     blockL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-dismiss-firefox-suggest"
-        : "firefox-suggest-urlbar-block",
+      id: "urlbar-result-menu-dismiss-firefox-suggest",
     },
     source: "remote-settings",
     provider: "AdmWikipedia",
@@ -90,15 +86,11 @@ const EXPECTED_NONSPONSORED_URLBAR_RESULT = {
     sponsoredIabCategory: "5 - Education",
     helpUrl: QuickSuggest.HELP_URL,
     helpL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-learn-more-about-firefox-suggest"
-        : "firefox-suggest-urlbar-learn-more",
+      id: "urlbar-result-menu-learn-more-about-firefox-suggest",
     },
-    isBlockable: UrlbarPrefs.get("quickSuggestBlockingEnabled"),
+    isBlockable: true,
     blockL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-dismiss-firefox-suggest"
-        : "firefox-suggest-urlbar-block",
+      id: "urlbar-result-menu-dismiss-firefox-suggest",
     },
     source: "remote-settings",
     provider: "AdmWikipedia",
@@ -109,23 +101,22 @@ let gSandbox;
 let gDateNowStub;
 let gStartupDateMsStub;
 
-add_task(async function init() {
-  UrlbarPrefs.set("quicksuggest.enabled", true);
-  UrlbarPrefs.set("quicksuggest.impressionCaps.sponsoredEnabled", true);
-  UrlbarPrefs.set("quicksuggest.impressionCaps.nonSponsoredEnabled", true);
-  UrlbarPrefs.set("suggest.quicksuggest.nonsponsored", true);
-  UrlbarPrefs.set("suggest.quicksuggest.sponsored", true);
-  UrlbarPrefs.set("bestMatch.enabled", false);
-
+add_setup(async () => {
   // Disable search suggestions so we don't hit the network.
   Services.prefs.setBoolPref("browser.search.suggest.enabled", false);
 
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
-    remoteSettingsResults: [
+    remoteSettingsRecords: [
       {
         type: "data",
         attachment: REMOTE_SETTINGS_RESULTS,
       },
+    ],
+    prefs: [
+      ["quicksuggest.impressionCaps.sponsoredEnabled", true],
+      ["quicksuggest.impressionCaps.nonSponsoredEnabled", true],
+      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quicksuggest.sponsored", true],
     ],
   });
 
@@ -1775,7 +1766,6 @@ add_task(async function sponsoredAndNonsponsored() {
         searchString: "nonsponsored",
         expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
       });
-      await checkTelemetryEvents([]);
 
       // 2nd searches
       await checkSearch({
@@ -1788,21 +1778,6 @@ add_task(async function sponsoredAndNonsponsored() {
         searchString: "nonsponsored",
         expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
       });
-      await checkTelemetryEvents([
-        {
-          object: "hit",
-          extra: {
-            eventDate: "0",
-            intervalSeconds: "Infinity",
-            maxCount: "2",
-            startDate: "0",
-            impressionDate: "0",
-            count: "2",
-            type: "sponsored",
-            eventCount: "1",
-          },
-        },
-      ]);
 
       // 3rd searches
       await checkSearch({
@@ -1815,21 +1790,6 @@ add_task(async function sponsoredAndNonsponsored() {
         searchString: "nonsponsored",
         expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
       });
-      await checkTelemetryEvents([
-        {
-          object: "hit",
-          extra: {
-            eventDate: "0",
-            intervalSeconds: "Infinity",
-            maxCount: "3",
-            startDate: "0",
-            impressionDate: "0",
-            count: "3",
-            type: "nonsponsored",
-            eventCount: "1",
-          },
-        },
-      ]);
 
       // 4th searches
       await checkSearch({
@@ -1842,7 +1802,6 @@ add_task(async function sponsoredAndNonsponsored() {
         searchString: "nonsponsored",
         expectedResults: [],
       });
-      await checkTelemetryEvents([]);
     },
   });
 });
@@ -1864,7 +1823,6 @@ add_task(async function emptyConfig() {
           expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
         });
       }
-      await checkTelemetryEvents([]);
     },
   });
 });
@@ -1896,21 +1854,6 @@ add_task(async function sponsoredCapsDisabled() {
           expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
         });
       }
-      await checkTelemetryEvents([
-        {
-          object: "hit",
-          extra: {
-            eventDate: "0",
-            intervalSeconds: "Infinity",
-            maxCount: "3",
-            startDate: "0",
-            impressionDate: "0",
-            count: "3",
-            type: "nonsponsored",
-            eventCount: "1",
-          },
-        },
-      ]);
 
       await checkSearch({
         name: "sponsored additional",
@@ -1922,7 +1865,6 @@ add_task(async function sponsoredCapsDisabled() {
         searchString: "nonsponsored",
         expectedResults: [],
       });
-      await checkTelemetryEvents([]);
     },
   });
   UrlbarPrefs.set("quicksuggest.impressionCaps.sponsoredEnabled", true);
@@ -1955,21 +1897,6 @@ add_task(async function nonsponsoredCapsDisabled() {
           expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
         });
       }
-      await checkTelemetryEvents([
-        {
-          object: "hit",
-          extra: {
-            eventDate: "0",
-            intervalSeconds: "Infinity",
-            maxCount: "3",
-            startDate: "0",
-            impressionDate: "0",
-            count: "3",
-            type: "sponsored",
-            eventCount: "1",
-          },
-        },
-      ]);
 
       await checkSearch({
         name: "sponsored additional",
@@ -1981,7 +1908,6 @@ add_task(async function nonsponsoredCapsDisabled() {
         searchString: "nonsponsored",
         expectedResults: [EXPECTED_NONSPONSORED_URLBAR_RESULT],
       });
-      await checkTelemetryEvents([]);
     },
   });
   UrlbarPrefs.set("quicksuggest.impressionCaps.nonSponsoredEnabled", true);
@@ -2013,21 +1939,6 @@ add_task(async function configChange_sameIntervalLowerCap_1() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "3",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2042,7 +1953,6 @@ add_task(async function configChange_sameIntervalLowerCap_1() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
         3: async () => {
           await checkSearch({
@@ -2055,34 +1965,6 @@ add_task(async function configChange_sameIntervalLowerCap_1() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "1",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "1",
-                startDate: "3000",
-                impressionDate: "3000",
-                count: "1",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2110,7 +1992,6 @@ add_task(async function configChange_sameIntervalLowerCap_2() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2137,34 +2018,6 @@ add_task(async function configChange_sameIntervalLowerCap_2() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "1",
-                startDate: "0",
-                impressionDate: "0",
-                count: "2",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "1",
-                startDate: "3000",
-                impressionDate: "3000",
-                count: "1",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2196,21 +2049,6 @@ add_task(async function configChange_sameIntervalHigherCap() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "3",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2232,21 +2070,6 @@ add_task(async function configChange_sameIntervalHigherCap() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "1000",
-                intervalSeconds: "3",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "1000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
         3: async () => {
           for (let i = 0; i < 5; i++) {
@@ -2261,34 +2084,6 @@ add_task(async function configChange_sameIntervalHigherCap() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "1000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "3000",
-                intervalSeconds: "3",
-                maxCount: "5",
-                startDate: "3000",
-                impressionDate: "3000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2317,21 +2112,6 @@ add_task(async function configChange_1IntervalTo2NewIntervalsHigher() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "3",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2349,7 +2129,6 @@ add_task(async function configChange_1IntervalTo2NewIntervalsHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
         4: async () => {
           await checkSearch({
@@ -2357,7 +2136,6 @@ add_task(async function configChange_1IntervalTo2NewIntervalsHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
         5: async () => {
           for (let i = 0; i < 2; i++) {
@@ -2372,34 +2150,6 @@ add_task(async function configChange_1IntervalTo2NewIntervalsHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "5000",
-                intervalSeconds: "5",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "5000",
-                intervalSeconds: "10",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "5000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2431,21 +2181,6 @@ add_task(async function configChange_2IntervalsTo1NewIntervalHigher() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "2",
-                maxCount: "2",
-                startDate: "0",
-                impressionDate: "0",
-                count: "2",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
         2: async () => {
           for (let i = 0; i < 2; i++) {
@@ -2455,47 +2190,6 @@ add_task(async function configChange_2IntervalsTo1NewIntervalHigher() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "2000",
-                intervalSeconds: "2",
-                maxCount: "2",
-                startDate: "0",
-                impressionDate: "0",
-                count: "2",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "2000",
-                intervalSeconds: "2",
-                maxCount: "2",
-                startDate: "2000",
-                impressionDate: "2000",
-                count: "2",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "2000",
-                intervalSeconds: "4",
-                maxCount: "4",
-                startDate: "0",
-                impressionDate: "2000",
-                count: "4",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2515,21 +2209,6 @@ add_task(async function configChange_2IntervalsTo1NewIntervalHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "4000",
-                intervalSeconds: "6",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "4000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
         5: async () => {
           await checkSearch({
@@ -2537,7 +2216,6 @@ add_task(async function configChange_2IntervalsTo1NewIntervalHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
         6: async () => {
           for (let i = 0; i < 5; i++) {
@@ -2552,34 +2230,6 @@ add_task(async function configChange_2IntervalsTo1NewIntervalHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "6000",
-                intervalSeconds: "6",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "4000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            {
-              object: "hit",
-              extra: {
-                eventDate: "6000",
-                intervalSeconds: "6",
-                maxCount: "5",
-                startDate: "6000",
-                impressionDate: "6000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2608,21 +2258,6 @@ add_task(async function configChange_1IntervalTo1NewIntervalLower() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "5",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2644,21 +2279,6 @@ add_task(async function configChange_1IntervalTo1NewIntervalLower() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "1000",
-                intervalSeconds: "3",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "1000",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2687,21 +2307,6 @@ add_task(async function configChange_1IntervalToLifetime() {
               expectedResults: [EXPECTED_SPONSORED_URLBAR_RESULT],
             });
           }
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "3",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2716,7 +2321,6 @@ add_task(async function configChange_1IntervalToLifetime() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
       });
     },
@@ -2748,21 +2352,6 @@ add_task(async function configChange_lifetimeCapHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "Infinity",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2784,21 +2373,6 @@ add_task(async function configChange_lifetimeCapHigher() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "1000",
-                intervalSeconds: "Infinity",
-                maxCount: "5",
-                startDate: "0",
-                impressionDate: "1000",
-                count: "5",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -2830,21 +2404,6 @@ add_task(async function configChange_lifetimeCapLower() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([
-            {
-              object: "hit",
-              extra: {
-                eventDate: "0",
-                intervalSeconds: "Infinity",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "3",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
           await QuickSuggestTestUtils.setConfig({
             impression_caps: {
               sponsored: {
@@ -2859,7 +2418,6 @@ add_task(async function configChange_lifetimeCapLower() {
             searchString: "sponsored",
             expectedResults: [],
           });
-          await checkTelemetryEvents([]);
         },
       });
     },
@@ -3126,37 +2684,6 @@ add_task(async function intervalsElapsedButCapNotHit() {
         // 10s
         10: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          let expectedEvents = [
-            // 1s: reset with count = 0
-            {
-              object: "reset",
-              extra: {
-                eventDate: "1000",
-                intervalSeconds: "1",
-                maxCount: "3",
-                startDate: "0",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-            // 2-10s: reset with count = 1, eventCount = 9
-            {
-              object: "reset",
-              extra: {
-                eventDate: "10000",
-                intervalSeconds: "1",
-                maxCount: "3",
-                startDate: "1000",
-                impressionDate: "1000",
-                count: "1",
-                type: "sponsored",
-                eventCount: "9",
-              },
-            },
-          ];
-          await checkTelemetryEvents(expectedEvents);
         },
       });
     },
@@ -3191,21 +2718,6 @@ add_task(async function restart_1() {
         // 10s: 6 batched resets for periods starting at 4s
         10: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "10000",
-                intervalSeconds: "1",
-                maxCount: "1",
-                startDate: "4000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "6",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3241,21 +2753,6 @@ add_task(async function restart_2() {
         // 10s: 5 batched resets for periods starting at 5s
         10: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "10000",
-                intervalSeconds: "1",
-                maxCount: "1",
-                startDate: "5000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "5",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3291,21 +2788,6 @@ add_task(async function restart_3() {
         // 10s: 5 batched resets for periods starting at 5s
         10: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "10000",
-                intervalSeconds: "1",
-                maxCount: "1",
-                startDate: "5000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "5",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3342,50 +2824,18 @@ add_task(async function restart_4() {
         // 9s: no resets
         9: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([]);
         },
         // 10s: 1 reset for period starting at 0s
         10: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "10000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "0",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
         // 19s: no resets
         19: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([]);
         },
         // 20s: 1 reset for period starting at 10s
         20: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "20000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "10000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3421,21 +2871,6 @@ add_task(async function restart_5() {
         // 20s: 2 batches resets for periods starting at 0s
         20: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "20000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "0",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "2",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3472,50 +2907,18 @@ add_task(async function restart_6() {
         // 19s: no resets
         19: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([]);
         },
         // 20s: 1 reset for period starting at 10s
         20: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "20000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "10000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
         // 29s: no resets
         29: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([]);
         },
         // 30s: 1 reset for period starting at 20s
         30: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "30000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "20000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "1",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3551,21 +2954,6 @@ add_task(async function restart_7() {
         // 30s: 2 batched resets for periods starting at 10s
         30: async () => {
           QuickSuggest.impressionCaps._test_resetElapsedCounters();
-          await checkTelemetryEvents([
-            {
-              object: "reset",
-              extra: {
-                eventDate: "30000",
-                intervalSeconds: "10",
-                maxCount: "1",
-                startDate: "10000",
-                impressionDate: "0",
-                count: "0",
-                type: "sponsored",
-                eventCount: "2",
-              },
-            },
-          ]);
         },
       });
     },
@@ -3592,22 +2980,6 @@ add_task(async function shutdown() {
       // Simulate shutdown.
       Services.prefs.setBoolPref("toolkit.asyncshutdown.testing", true);
       AsyncShutdown.profileChangeTeardown._trigger();
-
-      await checkTelemetryEvents([
-        {
-          object: "reset",
-          extra: {
-            eventDate: "10000",
-            intervalSeconds: "1",
-            maxCount: "1",
-            startDate: "0",
-            impressionDate: "0",
-            count: "0",
-            type: "sponsored",
-            eventCount: "10",
-          },
-        },
-      ]);
 
       gDateNowStub.returns(0);
       Services.prefs.clearUserPref("toolkit.asyncshutdown.testing");
@@ -3644,27 +3016,6 @@ add_task(async function resetInterval() {
 
       // Restore the reset interval to its default.
       QuickSuggest.impressionCaps._test_setCountersResetInterval();
-
-      await checkTelemetryEvents([
-        {
-          object: "reset",
-          extra: {
-            eventDate: /^[0-9]+$/,
-            intervalSeconds: "0.1",
-            maxCount: "1",
-            startDate: /^[0-9]+$/,
-            impressionDate: "0",
-            count: "0",
-            type: "sponsored",
-            // See comment above on allowing leeway for `eventCount`.
-            eventCount: str => {
-              info(`Checking 'eventCount': ${str}`);
-              let count = parseInt(str);
-              return 10 <= count && count < 20;
-            },
-          },
-        },
-      ]);
     },
   });
 
@@ -3691,8 +3042,6 @@ add_task(async function resetInterval() {
  *   The callback that will be run with the {@link config}
  */
 async function doTest({ config, callback }) {
-  Services.telemetry.clearEvents();
-
   // Make `Date.now()` return 0 to start with. It's necessary to do this before
   // calling `withConfig()` because when a new config is set, the provider
   // validates its impression stats, whose `startDateMs` values depend on
@@ -3706,7 +3055,7 @@ async function doTest({ config, callback }) {
 }
 
 /**
- * Does a series of timed searches and checks their results and telemetry. This
+ * Does a series of timed searches and checks their results. This
  * function relies on `doTimedCallbacks()`, so it may be helpful to look at it
  * too.
  *
@@ -3718,29 +3067,18 @@ async function doTest({ config, callback }) {
  *   entry `S -> E` in this object, searches are performed S seconds after this
  *   function is called. `E` is an object that looks like this:
  *
- *     { results, telemetry }
+ *     { results }
  *
  *     {array} results
  *       An array of arrays. A search is performed for each sub-array in
  *       `results`, and the contents of the sub-array are the expected results
  *       for that search.
- *     {object} telemetry
- *       An object like this: { events }
- *       {array} events
- *         An array of expected telemetry events after all searches are done.
- *         Telemetry events are cleared after checking these. If not present,
- *         then it will be asserted that no events were recorded.
  *
  *   Example:
  *
  *     {
  *       0: {
  *         results: [[R1], []],
- *         telemetry: {
- *           events: [
- *             someExpectedEvent,
- *           ],
- *         },
  *       }
  *       1: {
  *         results: [[]],
@@ -3749,33 +3087,26 @@ async function doTest({ config, callback }) {
  *
  *     0 seconds after `doTimedSearches()` is called, two searches are
  *     performed. The first one is expected to return a single result R1, and
- *     the second search is expected to return no results. After the searches
- *     are done, one telemetry event is expected to be recorded.
+ *     the second search is expected to return no results.
  *
  *     1 second after `doTimedSearches()` is called, one search is performed.
- *     It's expected to return no results, and no telemetry is expected to be
- *     recorded.
+ *     It's expected to return no results.
  */
 async function doTimedSearches(searchString, expectedBySecond) {
   await doTimedCallbacks(
-    Object.entries(expectedBySecond).reduce(
-      (memo, [second, { results, telemetry }]) => {
-        memo[second] = async () => {
-          for (let i = 0; i < results.length; i++) {
-            let expectedResults = results[i];
-            await checkSearch({
-              searchString,
-              expectedResults,
-              name: `${second}s search ${i + 1} of ${results.length}`,
-            });
-          }
-          let { events } = telemetry || {};
-          await checkTelemetryEvents(events || []);
-        };
-        return memo;
-      },
-      {}
-    )
+    Object.entries(expectedBySecond).reduce((memo, [second, { results }]) => {
+      memo[second] = async () => {
+        for (let i = 0; i < results.length; i++) {
+          let expectedResults = results[i];
+          await checkSearch({
+            searchString,
+            expectedResults,
+            name: `${second}s search ${i + 1} of ${results.length}`,
+          });
+        }
+      };
+      return memo;
+    }, {})
   );
 }
 
@@ -3865,11 +3196,7 @@ async function checkSearch({ name, searchString, expectedResults }) {
 
   // Impression stats are updated only on engagement, so force one now.
   // `selIndex` doesn't really matter but since we're not trying to simulate a
-  // click on the suggestion, pass in -1 to ensure we don't record a click. Pass
-  // in true for `isPrivate` so we don't attempt to record the impression ping
-  // because otherwise the following PingCentre error is logged:
-  // "Structured Ingestion ping failure with error: undefined"
-  context.isPrivate = true;
+  // click on the suggestion, pass in -1 to ensure we don't record a click.
   if (UrlbarProviderQuickSuggest._resultFromLastQuery) {
     UrlbarProviderQuickSuggest._resultFromLastQuery.isVisible = true;
   }
@@ -3896,26 +3223,16 @@ async function checkSearch({ name, searchString, expectedResults }) {
     controller: {
       removeResult() {},
     },
-    acknowledgeDismissal() {},
   });
-  UrlbarProviderQuickSuggest.onEngagement(
+
+  // If this test is ever re-enabled, this line will need to be updated for the
+  // new engagement API (onEngagement())
+  UrlbarProviderQuickSuggest.onLegacyEngagement(
     "engagement",
     context,
     {
       selIndex: -1,
     },
     controller
-  );
-}
-
-async function checkTelemetryEvents(expectedEvents) {
-  QuickSuggestTestUtils.assertEvents(
-    expectedEvents.map(event => ({
-      ...event,
-      category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-      method: "impression_cap",
-    })),
-    // Filter in only impression_cap events.
-    { method: "impression_cap" }
   );
 }

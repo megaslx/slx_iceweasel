@@ -5,6 +5,11 @@ This ping is captured after the main Firefox process crashes or after a child pr
 process crashes, whether or not the crash report is submitted to
 crash-stats.mozilla.org. It includes non-identifying metadata about the crash.
 
+.. warning::
+    The Telemetry crash ping will be deprecated and eventually removed. It is being
+    replaced by the Glean crash ping. See `bug 1784069 <https://bugzilla.mozilla.org/show_bug.cgi?id=1784069>`_.
+    Please be sure to mirror any changes made to the Telemetry ping!
+
 This ping is sent either by the ``CrashManager`` or by the crash reporter
 client. The ``CrashManager`` is responsible for sending crash pings for the
 child processes crashes, which are sent right after the crash is detected,
@@ -19,7 +24,7 @@ at the time of the crash will be recorded and ``hasCrashEnvironment`` will be tr
 If Firefox crashed before the environment was recorded, ``hasCrashEnvironment`` will
 be false and the recorded environment will be the environment at time of submission.
 
-The client ID is submitted with this ping.
+The client ID and profile group ID are submitted with this ping.
 
 The metadata field holds a subset of the crash annotations, all field values
 are stored as strings but some may be interpreted either as numbers or
@@ -35,6 +40,7 @@ Structure:
       type: "crash",
       ... common ping data
       clientId: <UUID>,
+      profileGroupId: <UUID>,
       environment: { ... },
       payload: {
         crashDate: "YYYY-MM-DD",
@@ -87,6 +93,7 @@ Structure:
           UptimeTS: <duration>, // Seconds since Firefox was started, this can have a fractional component
           User32BeforeBlocklist: "1", // Windows-only, present only if user32.dll was loaded before the DLL blocklist has been initialized
           WindowsErrorReporting: "1", // Windows-only, present only if the crash was intercepted by the WER runtime exception module
+          WindowsFileDialogErrorCode: <error code>, // Windows-only, optional, present only if file-dialog IPC failed
           WindowsPackageFamilyName: <string>, // Windows-only, a string containing the "Package Family Name" of Firefox, if installed through an MSIX package
         },
         hasCrashEnvironment: bool
@@ -121,8 +128,6 @@ are sent only for the ones below:
 | rdd           | :ref:`Data decoder process <data-decoder-process>`                            |
 +---------------+-------------------------------------------------------------------------------+
 | socket        | :ref:`Network socket process <network-socket-process>`                        |
-+---------------+-------------------------------------------------------------------------------+
-| sandboxbroker | :ref:`Remote sandbox broker <remote-sandbox-process>`                         |
 +---------------+-------------------------------------------------------------------------------+
 | forkserver    | :ref:`Fork server <fork-server>`                                              |
 +---------------+-------------------------------------------------------------------------------+
@@ -260,3 +265,4 @@ Version History
 - Firefox 96: Added WindowsPackageFamilyName (`bug 1738375 <https://bugzilla.mozilla.org/show_bug.cgi?id=1738375>`_).
 - Firefox 103: Removed ContainsMemoryReport (`bug 1776279 <https://bugzilla.mozilla.org/show_bug.cgi?id=1776279>`_).
 - Firefox 107: Added UtilityActorsName (`bug 1788596 <https://bugzilla.mozilla.org/show_bug.cgi?id=1788596>`_).
+- Firefox 119: Added WindowsFileDialogErrorCode (`bug 1837079 <https://bugzilla.mozilla.org/show_bug.cgi?id=1837079>`_)

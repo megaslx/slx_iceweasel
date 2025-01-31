@@ -2,13 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use crate::ffiops;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::path::{Path as StdPath, PathBuf};
 use syn::{
     ext::IdentExt,
     parse::{Parse, ParseStream},
-    Attribute, Path, Token,
+    Attribute, Expr, Lit, Token,
 };
 
 pub fn manifest_path() -> Result<PathBuf, String> {
@@ -77,10 +78,15 @@ pub fn mod_path() -> syn::Result<String> {
 
 pub fn try_read_field(f: &syn::Field) -> TokenStream {
     let ident = &f.ident;
-    let ty = &f.ty;
+    let try_read = ffiops::try_read(&f.ty);
 
-    quote! {
-        #ident: <#ty as ::uniffi::FfiConverter<crate::UniFfiTag>>::try_read(buf)?,
+    match ident {
+        Some(ident) => quote! {
+            #ident: #try_read(buf)?,
+        },
+        None => quote! {
+            #try_read(buf)?,
+        },
     }
 }
 
@@ -105,14 +111,17 @@ pub fn create_metadata_items(
     let const_ident =
         format_ident!("UNIFFI_META_CONST_{crate_name_upper}_{kind_upper}_{name_upper}");
     let static_ident = format_ident!("UNIFFI_META_{crate_name_upper}_{kind_upper}_{name_upper}");
-
     let checksum_fn = checksum_fn_name.map(|name| {
         let ident = Ident::new(&name, Span::call_site());
         quote! {
             #[doc(hidden)]
             #[no_mangle]
             pub extern "C" fn #ident() -> u16 {
-                #const_ident.checksum()
+                // Force constant evaluation to ensure:
+                // 1. The checksum is computed at compile time; and
+                // 2. The metadata buffer is not embedded into the binary.
+                const CHECKSUM: u16 = #const_ident.checksum();
+                CHECKSUM
             }
         }
     });
@@ -151,13 +160,7 @@ pub fn parse_comma_separated<T: UniffiAttributeArgs>(input: ParseStream<'_>) -> 
 }
 
 #[derive(Default)]
-pub struct ArgumentNotAllowedHere;
-
-impl Parse for ArgumentNotAllowedHere {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        parse_comma_separated(input)
-    }
-}
+struct ArgumentNotAllowedHere;
 
 impl UniffiAttributeArgs for ArgumentNotAllowedHere {
     fn parse_one(input: ParseStream<'_>) -> syn::Result<Self> {
@@ -205,69 +208,102 @@ pub fn either_attribute_arg<T: ToTokens>(a: Option<T>, b: Option<T>) -> syn::Res
 
 pub(crate) fn tagged_impl_header(
     trait_name: &str,
-    ident: &Ident,
-    tag: Option<&Path>,
+    ident: &impl ToTokens,
+    udl_mode: bool,
 ) -> TokenStream {
     let trait_name = Ident::new(trait_name, Span::call_site());
-    match tag {
-        Some(tag) => quote! { impl ::uniffi::#trait_name<#tag> for #ident },
-        None => quote! { impl<T> ::uniffi::#trait_name<T> for #ident },
+    if udl_mode {
+        quote! { impl ::uniffi::#trait_name<crate::UniFfiTag> for #ident }
+    } else {
+        quote! { impl<T> ::uniffi::#trait_name<T> for #ident }
     }
 }
 
-mod kw {
-    syn::custom_keyword!(tag);
+pub(crate) fn derive_all_ffi_traits(ty: &Ident, udl_mode: bool) -> TokenStream {
+    if udl_mode {
+        quote! { ::uniffi::derive_ffi_traits!(local #ty); }
+    } else {
+        quote! { ::uniffi::derive_ffi_traits!(blanket #ty); }
+    }
 }
 
-#[derive(Default)]
-pub(crate) struct CommonAttr {
-    /// Specifies the `UniFfiTag` used when implementing `FfiConverter`
-    ///   - When things are defined with proc-macros, this is `None` which means create a blanket
-    ///     impl for all types.
-    ///   - When things are defined with UDL files this is `Some(crate::UniFfiTag)`, which means only
-    ///     implement it for the local tag in the crate
-    ///
-    /// The reason for this split is remote types, i.e. types defined in remote crates that we
-    /// don't control and therefore can't define a blanket impl on because of the orphan rules.
-    ///
-    /// With UDL, we handle this by only implementing `FfiConverter<crate::UniFfiTag>` for the
-    /// type.  This gets around the orphan rules since a local type is in the trait, but requires
-    /// a `uniffi::ffi_converter_forward!` call if the type is used in a second local crate (an
-    /// External typedef).  This is natural for UDL-based generation, since you always need to
-    /// define the external type in the UDL file.
-    ///
-    /// With proc-macros this system isn't so natural.  Instead, we plan to use this system:
-    ///   - Most of the time, types aren't remote and we use the blanket impl.
-    ///   - When types are remote, we'll need a special syntax to define an `FfiConverter` for them
-    ///     and also a special declaration to use the types in other crates.  This requires some
-    ///     extra work for the consumer, but it should be rare.
-    pub tag: Option<Path>,
-}
-
-impl UniffiAttributeArgs for CommonAttr {
-    fn parse_one(input: ParseStream<'_>) -> syn::Result<Self> {
-        let lookahead = input.lookahead1();
-        if lookahead.peek(kw::tag) {
-            let _: kw::tag = input.parse()?;
-            let _: Token![=] = input.parse()?;
-            Ok(Self {
-                tag: Some(input.parse()?),
-            })
-        } else {
-            Err(lookahead.error())
+pub(crate) fn derive_ffi_traits(
+    ty: impl ToTokens,
+    udl_mode: bool,
+    trait_names: &[&str],
+) -> TokenStream {
+    let trait_idents = trait_names
+        .iter()
+        .map(|name| Ident::new(name, Span::call_site()));
+    if udl_mode {
+        quote! {
+            #(
+                ::uniffi::derive_ffi_traits!(impl #trait_idents<crate::UniFfiTag> for #ty);
+            )*
+        }
+    } else {
+        quote! {
+            #(
+                ::uniffi::derive_ffi_traits!(impl<UT> #trait_idents<UT> for #ty);
+            )*
         }
     }
+}
 
-    fn merge(self, other: Self) -> syn::Result<Self> {
+/// Custom keywords
+pub mod kw {
+    syn::custom_keyword!(async_runtime);
+    syn::custom_keyword!(callback_interface);
+    syn::custom_keyword!(with_foreign);
+    syn::custom_keyword!(default);
+    syn::custom_keyword!(flat_error);
+    syn::custom_keyword!(None);
+    syn::custom_keyword!(Some);
+    syn::custom_keyword!(with_try_read);
+    syn::custom_keyword!(name);
+    syn::custom_keyword!(non_exhaustive);
+    syn::custom_keyword!(Record);
+    syn::custom_keyword!(Enum);
+    syn::custom_keyword!(Error);
+    syn::custom_keyword!(Object);
+    syn::custom_keyword!(Debug);
+    syn::custom_keyword!(Display);
+    syn::custom_keyword!(Eq);
+    syn::custom_keyword!(Hash);
+    // Not used anymore
+    syn::custom_keyword!(handle_unknown_callback_error);
+}
+
+/// Specifies a type from a dependent crate
+pub struct ExternalTypeItem {
+    pub crate_ident: Ident,
+    pub sep: Token![,],
+    pub type_ident: Ident,
+}
+
+impl Parse for ExternalTypeItem {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         Ok(Self {
-            tag: either_attribute_arg(self.tag, other.tag)?,
+            crate_ident: input.parse()?,
+            sep: input.parse()?,
+            type_ident: input.parse()?,
         })
     }
 }
 
-// So CommonAttr can be used with `parse_macro_input!`
-impl Parse for CommonAttr {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        parse_comma_separated(input)
-    }
+pub(crate) fn extract_docstring(attrs: &[Attribute]) -> syn::Result<String> {
+    return attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .map(|attr| {
+            let name_value = attr.meta.require_name_value()?;
+            if let Expr::Lit(expr) = &name_value.value {
+                if let Lit::Str(lit_str) = &expr.lit {
+                    return Ok(lit_str.value().trim().to_owned());
+                }
+            }
+            Err(syn::Error::new_spanned(attr, "Cannot parse doc attribute"))
+        })
+        .collect::<syn::Result<Vec<_>>>()
+        .map(|lines| lines.join("\n"));
 }

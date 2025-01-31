@@ -9,7 +9,7 @@
 #define mozilla_net_HttpChannelChild_h
 
 #include "mozilla/Mutex.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/StaticPrefsBase.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/extensions/StreamFilterParent.h"
 #include "mozilla/net/HttpBaseChannel.h"
@@ -31,8 +31,6 @@
 #include "nsIMultiPartChannel.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "mozilla/net/DNS.h"
-
-using mozilla::Telemetry::LABELS_HTTP_CHILD_OMT_STATS;
 
 class nsIEventTarget;
 class nsIInterceptedBodyCallback;
@@ -96,6 +94,7 @@ class HttpChannelChild final : public PHttpChannelChild,
                               const nsACString& aValue, bool aMerge) override;
   NS_IMETHOD SetEmptyRequestHeader(const nsACString& aHeader) override;
   NS_IMETHOD RedirectTo(nsIURI* newURI) override;
+  NS_IMETHOD TransparentRedirectTo(nsIURI* newURI) override;
   NS_IMETHOD UpgradeToSecure() override;
   NS_IMETHOD GetProtocolVersion(nsACString& aProtocolVersion) override;
   void DoDiagnosticAssertWhenOnStopNotCalledOnDestroy() override;
@@ -104,6 +103,16 @@ class HttpChannelChild final : public PHttpChannelChild,
   NS_IMETHOD SetEarlyHintObserver(nsIEarlyHintObserver* aObserver) override;
   NS_IMETHOD SetWebTransportSessionEventListener(
       WebTransportSessionEventListener* aListener) override;
+
+  NS_IMETHOD SetResponseOverride(
+      nsIReplacedHttpResponse* aReplacedHttpResponse) override {
+    return NS_OK;
+  }
+
+  NS_IMETHOD SetResponseStatus(uint32_t aStatus,
+                               const nsACString& aStatusText) override {
+    return NS_OK;
+  }
   // nsISupportsPriority
   NS_IMETHOD SetPriority(int32_t value) override;
   // nsIClassOfService
@@ -137,9 +146,8 @@ class HttpChannelChild final : public PHttpChannelChild,
       const uint32_t& registrarId, nsIURI* newOriginalURI,
       const uint32_t& newLoadFlags, const uint32_t& redirectFlags,
       const ParentLoadInfoForwarderArgs& loadInfoForwarder,
-      const nsHttpResponseHead& responseHead,
-      nsITransportSecurityInfo* securityInfo, const uint64_t& channelId,
-      const NetAddr& oldPeerAddr,
+      nsHttpResponseHead&& responseHead, nsITransportSecurityInfo* securityInfo,
+      const uint64_t& channelId, const NetAddr& oldPeerAddr,
       const ResourceTimingStructArgs& aTiming) override;
   mozilla::ipc::IPCResult RecvRedirect3Complete() override;
   mozilla::ipc::IPCResult RecvRedirectFailed(const nsresult& status) override;
@@ -186,6 +194,9 @@ class HttpChannelChild final : public PHttpChannelChild,
                                  const nsAString& aURL,
                                  const nsAString& aContentType) override;
 
+  virtual void ExplicitSetUploadStreamLength(
+      uint64_t aContentLength, bool aSetContentLengthHeader) override;
+
  private:
   // We want to handle failure result of AsyncOpen, hence AsyncOpen calls the
   // Internal method
@@ -208,7 +219,8 @@ class HttpChannelChild final : public PHttpChannelChild,
                              const bool& aUseResponseHead,
                              const nsHttpHeaderArray& aRequestHeaders,
                              const HttpChannelOnStartRequestArgs& aArgs,
-                             const HttpChannelAltDataStream& aAltData);
+                             const HttpChannelAltDataStream& aAltData,
+                             const TimeStamp& aOnStartRequestStartTime);
 
   // Callbacks while receiving OnTransportAndData/OnStopRequest/OnProgress/
   // OnStatus/FlushedForDiversion/DivertMessages on background IPC channel.
@@ -216,12 +228,14 @@ class HttpChannelChild final : public PHttpChannelChild,
                                  const nsresult& aTransportStatus,
                                  const uint64_t& aOffset,
                                  const uint32_t& aCount,
-                                 const nsACString& aData);
+                                 const nsACString& aData,
+                                 const TimeStamp& aOnDataAvailableStartTime);
   void ProcessOnStopRequest(const nsresult& aChannelStatus,
                             const ResourceTimingStructArgs& aTiming,
                             const nsHttpHeaderArray& aResponseTrailers,
                             nsTArray<ConsoleReportCollected>&& aConsoleReports,
-                            bool aFromSocketProcess);
+                            bool aFromSocketProcess,
+                            const TimeStamp& aOnStopRequestStartTime);
   void ProcessOnConsoleReport(
       nsTArray<ConsoleReportCollected>&& aConsoleReports);
 
@@ -267,6 +281,9 @@ class HttpChannelChild final : public PHttpChannelChild,
 
   nsresult MaybeLogCOEPError(nsresult aStatus);
 
+  void RetargetDeliveryToImpl(nsISerialEventTarget* aNewTarget,
+                              MutexAutoLock& aLockRef);
+
  private:
   // this section is for main-thread-only object
   // all the references need to be proxy released on main thread.
@@ -299,17 +316,13 @@ class HttpChannelChild final : public PHttpChannelChild,
 
   // Target thread for delivering ODA.
   nsCOMPtr<nsISerialEventTarget> mODATarget MOZ_GUARDED_BY(mEventTargetMutex);
+  Atomic<bool, mozilla::Relaxed> mGotDataAvailable{false};
   // Used to ensure atomicity of mNeckoTarget / mODATarget;
   Mutex mEventTargetMutex{"HttpChannelChild::EventTargetMutex"};
 
   TimeStamp mLastStatusReported;
 
   uint64_t mCacheEntryId{0};
-
-  // The result of RetargetDeliveryTo for this channel.
-  // |notRequested| represents OMT is not requested by the channel owner.
-  LABELS_HTTP_CHILD_OMT_STATS mOMTResult =
-      LABELS_HTTP_CHILD_OMT_STATS::notRequested;
 
   uint32_t mCacheKey{0};
   int32_t mCacheFetchCount{0};
@@ -330,7 +343,7 @@ class HttpChannelChild final : public PHttpChannelChild,
       false};
   // True if we need to tell the parent the size of unreported received data
   Atomic<bool, SequentiallyConsistent> mNeedToReportBytesRead{true};
-
+  Atomic<uint32_t, mozilla::Relaxed> mOnProgressEventSent{false};
   // Attached StreamFilterParents
   // Using raw pointer here since StreamFilterParent owns the channel.
   // Should be only accessed on the main thread.
@@ -395,6 +408,12 @@ class HttpChannelChild final : public PHttpChannelChild,
   // permission or cookie. That is, RecvOnStartRequestSent is received.
   uint8_t mSuspendedByWaitingForPermissionCookie : 1;
 
+  // HttpChannelChild::Release has some special logic that makes sure
+  // OnStart/OnStop are always called when releasing the channel.
+  // But we have to make sure we only do this once - otherwise we could
+  // get stuck in a loop.
+  uint8_t mAlreadyReleased : 1;
+
   void CleanupRedirectingChannel(nsresult rv);
 
   // Calls OnStartRequest and/or OnStopRequest on our listener in case we didn't
@@ -427,11 +446,14 @@ class HttpChannelChild final : public PHttpChannelChild,
                       const ResourceTimingStructArgs& timing);
   void Redirect3Complete();
   void DeleteSelf();
-  void DoNotifyListener();
+  // aUseEventQueue should only be false when called from
+  // HttpChannelChild::Release to make sure OnStopRequest is called syncly.
+  void DoNotifyListener(bool aUseEventQueue = true);
   void ContinueDoNotifyListener();
   void OnAfterLastPart(const nsresult& aStatus);
   void MaybeConnectToSocketProcess();
   void OnDetachStreamFilters();
+  void SendOnDataFinished(const nsresult& aChannelStatus);
 
   // Create a a new channel to be used in a redirection, based on the provided
   // response headers.
@@ -440,8 +462,8 @@ class HttpChannelChild final : public PHttpChannelChild,
                                        const uint32_t& redirectFlags,
                                        nsIChannel** outChannel);
 
-  // Collect telemetry for the successful rate of OMT.
-  void CollectOMTTelemetry();
+  // Collect telemetry for mixed content.
+  void CollectMixedContentTelemetry();
 
   friend class HttpAsyncAborter<HttpChannelChild>;
   friend class InterceptStreamListener;

@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* This is a JavaScript module (JSM) to be imported via
-   ChromeUtils.import() and acts as a singleton.
+/* This is a JavaScript module to be imported via
+   ChromeUtils.importESModule() and acts as a singleton.
    Only the following listed symbols will exposed on import, and only when
    and where imported. */
 
@@ -68,7 +68,7 @@ Preference.prototype = {
           "string",
           "Wrong type used for preference value"
         );
-        Services.prefs.setCharPref(this.name, this.value);
+        Services.prefs.setStringPref(this.name, this.value);
         break;
       case Ci.nsIPrefBranch.PREF_BOOL:
         Logger.AssertEqual(
@@ -100,7 +100,7 @@ Preference.prototype = {
           value = Services.prefs.getIntPref(this.name);
           break;
         case Ci.nsIPrefBranch.PREF_STRING:
-          value = Services.prefs.getCharPref(this.name);
+          value = Services.prefs.getStringPref(this.name);
           break;
         case Ci.nsIPrefBranch.PREF_BOOL:
           value = Services.prefs.getBoolPref(this.name);

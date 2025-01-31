@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2017, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -19,10 +19,10 @@
 #include "aom/aom_integer.h"
 #include "aom_dsp/x86/synonyms.h"
 
-#include "aom_dsp/x86//masked_sad_intrin_ssse3.h"
+#include "aom_dsp/x86/masked_sad_intrin_ssse3.h"
 
 // For width a multiple of 16
-static INLINE unsigned int masked_sad_ssse3(const uint8_t *src_ptr,
+static inline unsigned int masked_sad_ssse3(const uint8_t *src_ptr,
                                             int src_stride,
                                             const uint8_t *a_ptr, int a_stride,
                                             const uint8_t *b_ptr, int b_stride,
@@ -84,14 +84,17 @@ MASKSAD8XN_SSSE3(8)
 MASKSAD8XN_SSSE3(4)
 MASKSAD4XN_SSSE3(8)
 MASKSAD4XN_SSSE3(4)
+
+#if !CONFIG_REALTIME_ONLY
 MASKSAD4XN_SSSE3(16)
 MASKSADMXN_SSSE3(16, 4)
 MASKSAD8XN_SSSE3(32)
 MASKSADMXN_SSSE3(32, 8)
 MASKSADMXN_SSSE3(16, 64)
 MASKSADMXN_SSSE3(64, 16)
+#endif  // !CONFIG_REALTIME_ONLY
 
-static INLINE unsigned int masked_sad_ssse3(const uint8_t *src_ptr,
+static inline unsigned int masked_sad_ssse3(const uint8_t *src_ptr,
                                             int src_stride,
                                             const uint8_t *a_ptr, int a_stride,
                                             const uint8_t *b_ptr, int b_stride,
@@ -132,9 +135,9 @@ static INLINE unsigned int masked_sad_ssse3(const uint8_t *src_ptr,
     m_ptr += m_stride;
   }
   // At this point, we have two 32-bit partial SADs in lanes 0 and 2 of 'res'.
-  int32_t sad =
-      _mm_cvtsi128_si32(res) + _mm_cvtsi128_si32(_mm_srli_si128(res, 8));
-  return (sad + 31) >> 6;
+  unsigned int sad = (unsigned int)(_mm_cvtsi128_si32(res) +
+                                    _mm_cvtsi128_si32(_mm_srli_si128(res, 8)));
+  return sad;
 }
 
 unsigned int aom_masked_sad8xh_ssse3(const uint8_t *src_ptr, int src_stride,
@@ -177,9 +180,9 @@ unsigned int aom_masked_sad8xh_ssse3(const uint8_t *src_ptr, int src_stride,
     b_ptr += b_stride * 2;
     m_ptr += m_stride * 2;
   }
-  int32_t sad =
-      _mm_cvtsi128_si32(res) + _mm_cvtsi128_si32(_mm_srli_si128(res, 8));
-  return (sad + 31) >> 6;
+  unsigned int sad = (unsigned int)(_mm_cvtsi128_si32(res) +
+                                    _mm_cvtsi128_si32(_mm_srli_si128(res, 8)));
+  return sad;
 }
 
 unsigned int aom_masked_sad4xh_ssse3(const uint8_t *src_ptr, int src_stride,
@@ -194,18 +197,18 @@ unsigned int aom_masked_sad4xh_ssse3(const uint8_t *src_ptr, int src_stride,
   for (y = 0; y < height; y += 2) {
     // Load two rows at a time, this seems to be a bit faster
     // than four rows at a time in this case.
-    const __m128i src = _mm_unpacklo_epi32(
-        _mm_cvtsi32_si128(*(uint32_t *)src_ptr),
-        _mm_cvtsi32_si128(*(uint32_t *)&src_ptr[src_stride]));
+    const __m128i src =
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(int *)src_ptr),
+                           _mm_cvtsi32_si128(*(int *)&src_ptr[src_stride]));
     const __m128i a =
-        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(uint32_t *)a_ptr),
-                           _mm_cvtsi32_si128(*(uint32_t *)&a_ptr[a_stride]));
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(int *)a_ptr),
+                           _mm_cvtsi32_si128(*(int *)&a_ptr[a_stride]));
     const __m128i b =
-        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(uint32_t *)b_ptr),
-                           _mm_cvtsi32_si128(*(uint32_t *)&b_ptr[b_stride]));
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(int *)b_ptr),
+                           _mm_cvtsi32_si128(*(int *)&b_ptr[b_stride]));
     const __m128i m =
-        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(uint32_t *)m_ptr),
-                           _mm_cvtsi32_si128(*(uint32_t *)&m_ptr[m_stride]));
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(int *)m_ptr),
+                           _mm_cvtsi32_si128(*(int *)&m_ptr[m_stride]));
     const __m128i m_inv = _mm_sub_epi8(mask_max, m);
 
     const __m128i data = _mm_unpacklo_epi8(a, b);
@@ -222,12 +225,12 @@ unsigned int aom_masked_sad4xh_ssse3(const uint8_t *src_ptr, int src_stride,
     m_ptr += m_stride * 2;
   }
   // At this point, the SAD is stored in lane 0 of 'res'
-  int32_t sad = _mm_cvtsi128_si32(res);
-  return (sad + 31) >> 6;
+  return (unsigned int)_mm_cvtsi128_si32(res);
 }
 
+#if CONFIG_AV1_HIGHBITDEPTH
 // For width a multiple of 8
-static INLINE unsigned int highbd_masked_sad_ssse3(
+static inline unsigned int highbd_masked_sad_ssse3(
     const uint8_t *src8, int src_stride, const uint8_t *a8, int a_stride,
     const uint8_t *b8, int b_stride, const uint8_t *m_ptr, int m_stride,
     int width, int height);
@@ -276,14 +279,17 @@ HIGHBD_MASKSADMXN_SSSE3(8, 8)
 HIGHBD_MASKSADMXN_SSSE3(8, 4)
 HIGHBD_MASKSAD4XN_SSSE3(8)
 HIGHBD_MASKSAD4XN_SSSE3(4)
+
+#if !CONFIG_REALTIME_ONLY
 HIGHBD_MASKSAD4XN_SSSE3(16)
 HIGHBD_MASKSADMXN_SSSE3(16, 4)
 HIGHBD_MASKSADMXN_SSSE3(8, 32)
 HIGHBD_MASKSADMXN_SSSE3(32, 8)
 HIGHBD_MASKSADMXN_SSSE3(16, 64)
 HIGHBD_MASKSADMXN_SSSE3(64, 16)
+#endif  // !CONFIG_REALTIME_ONLY
 
-static INLINE unsigned int highbd_masked_sad_ssse3(
+static inline unsigned int highbd_masked_sad_ssse3(
     const uint8_t *src8, int src_stride, const uint8_t *a8, int a_stride,
     const uint8_t *b8, int b_stride, const uint8_t *m_ptr, int m_stride,
     int width, int height) {
@@ -338,7 +344,7 @@ static INLINE unsigned int highbd_masked_sad_ssse3(
   res = _mm_hadd_epi32(res, res);
   res = _mm_hadd_epi32(res, res);
   int sad = _mm_cvtsi128_si32(res);
-  return (sad + 31) >> 6;
+  return sad;
 }
 
 unsigned int aom_highbd_masked_sad4xh_ssse3(const uint8_t *src8, int src_stride,
@@ -368,9 +374,8 @@ unsigned int aom_highbd_masked_sad4xh_ssse3(const uint8_t *src8, int src_stride,
                            _mm_loadl_epi64((const __m128i *)&b_ptr[b_stride]));
     // Zero-extend mask to 16 bits
     const __m128i m = _mm_unpacklo_epi8(
-        _mm_unpacklo_epi32(
-            _mm_cvtsi32_si128(*(const uint32_t *)m_ptr),
-            _mm_cvtsi32_si128(*(const uint32_t *)&m_ptr[m_stride])),
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(*(const int *)m_ptr),
+                           _mm_cvtsi32_si128(*(const int *)&m_ptr[m_stride])),
         _mm_setzero_si128());
     const __m128i m_inv = _mm_sub_epi16(mask_max, m);
 
@@ -398,5 +403,6 @@ unsigned int aom_highbd_masked_sad4xh_ssse3(const uint8_t *src8, int src_stride,
   res = _mm_hadd_epi32(res, res);
   res = _mm_hadd_epi32(res, res);
   int sad = _mm_cvtsi128_si32(res);
-  return (sad + 31) >> 6;
+  return sad;
 }
+#endif  // CONFIG_AV1_HIGHBITDEPTH

@@ -15,12 +15,12 @@ registerCleanupFunction(async function () {
 
 add_task(async function test_tags() {
   const uris = [
-    Services.io.newURI("http://example.com/1"),
-    Services.io.newURI("http://example.com/2"),
-    Services.io.newURI("http://example.com/3"),
+    Services.io.newURI("https://example.com/1"),
+    Services.io.newURI("https://example.com/2"),
+    Services.io.newURI("https://example.com/3"),
   ];
 
-  let children = uris.map((uri, index, arr) => {
+  let children = uris.map((uri, index) => {
     return {
       title: `bm${index}`,
       url: uri,

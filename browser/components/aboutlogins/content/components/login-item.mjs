@@ -39,13 +39,13 @@ export default class LoginItem extends HTMLElement {
     this._cancelButton = this.shadowRoot.querySelector(".cancel-button");
     this._confirmDeleteDialog = document.querySelector("confirm-delete-dialog");
     this._copyPasswordButton = this.shadowRoot.querySelector(
-      ".copy-password-button"
+      "copy-password-button"
     );
     this._copyUsernameButton = this.shadowRoot.querySelector(
-      ".copy-username-button"
+      "copy-username-button"
     );
-    this._deleteButton = this.shadowRoot.querySelector(".delete-button");
-    this._editButton = this.shadowRoot.querySelector(".edit-button");
+    this._deleteButton = this.shadowRoot.querySelector("delete-button");
+    this._editButton = this.shadowRoot.querySelector("edit-button");
     this._errorMessage = this.shadowRoot.querySelector(".error-message");
     this._errorMessageLink = this._errorMessage.querySelector(
       ".error-message-link"
@@ -81,21 +81,23 @@ export default class LoginItem extends HTMLElement {
     this._vulnerableAlert = this.shadowRoot.querySelector(
       "login-vulnerable-password-alert"
     );
+    this._passwordWarning = this.shadowRoot.querySelector("password-warning");
+    this._originWarning = this.shadowRoot.querySelector("origin-warning");
 
     this.render();
 
     this._cancelButton.addEventListener("click", e =>
-      this.handleCancelClick(e)
+      this.handleCancelEvent(e)
     );
+
+    window.addEventListener("keydown", e => this.handleKeydown(e));
 
     // TODO: Using the addEventListener to listen for clicks and pass the event handler due to a CSP error.
     // This will be fixed as login-item itself is converted into a lit component. We will then be able to use the onclick
     // prop of login-command-button as seen in the example below (functionality works and passes tests).
-    // this._editButton.onClick = e => this.handleEditButtonClick(e);
+    // this._editButton.onClick = e => this.handleEditEvent(e);
 
-    this._editButton.addEventListener("click", e =>
-      this.handleEditButtonClick(e)
-    );
+    this._editButton.addEventListener("click", e => this.handleEditEvent(e));
 
     this._copyPasswordButton.addEventListener("click", e =>
       this.handleCopyPasswordClick(e)
@@ -106,7 +108,7 @@ export default class LoginItem extends HTMLElement {
     );
 
     this._deleteButton.addEventListener("click", e =>
-      this.handleDeleteButtonClick(e)
+      this.handleDeleteEvent(e)
     );
 
     this._errorMessageLink.addEventListener("click", e =>
@@ -260,30 +262,33 @@ export default class LoginItem extends HTMLElement {
       this._saveChangesButton,
       this.dataset.isNewLogin
         ? "login-item-save-new-button"
-        : "login-item-save-changes-button"
+        : "about-logins-login-item-save-changes-button"
     );
     this._updatePasswordRevealState();
     this._updateOriginDisplayState();
     this.#updateTimeline();
+    this.#updatePasswordMessage();
   }
 
   #updateTimeline() {
     let timeline = this.shadowRoot.querySelector("login-timeline");
     timeline.hidden = !this._login.guid;
-    timeline.history = [
-      {
-        actionId: "login-item-timeline-action-created",
-        time: this._login.timeCreated,
-      },
-      {
-        actionId: "login-item-timeline-action-updated",
-        time: this._login.timePasswordChanged,
-      },
-      {
-        actionId: "login-item-timeline-action-used",
-        time: this._login.timeLastUsed,
-      },
-    ];
+    const createdTime = {
+      actionId: "login-item-timeline-action-created",
+      time: this._login.timeCreated,
+    };
+    const lastUpdatedTime = {
+      actionId: "login-item-timeline-action-updated",
+      time: this._login.timePasswordChanged,
+    };
+    const lastUsedTime = {
+      actionId: "login-item-timeline-action-used",
+      time: this._login.timeLastUsed,
+    };
+    timeline.history =
+      this._login.timeCreated == this._login.timePasswordChanged
+        ? [createdTime, lastUsedTime]
+        : [createdTime, lastUpdatedTime, lastUsedTime];
   }
 
   setBreaches(breachesByLoginGUID) {
@@ -330,6 +335,17 @@ export default class LoginItem extends HTMLElement {
   showLoginItemError(error) {
     this._error = error;
     this.render();
+  }
+
+  async handleKeydown(e) {
+    // The below handleKeydown will be cleaned up when Bug 1848785 lands.
+    if (e.key === "Escape" && this.dataset.editing) {
+      this.handleCancelEvent();
+    } else if (e.altKey && e.key === "Enter" && !this.dataset.editing) {
+      this.handleEditEvent();
+    } else if (e.altKey && (e.key === "Backspace" || e.key === "Delete")) {
+      this.handleDeleteEvent();
+    }
   }
 
   async handlePasswordDisplayFocus(e) {
@@ -418,10 +434,10 @@ export default class LoginItem extends HTMLElement {
     this._updatePasswordRevealState();
 
     let method = this._revealCheckbox.checked ? "show" : "hide";
-    this._recordTelemetryEvent({ object: "password", method });
+    this._recordTelemetryEvent({ name: method + "Password" });
   }
 
-  async handleCancelClick() {
+  async handleCancelEvent(_e) {
     let wasExistingLogin = !!this._login.guid;
     if (wasExistingLogin) {
       if (this.hasPendingChanges()) {
@@ -434,8 +450,7 @@ export default class LoginItem extends HTMLElement {
     } else if (!this.hasPendingChanges()) {
       window.dispatchEvent(new CustomEvent("AboutLoginsClearSelection"));
       this._recordTelemetryEvent({
-        object: "new_login",
-        method: "cancel",
+        name: "cancelNewLogin",
       });
 
       this.setLogin(this._login, { skipFocusChange: true });
@@ -452,12 +467,6 @@ export default class LoginItem extends HTMLElement {
     }
   }
 
-  /*
-  Removed the functionality to disable copy button on click since it lead to a focus shift to "Sign in to Sync" every time
-  it was activated by keyboard navigation. This did not happen if the buttons were not disabled. This was done to avoid any 
-  accessibility concerns. These handleEvents for login-command-button will be extracted out in the follow up bug -> Bug 1844869.
-  */
-
   async handleCopyPasswordClick({ currentTarget }) {
     let primaryPasswordAuth = await promptForPrimaryPassword(
       "about-logins-copy-password-os-auth-dialog-message"
@@ -466,8 +475,8 @@ export default class LoginItem extends HTMLElement {
       return;
     }
     currentTarget.dataset.copied = true;
-    currentTarget.l10nId = "login-item-copied-password-button-text";
-    currentTarget.class = "copied-button-text";
+    currentTarget.copiedText = true;
+    currentTarget.disabled = true;
     let propertyToCopy = this._login.password;
     document.dispatchEvent(
       new CustomEvent("AboutLoginsCopyLoginDetail", {
@@ -478,29 +487,27 @@ export default class LoginItem extends HTMLElement {
     // If there is no username, this must be triggered by the password button,
     // don't enable otherCopyButton (username copy button) in this case.
     if (this._login.username) {
-      this._copyUsernameButton.l10nId = "login-item-copy-username-button-text";
-      this._copyUsernameButton.class = "copy-button copy-username-button";
+      this._copyUsernameButton.copiedText = false;
+      this._copyUsernameButton.disabled = false;
       delete this._copyUsernameButton.dataset.copied;
     }
     clearTimeout(this._copyUsernameTimeoutId);
     clearTimeout(this._copyPasswordTimeoutId);
     let timeoutId = setTimeout(() => {
       currentTarget.disabled = false;
-      currentTarget.l10nId = "login-item-copy-password-button-text";
-      currentTarget.class = "copy-button copy-password-button";
+      currentTarget.copiedText = false;
       delete currentTarget.dataset.copied;
     }, LoginItem.COPY_BUTTON_RESET_TIMEOUT);
     this._copyPasswordTimeoutId = timeoutId;
     this._recordTelemetryEvent({
-      object: "password",
-      method: "copy",
+      name: "copyPassword",
     });
   }
 
   async handleCopyUsernameClick({ currentTarget }) {
     currentTarget.dataset.copied = true;
-    currentTarget.l10nId = "login-item-copied-username-button-text";
-    currentTarget.class = "copied-button-text";
+    currentTarget.copiedText = true;
+    currentTarget.disabled = true;
     let propertyToCopy = this._login.username;
     document.dispatchEvent(
       new CustomEvent("AboutLoginsCopyLoginDetail", {
@@ -511,26 +518,24 @@ export default class LoginItem extends HTMLElement {
     // If there is no username, this must be triggered by the password button,
     // don't enable otherCopyButton (username copy button) in this case.
     if (this._login.username) {
-      this._copyPasswordButton.l10nId = "login-item-copy-password-button-text";
-      this._copyPasswordButton.class = "copy-button copy-password-button";
+      this._copyPasswordButton.copiedText = false;
+      this._copyPasswordButton.disabled = false;
       delete this._copyPasswordButton.dataset.copied;
     }
     clearTimeout(this._copyUsernameTimeoutId);
     clearTimeout(this._copyPasswordTimeoutId);
     let timeoutId = setTimeout(() => {
       currentTarget.disabled = false;
-      currentTarget.l10nId = "login-item-copy-username-button-text";
-      currentTarget.class = "copy-button copy-username-button";
+      currentTarget.copiedText = false;
       delete currentTarget.dataset.copied;
     }, LoginItem.COPY_BUTTON_RESET_TIMEOUT);
     this._copyUsernameTimeoutId = timeoutId;
     this._recordTelemetryEvent({
-      object: "username",
-      method: "copy",
+      name: "copyUsername",
     });
   }
 
-  async handleDeleteButtonClick() {
+  async handleDeleteEvent() {
     this.showConfirmationDialog("delete", () => {
       document.dispatchEvent(
         new CustomEvent("AboutLoginsDeleteLogin", {
@@ -541,9 +546,9 @@ export default class LoginItem extends HTMLElement {
     });
   }
 
-  async handleEditButtonClick() {
+  async handleEditEvent() {
     let primaryPasswordAuth = await promptForPrimaryPassword(
-      "about-logins-edit-login-os-auth-dialog-message"
+      "about-logins-edit-login-os-auth-dialog-message2"
     );
     if (!primaryPasswordAuth) {
       return;
@@ -553,16 +558,14 @@ export default class LoginItem extends HTMLElement {
     this.render();
 
     this._recordTelemetryEvent({
-      object: "existing_login",
-      method: "edit",
+      name: "editExistingLogin",
     });
   }
 
   async handleAlertLearnMoreClick({ currentTarget }) {
     if (currentTarget.closest(".vulnerable-alert")) {
       this._recordTelemetryEvent({
-        object: "existing_login",
-        method: "learn_more_vuln",
+        name: "learnMoreVulnExistingLogin",
       });
     }
   }
@@ -605,8 +608,7 @@ export default class LoginItem extends HTMLElement {
       );
 
       this._recordTelemetryEvent({
-        object: "existing_login",
-        method: "save",
+        name: "saveExistingLogin",
       });
       this._toggleEditing(false);
       this.render();
@@ -618,7 +620,7 @@ export default class LoginItem extends HTMLElement {
         })
       );
 
-      this._recordTelemetryEvent({ object: "new_login", method: "save" });
+      this._recordTelemetryEvent({ name: "saveNewLogin" });
     }
   }
 
@@ -653,7 +655,7 @@ export default class LoginItem extends HTMLElement {
     }
     this._updatePasswordRevealState();
     let method = this._revealCheckbox.checked ? "show" : "hide";
-    this._recordTelemetryEvent({ object: "password", method });
+    this._recordTelemetryEvent({ name: method + "Password" });
   }
 
   /**
@@ -692,8 +694,8 @@ export default class LoginItem extends HTMLElement {
     switch (type) {
       case "delete": {
         options = {
-          title: "about-logins-confirm-remove-dialog-title",
-          message: "confirm-delete-dialog-message",
+          title: "about-logins-confirm-delete-dialog-title",
+          message: "about-logins-confirm-delete-dialog-message",
           confirmButtonLabel:
             "about-logins-confirm-remove-dialog-confirm-button",
         };
@@ -717,8 +719,7 @@ export default class LoginItem extends HTMLElement {
           onConfirm();
         } catch (ex) {}
         this._recordTelemetryEvent({
-          object: wasExistingLogin ? "existing_login" : "new_login",
-          method,
+          name: method + (wasExistingLogin ? "ExistingLogin" : "NewLogin"),
         });
       },
       () => {}
@@ -783,10 +784,8 @@ export default class LoginItem extends HTMLElement {
       this._copyPasswordButton,
     ]) {
       currentTarget.disabled = false;
-      this._copyPasswordButton.l10nId = "login-item-copy-password-button-text";
-      this._copyPasswordButton.class = "copy-button copy-password-button";
-      this._copyUsernameButton.l10nId = "login-item-copy-username-button-text";
-      this._copyUsernameButton.class = "copy-button copy-username-button";
+      this._copyPasswordButton.copiedText = false;
+      this._copyUsernameButton.copiedText = false;
       delete currentTarget.dataset.copied;
     }
 
@@ -863,8 +862,7 @@ export default class LoginItem extends HTMLElement {
 
   _handleOriginClick() {
     this._recordTelemetryEvent({
-      object: "existing_login",
-      method: "open_site",
+      name: "openSiteExistingLogin",
     });
   }
 
@@ -907,13 +905,13 @@ export default class LoginItem extends HTMLElement {
     // following conditionals must reflect this priority.
     const extra = eventObject.hasOwnProperty("extra") ? eventObject.extra : {};
     if (this._breachesMap && this._breachesMap.has(this._login.guid)) {
-      Object.assign(extra, { breached: "true" });
+      Object.assign(extra, { breached: true });
       eventObject.extra = extra;
     } else if (
       this._vulnerableLoginsMap &&
       this._vulnerableLoginsMap.has(this._login.guid)
     ) {
-      Object.assign(extra, { vulnerable: "true" });
+      Object.assign(extra, { vulnerable: true });
       eventObject.extra = extra;
     }
     recordTelemetryEvent(eventObject);
@@ -978,8 +976,10 @@ export default class LoginItem extends HTMLElement {
 
     if (this.dataset.editing) {
       this._passwordDisplayInput.removeAttribute("tabindex");
+      this._revealCheckbox.hidden = true;
     } else {
       this._passwordDisplayInput.setAttribute("tabindex", -1);
+      this._revealCheckbox.hidden = false;
     }
 
     // Swap which <input> is in the document depending on whether we need the
@@ -1020,6 +1020,11 @@ export default class LoginItem extends HTMLElement {
 
   #updateVulnerablePasswordAlert(hostname) {
     this._vulnerableAlert.hostname = hostname;
+  }
+
+  #updatePasswordMessage() {
+    this._passwordWarning.isNewLogin = this.dataset.isNewLogin;
+    this._passwordWarning.webTitle = this._login.title;
   }
 }
 customElements.define("login-item", LoginItem);

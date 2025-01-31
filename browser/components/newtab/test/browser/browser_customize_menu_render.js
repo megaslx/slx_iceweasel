@@ -9,10 +9,11 @@ test_newtab({
     );
 
     let defaultPos = "matrix(1, 0, 0, 1, 0, 0)";
-    ok(
+    Assert.notStrictEqual(
       content.getComputedStyle(
         content.document.querySelector(".customize-menu")
-      ).transform !== defaultPos,
+      ).transform,
+      defaultPos,
       "Customize Menu should be rendered, but not visible"
     );
 
@@ -20,7 +21,7 @@ test_newtab({
     customizeButton.click();
 
     await ContentTaskUtils.waitForCondition(
-      () => content.document.querySelector(".customize-menu"),
+      () => content.document.querySelector(".customize-animate-enter-done"),
       "Customize Menu should be rendered now"
     );
   },

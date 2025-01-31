@@ -197,8 +197,7 @@ mozilla::gfx::VRFieldOfView SetFromTanRadians(double left, double right,
 }
 
 OSVRSession::OSVRSession()
-    : VRSession(),
-      mRuntimeLoaded(false),
+    : mRuntimeLoaded(false),
       mOSVRInitialized(false),
       mClientContextInitialized(false),
       mDisplayConfigInitialized(false),
@@ -348,7 +347,7 @@ void OSVRSession::InitializeDisplay() {
 
 bool OSVRSession::InitState(mozilla::gfx::VRSystemState& aSystemState) {
   VRDisplayState& state = aSystemState.displayState;
-  strncpy(state.displayName, "OSVR HMD", kVRDisplayNameMaxLen);
+  strncpy(state.displayName.data(), "OSVR HMD", kVRDisplayNameMaxLen);
   state.eightCC = GFX_VR_EIGHTCC('O', 'S', 'V', 'R', ' ', ' ', ' ', ' ');
   state.isConnected = true;
   state.isMounted = false;

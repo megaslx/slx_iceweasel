@@ -29,6 +29,9 @@
 using namespace js;
 using namespace js::wasm;
 
+using mozilla::CheckedInt32;
+using mozilla::MallocSizeOf;
+
 /* static */
 CacheableName CacheableName::fromUTF8Chars(UniqueChars&& utf8Chars) {
   size_t length = strlen(utf8Chars.get());
@@ -47,6 +50,12 @@ bool CacheableName::fromUTF8Chars(const char* utf8Chars, CacheableName* name) {
   memcpy(bytes.begin(), utf8Chars, utf8CharsLen);
   *name = CacheableName(std::move(bytes));
   return true;
+}
+
+MOZ_RUNINIT BranchHintVector BranchHintCollection::invalidVector_;
+
+JSString* CacheableName::toJSString(JSContext* cx) const {
+  return NewStringCopyUTF8N(cx, JS::UTF8Chars(begin(), length()));
 }
 
 JSAtom* CacheableName::toAtom(JSContext* cx) const {
@@ -119,23 +128,26 @@ size_t GlobalDesc::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return initial_.sizeOfExcludingThis(mallocSizeOf);
 }
 
-bool TagType::initialize(ValTypeVector&& argTypes) {
-  MOZ_ASSERT(argTypes_.empty() && argOffsets_.empty() && size_ == 0);
+bool TagType::initialize(const SharedTypeDef& funcType) {
+  MOZ_ASSERT(funcType->isFuncType());
+  type_ = funcType;
 
-  argTypes_ = std::move(argTypes);
-  if (!argOffsets_.resize(argTypes_.length())) {
+  const ValTypeVector& args = argTypes();
+  // Compute the byte offsets for arguments when we layout an exception.
+  if (!argOffsets_.resize(args.length())) {
     return false;
   }
 
   StructLayout layout;
-  for (size_t i = 0; i < argTypes_.length(); i++) {
-    CheckedInt32 offset = layout.addField(FieldType(argTypes_[i].packed()));
+  for (size_t i = 0; i < args.length(); i++) {
+    CheckedInt32 offset = layout.addField(StorageType(args[i].packed()));
     if (!offset.isValid()) {
       return false;
     }
     argOffsets_[i] = offset.value();
   }
 
+  // Find the total size of all the arguments.
   CheckedInt32 size = layout.close();
   if (!size.isValid()) {
     return false;
@@ -146,17 +158,21 @@ bool TagType::initialize(ValTypeVector&& argTypes) {
 }
 
 size_t TagType::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
-  return argTypes_.sizeOfExcludingThis(mallocSizeOf) +
-         argOffsets_.sizeOfExcludingThis(mallocSizeOf);
+  return argOffsets_.sizeOfExcludingThis(mallocSizeOf);
 }
 
 size_t TagDesc::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return type->sizeOfExcludingThis(mallocSizeOf);
 }
 
-size_t ElemSegment::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
+size_t ModuleElemSegment::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return SizeOfMaybeExcludingThis(offsetIfActive, mallocSizeOf) +
-         elemFuncIndices.sizeOfExcludingThis(mallocSizeOf);
+         elemIndices.sizeOfExcludingThis(mallocSizeOf);
+}
+
+size_t ModuleElemSegment::Expressions::sizeOfExcludingThis(
+    MallocSizeOf mallocSizeOf) const {
+  return exprBytes.sizeOfExcludingThis(mallocSizeOf);
 }
 
 size_t DataSegment::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
@@ -167,4 +183,15 @@ size_t DataSegment::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
 size_t CustomSection::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return name.sizeOfExcludingThis(mallocSizeOf) + sizeof(*payload) +
          payload->sizeOfExcludingThis(mallocSizeOf);
+}
+
+const char* wasm::ToString(LimitsKind kind) {
+  switch (kind) {
+    case LimitsKind::Memory:
+      return "Memory";
+    case LimitsKind::Table:
+      return "Table";
+    default:
+      MOZ_CRASH();
+  }
 }

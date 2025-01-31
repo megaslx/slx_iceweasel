@@ -7,65 +7,36 @@
 
 "use strict";
 
-ChromeUtils.defineESModuleGetters(this, {
-  UrlbarProviderWeather: "resource:///modules/UrlbarProviderWeather.sys.mjs",
-});
+const EXPECTED_RESULT_INDEX = 1;
+
+const { WEATHER_SUGGESTION } = MerinoTestUtils;
+
+// This test takes a while and can time out in verify mode.
+requestLongerTimeout(5);
 
 add_setup(async function () {
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
-    remoteSettingsResults: [
-      {
-        type: "weather",
-        weather: MerinoTestUtils.WEATHER_RS_DATA,
-      },
+    remoteSettingsRecords: [QuickSuggestTestUtils.weatherRecord()],
+    prefs: [
+      ["suggest.quicksuggest.sponsored", true],
+      ["weather.featureGate", true],
     ],
   });
   await MerinoTestUtils.initWeather();
-});
-
-// This test ensures the browser navigates to the weather webpage after
-// the weather result is selected.
-add_task(async function test_weather_result_selection() {
-  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
-  let browserLoadedPromise = BrowserTestUtils.browserLoaded(
-    tab.linkedBrowser,
-    false
-  );
-
-  await UrlbarTestUtils.promiseAutocompleteResultPopup({
-    window,
-    value: MerinoTestUtils.WEATHER_KEYWORD,
-  });
-
-  info(`Select the weather result`);
-  EventUtils.synthesizeKey("KEY_ArrowDown");
-
-  info(`Navigate to the weather url`);
-  EventUtils.synthesizeKey("KEY_Enter");
-
-  await browserLoadedPromise;
-
-  Assert.equal(
-    gBrowser.currentURI.spec,
-    "https://example.com/weather",
-    "Assert the page navigated to the weather webpage after selecting the weather result."
-  );
-
-  BrowserTestUtils.removeTab(tab);
-  await PlacesUtils.history.clear();
 });
 
 // Does a search, clicks the "Show less frequently" result menu command, and
 // repeats both steps until the min keyword length cap is reached.
 add_task(async function showLessFrequentlyCapReached_manySearches() {
   // Set up a min keyword length and cap.
-  await QuickSuggestTestUtils.setRemoteSettingsResults([
+  await QuickSuggestTestUtils.setRemoteSettingsRecords([
+    QuickSuggestTestUtils.weatherRecord({
+      min_keyword_length: 3,
+    }),
     {
-      type: "weather",
-      weather: {
-        keywords: ["weather"],
-        min_keyword_length: 3,
-        min_keyword_length_cap: 4,
+      type: "configuration",
+      configuration: {
+        show_less_frequently_cap: 1,
       },
     },
   ]);
@@ -76,18 +47,13 @@ add_task(async function showLessFrequentlyCapReached_manySearches() {
     value: "wea",
   });
 
-  let resultIndex = 1;
-  let details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
-  Assert.equal(
-    details.result.providerName,
-    UrlbarProviderWeather.name,
-    "Weather suggestion should be present at expected index after 'wea' search"
-  );
+  info("Weather suggestion should be present after 'wea' search");
+  let details = await assertWeatherResultPresent();
 
   // Click the command.
   let command = "show_less_frequently";
   await UrlbarTestUtils.openResultMenuAndClickItem(window, command, {
-    resultIndex,
+    resultIndex: EXPECTED_RESULT_INDEX,
   });
 
   Assert.ok(
@@ -112,11 +78,8 @@ add_task(async function showLessFrequentlyCapReached_manySearches() {
 
   for (let i = 0; i < UrlbarTestUtils.getResultCount(window); i++) {
     details = await UrlbarTestUtils.getDetailsOfResultAt(window, i);
-    Assert.notEqual(
-      details.result.providerName,
-      UrlbarProviderWeather.name,
-      `Weather suggestion should be absent (checking index ${i})`
-    );
+    info(`Weather suggestion should be absent (checking index ${i})`);
+    assertIsWeatherResult(details.result, false);
   }
 
   // Do a search using one more character. The suggestion should appear.
@@ -125,12 +88,8 @@ add_task(async function showLessFrequentlyCapReached_manySearches() {
     value: "weat",
   });
 
-  details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
-  Assert.equal(
-    details.result.providerName,
-    UrlbarProviderWeather.name,
-    "Weather suggestion should be present at expected index after 'weat' search"
-  );
+  info("Weather suggestion should be present after 'weat' search");
+  details = await assertWeatherResultPresent();
   Assert.ok(
     !details.element.row.hasAttribute("feedback-acknowledgment"),
     "Row should not have feedback acknowledgment after 'weat' search"
@@ -138,7 +97,9 @@ add_task(async function showLessFrequentlyCapReached_manySearches() {
 
   // Since the cap has been reached, the command should no longer appear in the
   // result menu.
-  await UrlbarTestUtils.openResultMenu(window, { resultIndex });
+  await UrlbarTestUtils.openResultMenu(window, {
+    resultIndex: EXPECTED_RESULT_INDEX,
+  });
   let menuitem = gURLBar.view.resultMenu.querySelector(
     `menuitem[data-command=${command}]`
   );
@@ -146,93 +107,18 @@ add_task(async function showLessFrequentlyCapReached_manySearches() {
   gURLBar.view.resultMenu.hidePopup(true);
 
   await UrlbarTestUtils.promisePopupClose(window);
-  await QuickSuggestTestUtils.setRemoteSettingsResults([
-    {
-      type: "weather",
-      weather: MerinoTestUtils.WEATHER_RS_DATA,
-    },
+  await QuickSuggestTestUtils.setRemoteSettingsRecords([
+    QuickSuggestTestUtils.weatherRecord(),
   ]);
   UrlbarPrefs.clear("weather.minKeywordLength");
-});
-
-// Repeatedly clicks the "Show less frequently" result menu command after doing
-// a single search until the min keyword length cap is reached.
-add_task(async function showLessFrequentlyCapReached_oneSearch() {
-  // Set up a min keyword length and cap.
-  await QuickSuggestTestUtils.setRemoteSettingsResults([
-    {
-      type: "weather",
-      weather: {
-        keywords: ["weather"],
-        min_keyword_length: 3,
-        min_keyword_length_cap: 6,
-      },
-    },
-  ]);
-
-  // Trigger the suggestion.
-  await UrlbarTestUtils.promiseAutocompleteResultPopup({
-    window,
-    value: "wea",
-  });
-
-  let resultIndex = 1;
-  let details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
-  Assert.equal(
-    details.result.providerName,
-    UrlbarProviderWeather.name,
-    "Weather suggestion should be present at expected index after 'wea' search"
-  );
-
-  let command = "show_less_frequently";
-
-  for (let i = 0; i < 3; i++) {
-    await UrlbarTestUtils.openResultMenuAndClickItem(window, command, {
-      resultIndex,
-      openByMouse: true,
-    });
-
-    Assert.ok(
-      gURLBar.view.isOpen,
-      "The view should remain open clicking the command"
-    );
-    Assert.ok(
-      details.element.row.hasAttribute("feedback-acknowledgment"),
-      "Row should have feedback acknowledgment after clicking command"
-    );
-    Assert.equal(
-      UrlbarPrefs.get("weather.minKeywordLength"),
-      4 + i,
-      "weather.minKeywordLength should be incremented once"
-    );
-  }
-
-  let menuitem = await UrlbarTestUtils.openResultMenuAndGetItem({
-    window,
-    command,
-    resultIndex,
-  });
-  Assert.ok(
-    !menuitem,
-    "The menuitem should not exist after the cap is reached"
-  );
-
-  gURLBar.view.resultMenu.hidePopup(true);
-  await UrlbarTestUtils.promisePopupClose(window);
-  await QuickSuggestTestUtils.setRemoteSettingsResults([
-    {
-      type: "weather",
-      weather: MerinoTestUtils.WEATHER_RS_DATA,
-    },
-  ]);
-  UrlbarPrefs.clear("weather.minKeywordLength");
+  UrlbarPrefs.clear("weather.showLessFrequentlyCount");
 });
 
 // Tests the "Not interested" result menu dismissal command.
 add_task(async function notInterested() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    value: MerinoTestUtils.WEATHER_KEYWORD,
+    value: "weather",
   });
   await doDismissTest("not_interested");
 });
@@ -241,27 +127,20 @@ add_task(async function notInterested() {
 add_task(async function notRelevant() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    value: MerinoTestUtils.WEATHER_KEYWORD,
+    value: "weather",
   });
   await doDismissTest("not_relevant");
 });
 
 async function doDismissTest(command) {
   let resultCount = UrlbarTestUtils.getResultCount(window);
-
-  let resultIndex = 1;
-  let details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
-  Assert.equal(
-    details.result.providerName,
-    UrlbarProviderWeather.name,
-    "Weather suggestion should be present"
-  );
+  let details = await assertWeatherResultPresent();
 
   // Click the command.
   await UrlbarTestUtils.openResultMenuAndClickItem(
     window,
     ["[data-l10n-id=firefox-suggest-command-dont-show-this]", command],
-    { resultIndex, openByMouse: true }
+    { resultIndex: EXPECTED_RESULT_INDEX, openByMouse: true }
   );
 
   Assert.ok(
@@ -276,7 +155,10 @@ async function doDismissTest(command) {
     resultCount,
     "The result count should not haved changed after dismissal"
   );
-  details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
+  details = await UrlbarTestUtils.getDetailsOfResultAt(
+    window,
+    EXPECTED_RESULT_INDEX
+  );
   Assert.equal(
     details.type,
     UrlbarUtils.RESULT_TYPE.TIP,
@@ -296,7 +178,7 @@ async function doDismissTest(command) {
   let gotItButton = UrlbarTestUtils.getButtonForResultIndex(
     window,
     "0",
-    resultIndex
+    EXPECTED_RESULT_INDEX
   );
   Assert.ok(gotItButton, "Row should have a 'Got it' button");
   EventUtils.synthesizeMouseAtCenter(gotItButton, {}, window);
@@ -313,21 +195,22 @@ async function doDismissTest(command) {
   );
   for (let i = 0; i < UrlbarTestUtils.getResultCount(window); i++) {
     details = await UrlbarTestUtils.getDetailsOfResultAt(window, i);
-    Assert.ok(
-      details.type != UrlbarUtils.RESULT_TYPE.TIP &&
-        details.result.providerName != UrlbarProviderWeather.name,
-      "Tip result and weather result should not be present"
+    Assert.notEqual(
+      details.type,
+      UrlbarUtils.RESULT_TYPE.TIP,
+      "Tip result should not be present"
     );
+    info("Weather result should not be present");
+    assertIsWeatherResult(details.result, false);
   }
 
   await UrlbarTestUtils.promisePopupClose(window);
 
-  // Enable the weather suggestion again and wait for it to be fetched.
-  let fetchPromise = QuickSuggest.weather.waitForFetches();
+  // Enable the weather suggestion again.
   UrlbarPrefs.clear("suggest.weather");
-  info("Waiting for weather fetch after re-enabling the suggestion");
-  await fetchPromise;
-  info("Got weather fetch");
+
+  // Wait for keywords to be re-synced from remote settings.
+  await QuickSuggestTestUtils.forceSync();
 }
 
 // Tests the "Report inaccurate location" result menu command immediately
@@ -343,26 +226,22 @@ add_task(async function inaccurateLocationAndDismissal() {
 add_task(async function showLessFrequentlyAndDismissal() {
   await doSessionOngoingCommandTest("show_less_frequently");
   UrlbarPrefs.clear("weather.minKeywordLength");
+  UrlbarPrefs.clear("weather.showLessFrequentlyCount");
 });
 
 async function doSessionOngoingCommandTest(command) {
   // Trigger the suggestion.
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    value: MerinoTestUtils.WEATHER_KEYWORD,
+    value: "weather",
   });
 
-  let resultIndex = 1;
-  let details = await UrlbarTestUtils.getDetailsOfResultAt(window, resultIndex);
-  Assert.equal(
-    details.result.providerName,
-    UrlbarProviderWeather.name,
-    "Weather suggestion should be present at expected index after search"
-  );
+  info("Weather suggestion should be present after search");
+  let details = await assertWeatherResultPresent();
 
   // Click the command.
   await UrlbarTestUtils.openResultMenuAndClickItem(window, command, {
-    resultIndex,
+    resultIndex: EXPECTED_RESULT_INDEX,
   });
 
   Assert.ok(
@@ -376,4 +255,242 @@ async function doSessionOngoingCommandTest(command) {
 
   info("Doing dismissal");
   await doDismissTest("not_interested");
+}
+
+// Test for menu item to manage the suggest.
+add_task(async function manage() {
+  await BrowserTestUtils.withNewTab({ gBrowser }, async browser => {
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "weather",
+    });
+
+    await assertWeatherResultPresent();
+
+    const managePage = "about:preferences#search";
+    let onManagePageLoaded = BrowserTestUtils.browserLoaded(
+      browser,
+      false,
+      managePage
+    );
+    // Click the command.
+    await UrlbarTestUtils.openResultMenuAndClickItem(window, "manage", {
+      resultIndex: EXPECTED_RESULT_INDEX,
+    });
+    await onManagePageLoaded;
+    Assert.equal(
+      browser.currentURI.spec,
+      managePage,
+      "The manage page is loaded"
+    );
+
+    await UrlbarTestUtils.promisePopupClose(window);
+  });
+});
+
+// Tests the "simplest" (integer value 0) UI treatment.
+add_task(async function simplestUi() {
+  let nimbusVariablesList = [
+    // The simplest UI should be enabled by default, when no Nimbus experiment
+    // is installed.
+    null,
+    { weatherUiTreatment: 0 },
+  ];
+
+  for (let nimbusVariables of nimbusVariablesList) {
+    let nimbusCleanup = nimbusVariables
+      ? await UrlbarTestUtils.initNimbusFeature(nimbusVariables)
+      : null;
+
+    await BrowserTestUtils.withNewTab("about:blank", async () => {
+      await UrlbarTestUtils.promiseAutocompleteResultPopup({
+        window,
+        value: "weather",
+      });
+
+      let details = await assertWeatherResultPresent();
+
+      let { row } = details.element;
+
+      // Build the expected title.
+      let unit = Services.locale.regionalPrefsLocales[0] == "en-US" ? "f" : "c";
+      let temperature =
+        WEATHER_SUGGESTION.current_conditions.temperature[unit] +
+        "°" +
+        unit.toUpperCase();
+      let expectedTitle = [
+        temperature,
+        "in",
+        WEATHER_SUGGESTION.city_name + ",",
+        WEATHER_SUGGESTION.region_code,
+      ].join(" ");
+
+      // Check the title. L10n string translation is async so it may not be
+      // ready yet, so wait for it.
+      let title = row.querySelector(".urlbarView-title");
+      await TestUtils.waitForCondition(
+        () => title.textContent == expectedTitle,
+        "Waiting for the row's title text to be updated"
+      );
+      Assert.equal(
+        title.textContent,
+        expectedTitle,
+        "Row should have expected title"
+      );
+
+      // The temperature should be `<strong>`.
+      let strongChildren = title.querySelectorAll("strong");
+      Assert.equal(
+        strongChildren.length,
+        1,
+        "Title should have one <strong> child"
+      );
+      Assert.equal(
+        strongChildren[0].textContent,
+        temperature,
+        "Strong child should be correct"
+      );
+
+      Assert.ok(
+        !row.hasAttribute("label"),
+        "Simplest UI should not have a row label"
+      );
+
+      await assertPageLoad();
+    });
+
+    await nimbusCleanup?.();
+  }
+});
+
+// Tests the "simpler" (integer value 1) and "full" (2) UI treatments.
+add_task(async function simplerAndFullUi() {
+  const testData = [
+    // simpler
+    {
+      nimbusVariables: { weatherUiTreatment: 1 },
+      expectedSummary: WEATHER_SUGGESTION.current_conditions.summary,
+    },
+    // full
+    {
+      nimbusVariables: { weatherUiTreatment: 2 },
+      expectedSummary: `${WEATHER_SUGGESTION.current_conditions.summary}; ${WEATHER_SUGGESTION.forecast.summary}`,
+    },
+  ];
+
+  for (let { nimbusVariables, expectedSummary } of testData) {
+    let nimbusCleanup = nimbusVariables
+      ? await UrlbarTestUtils.initNimbusFeature(nimbusVariables)
+      : null;
+
+    await BrowserTestUtils.withNewTab("about:blank", async () => {
+      await UrlbarTestUtils.promiseAutocompleteResultPopup({
+        window,
+        value: "weather",
+      });
+
+      let details = await assertWeatherResultPresent();
+
+      let { row } = details.element;
+      let summary = row.querySelector(
+        ".urlbarView-dynamic-weather-summaryText"
+      );
+
+      // `getViewUpdate()` is allowed to be async and `UrlbarView` awaits it even
+      // though the `Weather` implementation is not async. That means the summary
+      // text content will be updated asyncly, so we need to wait for it.
+      await TestUtils.waitForCondition(
+        () => summary.textContent == expectedSummary,
+        "Waiting for the row's summary text to be updated"
+      );
+      Assert.equal(
+        summary.textContent,
+        expectedSummary,
+        "The summary text should be correct"
+      );
+
+      // Check the title too while we're here.
+      let expectedTitle = [
+        "Weather for",
+        WEATHER_SUGGESTION.city_name + ",",
+        WEATHER_SUGGESTION.region_code,
+      ].join(" ");
+      let title = row.querySelector(".urlbarView-dynamic-weather-title");
+      await TestUtils.waitForCondition(
+        () => title.textContent == expectedTitle,
+        "Waiting for the row's title text to be updated"
+      );
+      Assert.equal(
+        title.textContent,
+        expectedTitle,
+        "The title text should be correct"
+      );
+
+      Assert.equal(
+        row.getAttribute("label"),
+        "Firefox Suggest",
+        "Row label should be correct"
+      );
+
+      await assertPageLoad();
+    });
+
+    await nimbusCleanup?.();
+  }
+});
+
+async function assertWeatherResultPresent() {
+  let details = await UrlbarTestUtils.getDetailsOfResultAt(
+    window,
+    EXPECTED_RESULT_INDEX
+  );
+  assertIsWeatherResult(details.result, true);
+  return details;
+}
+
+function assertIsWeatherResult(result, isWeatherResult) {
+  if (isWeatherResult) {
+    Assert.equal(
+      result.providerName,
+      UrlbarProviderQuickSuggest.name,
+      "Result should be from UrlbarProviderQuickSuggest"
+    );
+    Assert.equal(
+      UrlbarUtils.searchEngagementTelemetryType(result),
+      "weather",
+      "Result telemetry type should be 'weather'"
+    );
+  } else {
+    Assert.notEqual(
+      result.providerName,
+      UrlbarProviderQuickSuggest.name,
+      "Result should not be from UrlbarProviderQuickSuggest"
+    );
+    Assert.notEqual(
+      UrlbarUtils.searchEngagementTelemetryType(result),
+      "weather",
+      "Result telemetry type should not be 'weather'"
+    );
+  }
+}
+
+async function assertPageLoad() {
+  let loadPromise = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    false
+  );
+
+  EventUtils.synthesizeKey("KEY_ArrowDown", { repeat: EXPECTED_RESULT_INDEX });
+  EventUtils.synthesizeKey("KEY_Enter");
+
+  info("Waiting for weather page to load");
+  await loadPromise;
+
+  Assert.equal(
+    gBrowser.currentURI.spec,
+    "https://example.com/weather",
+    "Expected weather page should have loaded"
+  );
+
+  await PlacesUtils.history.clear();
 }

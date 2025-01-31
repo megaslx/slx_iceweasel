@@ -22,7 +22,8 @@
 #include "nsJSUtils.h"
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowOuter.h"
+#include "nsPIDOMWindowInlines.h"
 #include "mozilla/Likely.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/BasePrincipal.h"
@@ -33,22 +34,26 @@
 #include "mozilla/Unused.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/FragmentDirective.h"
 #include "mozilla/dom/LocationBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "ReferrerInfo.h"
 
 namespace mozilla::dom {
 
-Location::Location(nsPIDOMWindowInner* aWindow,
-                   BrowsingContext* aBrowsingContext)
-    : mInnerWindow(aWindow) {
-  // aBrowsingContext can be null if it gets called after nsDocShell::Destory().
-  if (aBrowsingContext) {
-    mBrowsingContextId = aBrowsingContext->Id();
+Location::Location(nsPIDOMWindowInner* aWindow)
+    : mCachedHash(VoidString()), mInnerWindow(aWindow) {
+  BrowsingContext* bc = GetBrowsingContext();
+  if (bc) {
+    bc->LocationCreated(this);
   }
 }
 
-Location::~Location() = default;
+Location::~Location() {
+  if (isInList()) {
+    remove();
+  }
+}
 
 // QueryInterface implementation for Location
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Location)
@@ -62,13 +67,12 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(Location)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Location)
 
 BrowsingContext* Location::GetBrowsingContext() {
-  RefPtr<BrowsingContext> bc = BrowsingContext::Get(mBrowsingContextId);
-  return bc.get();
+  return mInnerWindow ? mInnerWindow->GetBrowsingContext() : nullptr;
 }
 
-already_AddRefed<nsIDocShell> Location::GetDocShell() {
-  if (RefPtr<BrowsingContext> bc = GetBrowsingContext()) {
-    return do_AddRef(bc->GetDocShell());
+nsIDocShell* Location::GetDocShell() {
+  if (BrowsingContext* bc = GetBrowsingContext()) {
+    return bc->GetDocShell();
   }
   return nullptr;
 }
@@ -76,7 +80,7 @@ already_AddRefed<nsIDocShell> Location::GetDocShell() {
 nsresult Location::GetURI(nsIURI** aURI, bool aGetInnermostURI) {
   *aURI = nullptr;
 
-  nsCOMPtr<nsIDocShell> docShell(GetDocShell());
+  nsIDocShell* docShell = GetDocShell();
   if (!docShell) {
     return NS_OK;
   }
@@ -102,6 +106,9 @@ nsresult Location::GetURI(nsIURI** aURI, bool aGetInnermostURI) {
   }
 
   NS_ASSERTION(uri, "nsJARURI screwed up?");
+
+  // Remove the fragment directive from the url hash.
+  FragmentDirective::ParseAndRemoveFragmentDirectiveFromFragment(uri);
   nsCOMPtr<nsIURI> exposableURI = net::nsIOService::CreateExposableURI(uri);
   exposableURI.forget(aURI);
   return NS_OK;
@@ -114,6 +121,11 @@ void Location::GetHash(nsAString& aHash, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
+  if (!mCachedHash.IsVoid()) {
+    aHash = mCachedHash;
+    return;
+  }
+
   aHash.SetLength(0);
 
   nsCOMPtr<nsIURI> uri;
@@ -123,7 +135,6 @@ void Location::GetHash(nsAString& aHash, nsIPrincipal& aSubjectPrincipal,
   }
 
   nsAutoCString ref;
-  nsAutoString unicodeRef;
 
   aRv = uri->GetRef(ref);
   if (NS_WARN_IF(aRv.Failed())) {
@@ -135,14 +146,7 @@ void Location::GetHash(nsAString& aHash, nsIPrincipal& aSubjectPrincipal,
     AppendUTF8toUTF16(ref, aHash);
   }
 
-  if (aHash == mCachedHash) {
-    // Work around ShareThis stupidly polling location.hash every
-    // 5ms all the time by handing out the same exact string buffer
-    // we handed out last time.
-    aHash = mCachedHash;
-  } else {
-    mCachedHash = aHash;
-  }
+  mCachedHash = aHash;
 }
 
 void Location::SetHash(const nsAString& aHash, nsIPrincipal& aSubjectPrincipal,
@@ -544,29 +548,9 @@ void Location::Reload(bool aForceget, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
-  RefPtr<nsDocShell> docShell(GetDocShell().downcast<nsDocShell>());
+  RefPtr<nsDocShell> docShell(nsDocShell::Cast(GetDocShell()));
   if (!docShell) {
     return aRv.Throw(NS_ERROR_FAILURE);
-  }
-
-  if (StaticPrefs::dom_block_reload_from_resize_event_handler()) {
-    nsCOMPtr<nsPIDOMWindowOuter> window = docShell->GetWindow();
-    if (window && window->IsHandlingResizeEvent()) {
-      // location.reload() was called on a window that is handling a
-      // resize event. Sites do this since Netscape 4.x needed it, but
-      // we don't, and it's a horrible experience for nothing. In stead
-      // of reloading the page, just clear style data and reflow the
-      // page since some sites may use this trick to work around gecko
-      // reflow bugs, and this should have the same effect.
-      RefPtr<Document> doc = window->GetExtantDoc();
-
-      nsPresContext* pcx;
-      if (doc && (pcx = doc->GetPresContext())) {
-        pcx->RebuildAllStyleData(NS_STYLE_HINT_REFLOW,
-                                 RestyleHint::RestyleSubtree());
-      }
-      return;
-    }
   }
 
   RefPtr<BrowsingContext> bc = GetBrowsingContext();
@@ -578,7 +562,7 @@ void Location::Reload(bool aForceget, nsIPrincipal& aSubjectPrincipal,
                               ? CallerType::System
                               : CallerType::NonSystem;
 
-  nsresult rv = bc->CheckLocationChangeRateLimit(callerType);
+  nsresult rv = bc->CheckNavigationRateLimit(callerType);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
     return;
@@ -613,7 +597,7 @@ void Location::Assign(const nsAString& aUrl, nsIPrincipal& aSubjectPrincipal,
 bool Location::CallerSubsumes(nsIPrincipal* aSubjectPrincipal) {
   MOZ_ASSERT(aSubjectPrincipal);
 
-  RefPtr<BrowsingContext> bc(GetBrowsingContext());
+  BrowsingContext* bc = GetBrowsingContext();
   if (MOZ_UNLIKELY(!bc) || MOZ_UNLIKELY(bc->IsDiscarded())) {
     // Per spec, operations on a Location object with a discarded BC are no-ops,
     // not security errors, so we need to return true from the access check and
@@ -645,5 +629,7 @@ JSObject* Location::WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) {
   return Location_Binding::Wrap(aCx, this, aGivenProto);
 }
+
+void Location::ClearCachedValues() { mCachedHash = VoidString(); }
 
 }  // namespace mozilla::dom

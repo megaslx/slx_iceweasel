@@ -95,6 +95,7 @@ class RTCRtpSender : public nsISupports,
   void SetTrack(const RefPtr<MediaStreamTrack>& aTrack);
   void Shutdown();
   void BreakCycles();
+  void Unlink();
   // Terminal state, reached through stopping RTCRtpTransceiver.
   void Stop();
   bool HasTrack(const dom::MediaStreamTrack* aTrack) const;
@@ -165,7 +166,8 @@ class RTCRtpSender : public nsISupports,
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
   RefPtr<PeerConnectionImpl> mPc;
   RefPtr<dom::MediaStreamTrack> mSenderTrack;
-  bool mAddTrackCalled = false;
+  bool mSenderTrackSetByAddTrack = false;
+  // Houses [[SendEncodings]] and [[SendCodecs]]
   RTCRtpSendParameters mParameters;
   Maybe<RTCRtpSendParameters> mPendingParameters;
   uint32_t mNumSetParametersCalls = 0;
@@ -190,7 +192,6 @@ class RTCRtpSender : public nsISupports,
   bool mHaveWarnedBecauseNoGetParameters = false;
   bool mHaveWarnedBecauseEncodingCountChange = false;
   bool mHaveWarnedBecauseNoTransactionId = false;
-  bool mHaveWarnedBecauseStaleTransactionId = false;
   // TODO(bug 1803389): Remove the glean errors once they are no longer needed.
   bool mHaveFailedBecauseNoGetParameters = false;
   bool mHaveFailedBecauseEncodingCountChange = false;
@@ -199,6 +200,15 @@ class RTCRtpSender : public nsISupports,
   bool mHaveFailedBecauseStaleTransactionId = false;
   bool mHaveFailedBecauseNoEncodings = false;
   bool mHaveFailedBecauseOtherError = false;
+
+  // Limits logging of codec information
+  bool mHaveLoggedUlpfecInfo = false;
+  bool mHaveLoggedOtherFec = false;
+  bool mHaveLoggedVideoPreferredCodec = false;
+  bool mHaveLoggedAudioPreferredCodec = false;
+  // Used to detect cases where getParameters is called too long after
+  // setParameters, and log a better warning.
+  Maybe<nsString> mLastTransactionId;
 
   RefPtr<dom::RTCDTMFSender> mDtmf;
 
@@ -251,6 +261,7 @@ class RTCRtpSender : public nsISupports,
   void UpdateBaseConfig(BaseConfig* aConfig);
   void ApplyVideoConfig(const VideoConfig& aConfig);
   void ApplyAudioConfig(const AudioConfig& aConfig);
+  void UpdateParametersCodecs();
 
   Canonical<Ssrcs> mSsrcs;
   Canonical<Ssrcs> mVideoRtxSsrcs;

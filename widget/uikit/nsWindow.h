@@ -6,65 +6,84 @@
 #ifndef NSWINDOW_H_
 #define NSWINDOW_H_
 
+#include <CoreFoundation/CoreFoundation.h>
+
+#include "mozilla/widget/IOSView.h"
 #include "nsBaseWidget.h"
 #include "gfxPoint.h"
 
 #include "nsTArray.h"
 
-@class UIWindow;
-@class UIView;
+#ifdef __OBJC__
 @class ChildView;
+#else
+typedef struct objc_object ChildView;
+#endif
+
+namespace mozilla::widget {
+class EventDispatcher;
+class TextInputHandler;
+}  // namespace mozilla::widget
+
+#define NS_WINDOW_IID                                \
+  {                                                  \
+    0x5e6fd559, 0xb3f9, 0x40c9, {                    \
+      0x92, 0xd1, 0xef, 0x80, 0xb4, 0xf9, 0x69, 0xe9 \
+    }                                                \
+  }
 
 class nsWindow final : public nsBaseWidget {
-  typedef nsBaseWidget Inherited;
-
  public:
   nsWindow();
 
-  NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, Inherited)
+  NS_DECLARE_STATIC_IID_ACCESSOR(NS_WINDOW_IID)
+
+  NS_DECL_ISUPPORTS_INHERITED
 
   //
   // nsIWidget
   //
 
-  [[nodiscard]] virtual nsresult Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
-                                        const LayoutDeviceIntRect& aRect,
-                                        widget::InitData* aInitData = nullptr) override;
-  virtual void Destroy() override;
-  virtual void Show(bool aState) override;
-  virtual void Enable(bool aState) override {}
-  virtual bool IsEnabled() const override { return true; }
-  virtual bool IsVisible() const override { return mVisible; }
-  virtual void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override;
-  virtual LayoutDeviceIntPoint WidgetToScreenOffset() override;
+  [[nodiscard]] nsresult Create(
+      nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+      mozilla::widget::InitData* aInitData = nullptr) override;
+  void Destroy() override;
+  void Show(bool aState) override;
+  void Enable(bool aState) override {}
+  bool IsEnabled() const override { return true; }
+  bool IsVisible() const override { return mVisible; }
+  void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override;
+  LayoutDeviceIntPoint WidgetToScreenOffset() override;
 
-  virtual void SetBackgroundColor(const nscolor& aColor) override;
-  virtual void* GetNativeData(uint32_t aDataType) override;
+  void SetBackgroundColor(const nscolor& aColor) override;
+  void* GetNativeData(uint32_t aDataType) override;
 
-  virtual void Move(double aX, double aY) override;
-  virtual nsSizeMode SizeMode() override { return mSizeMode; }
-  virtual void SetSizeMode(nsSizeMode aMode) override;
+  void Move(double aX, double aY) override;
+  nsSizeMode SizeMode() override { return mSizeMode; }
+  void SetSizeMode(nsSizeMode aMode) override;
   void EnteredFullScreen(bool aFullScreen);
-  virtual void Resize(double aWidth, double aHeight, bool aRepaint) override;
-  virtual void Resize(double aX, double aY, double aWidth, double aHeight, bool aRepaint) override;
-  virtual LayoutDeviceIntRect GetScreenBounds() override;
+  void Resize(double aWidth, double aHeight, bool aRepaint) override;
+  void Resize(double aX, double aY, double aWidth, double aHeight,
+              bool aRepaint) override;
+  LayoutDeviceIntRect GetScreenBounds() override;
   void ReportMoveEvent();
   void ReportSizeEvent();
   void ReportSizeModeEvent(nsSizeMode aMode);
 
   CGFloat BackingScaleFactor();
   void BackingScaleFactorChanged();
-  virtual float GetDPI() override {
+  float GetDPI() override {
     // XXX: terrible
     return 326.0f;
   }
-  virtual double GetDefaultScaleInternal() override { return BackingScaleFactor(); }
-  virtual int32_t RoundsWidgetCoordinatesTo() override;
+  double GetDefaultScaleInternal() override { return BackingScaleFactor(); }
+  int32_t RoundsWidgetCoordinatesTo() override;
 
-  virtual nsresult SetTitle(const nsAString& aTitle) override { return NS_OK; }
+  nsresult SetTitle(const nsAString& aTitle) override { return NS_OK; }
 
-  virtual void Invalidate(const LayoutDeviceIntRect& aRect) override;
-  virtual nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent, nsEventStatus& aStatus) override;
+  void Invalidate(const LayoutDeviceIntRect& aRect) override;
+  nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
+                         nsEventStatus& aStatus) override;
 
   void WillPaintWindow();
   bool PaintWindow(LayoutDeviceIntRegion aRegion);
@@ -73,8 +92,16 @@ class nsWindow final : public nsBaseWidget {
 
   // virtual nsresult
   // NotifyIME(const IMENotification& aIMENotification) override;
-  virtual void SetInputContext(const InputContext& aContext, const InputContextAction& aAction);
-  virtual InputContext GetInputContext();
+  void SetInputContext(const InputContext& aContext,
+                       const InputContextAction& aAction) override;
+  InputContext GetInputContext() override;
+  TextEventDispatcherListener* GetNativeTextEventDispatcherListener() override;
+
+  mozilla::widget::TextInputHandler* GetTextInputHandler() const {
+    return mTextInputHandler;
+  }
+  bool IsVirtualKeyboardDisabled() const;
+
   /*
   virtual bool ExecuteNativeKeyBinding(
                       NativeKeyBindingsType aType,
@@ -82,6 +109,16 @@ class nsWindow final : public nsBaseWidget {
                       DoCommandCallback aCallback,
                       void* aCallbackData) override;
   */
+
+  mozilla::widget::EventDispatcher* GetEventDispatcher() const;
+
+  static already_AddRefed<nsWindow> From(nsPIDOMWindowOuter* aDOMWindow);
+  static already_AddRefed<nsWindow> From(nsIWidget* aWidget);
+
+  void SetIOSView(already_AddRefed<mozilla::widget::IOSView>&& aView) {
+    mIOSView = aView;
+  }
+  mozilla::widget::IOSView* GetIOSView() const { return mIOSView; }
 
  protected:
   virtual ~nsWindow();
@@ -98,7 +135,10 @@ class nsWindow final : public nsBaseWidget {
   nsSizeMode mSizeMode;
   nsTArray<nsWindow*> mChildren;
   nsWindow* mParent;
-  InputContext mInputContext;
+
+  mozilla::widget::InputContext mInputContext;
+  RefPtr<mozilla::widget::TextInputHandler> mTextInputHandler;
+  RefPtr<mozilla::widget::IOSView> mIOSView;
 
   void OnSizeChanged(const mozilla::gfx::IntSize& aSize);
 
@@ -106,5 +146,7 @@ class nsWindow final : public nsBaseWidget {
   static void DumpWindows(const nsTArray<nsWindow*>& wins, int indent = 0);
   static void LogWindow(nsWindow* win, int index, int indent);
 };
+
+NS_DEFINE_STATIC_IID_ACCESSOR(nsWindow, NS_WINDOW_IID)
 
 #endif /* NSWINDOW_H_ */

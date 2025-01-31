@@ -7,12 +7,15 @@
  * helper functions that are useful to all components of the urlbar.
  */
 
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  ContextualIdentityService:
+    "resource://gre/modules/ContextualIdentityService.sys.mjs",
   FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
   KeywordUtils: "resource://gre/modules/KeywordUtils.sys.mjs",
-  Log: "resource://gre/modules/Log.sys.mjs",
   PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -21,12 +24,21 @@ ChromeUtils.defineESModuleGetters(lazy, {
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
   UrlbarProviderInterventions:
     "resource:///modules/UrlbarProviderInterventions.sys.mjs",
+  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
   UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
   UrlbarProviderSearchTips:
     "resource:///modules/UrlbarProviderSearchTips.sys.mjs",
   UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
   UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+  BrowserUIUtils: "resource:///modules/BrowserUIUtils.sys.mjs",
 });
+
+XPCOMUtils.defineLazyServiceGetter(
+  lazy,
+  "parserUtils",
+  "@mozilla.org/parserutils;1",
+  "nsIParserUtils"
+);
 
 export var UrlbarUtils = {
   // Results are categorized into groups to help the muxer compose them.  See
@@ -47,13 +59,16 @@ export var UrlbarUtils = {
     HEURISTIC_BOOKMARK_KEYWORD: "heuristicBookmarkKeyword",
     HEURISTIC_HISTORY_URL: "heuristicHistoryUrl",
     HEURISTIC_OMNIBOX: "heuristicOmnibox",
+    HEURISTIC_RESTRICT_KEYWORD_AUTOFILL: "heuristicRestrictKeywordAutofill",
     HEURISTIC_SEARCH_TIP: "heuristicSearchTip",
     HEURISTIC_TEST: "heuristicTest",
     HEURISTIC_TOKEN_ALIAS_ENGINE: "heuristicTokenAliasEngine",
     INPUT_HISTORY: "inputHistory",
     OMNIBOX: "extension",
+    RECENT_SEARCH: "recentSearch",
     REMOTE_SUGGESTION: "remoteSuggestion",
     REMOTE_TAB: "remoteTab",
+    RESTRICT_SEARCH_KEYWORD: "restrictSearchKeyword",
     SUGGESTED_INDEX: "suggestedIndex",
     TAIL_SUGGESTION: "tailSuggestion",
   },
@@ -90,8 +105,10 @@ export var UrlbarUtils = {
     REMOTE_TAB: 6,
     // An actionable message to help the user with their query.
     TIP: 7,
-    // A type of result created at runtime, for example by an extension.
+    // A type of result which layout is defined at runtime.
     DYNAMIC: 8,
+    // A restrict keyword result, could be @bookmarks, @history, or @tabs.
+    RESTRICT: 9,
 
     // When you add a new type, also add its schema to
     // UrlbarUtils.RESULT_PAYLOAD_SCHEMA below.  Also consider checking if
@@ -111,8 +128,20 @@ export var UrlbarUtils = {
     TABS: 4,
     OTHER_LOCAL: 5,
     OTHER_NETWORK: 6,
-    ACTIONS: 7,
-    ADDON: 8,
+    ADDON: 7,
+    ACTIONS: 8,
+  },
+
+  // Per-result exposure telemetry.
+  EXPOSURE_TELEMETRY: {
+    // Exposure telemetry will not be recorded for the result.
+    NONE: 0,
+    // Exposure telemetry will be recorded for the result and the result will be
+    // visible in the view as usual.
+    SHOWN: 1,
+    // Exposure telemetry will be recorded for the result but the result will
+    // not be present in the view.
+    HIDDEN: 2,
   },
 
   // This defines icon locations that are commonly used in the UI.
@@ -168,6 +197,7 @@ export var UrlbarUtils = {
     "oneoff",
     "historymenu",
     "other",
+    "searchbutton",
     "shortcut",
     "tabmenu",
     "tabtosearch",
@@ -211,13 +241,15 @@ export var UrlbarUtils = {
         icon: "chrome://browser/skin/bookmark.svg",
         pref: "shortcuts.bookmarks",
         telemetryLabel: "bookmarks",
+        uiLabel: "urlbar-searchmode-bookmarks",
       },
       {
         source: UrlbarUtils.RESULT_SOURCE.TABS,
         restrict: lazy.UrlbarTokenizer.RESTRICT.OPENPAGE,
-        icon: "chrome://browser/skin/tab.svg",
+        icon: "chrome://browser/skin/tabs.svg",
         pref: "shortcuts.tabs",
         telemetryLabel: "tabs",
+        uiLabel: "urlbar-searchmode-tabs",
       },
       {
         source: UrlbarUtils.RESULT_SOURCE.HISTORY,
@@ -225,13 +257,15 @@ export var UrlbarUtils = {
         icon: "chrome://browser/skin/history.svg",
         pref: "shortcuts.history",
         telemetryLabel: "history",
+        uiLabel: "urlbar-searchmode-history",
       },
       {
         source: UrlbarUtils.RESULT_SOURCE.ACTIONS,
         restrict: lazy.UrlbarTokenizer.RESTRICT.ACTION,
         icon: "chrome://browser/skin/quickactions.svg",
-        pref: "shortcuts.quickactions",
+        pref: "shortcuts.actions",
         telemetryLabel: "actions",
+        uiLabel: "urlbar-searchmode-actions",
       },
     ];
   },
@@ -343,7 +377,7 @@ export var UrlbarUtils = {
     let dataStream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
       Ci.nsIStringInputStream
     );
-    dataStream.data = postDataString;
+    dataStream.setByteStringData(postDataString);
 
     let mimeStream = Cc[
       "@mozilla.org/network/mime-input-stream;1"
@@ -512,6 +546,8 @@ export var UrlbarUtils = {
           return UrlbarUtils.RESULT_GROUP.HEURISTIC_FALLBACK;
         case "Omnibox":
           return UrlbarUtils.RESULT_GROUP.HEURISTIC_OMNIBOX;
+        case "RestrictKeywordsAutofill":
+          return UrlbarUtils.RESULT_GROUP.HEURISTIC_RESTRICT_KEYWORD_AUTOFILL;
         case "TokenAliasEngines":
           return UrlbarUtils.RESULT_GROUP.HEURISTIC_TOKEN_ALIAS_ENGINE;
         case "UrlbarProviderSearchTips":
@@ -548,9 +584,11 @@ export var UrlbarUtils = {
     switch (result.type) {
       case UrlbarUtils.RESULT_TYPE.SEARCH:
         if (result.source == UrlbarUtils.RESULT_SOURCE.HISTORY) {
-          return UrlbarUtils.RESULT_GROUP.FORM_HISTORY;
+          return result.providerName == "RecentSearches"
+            ? UrlbarUtils.RESULT_GROUP.RECENT_SEARCH
+            : UrlbarUtils.RESULT_GROUP.FORM_HISTORY;
         }
-        if (result.payload.tail) {
+        if (result.payload.tail && !result.isRichSuggestion) {
           return UrlbarUtils.RESULT_GROUP.TAIL_SUGGESTION;
         }
         if (result.payload.suggestion) {
@@ -561,43 +599,41 @@ export var UrlbarUtils = {
         return UrlbarUtils.RESULT_GROUP.OMNIBOX;
       case UrlbarUtils.RESULT_TYPE.REMOTE_TAB:
         return UrlbarUtils.RESULT_GROUP.REMOTE_TAB;
+      case UrlbarUtils.RESULT_TYPE.RESTRICT:
+        return UrlbarUtils.RESULT_GROUP.RESTRICT_SEARCH_KEYWORD;
     }
     return UrlbarUtils.RESULT_GROUP.GENERAL;
   },
 
   /**
-   * Extracts an url from a result, if possible.
+   * Extracts the URL from a result.
    *
-   * @param {UrlbarResult} result The result to extract from.
-   * @returns {object} a {url, postData} object, or null if a url can't be built
-   *          from this result.
+   * @param {UrlbarResult} result
+   *   The result to extract from.
+   * @returns {object}
+   *   An object: `{ url, postData }`
+   *   `url` will be null if the result doesn't have a URL. `postData` will be
+   *   null if the result doesn't have post data.
    */
   getUrlFromResult(result) {
-    switch (result.type) {
-      case UrlbarUtils.RESULT_TYPE.URL:
-      case UrlbarUtils.RESULT_TYPE.REMOTE_TAB:
-      case UrlbarUtils.RESULT_TYPE.TAB_SWITCH:
-        return { url: result.payload.url, postData: null };
-      case UrlbarUtils.RESULT_TYPE.KEYWORD:
-        return {
-          url: result.payload.url,
-          postData: result.payload.postData
-            ? this.getPostDataStream(result.payload.postData)
-            : null,
-        };
-      case UrlbarUtils.RESULT_TYPE.SEARCH: {
-        if (result.payload.engine) {
-          const engine = Services.search.getEngineByName(result.payload.engine);
-          let [url, postData] = this.getSearchQueryUrl(
-            engine,
-            result.payload.suggestion || result.payload.query
-          );
-          return { url, postData };
-        }
-        break;
-      }
+    if (
+      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.payload.engine
+    ) {
+      const engine = Services.search.getEngineByName(result.payload.engine);
+      let [url, postData] = this.getSearchQueryUrl(
+        engine,
+        result.payload.suggestion || result.payload.query
+      );
+      return { url, postData };
     }
-    return { url: null, postData: null };
+
+    return {
+      url: result.payload.url ?? null,
+      postData: result.payload.postData
+        ? this.getPostDataStream(result.payload.postData)
+        : null,
+    };
   },
 
   /**
@@ -627,22 +663,25 @@ export var UrlbarUtils = {
   },
 
   /**
-   * Get the number of rows a result should span in the autocomplete dropdown.
+   * Gets the number of rows a result should span in the view.
    *
-   * @param {UrlbarResult} result The result being created.
+   * @param {UrlbarResult} result
+   *   The result.
+   * @param {bool} includeHiddenExposures
+   *   Whether a span should be returned if the result is a hidden exposure. If
+   *   false and `result.isHiddenExposure` is true, zero will be returned since
+   *   the result should be hidden and not take up any rows at all. Otherwise
+   *   the result's true span is returned.
    * @returns {number}
-   *          The number of rows the result should span in the autocomplete
-   *          dropdown.
+   *   The number of rows the result should span in the view.
    */
-  getSpanForResult(result) {
-    if (result.resultSpan) {
-      return result.resultSpan;
+  getSpanForResult(result, { includeHiddenExposures = false } = {}) {
+    if (!includeHiddenExposures && result.isHiddenExposure) {
+      return 0;
     }
 
-    // We know this result will be hidden in the final view so assign it
-    // a span of zero.
-    if (result.exposureResultHidden) {
-      return 0;
+    if (result.resultSpan) {
+      return result.resultSpan;
     }
 
     switch (result.type) {
@@ -756,6 +795,25 @@ export var UrlbarUtils = {
   },
 
   /**
+   * Splits a url into base and ref strings, according to nsIURI.idl.
+   * Base refers to the part of the url before the ref, excluding the #.
+   *
+   * @param {string} url
+   *   The url to split.
+   * @returns {object} { base, ref }
+   *   Base and ref parts of the given url. Ref is an empty string
+   *   if there is no ref and undefined if url is not well-formed.
+   */
+  extractRefFromUrl(url) {
+    try {
+      let nsUri = Services.io.newURI(url);
+      return { base: nsUri.specIgnoringRef, ref: nsUri.ref };
+    } catch {
+      return { base: url };
+    }
+  },
+
+  /**
    * Strips parts of a URL defined in `options`.
    *
    * @param {string} spec
@@ -846,7 +904,7 @@ export var UrlbarUtils = {
    * @returns {string} The modified paste data.
    */
   stripUnsafeProtocolOnPaste(pasteData) {
-    while (true) {
+    for (;;) {
       let scheme = "";
       try {
         scheme = Services.io.extractScheme(pasteData);
@@ -862,6 +920,13 @@ export var UrlbarUtils = {
     return pasteData;
   },
 
+  /**
+   * Add a (url, input) tuple to the input history table that drives adaptive
+   * results.
+   *
+   * @param {string} url The url to add input history for
+   * @param {string} input The associated search term
+   */
   async addToInputHistory(url, input) {
     await lazy.PlacesUtils.withConnectionWrapper("addToInputHistory", db => {
       // use_count will asymptotically approach the max of 10.
@@ -873,6 +938,29 @@ export var UrlbarUtils = {
         LEFT JOIN moz_inputhistory i ON i.place_id = h.id AND i.input = :input
         WHERE url_hash = hash(:url) AND url = :url
       `,
+        { url, input: input.toLowerCase() }
+      );
+    });
+  },
+
+  /**
+   * Remove a (url, input*) tuple from the input history table that drives
+   * adaptive results.
+   * Note the input argument is used as a wildcard so any match starting with
+   * it will also be removed.
+   *
+   * @param {string} url The url to add input history for
+   * @param {string} input The associated search term
+   */
+  async removeInputHistory(url, input) {
+    await lazy.PlacesUtils.withConnectionWrapper("removeInputHistory", db => {
+      return db.executeCached(
+        `
+        DELETE FROM moz_inputhistory
+        WHERE input BETWEEN :input AND :input || X'FFFF'
+          AND place_id =
+            (SELECT id FROM moz_places WHERE url_hash = hash(:url) AND url = :url)
+        `,
         { url, input: input.toLowerCase() }
       );
     });
@@ -991,8 +1079,9 @@ export var UrlbarUtils = {
       isPrivate: lazy.PrivateBrowsingUtils.isWindowPrivate(window),
       maxResults: 1,
       searchString,
-      userContextId:
-        window.gBrowser.selectedBrowser.getAttribute("usercontextid"),
+      userContextId: parseInt(
+        window.gBrowser.selectedBrowser.getAttribute("usercontextid") || 0
+      ),
       prohibitRemoteResults: true,
       providers: ["AliasEngines", "BookmarkKeywords", "HeuristicFallback"],
     };
@@ -1012,31 +1101,27 @@ export var UrlbarUtils = {
   },
 
   /**
-   * Creates a logger.
-   * Logging level can be controlled through browser.urlbar.loglevel.
+   * Creates a console logger.
+   * Logging level can be controlled through the `browser.urlbar.loglevel`
+   * preference.
    *
-   * @param {string} [prefix] Prefix to use for the logged messages, "::" will
-   *                 be appended automatically to the prefix.
-   * @returns {object} The logger.
+   * @param {object} [options] Options for the logger.
+   * @param {string} [options.prefix] Prefix to use for the logged messages.
+   * @returns {ConsoleInstance} The console logger.
    */
   getLogger({ prefix = "" } = {}) {
-    if (!this._logger) {
-      this._logger = lazy.Log.repository.getLogger("urlbar");
-      this._logger.manageLevelFromPref("browser.urlbar.loglevel");
-      this._logger.addAppender(
-        new lazy.Log.ConsoleAppender(new lazy.Log.BasicFormatter())
-      );
+    if (!this._loggers) {
+      this._loggers = new Map();
     }
-    if (prefix) {
-      // This is not an early return because it is necessary to invoke getLogger
-      // at least once before getLoggerWithMessagePrefix; it replaces a
-      // method of the original logger, rather than using an actual Proxy.
-      return lazy.Log.repository.getLoggerWithMessagePrefix(
-        "urlbar",
-        prefix + " :: "
-      );
+    let logger = this._loggers.get(prefix);
+    if (!logger) {
+      logger = console.createInstance({
+        prefix: `URLBar${prefix ? " - " + prefix : ""}`,
+        maxLogLevelPref: "browser.urlbar.loglevel",
+      });
+      this._loggers.set(prefix, logger);
     }
-    return this._logger;
+    return logger;
   },
 
   /**
@@ -1164,9 +1249,12 @@ export var UrlbarUtils = {
    *       is always necessary.
    *
    * @param {UrlbarResult} result The result to analyze.
+   * @param {boolean} camelCase Whether the returned telemetry type should be the
+                                camelCase version.
+                                Eventually this should be the default (bug 1928946).
    * @returns {string} A string type for telemetry.
    */
-  telemetryTypeFromResult(result) {
+  telemetryTypeFromResult(result, camelCase = false) {
     if (!result) {
       return "unknown";
     }
@@ -1174,6 +1262,9 @@ export var UrlbarUtils = {
       case UrlbarUtils.RESULT_TYPE.TAB_SWITCH:
         return "switchtab";
       case UrlbarUtils.RESULT_TYPE.SEARCH:
+        if (result.providerName == "RecentSearches") {
+          return camelCase ? "recentSearch" : "recent_search";
+        }
         if (result.source == UrlbarUtils.RESULT_SOURCE.HISTORY) {
           return "formhistory";
         }
@@ -1183,7 +1274,7 @@ export var UrlbarUtils = {
         if (result.payload.suggestion) {
           let type = result.payload.trending ? "trending" : "searchsuggestion";
           if (result.isRichSuggestion) {
-            type += "_rich";
+            type += camelCase ? "Rich" : "_rich";
           }
           return type;
         }
@@ -1198,6 +1289,9 @@ export var UrlbarUtils = {
                 "`result.autofill.type` not set, falling back to 'other'"
               )
             );
+          }
+          if (camelCase) {
+            return `autofill${type[0].toUpperCase()}${type.slice(1)}`;
           }
           return `autofill_${type}`;
         }
@@ -1214,18 +1308,23 @@ export var UrlbarUtils = {
             case "top_picks":
               return "navigational";
             case "wikipedia":
-              return "dynamic_wikipedia";
+              return camelCase ? "dynamicWikipedia" : "dynamic_wikipedia";
           }
           return "quicksuggest";
         }
-        if (result.providerName == "InputHistory") {
-          return result.source == UrlbarUtils.RESULT_SOURCE.BOOKMARKS
-            ? "bookmark_adaptive"
-            : "history_adaptive";
+        if (result.providerName == "UrlbarProviderClipboard") {
+          return "clipboard";
         }
-        return result.source == UrlbarUtils.RESULT_SOURCE.BOOKMARKS
-          ? "bookmark"
-          : "history";
+        {
+          let type =
+            result.source == UrlbarUtils.RESULT_SOURCE.BOOKMARKS
+              ? "bookmark"
+              : "history";
+          if (result.providerName == "InputHistory") {
+            return type + (camelCase ? "Adaptive" : "adaptive");
+          }
+          return type;
+        }
       case UrlbarUtils.RESULT_TYPE.KEYWORD:
         return "keyword";
       case UrlbarUtils.RESULT_TYPE.OMNIBOX:
@@ -1238,12 +1337,27 @@ export var UrlbarUtils = {
         if (result.providerName == "TabToSearch") {
           // This is the onboarding result.
           return "tabtosearch";
-        } else if (result.providerName == "quickactions") {
-          return "quickaction";
-        } else if (result.providerName == "Weather") {
-          return "weather";
         }
         return "dynamic";
+      case UrlbarUtils.RESULT_TYPE.RESTRICT:
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.BOOKMARK) {
+          return camelCase
+            ? "restrictKeywordBookmarks"
+            : "restrict_keyword_bookmarks";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.OPENPAGE) {
+          return camelCase ? "restrictKeywordTabs" : "restrict_keyword_tabs";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.HISTORY) {
+          return camelCase
+            ? "restrictKeywordHistory"
+            : "restrict_keyword_history";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.ACTION) {
+          return camelCase
+            ? "restrictKeywordActions"
+            : "restrict_keyword_actions";
+        }
     }
     return "unknown";
   },
@@ -1260,6 +1374,57 @@ export var UrlbarUtils = {
     return uri.length > UrlbarUtils.MAX_TEXT_LENGTH
       ? uri
       : Services.textToSubURI.unEscapeURIForUI(uri);
+  },
+
+  /**
+   * Checks whether a given text has right-to-left direction or not.
+   *
+   * @param {string} value The text which should be check for RTL direction.
+   * @param {Window} window The window where 'value' is going to be displayed.
+   * @returns {boolean} Returns true if text has right-to-left direction and
+   *                    false otherwise.
+   */
+  isTextDirectionRTL(value, window) {
+    let directionality = window.windowUtils.getDirectionFromText(value);
+    return directionality == window.windowUtils.DIRECTION_RTL;
+  },
+
+  /**
+   * Unescape, decode punycode, and trim (both protocol and trailing slash)
+   * the URL. Use for displaying purposes only!
+   *
+   * @param {string} url The url that should be prepared for display.
+   * @param {object} [options] Preparation options.
+   * @param {boolean} [options.trimURL] Whether the displayed URL should be
+   *                  trimmed or not.
+   * @param {boolean} [options.schemeless] Trim `http(s)://`.
+   * @returns {string} Prepared url.
+   */
+  prepareUrlForDisplay(url, { trimURL = true, schemeless = false } = {}) {
+    // Some domains are encoded in punycode. The following ensures we display
+    // the url in utf-8.
+    try {
+      url = new URL(url).URI.displaySpec;
+    } catch {} // In some cases url is not a valid url.
+
+    if (url) {
+      if (schemeless) {
+        url = UrlbarUtils.stripPrefixAndTrim(url, {
+          stripHttp: true,
+          stripHttps: true,
+        })[0];
+      } else if (trimURL && lazy.UrlbarPrefs.get("trimURLs")) {
+        url = lazy.BrowserUIUtils.removeSingleTrailingSlashFromURL(url);
+        if (url.startsWith("https://")) {
+          url = url.substring(8);
+          if (url.startsWith("www.")) {
+            url = url.substring(4);
+          }
+        }
+      }
+    }
+
+    return this.unEscapeURIForUI(url);
   },
 
   /**
@@ -1282,6 +1447,9 @@ export var UrlbarUtils = {
     switch (this.getResultGroup(result)) {
       case UrlbarUtils.RESULT_GROUP.INPUT_HISTORY: {
         return "adaptive_history";
+      }
+      case UrlbarUtils.RESULT_GROUP.RECENT_SEARCH: {
+        return "recent_search";
       }
       case UrlbarUtils.RESULT_GROUP.FORM_HISTORY: {
         return "search_history";
@@ -1317,6 +1485,9 @@ export var UrlbarUtils = {
       case UrlbarUtils.RESULT_GROUP.SUGGESTED_INDEX: {
         return "suggested_index";
       }
+      case UrlbarUtils.RESULT_GROUP.RESTRICT_SEARCH_KEYWORD: {
+        return "restrict_keyword";
+      }
     }
 
     return result.heuristic ? "heuristic" : "unknown";
@@ -1334,6 +1505,8 @@ export var UrlbarUtils = {
       return selType === "oneoff" ? "search_shortcut_button" : "input_field";
     }
 
+    // While product doesn't use experimental addons anymore, tests may still do
+    // for testing purposes.
     if (
       result.providerType === UrlbarUtils.PROVIDER_TYPE.EXTENSION &&
       result.providerName != "Omnibox"
@@ -1346,18 +1519,17 @@ export var UrlbarUtils = {
         switch (result.providerName) {
           case "calculator":
             return "calc";
-          case "quickactions":
-            return "action";
           case "TabToSearch":
             return "tab_to_search";
           case "UnitConversion":
             return "unit";
-          case "UrlbarProviderContextualSearch":
-            return "site_specific_contextual_search";
           case "UrlbarProviderQuickSuggest":
             return this._getQuickSuggestTelemetryType(result);
-          case "Weather":
-            return "weather";
+          case "UrlbarProviderQuickSuggestContextualOptIn":
+            return "fxsuggest_data_sharing_opt_in";
+          case "UrlbarProviderGlobalActions":
+          case "UrlbarProviderActionsSearchMode":
+            return "action";
         }
         break;
       case UrlbarUtils.RESULT_TYPE.KEYWORD:
@@ -1371,7 +1543,9 @@ export var UrlbarUtils = {
           return "tab_to_search";
         }
         if (result.source == UrlbarUtils.RESULT_SOURCE.HISTORY) {
-          return "search_history";
+          return result.providerName == "RecentSearches"
+            ? "recent_search"
+            : "search_history";
         }
         if (result.payload.suggestion) {
           let type = result.payload.trending
@@ -1406,8 +1580,6 @@ export var UrlbarUtils = {
         switch (result.payload.type) {
           case lazy.UrlbarProviderSearchTips.TIP_TYPE.ONBOARD:
             return "tip_onboard";
-          case lazy.UrlbarProviderSearchTips.TIP_TYPE.PERSIST:
-            return "tip_persist";
           case lazy.UrlbarProviderSearchTips.TIP_TYPE.REDIRECT:
             return "tip_redirect";
           case "dismissalAcknowledgment":
@@ -1431,42 +1603,127 @@ export var UrlbarUtils = {
         if (result.providerName === "UrlbarProviderTopSites") {
           return "top_site";
         }
+        if (result.providerName === "UrlbarProviderClipboard") {
+          return "clipboard";
+        }
         return result.source === UrlbarUtils.RESULT_SOURCE.BOOKMARKS
           ? "bookmark"
           : "history";
+      case UrlbarUtils.RESULT_TYPE.RESTRICT:
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.BOOKMARK) {
+          return "restrict_keyword_bookmarks";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.OPENPAGE) {
+          return "restrict_keyword_tabs";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.HISTORY) {
+          return "restrict_keyword_history";
+        }
+        if (result.payload.keyword === lazy.UrlbarTokenizer.RESTRICT.ACTION) {
+          return "restrict_keyword_actions";
+        }
     }
 
     return "unknown";
   },
 
-  /**
-   * Extracts a subtype for search engagement telemetry from a result and the picked element.
-   *
-   * @param {UrlbarResult} result The result to analyze.
-   * @param {DOMElement} element The picked view element. Nullable.
-   * @returns {string} Subtype as string.
-   */
-  searchEngagementTelemetrySubtype(result, element) {
-    if (!result) {
-      return "";
+  searchEngagementTelemetryAction(result) {
+    if (result.providerName != "UrlbarProviderGlobalActions") {
+      return result.payload.action?.key ?? "none";
     }
-
-    if (
-      result.providerName === "quickactions" &&
-      element?.classList.contains("urlbarView-quickaction-row")
-    ) {
-      return element.dataset.key;
-    }
-
-    return "";
+    return result.payload.results.map(({ key }) => key).join(",");
   },
 
   _getQuickSuggestTelemetryType(result) {
-    let source = result.payload.source;
-    if (source == "remote-settings") {
-      source = "rs";
+    if (result.payload.telemetryType == "weather") {
+      // Return "weather" without the usual source prefix for consistency with
+      // past reporting of weather suggestions.
+      return "weather";
     }
-    return `${source}_${result.payload.telemetryType}`;
+    return result.payload.source + "_" + result.payload.telemetryType;
+  },
+
+  /**
+   * For use when we want to hash a pair of items in a dictionary
+   *
+   * @param {string[]} tokens
+   *   list of tokens to join into a string eg "a" "b" "c"
+   * @returns {string}
+   *   the tokens joined in a string "a|b|c"
+   */
+  tupleString(...tokens) {
+    return tokens.filter(t => t).join("|");
+  },
+
+  /**
+   * Creates camelCase versions of snake_case keys in the given object and
+   * recursively all nested objects. All objects are modified in place and the
+   * original snake_case keys are preserved.
+   *
+   * @param {object} obj
+   *   The object to modify.
+   * @param {boolean} overwrite
+   *   Controls what happens when a camelCase key is already defined for a
+   *   snake_case key (excluding keys that don't have underscores). If true the
+   *   existing key will be overwritten. If false an error will be thrown.
+   * @returns {object} The passed-in modified-in-place object.
+   */
+  copySnakeKeysToCamel(obj, overwrite = true) {
+    for (let [key, value] of Object.entries(obj)) {
+      // Trim off leading underscores since they'll interfere with the replace.
+      // We'll tack them back on after.
+      let match = key.match(/^_+/);
+      if (match) {
+        key = key.substring(match[0].length);
+      }
+      let camelKey = key.replace(/_([^_])/g, (m, p1) => p1.toUpperCase());
+      if (match) {
+        camelKey = match[0] + camelKey;
+      }
+      if (!overwrite && camelKey != key && obj.hasOwnProperty(camelKey)) {
+        throw new Error(
+          `Can't copy snake_case key '${key}' to camelCase key ` +
+            `'${camelKey}' because '${camelKey}' is already defined`
+        );
+      }
+      obj[camelKey] = value;
+      if (value && typeof value == "object") {
+        this.copySnakeKeysToCamel(value);
+      }
+    }
+    return obj;
+  },
+
+  /**
+   * Create secondary action button data for tab switch.
+   *
+   * @param {number} userContextId
+   *   The container id for the tab.
+   * @returns {object} data to create secondary action button.
+   */
+  createTabSwitchSecondaryAction(userContextId) {
+    let action = { key: "tabswitch" };
+    let identity =
+      lazy.ContextualIdentityService.getPublicIdentityFromId(userContextId);
+
+    if (identity) {
+      let label =
+        lazy.ContextualIdentityService.getUserContextLabel(
+          userContextId
+        ).toLowerCase();
+      action.l10nId = "urlbar-result-action-switch-tab-with-container";
+      action.l10nArgs = {
+        container: label,
+      };
+      action.classList = [
+        "urlbarView-userContext",
+        `identity-color-${identity.color}`,
+      ];
+    } else {
+      action.l10nId = "urlbar-result-action-switch-tab";
+    }
+
+    return action;
   },
 };
 
@@ -1480,6 +1737,31 @@ ChromeUtils.defineLazyGetter(UrlbarUtils, "strings", () => {
   );
 });
 
+const L10N_SCHEMA = {
+  type: "object",
+  required: ["id"],
+  properties: {
+    id: {
+      type: "string",
+    },
+    args: {
+      type: "object",
+      additionalProperties: true,
+    },
+    // The remaining properties are related to l10n string caching. See
+    // `L10nCache`. All are optional and are false by default.
+    parseMarkup: {
+      type: "boolean",
+    },
+    cacheable: {
+      type: "boolean",
+    },
+    excludeArgsFromCacheKey: {
+      type: "boolean",
+    },
+  },
+};
+
 /**
  * Payload JSON schemas for each result type.  Payloads are validated against
  * these schemas using JsonSchemaValidator.sys.mjs.
@@ -1489,11 +1771,41 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
     type: "object",
     required: ["url"],
     properties: {
+      action: {
+        type: "object",
+        properties: {
+          classList: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          l10nArgs: {
+            type: "object",
+            additionalProperties: true,
+          },
+          l10nId: {
+            type: "string",
+          },
+          key: {
+            type: "string",
+          },
+        },
+      },
       displayUrl: {
         type: "string",
       },
       icon: {
         type: "string",
+      },
+      isPinned: {
+        type: "boolean",
+      },
+      isSponsored: {
+        type: "boolean",
+      },
+      lastVisit: {
+        type: "number",
       },
       title: {
         type: "string",
@@ -1509,6 +1821,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
   [UrlbarUtils.RESULT_TYPE.SEARCH]: {
     type: "object",
     properties: {
+      blockL10n: L10N_SCHEMA,
       description: {
         type: "string",
       },
@@ -1518,10 +1831,16 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       engine: {
         type: "string",
       },
+      helpUrl: {
+        type: "string",
+      },
       icon: {
         type: "string",
       },
       inPrivateWindow: {
+        type: "boolean",
+      },
+      isBlockable: {
         type: "boolean",
       },
       isPinned: {
@@ -1536,6 +1855,9 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       keyword: {
         type: "string",
       },
+      keywords: {
+        type: "string",
+      },
       lowerCaseSuggestion: {
         type: "string",
       },
@@ -1547,6 +1869,9 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       },
       satisfiesAutofillThreshold: {
         type: "boolean",
+      },
+      searchUrlDomainWithoutSuffix: {
+        type: "string",
       },
       suggestion: {
         type: "string",
@@ -1575,51 +1900,12 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
     type: "object",
     required: ["url"],
     properties: {
-      // l10n { id, args }
-      blockL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
-      // l10n { id, args }
-      bottomTextL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
+      blockL10n: L10N_SCHEMA,
+      bottomTextL10n: L10N_SCHEMA,
       description: {
         type: "string",
       },
-      // l10n { id, args }
-      descriptionL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
+      descriptionL10n: L10N_SCHEMA,
       displayUrl: {
         type: "string",
       },
@@ -1629,27 +1915,20 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       fallbackTitle: {
         type: "string",
       },
-      // l10n { id, args }
-      helpL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
+      helpL10n: L10N_SCHEMA,
       helpUrl: {
         type: "string",
       },
       icon: {
         type: "string",
       },
+      iconBlob: {
+        type: "object",
+      },
       isBlockable: {
+        type: "boolean",
+      },
+      isManageable: {
         type: "boolean",
       },
       isPinned: {
@@ -1657,6 +1936,9 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       },
       isSponsored: {
         type: "boolean",
+      },
+      lastVisit: {
+        type: "number",
       },
       originalUrl: {
         type: "string",
@@ -1712,6 +1994,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       title: {
         type: "string",
       },
+      titleL10n: L10N_SCHEMA,
       url: {
         type: "string",
       },
@@ -1751,18 +2034,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
     type: "object",
     required: ["keyword"],
     properties: {
-      blockL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "array",
-          },
-        },
-      },
+      blockL10n: L10N_SCHEMA,
       content: {
         type: "string",
       },
@@ -1814,18 +2086,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
           type: "object",
           required: ["l10n"],
           properties: {
-            l10n: {
-              type: "object",
-              required: ["id"],
-              properties: {
-                id: {
-                  type: "string",
-                },
-                args: {
-                  type: "array",
-                },
-              },
-            },
+            l10n: L10N_SCHEMA,
             url: {
               type: "string",
             },
@@ -1842,20 +2103,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       buttonUrl: {
         type: "string",
       },
-      // l10n { id, args }
-      helpL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
+      helpL10n: L10N_SCHEMA,
       helpUrl: {
         type: "string",
       },
@@ -1867,20 +2115,7 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       text: {
         type: "string",
       },
-      // l10n { id, args }
-      titleL10n: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: {
-            type: "string",
-          },
-          args: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-      },
+      titleL10n: L10N_SCHEMA,
       // `type` is used in the names of keys in the `urlbar.tips` keyed scalar
       // telemetry (see telemetry.rst).  If you add a new type, then you are
       // also adding new `urlbar.tips` keys and therefore need an expanded data
@@ -1897,7 +2132,6 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
           "intervention_update_restart",
           "intervention_update_web",
           "searchTip_onboard",
-          "searchTip_persist",
           "searchTip_redirect",
           "test", // for tests only
         ],
@@ -1911,10 +2145,27 @@ UrlbarUtils.RESULT_PAYLOAD_SCHEMA = {
       dynamicType: {
         type: "string",
       },
-      // If `shouldNavigate` is `true` and the payload contains a `url`
-      // property, when the result is selected the browser will navigate to the
-      // `url`.
-      shouldNavigate: {
+    },
+  },
+  [UrlbarUtils.RESULT_TYPE.RESTRICT]: {
+    type: "object",
+    properties: {
+      icon: {
+        type: "string",
+      },
+      keyword: {
+        type: "string",
+      },
+      l10nRestrictKeywords: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+      },
+      autofillKeyword: {
+        type: "string",
+      },
+      providesSearchMode: {
         type: "boolean",
       },
     },
@@ -1974,11 +2225,11 @@ export class UrlbarQueryContext {
     for (let [prop, checkFn, defaultValue] of [
       ["currentPage", v => typeof v == "string" && !!v.length],
       ["formHistoryName", v => typeof v == "string" && !!v.length],
-      ["prohibitRemoteResults", v => true, false],
+      ["prohibitRemoteResults", () => true, false],
       ["providers", v => Array.isArray(v) && v.length],
       ["searchMode", v => v && typeof v == "object"],
       ["sources", v => Array.isArray(v) && v.length],
-      ["view", v => true],
+      ["view", () => true],
     ]) {
       if (prop in options) {
         if (!checkFn(options[prop])) {
@@ -1996,9 +2247,13 @@ export class UrlbarQueryContext {
     this.pendingHeuristicProviders = new Set();
     this.deferUserSelectionProviders = new Set();
     this.trimmedSearchString = this.searchString.trim();
+    this.lowerCaseSearchString = this.searchString.toLowerCase();
+    this.trimmedLowerCaseSearchString = this.trimmedSearchString.toLowerCase();
     this.userContextId =
-      options.userContextId ||
-      Ci.nsIScriptSecurityManager.DEFAULT_USER_CONTEXT_ID;
+      lazy.UrlbarProviderOpenTabs.getUserContextIdForOpenPagesTable(
+        options.userContextId,
+        this.isPrivate
+      ) || Ci.nsIScriptSecurityManager.DEFAULT_USER_CONTEXT_ID;
   }
 
   /**
@@ -2037,10 +2292,7 @@ export class UrlbarQueryContext {
       }
 
       try {
-        let info = Services.uriFixup.getFixupURIInfo(
-          this.trimmedSearchString,
-          flags
-        );
+        let info = Services.uriFixup.getFixupURIInfo(this.searchString, flags);
 
         this._fixupInfo = {
           href: info.fixedURI.spec,
@@ -2092,7 +2344,10 @@ export class UrlbarQueryContext {
     }
 
     // We're unlikely to get useful remote results for a single character.
-    if (searchString.length < 2 && !allowEmptySearchString) {
+    if (
+      searchString.length < 2 &&
+      !(!searchString.length && allowEmptySearchString)
+    ) {
       return false;
     }
 
@@ -2135,10 +2390,10 @@ export class UrlbarMuxer {
   /**
    * Sorts queryContext results in-place.
    *
-   * @param {UrlbarQueryContext} queryContext the context to sort results for.
+   * @param {UrlbarQueryContext} _queryContext the context to sort results for.
    * @abstract
    */
-  sort(queryContext) {
+  sort(_queryContext) {
     throw new Error("Trying to access the base class, must be overridden");
   }
 }
@@ -2198,11 +2453,11 @@ export class UrlbarProvider {
    * If this method returns false, the providers manager won't start a query
    * with this provider, to save on resources.
    *
-   * @param {UrlbarQueryContext} queryContext The query context object
+   * @param {UrlbarQueryContext} _queryContext The query context object
    * @returns {boolean} Whether this provider should be invoked for the search.
    * @abstract
    */
-  isActive(queryContext) {
+  isActive(_queryContext) {
     throw new Error("Trying to access the base class, must be overridden");
   }
 
@@ -2212,11 +2467,11 @@ export class UrlbarProvider {
    * larger values are higher priorities.  For a given query, `startQuery` is
    * called on only the active and highest-priority providers.
    *
-   * @param {UrlbarQueryContext} queryContext The query context object
+   * @param {UrlbarQueryContext} _queryContext The query context object
    * @returns {number} The provider's priority for the given query.
    * @abstract
    */
-  getPriority(queryContext) {
+  getPriority(_queryContext) {
     // By default, all providers share the lowest priority.
     return 0;
   }
@@ -2227,48 +2482,38 @@ export class UrlbarProvider {
    * Note: Extended classes should return a Promise resolved when the provider
    *       is done searching AND returning results.
    *
-   * @param {UrlbarQueryContext} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
+   * @param {UrlbarQueryContext} _queryContext The query context object
+   * @param {Function} _addCallback Callback invoked by the provider to add a new
    *        result. A UrlbarResult should be passed to it.
    * @abstract
    */
-  startQuery(queryContext, addCallback) {
+  startQuery(_queryContext, _addCallback) {
     throw new Error("Trying to access the base class, must be overridden");
   }
 
   /**
    * Cancels a running query,
    *
-   * @param {UrlbarQueryContext} queryContext the query context object to cancel
+   * @param {UrlbarQueryContext} _queryContext the query context object to cancel
    *        query for.
    * @abstract
    */
-  cancelQuery(queryContext) {
+  cancelQuery(_queryContext) {
     // Override this with your clean-up on cancel code.
   }
 
+  // The following `on{Event}` notification methods are invoked only when
+  // defined, thus there is no base class implementation for them
   /**
-   * Called when the user starts and ends an engagement with the urlbar.
+   * Called when a user engages with a result in the urlbar. This is called for
+   * all providers who have implemented this method.
    *
-   * @param {string} state
-   *   The state of the engagement, one of the following strings:
-   *
-   *   start
-   *       A new query has started in the urlbar.
-   *   engagement
-   *       The user picked a result in the urlbar or used paste-and-go.
-   *   abandonment
-   *       The urlbar was blurred (i.e., lost focus).
-   *   discard
-   *       This doesn't correspond to a user action, but it means that the
-   *       urlbar has discarded the engagement for some reason, and the
-   *       `onEngagement` implementation should ignore it.
-   *
-   * @param {UrlbarQueryContext} queryContext
-   *   The engagement's query context.  This is *not* guaranteed to be defined
-   *   when `state` is "start".  It will always be defined for "engagement" and
-   *   "abandonment".
-   * @param {object} details
+   * @param {UrlbarQueryContext} _queryContext
+   *   The engagement's query context. It will always be defined for
+   *   "engagement" and "abandonment".
+   * @param {UrlbarController} _controller
+   *  The associated controller.
+   * @param {object} _details
    *   This object is non-empty only when `state` is "engagement" or
    *   "abandonment", and it describes the search string and engaged result.
    *
@@ -2293,15 +2538,82 @@ export class UrlbarProvider {
    *       The index of the picked result.
    *   {string} selType
    *       The type of the selected result.  See TelemetryEvent.record() in
-   *       UrlbarController.jsm.
+   *       UrlbarController.sys.mjs.
    *   {string} provider
    *       The name of the provider that produced the picked result.
    *
    *   For "abandonment", only `searchString` is defined.
-   * @param {UrlbarController} controller
-   *  The associated controller.
+   *
+   * onEngagement(_queryContext, _controller, _details) {}
    */
-  onEngagement(state, queryContext, details, controller) {}
+
+  /**
+   * Called when the user abandons a search session without selecting a result.
+   * This could be due to losing focus on the urlbar, switching tabs, or other
+   * actions that imply the user is no longer actively engaging with the search
+   * suggestions. The method is called for all providers who have implemented
+   * this method and whose results were visible at the time of the abandonment.
+   *
+   * @param {UrlbarQueryContext} _queryContext
+   *    The query context at the time of abandonment.
+   * @param {UrlbarController} _controller
+   * The associated controller.
+   *
+   * onAbandonment(_queryContext, _controller) {}
+   */
+
+  /**
+   * Called for providers whose results are visible at the time of either
+   * engagement or abandonment. The method is called when a user actively
+   * interacts with a search result. This interaction could be clicking on a
+   * suggestion, using a keyboard to select a suggestion, or any other form of
+   * direct engagement with the results displayed. It is also called
+   * when a user decides to abandon the search session without engaging with any
+   * of the presented results. This is called for all providers who have
+   * implemented this method.
+   *
+   * @param {string} _state
+   *    The state of the user interaction, either "engagement" or "abandonment".
+   * @param {UrlbarQueryContext} _queryContext
+   *    The current query context.
+   * @param {UrlbarController} _controller
+   *    The associated controller.
+   * @param {Array} _providerVisibleResults
+   *    Array of visible results at the time of either an engagement or
+   *    abandonment event relevant to the provider. Each object in the array
+   *    contains:
+   *    - `index`: The position of the visible result within the original list
+   *               visible results.
+   *    - `result`: The visible result itself
+   *
+   * onImpression(_state, _queryContext, _controller, _providerVisibleResults)
+   * {}
+   */
+
+  /**
+   * Called when a search session concludes regardless of how it ends -
+   * whether through engagement or abandonment or otherwise. This is
+   * called for all providers who have implemented this method.
+   *
+   * @param {UrlbarQueryContext} _queryContext
+   *    The current query context.
+   * @param {UrlbarController} _controller
+   *    The associated controller.
+   *
+   * onSearchSessionEnd(_queryContext, _controller) {}
+   */
+
+  /**
+   * Called before a result from the provider is selected. See `onSelection`
+   * for details on what that means.
+   *
+   * @param {UrlbarResult} _result
+   *   The result that was selected.
+   * @param {Element} _element
+   *   The element in the result's view that was selected.
+   * @abstract
+   */
+  onBeforeSelection(_result, _element) {}
 
   /**
    * Called when a result from the provider is selected. "Selected" refers to
@@ -2310,13 +2622,13 @@ export class UrlbarProvider {
    * event of a click, onSelection is called just before onEngagement. Note that
    * this is called when heuristic results are pre-selected.
    *
-   * @param {UrlbarResult} result
+   * @param {UrlbarResult} _result
    *   The result that was selected.
-   * @param {Element} element
+   * @param {Element} _element
    *   The element in the result's view that was selected.
    * @abstract
    */
-  onSelection(result, element) {}
+  onSelection(_result, _element) {}
 
   /**
    * This is called only for dynamic result types, when the urlbar view updates
@@ -2355,9 +2667,9 @@ export class UrlbarProvider {
    * element's name is not specified, then it will not be updated and will
    * retain its current state.
    *
-   * @param {UrlbarResult} result
+   * @param {UrlbarResult} _result
    *   The result whose view will be updated.
-   * @param {Map} idsByName
+   * @param {Map} _idsByName
    *   A Map from an element's name, as defined by the provider; to its ID in
    *   the DOM, as defined by the browser. The browser manages element IDs for
    *   dynamic results to prevent collisions. However, a provider may need to
@@ -2384,7 +2696,7 @@ export class UrlbarProvider {
    *   {string} [textContent]
    *     A string that will be set as `element.textContent`.
    */
-  getViewUpdate(result, idsByName) {
+  getViewUpdate(_result, _idsByName) {
     return null;
   }
 
@@ -2394,7 +2706,7 @@ export class UrlbarProvider {
    * be handled by implementing `onEngagement()` with the possible exception of
    * commands automatically handled by the urlbar, like "help".
    *
-   * @param {UrlbarResult} result
+   * @param {UrlbarResult} _result
    *   The menu will be shown for this result.
    * @returns {Array}
    *   If the result doesn't have any commands, this should return null.
@@ -2413,7 +2725,7 @@ export class UrlbarProvider {
    *     If specified, a submenu will be created with the given child commands.
    *     Each object in the array must be a command object.
    */
-  getResultCommands(result) {
+  getResultCommands(_result) {
     return null;
   }
 
@@ -2728,16 +3040,155 @@ export class L10nCache {
   }
 
   /**
+   * Sets an element's content or attribute to a cached l10n string. If the
+   * string isn't cached, then this falls back to the usual
+   * `document.l10n.setAttributes()` using the given l10n ID and args, which
+   * means the string will pop in on a later animation frame.
+   *
+   * This also optionally caches the string so that it will be ready the next
+   * time this is called for it. The function returns a promise that will be
+   * resolved when the string has been cached. Typically there's no need to
+   * await it unless you want to be sure the string is cached before continuing.
+   *
+   * @param {Element} element
+   *   The l10n string will be applied to this element.
+   * @param {object} options
+   *   Options object.
+   * @param {string} options.id
+   *   The l10n string ID.
+   * @param {object} options.args
+   *   The l10n string arguments.
+   * @param {string} options.attribute
+   *   If the string applies to an attribute on the element, pass the name of
+   *   the attribute. The string in the Fluent file should define a value for
+   *   the attribute, like ".foo = My value". If the string applies to the
+   *   element's content, leave this undefined.
+   * @param {boolean} options.parseMarkup
+   *   This controls whether the cached string is applied to the element's
+   *   `textContent` or its `innerHTML`. It's not relevant if the string is
+   *   applied to an attribute. Typically it should be set to true when the
+   *   string is expected to contain markup. When true, the cached string is
+   *   essentially assigned to the element's `innerHTML`. When false, it's
+   *   assigned to the element's `textContent`.
+   * @param {boolean} options.cacheable
+   *   Whether the string should be cached in addition to applying it to the
+   *   given element.
+   * @param {boolean} options.excludeArgsFromCacheKey
+   *   This affects how the string is stored in and fetched from the cache and
+   *   is only relevant if the string has arguments. When true, all formatted
+   *   values of the string share the same cache entry regardless of the
+   *   arguments they were formatted with. In other words, only the ID matters.
+   *   When false, formatted values with different arguments have separate cache
+   *   entries. Typically it should be true when the number of possible argument
+   *   values is unbounded and false otherwise. For example, it should be true
+   *   if the argument is a user search string since that could be anything. It
+   *   should be false if the argument is the name of an installed search engine
+   *   since there's a relatively small number of those.
+   *
+   *   If `cacheable` is false but you previously cached the string using
+   *   another function, you should pass the same value you passed for
+   *   `excludeArgsFromCacheKey` when you cached it.
+   * @returns {Promise|null}
+   *   If `cacheable` is true, this returns a promise that's resolved when the
+   *   string has been cached. Otherwise it returns null.
+   */
+  setElementL10n(
+    element,
+    {
+      id,
+      args = undefined,
+      attribute = undefined,
+      parseMarkup = false,
+      cacheable = false,
+      excludeArgsFromCacheKey = false,
+    }
+  ) {
+    let message = this.get({ id, args, excludeArgsFromCacheKey });
+    if (message) {
+      element.removeAttribute("data-l10n-id");
+      element.removeAttribute("data-l10n-attrs");
+      element.removeAttribute("data-l10n-args");
+      if (attribute) {
+        element.setAttribute(attribute, message.attributes[attribute]);
+      } else if (!parseMarkup) {
+        element.textContent = message.value;
+      } else {
+        element.innerHTML = "";
+        element.append(
+          lazy.parserUtils.parseFragment(
+            message.value,
+            Ci.nsIParserUtils.SanitizerDropNonCSSPresentation |
+              Ci.nsIParserUtils.SanitizerDropForms |
+              Ci.nsIParserUtils.SanitizerDropMedia,
+            false,
+            Services.io.newURI(element.ownerDocument.documentURI),
+            element
+          )
+        );
+      }
+    }
+
+    // If the message wasn't cached, set the element's l10n attributes and let
+    // `DOMLocalization` do its asynchronous translation. The element's content
+    // will pop in when translation finishes.
+    //
+    // Also do this if the message was cached but its args aren't part of the
+    // cache key because in that case the cached message may contain outdated
+    // arg values. We just set the element's content to the old message above,
+    // and when `DOMLocalization` finishes translating the new message, it will
+    // set the element's content again. If the old and new args are different,
+    // the new content will pop in. If they're the same, nothing will appear to
+    // change.
+    if (!message || (cacheable && excludeArgsFromCacheKey)) {
+      if (attribute) {
+        element.setAttribute("data-l10n-attrs", attribute);
+      } else {
+        element.removeAttribute("data-l10n-attrs");
+      }
+      element.ownerDocument.l10n.setAttributes(element, id, args);
+    }
+
+    if (cacheable) {
+      // Cache the string. We specifically do not do this first and await it
+      // because the whole point of the l10n cache is to synchronously update
+      // the element's content when possible. Here, we return a promise rather
+      // than making this function async and awaiting so it's clearer to callers
+      // that they probably don't need to wait for caching to finish.
+      return this.ensure({ id, args, excludeArgsFromCacheKey });
+    }
+    return null;
+  }
+
+  /**
+   * Removes content and attributes set by `setElementL10n()`.
+   *
+   * @param {Element} element
+   *   The content and attributes will be removed from this element.
+   * @param {object} options
+   *   Options object.
+   * @param {string} options.attribute
+   *   If you passed an attribute to `setElementL10n()`, pass it here too.
+   */
+  removeElementL10n(element, { attribute = undefined } = {}) {
+    if (attribute) {
+      element.removeAttribute(attribute);
+      element.removeAttribute("data-l10n-attrs");
+    } else {
+      element.textContent = "";
+    }
+    element.removeAttribute("data-l10n-id");
+    element.removeAttribute("data-l10n-args");
+  }
+
+  /**
    * Observer method from Services.obs.addObserver.
    *
    * @param {nsISupports} subject
    *   The subject of the notification.
    * @param {string} topic
    *   The topic of the notification.
-   * @param {string} data
-   *   The data attached to the notification.
    */
-  async observe(subject, topic, data) {
+  async observe(subject, topic) {
     switch (topic) {
       case "intl:app-locales-changed": {
         await this.l10n.ready;
@@ -2793,10 +3244,7 @@ export class TaskQueue {
    *   then a resolved promise is returned.
    */
   get emptyPromise() {
-    if (!this._queue.length) {
-      return Promise.resolve();
-    }
-    return new Promise(resolve => this._emptyCallbacks.push(resolve));
+    return this.#emptyPromise;
   }
 
   /**
@@ -2814,10 +3262,38 @@ export class TaskQueue {
    */
   queue(callback) {
     return new Promise((resolve, reject) => {
-      this._queue.push({ callback, resolve, reject });
-      if (this._queue.length == 1) {
-        this._doNextTask();
+      this.#queue.push({ callback, resolve, reject });
+      if (this.#queue.length == 1) {
+        this.#emptyDeferred = Promise.withResolvers();
+        this.#emptyPromise = this.#emptyDeferred.promise;
+        this.#doNextTask();
       }
+    });
+  }
+
+  /**
+   * Adds a callback function to the task queue that will be called on idle.
+   *
+   * @param {Function} callback
+   *   The function to queue.
+   * @returns {Promise}
+   *   Resolved after the task queue calls and awaits `callback`. It will be
+   *   resolved with the value returned by `callback`. If `callback` throws an
+   *   error, then it will be rejected with the error.
+   */
+  queueIdleCallback(callback) {
+    return this.queue(async () => {
+      await new Promise((resolve, reject) => {
+        ChromeUtils.idleDispatch(async () => {
+          try {
+            let value = await callback();
+            resolve(value);
+          } catch (error) {
+            console.error(error);
+            reject(error);
+          }
+        });
+      });
     });
   }
 
@@ -2825,16 +3301,17 @@ export class TaskQueue {
    * Calls the next function in the task queue and recurses until the queue is
    * empty. Once empty, all empty callback functions are called.
    */
-  async _doNextTask() {
-    if (!this._queue.length) {
-      while (this._emptyCallbacks.length) {
-        let callback = this._emptyCallbacks.shift();
-        callback();
-      }
+  async #doNextTask() {
+    if (!this.#queue.length) {
+      this.#emptyDeferred.resolve();
+      this.#emptyDeferred = null;
       return;
     }
 
-    let { callback, resolve, reject } = this._queue[0];
+    // Leave the callback in the queue while awaiting it. If we remove it now
+    // the queue could become empty, and if `queue()` were called while we're
+    // awaiting the callback, `#doNextTask()` would be re-entered.
+    let { callback, resolve, reject } = this.#queue[0];
     try {
       let value = await callback();
       resolve(value);
@@ -2842,10 +3319,11 @@ export class TaskQueue {
       console.error(error);
       reject(error);
     }
-    this._queue.shift();
-    this._doNextTask();
+    this.#queue.shift();
+    this.#doNextTask();
   }
 
-  _queue = [];
-  _emptyCallbacks = [];
+  #queue = [];
+  #emptyDeferred = null;
+  #emptyPromise = Promise.resolve();
 }

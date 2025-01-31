@@ -162,25 +162,13 @@ impl PossibleValue {
         self.help.as_ref()
     }
 
-    /// Get the help specified for this argument, if any and the argument
-    /// value is not hidden
-    #[inline]
-    #[cfg(feature = "help")]
-    pub(crate) fn get_visible_help(&self) -> Option<&StyledStr> {
-        if !self.hide {
-            self.get_help()
-        } else {
-            None
-        }
-    }
-
     /// Report if [`PossibleValue::hide`] is set
     #[inline]
     pub fn is_hide_set(&self) -> bool {
         self.hide
     }
 
-    /// Report if PossibleValue is not hidden and has a help message
+    /// Report if `PossibleValue` is not hidden and has a help message
     pub(crate) fn should_show_help(&self) -> bool {
         !self.hide && self.help.is_some()
     }

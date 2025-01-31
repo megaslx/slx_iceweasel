@@ -9,11 +9,13 @@ const {
   targetConfigurationSpec,
 } = require("resource://devtools/shared/specs/target-configuration.js");
 
-const {
-  SessionDataHelpers,
-} = require("resource://devtools/server/actors/watcher/SessionDataHelpers.jsm");
+const { SessionDataHelpers } = ChromeUtils.importESModule(
+  "resource://devtools/server/actors/watcher/SessionDataHelpers.sys.mjs",
+  { global: "contextual" }
+);
 const { isBrowsingContextPartOfContext } = ChromeUtils.importESModule(
-  "resource://devtools/server/actors/watcher/browsing-context-helpers.sys.mjs"
+  "resource://devtools/server/actors/watcher/browsing-context-helpers.sys.mjs",
+  { global: "contextual" }
 );
 const { SUPPORTED_DATA } = SessionDataHelpers;
 const { TARGET_CONFIGURATION } = SUPPORTED_DATA;
@@ -29,6 +31,8 @@ const SUPPORTED_OPTIONS = {
   customFormatters: true,
   // Set a custom user agent
   customUserAgent: true,
+  // Is the tracer experimental feature manually enabled by the user?
+  isTracerFeatureEnabled: true,
   // Enable JavaScript
   javascriptEnabled: true,
   // Force a custom device pixel ratio (used in RDM). Set to null to restore origin ratio.
@@ -47,8 +51,12 @@ const SUPPORTED_OPTIONS = {
   restoreFocus: true,
   // Enable service worker testing over HTTP (instead of HTTPS only).
   serviceWorkersTestingEnabled: true,
+  // Set the current tab offline
+  setTabOffline: true,
   // Enable touch events simulation
   touchEventsOverride: true,
+  // Used to configure and start/stop the JavaScript tracer
+  tracerOptions: true,
   // Use simplified highlighters when prefers-reduced-motion is enabled.
   useSimpleHighlightersForReducedMotion: true,
 };
@@ -95,6 +103,9 @@ class TargetConfigurationActor extends Actor {
 
     this._browsingContext = this.watcherActor.browserElement?.browsingContext;
   }
+
+  // Value of `logging.console` pref, before starting recording JS Traces
+  #consolePrefValue;
 
   form() {
     return {
@@ -213,7 +224,11 @@ class TargetConfigurationActor extends Actor {
       .map(key => ({ key, value: configuration[key] }));
 
     this._updateParentProcessConfiguration(configuration);
-    await this.watcherActor.addDataEntry(TARGET_CONFIGURATION, cfgArray);
+    await this.watcherActor.addOrSetDataEntry(
+      TARGET_CONFIGURATION,
+      cfgArray,
+      "add"
+    );
     return this._getConfiguration();
   }
 
@@ -222,6 +237,11 @@ class TargetConfigurationActor extends Actor {
    * @param {Object} configuration: See `updateConfiguration`
    */
   _updateParentProcessConfiguration(configuration) {
+    // Process "tracerOptions" for all session types, as this isn't specific to tab debugging
+    if ("tracerOptions" in configuration) {
+      this._setTracerOptions(configuration.tracerOptions);
+    }
+
     if (!this._shouldHandleConfigurationInParentProcess()) {
       return;
     }
@@ -266,6 +286,9 @@ class TargetConfigurationActor extends Actor {
         case "cacheDisabled":
           this._setCacheDisabled(value);
           break;
+        case "setTabOffline":
+          this._setTabOffline(value);
+          break;
       }
     }
 
@@ -275,6 +298,11 @@ class TargetConfigurationActor extends Actor {
   }
 
   _restoreParentProcessConfiguration() {
+    // Always process tracer options as this isn't specific to tab debugging
+    if (this.#consolePrefValue !== undefined) {
+      this._setTracerOptions();
+    }
+
     if (!this._shouldHandleConfigurationInParentProcess()) {
       return;
     }
@@ -282,6 +310,7 @@ class TargetConfigurationActor extends Actor {
     this._setServiceWorkersTestingEnabled(false);
     this._setPrintSimulationEnabled(false);
     this._setCacheDisabled(false);
+    this._setTabOffline(false);
 
     // Restore the color scheme simulation only if it was explicitly updated
     // by this actor. This will avoid side effects caused when destroying additional
@@ -453,6 +482,17 @@ class TargetConfigurationActor extends Actor {
     }
   }
 
+  /**
+   * Set the browsing context to offline.
+   *
+   * @param {Boolean} offline: Whether the network throttling is set to offline
+   */
+  _setTabOffline(offline) {
+    if (!this._browsingContext.isDiscarded) {
+      this._browsingContext.forceOffline = offline;
+    }
+  }
+
   destroy() {
     Services.obs.removeObserver(
       this._onBrowsingContextAttached,
@@ -462,8 +502,42 @@ class TargetConfigurationActor extends Actor {
       "bf-cache-navigation-pageshow",
       this._onBfCacheNavigation
     );
-    this._restoreParentProcessConfiguration();
+    // Avoid trying to restore if the related context is already being destroyed
+    if (this._browsingContext && !this._browsingContext.isDiscarded) {
+      this._restoreParentProcessConfiguration();
+    }
     super.destroy();
+  }
+
+  /**
+   * Called when the tracer is toggled on/off by the frontend.
+   * Note that when `options` is defined, it is meant to be enabled.
+   * It may not actually be tracing yet depending on the passed options.
+   *
+   * @param {Object} options
+   */
+  _setTracerOptions(options) {
+    if (!options) {
+      if (this.#consolePrefValue === -1) {
+        Services.prefs.clearUserPref("logging.console");
+      } else {
+        Services.prefs.setIntPref("logging.console", this.#consolePrefValue);
+      }
+      this.#consolePrefValue = undefined;
+      return;
+    }
+    // Enable `MOZ_LOG=console:5` via the logging.console so that all console API calls
+    // are stored in the profiler when recording JS Traces via the profiler.
+    //
+    // We do this from here as TargetConfiguration runs in the parent process,
+    // where we can set preferences. Whereas the profiler tracer actor runs in the content process.
+    const LOG_DISABLED = -1;
+    const LOG_VERBOSE = 5;
+    this.#consolePrefValue = Services.prefs.getIntPref(
+      "logging.console",
+      LOG_DISABLED
+    );
+    Services.prefs.setIntPref("logging.console", LOG_VERBOSE);
   }
 }
 

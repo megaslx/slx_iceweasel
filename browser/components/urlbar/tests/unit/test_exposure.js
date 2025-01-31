@@ -2,197 +2,280 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Tests that registering an exposureResults pref and triggering a match causes
+// the exposure event to be recorded on the UrlbarResults.
+
 ChromeUtils.defineESModuleGetters(this, {
-  QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
   UrlbarProviderQuickSuggest:
     "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
 });
 
-// Tests that registering an exposureResults pref and triggering a match causes
-// the exposure event to be recorded on the UrlbarResults.
 const REMOTE_SETTINGS_RESULTS = [
-  {
-    id: 1,
-    url: "http://test.com/q=frabbits",
-    title: "frabbits",
-    keywords: ["test"],
-    click_url: "http://click.reporting.test.com/",
-    impression_url: "http://impression.reporting.test.com/",
-    advertiser: "TestAdvertiser",
-  },
-  {
-    id: 2,
-    url: "http://test.com/q=frabbits",
-    title: "frabbits",
-    keywords: ["non_sponsored"],
-    click_url: "http://click.reporting.test.com/",
-    impression_url: "http://impression.reporting.test.com/",
-    advertiser: "wikipedia",
-    iab_category: "5 - Education",
-  },
+  QuickSuggestTestUtils.ampRemoteSettings({
+    keywords: ["amp", "amp and wikipedia"],
+  }),
+  QuickSuggestTestUtils.wikipediaRemoteSettings({
+    keywords: ["wikipedia", "amp and wikipedia"],
+  }),
 ];
 
-const EXPECTED_REMOTE_SETTINGS_URLBAR_RESULT = {
-  type: UrlbarUtils.RESULT_TYPE.URL,
-  source: UrlbarUtils.RESULT_SOURCE.SEARCH,
-  heuristic: false,
-  payload: {
-    telemetryType: "adm_sponsored",
-    qsSuggestion: "test",
-    title: "frabbits",
-    url: "http://test.com/q=frabbits",
-    originalUrl: "http://test.com/q=frabbits",
-    icon: null,
-    sponsoredImpressionUrl: "http://impression.reporting.test.com/",
-    sponsoredClickUrl: "http://click.reporting.test.com/",
-    sponsoredBlockId: 1,
-    sponsoredAdvertiser: "TestAdvertiser",
-    isSponsored: true,
-    descriptionL10n: { id: "urlbar-result-action-sponsored" },
-    helpUrl: QuickSuggest.HELP_URL,
-    helpL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-learn-more-about-firefox-suggest"
-        : "firefox-suggest-urlbar-learn-more",
-    },
-    isBlockable: UrlbarPrefs.get("quickSuggestBlockingEnabled"),
-    blockL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-dismiss-firefox-suggest"
-        : "firefox-suggest-urlbar-block",
-    },
-    displayUrl: "http://test.com/q=frabbits",
-    source: "remote-settings",
-    provider: "AdmWikipedia",
-  },
-};
-
-const EXPECTED_NON_SPONSORED_REMOTE_SETTINGS_RESULT = {
-  type: UrlbarUtils.RESULT_TYPE.URL,
-  source: UrlbarUtils.RESULT_SOURCE.SEARCH,
-  heuristic: false,
-  payload: {
-    telemetryType: "adm_nonsponsored",
-    qsSuggestion: "non_sponsored",
-    title: "frabbits",
-    url: "http://test.com/q=frabbits",
-    originalUrl: "http://test.com/q=frabbits",
-    icon: null,
-    sponsoredImpressionUrl: "http://impression.reporting.test.com/",
-    sponsoredClickUrl: "http://click.reporting.test.com/",
-    sponsoredBlockId: 2,
-    sponsoredAdvertiser: "wikipedia",
-    sponsoredIabCategory: "5 - Education",
-    isSponsored: false,
-    helpUrl: QuickSuggest.HELP_URL,
-    helpL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-learn-more-about-firefox-suggest"
-        : "firefox-suggest-urlbar-learn-more",
-    },
-    isBlockable: UrlbarPrefs.get("quickSuggestBlockingEnabled"),
-    blockL10n: {
-      id: UrlbarPrefs.get("resultMenu")
-        ? "urlbar-result-menu-dismiss-firefox-suggest"
-        : "firefox-suggest-urlbar-block",
-    },
-    displayUrl: "http://test.com/q=frabbits",
-    source: "remote-settings",
-    provider: "AdmWikipedia",
-  },
-};
-
-add_setup(async function test_setup() {
-  // FOG needs a profile directory to put its data in.
-  do_get_profile();
-
-  // FOG needs to be initialized in order for data to flow.
-  Services.fog.initializeFOG();
-
-  UrlbarPrefs.set("quicksuggest.enabled", true);
-  UrlbarPrefs.set("suggest.quicksuggest.nonsponsored", true);
-  UrlbarPrefs.set("suggest.quicksuggest.sponsored", true);
-  UrlbarPrefs.set("quicksuggest.shouldShowOnboardingDialog", false);
-
-  await MerinoTestUtils.server.start();
-
-  // Set up the remote settings client with the test data.
+add_setup(async function setup() {
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
-    remoteSettingsResults: [
+    remoteSettingsRecords: [
       {
         type: "data",
         attachment: REMOTE_SETTINGS_RESULTS,
       },
     ],
+    prefs: [
+      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quicksuggest.sponsored", true],
+    ],
   });
 });
 
-add_task(async function testExposureCheck() {
-  UrlbarPrefs.set("quicksuggest.remoteSettings.enabled", true);
-  UrlbarPrefs.set("exposureResults", "rs_adm_sponsored");
+add_task(async function oneExposureResult_shown_matched() {
+  UrlbarPrefs.set("exposureResults", suggestResultType("adm_sponsored"));
   UrlbarPrefs.set("showExposureResults", true);
 
-  let context = createContext("test", {
+  let context = createContext("amp", {
     providers: [UrlbarProviderQuickSuggest.name],
     isPrivate: false,
   });
 
   await check_results({
     context,
-    matches: [EXPECTED_REMOTE_SETTINGS_URLBAR_RESULT],
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+      },
+    ],
   });
-
-  Assert.equal(context.results[0].exposureResultType, "rs_adm_sponsored");
-  Assert.equal(context.results[0].exposureResultHidden, false);
 });
 
-add_task(async function testExposureCheckMultiple() {
-  UrlbarPrefs.set("quicksuggest.remoteSettings.enabled", true);
-  UrlbarPrefs.set("exposureResults", "rs_adm_sponsored,rs_adm_nonsponsored");
+add_task(async function oneExposureResult_shown_notMatched() {
+  UrlbarPrefs.set("exposureResults", suggestResultType("adm_sponsored"));
   UrlbarPrefs.set("showExposureResults", true);
 
-  let context = createContext("test", {
+  let context = createContext("wikipedia", {
     providers: [UrlbarProviderQuickSuggest.name],
     isPrivate: false,
   });
 
   await check_results({
     context,
-    matches: [EXPECTED_REMOTE_SETTINGS_URLBAR_RESULT],
+    matches: [
+      {
+        ...QuickSuggestTestUtils.wikipediaResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.NONE,
+      },
+    ],
   });
-
-  Assert.equal(context.results[0].exposureResultType, "rs_adm_sponsored");
-  Assert.equal(context.results[0].exposureResultHidden, false);
-
-  context = createContext("non_sponsored", {
-    providers: [UrlbarProviderQuickSuggest.name],
-    isPrivate: false,
-  });
-
-  await check_results({
-    context,
-    matches: [EXPECTED_NON_SPONSORED_REMOTE_SETTINGS_RESULT],
-  });
-
-  Assert.equal(context.results[0].exposureResultType, "rs_adm_nonsponsored");
-  Assert.equal(context.results[0].exposureResultHidden, false);
 });
 
-add_task(async function exposureDisplayFiltering() {
-  UrlbarPrefs.set("quicksuggest.remoteSettings.enabled", true);
-  UrlbarPrefs.set("exposureResults", "rs_adm_sponsored");
+add_task(async function oneExposureResult_hidden_matched() {
+  UrlbarPrefs.set("exposureResults", suggestResultType("adm_sponsored"));
   UrlbarPrefs.set("showExposureResults", false);
 
-  let context = createContext("test", {
+  let context = createContext("amp", {
     providers: [UrlbarProviderQuickSuggest.name],
     isPrivate: false,
   });
 
   await check_results({
     context,
-    matches: [EXPECTED_REMOTE_SETTINGS_URLBAR_RESULT],
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+      },
+    ],
+  });
+});
+
+add_task(async function oneExposureResult_hidden_notMatched() {
+  UrlbarPrefs.set("exposureResults", suggestResultType("adm_sponsored"));
+  UrlbarPrefs.set("showExposureResults", false);
+
+  let context = createContext("wikipedia", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
   });
 
-  Assert.equal(context.results[0].exposureResultType, "rs_adm_sponsored");
-  Assert.equal(context.results[0].exposureResultHidden, true);
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.wikipediaResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.NONE,
+      },
+    ],
+  });
 });
+
+add_task(async function manyExposureResults_shown_oneMatched_1() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", true);
+
+  let context = createContext("amp", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+      },
+    ],
+  });
+});
+
+add_task(async function manyExposureResults_shown_oneMatched_2() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", true);
+
+  let context = createContext("wikipedia", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.wikipediaResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+      },
+    ],
+  });
+});
+
+add_task(async function manyExposureResults_shown_manyMatched() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", true);
+
+  let keyword = "amp and wikipedia";
+  let context = createContext(keyword, {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+
+  // Only one result should be added since exposures are shown and at most one
+  // Suggest result should be shown.
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult({ keyword }),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+      },
+    ],
+  });
+});
+
+add_task(async function manyExposureResults_hidden_oneMatched_1() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", false);
+
+  let context = createContext("amp", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+      },
+    ],
+  });
+});
+
+add_task(async function manyExposureResults_hidden_oneMatched_2() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", false);
+
+  let context = createContext("wikipedia", {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.wikipediaResult(),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+      },
+    ],
+  });
+});
+
+add_task(async function manyExposureResults_hidden_manyMatched() {
+  UrlbarPrefs.set(
+    "exposureResults",
+    [
+      suggestResultType("adm_sponsored"),
+      suggestResultType("adm_nonsponsored"),
+    ].join(",")
+  );
+  UrlbarPrefs.set("showExposureResults", false);
+
+  let keyword = "amp and wikipedia";
+  let context = createContext(keyword, {
+    providers: [UrlbarProviderQuickSuggest.name],
+    isPrivate: false,
+  });
+
+  // Both results should be added since exposures are hidden and there's no
+  // limit on the number of hidden-exposure Suggest results.
+  await check_results({
+    context,
+    matches: [
+      {
+        ...QuickSuggestTestUtils.ampResult({ keyword }),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+      },
+      {
+        ...QuickSuggestTestUtils.wikipediaResult({ keyword }),
+        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+      },
+    ],
+  });
+});
+
+function suggestResultType(typeWithoutSource) {
+  return `rust_${typeWithoutSource}`;
+}

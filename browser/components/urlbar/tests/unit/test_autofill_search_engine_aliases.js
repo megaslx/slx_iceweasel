@@ -9,7 +9,7 @@
 const TEST_ENGINE_NAME = "test autofill aliases";
 const TEST_ENGINE_ALIAS = "@autofilltest";
 
-add_task(async function init() {
+add_setup(async () => {
   // Add an engine with an "@" alias.
   await SearchTestUtils.installSearchExtension({
     name: TEST_ENGINE_NAME,
@@ -43,6 +43,7 @@ add_task(async function basic() {
         query: "",
         providesSearchMode: true,
         heuristic: false,
+        providerName: "TokenAliasEngines",
       }),
     ],
   });
@@ -78,6 +79,7 @@ add_task(async function preserveCase() {
         query: "",
         providesSearchMode: true,
         heuristic: false,
+        providerName: "TokenAliasEngines",
       }),
     ],
   });

@@ -966,6 +966,32 @@
     @assert pixel 50,20 == 0,255,0,255;
   expected: green
 
+- name: 2d.path.arc.twopie.5
+  desc: arc() draws correctly when start = 2 and end = start + 2pi+e and clockwise
+  code: |
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, 100, 50);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.moveTo(50, 25);
+    ctx.arc(50, 25, 50, 2, 2 + 2*Math.PI, false);
+    ctx.closePath();
+    ctx.fill();
+    @assert pixel 95,25 == 0,0,0,255;
+
+- name: 2d.path.arc.twopie.6
+  desc: arc() draws correctly when start = 5 and end = start + 2pi+e and clockwise
+  code: |
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, 100, 50);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.moveTo(50, 25);
+    ctx.arc(50, 25, 50, 5, 5 + 2*Math.PI, false);
+    ctx.closePath();
+    ctx.fill();
+    @assert pixel 5,25 == 0,0,0,255;
+
 - name: 2d.path.arc.shape.1
   desc: arc() from 0 to pi does not draw anything in the wrong half
   code: |
@@ -1184,6 +1210,34 @@
     @assert pixel 90,45 == 0,255,0,255;
   expected: green
 
+- name: 2d.path.closed.arc
+  desc: line caps should not be drawn on closed arcs
+  size: [300, 300]
+  code: |
+    ctx.beginPath();
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 20;
+    ctx.lineCap = 'square';
+    ctx.arc(150, 150, 50, 0, 2 * Math.PI);
+    ctx.closePath();
+    ctx.stroke();
+    // The pixel (209, 148) is part of the line cap, but not part of the circle.
+    // Linecap is not drawn if the circle is closed, so the pixel is not red.
+    assert_not_equals(ctx.getImageData(209, 148, 1, 1).data, [255, 0, 0, 255])
+
+- name: 2d.path.open.arc
+  desc: line caps should be drawn on open arcs
+  size: [300, 300]
+  code: |
+    ctx.beginPath();
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 20;
+    ctx.lineCap = 'square';
+    ctx.arc(150, 150, 50, 0, 2 * Math.PI);
+    ctx.stroke();
+    // The pixel (209, 148) is part of the line cap, but not part of the circle.
+    // Linecap is drawn with 360 degree arc, so the pixel is red.
+    @assert pixel 209,148 ==~ 255,0,0,255 +/- 1;
 
 - name: 2d.path.rect.basic
   code: |
@@ -2187,7 +2241,7 @@
     @assert pixel 1,39 == 255,0,0,255;
     @assert pixel 1,28 == 0,255,0,255;
 
-- name: 2d.path.roundrect.1.radius.dompoint.single argument
+- name: 2d.path.roundrect.1.radius.dompoint.single.argument
   desc: Verify that when one radius is given to roundRect() as a non-array argument, specified as a DOMPoint, it applies to all corners.
   code: |
     ctx.fillStyle = '#f00';
@@ -2852,7 +2906,6 @@
 
     @assert pixel 50,25 == 0,255,0,255;
   expected: green
-
 
 - name: 2d.path.transformation.basic
   code: |

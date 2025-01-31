@@ -34,7 +34,11 @@ class nsLineLayout {
                const ReflowInput& aLineContainerRI,
                const nsLineList::iterator* aLine,
                nsLineLayout* aBaseLineLayout);
-  ~nsLineLayout();
+
+  ~nsLineLayout() {
+    MOZ_COUNT_DTOR(nsLineLayout);
+    MOZ_ASSERT(!mRootSpan, "bad line-layout user");
+  }
 
   void Init(BlockReflowState* aState, nscoord aMinLineBSize,
             int32_t aLineNumber) {
@@ -48,9 +52,15 @@ class nsLineLayout {
   void BeginLineReflow(nscoord aICoord, nscoord aBCoord, nscoord aISize,
                        nscoord aBSize, bool aImpactedByFloats,
                        bool aIsTopOfPage, mozilla::WritingMode aWritingMode,
-                       const nsSize& aContainerSize);
+                       const nsSize& aContainerSize,
+                       // aInset is used during text-wrap:balance to reduce
+                       // the effective available space on the line.
+                       nscoord aInset = 0);
 
-  void EndLineReflow();
+  /**
+   * Returns true if the line had to use an overflow-wrap break position.
+   */
+  bool EndLineReflow();
 
   /**
    * Called when a float has been placed. This method updates the
@@ -86,7 +96,7 @@ class nsLineLayout {
 
   void SplitLineTo(int32_t aNewCount);
 
-  bool IsZeroBSize();
+  bool IsZeroBSize() const;
 
   // Reflows the frame and returns the reflow status. aPushedFrame is true
   // if the frame is pushed to the next line because it doesn't fit.
@@ -137,10 +147,13 @@ class nsLineLayout {
    */
   bool LineAtStart() const { return mLineAtStart; }
 
-  bool LineIsBreakable() const;
+  bool LineIsBreakable() const {
+    // XXX mTotalPlacedFrames should go away and we should just use
+    // mLineIsEmpty here instead
+    return mTotalPlacedFrames || mImpactedByFloats;
+  }
 
   bool GetLineEndsInBR() const { return mLineEndsInBR; }
-
   void SetLineEndsInBR(bool aOn) { mLineEndsInBR = aOn; }
 
   //----------------------------------------
@@ -164,25 +177,20 @@ class nsLineLayout {
   //----------------------------------------
 
   bool GetFirstLetterStyleOK() const { return mFirstLetterStyleOK; }
-
   void SetFirstLetterStyleOK(bool aSetting) { mFirstLetterStyleOK = aSetting; }
 
   bool GetInFirstLetter() const { return mInFirstLetter; }
-
   void SetInFirstLetter(bool aSetting) { mInFirstLetter = aSetting; }
 
   bool GetInFirstLine() const { return mInFirstLine; }
-
   void SetInFirstLine(bool aSetting) { mInFirstLine = aSetting; }
 
   // Calling this during block reflow ensures that the next line of inlines
   // will be marked dirty, if there is one.
   void SetDirtyNextLine() { mDirtyNextLine = true; }
-  bool GetDirtyNextLine() { return mDirtyNextLine; }
+  bool GetDirtyNextLine() const { return mDirtyNextLine; }
 
   //----------------------------------------
-
-  nsPresContext* mPresContext;
 
   /**
    * Record where an optional break could have been placed. During line reflow,
@@ -327,12 +335,19 @@ class nsLineLayout {
 
   void SetSuppressLineWrap(bool aEnabled) { mSuppressLineWrap = aEnabled; }
 
+  /**
+   * Record that the line had to resort to an overflow-wrap break.
+   */
+  void SetUsedOverflowWrap() { mUsedOverflowWrap = true; }
+
  protected:
   // This state is constant for a given block frame doing line layout
 
+  nsPresContext* const mPresContext;
+
   // A non-owning pointer, which points to the object owned by
   // nsAutoFloatManager::mNew.
-  nsFloatManager* mFloatManager;
+  nsFloatManager* const mFloatManager;
 
   const nsStyleText* mStyleText;  // for the block
   const ReflowInput& mLineContainerRI;
@@ -354,12 +369,8 @@ class nsLineLayout {
     return lineLayout;
   }
 
-  nsIFrame* mLastOptionalBreakFrame;
-  nsIFrame* mForceBreakFrame;
-
-  // XXX remove this when landing bug 154892 (splitting absolute positioned
-  // frames)
-  friend class nsInlineFrame;
+  nsIFrame* mLastOptionalBreakFrame = nullptr;
+  nsIFrame* mForceBreakFrame = nullptr;
 
   // XXX Take care that nsRubyBaseContainer would give nullptr to this
   //     member. It should not be a problem currently, since the only
@@ -373,11 +384,7 @@ class nsLineLayout {
   // state is the state needed to post-process the line after reflow
   // has completed (block-direction alignment, inline-direction alignment,
   // justification and relative positioning).
-
   struct PerSpanData;
-  struct PerFrameData;
-  friend struct PerSpanData;
-  friend struct PerFrameData;
   struct PerFrameData {
     // link to next/prev frame in same span
     PerFrameData* mNext;
@@ -452,7 +459,7 @@ class nsLineLayout {
 
     bool ParticipatesInJustification() const;
   };
-  PerFrameData* mFrameFreeList;
+  PerFrameData* mFrameFreeList = nullptr;
 
   // In nsLineLayout, a "span" is a container inline frame, and a "frame" is one
   // of its children.
@@ -494,6 +501,7 @@ class nsLineLayout {
     nscoord mIStart;
     nscoord mICoord;
     nscoord mIEnd;
+    nscoord mInset;
 
     nscoord mBStartLeading, mBEndLeading;
     nscoord mLogicalBSize;
@@ -510,9 +518,9 @@ class nsLineLayout {
       mLastFrame = pfd;
     }
   };
-  PerSpanData* mSpanFreeList;
-  PerSpanData* mRootSpan;
-  PerSpanData* mCurrentSpan;
+  PerSpanData* mSpanFreeList = nullptr;
+  PerSpanData* mRootSpan = nullptr;
+  PerSpanData* mCurrentSpan = nullptr;
 
   // The container size to use when converting between logical and
   // physical coordinates for frames in this span. For the root span
@@ -531,36 +539,36 @@ class nsLineLayout {
   gfxTextRun::TrimmableWS GetTrimFrom(const PerSpanData* aSpan,
                                       bool aLineIsRTL) const;
 
-  gfxBreakPriority mLastOptionalBreakPriority;
-  int32_t mLastOptionalBreakFrameOffset;
-  int32_t mForceBreakFrameOffset;
+  gfxBreakPriority mLastOptionalBreakPriority = gfxBreakPriority::eNoBreak;
+  int32_t mLastOptionalBreakFrameOffset = -1;
+  int32_t mForceBreakFrameOffset = -1;
 
-  nscoord mMinLineBSize;
+  nscoord mMinLineBSize = 0;
 
   // The amount of text indent that we applied to this line, needed for
   // max-element-size calculation.
-  nscoord mTextIndent;
+  nscoord mTextIndent = 0;
 
   // This state varies during the reflow of a line but is line
   // "global" state not span "local" state.
-  int32_t mLineNumber;
+  int32_t mLineNumber = 0;
   mozilla::JustificationInfo mJustificationInfo;
 
-  int32_t mTotalPlacedFrames;
+  int32_t mTotalPlacedFrames = 0;
 
-  nscoord mBStartEdge;
-  nscoord mMaxStartBoxBSize;
-  nscoord mMaxEndBoxBSize;
+  nscoord mBStartEdge = 0;
+  nscoord mMaxStartBoxBSize = 0;
+  nscoord mMaxEndBoxBSize = 0;
 
   nscoord mInflationMinFontSize;
 
   // Final computed line-bSize value after VerticalAlignFrames for
   // the block has been called.
-  nscoord mFinalLineBSize;
+  nscoord mFinalLineBSize = 0;
 
   // Amount of trimmable whitespace inline size for the trailing text
   // frame, if any
-  nscoord mTrimmableISize;
+  nscoord mTrimmableISize = 0;
 
   // Physical size. Use only for physical <-> logical coordinate conversion.
   nsSize mContainerSize;
@@ -581,11 +589,12 @@ class nsLineLayout {
   bool mLineAtStart : 1;
   bool mHasRuby : 1;
   bool mSuppressLineWrap : 1;
+  bool mUsedOverflowWrap : 1;
 
-  int32_t mSpanDepth;
+  int32_t mSpanDepth = 0;
 #ifdef DEBUG
-  int32_t mSpansAllocated, mSpansFreed;
-  int32_t mFramesAllocated, mFramesFreed;
+  int32_t mSpansAllocated = 0, mSpansFreed = 0;
+  int32_t mFramesAllocated = 0, mFramesFreed = 0;
 #endif
 
   /**
@@ -639,6 +648,10 @@ class nsLineLayout {
                       const nsStyleText* aStyleText, float aInflation,
                       bool* aZeroEffectiveSpanBox);
 
+  static void SetSpanForEmptyLine(PerSpanData* aPerSpanData,
+                                  mozilla::WritingMode aWM,
+                                  const nsSize& aContainerSize,
+                                  nscoord aBStartEdge);
   void VerticalAlignFrames(PerSpanData* psd);
 
   void PlaceTopBottomFrames(PerSpanData* psd, nscoord aDistanceFromStart,
@@ -688,6 +701,9 @@ class nsLineLayout {
 #ifdef DEBUG
   void DumpPerSpanData(PerSpanData* psd, int32_t aIndent);
 #endif
+
+ private:
+  static bool ShouldApplyLineHeightInPreserveWhiteSpace(const PerSpanData* psd);
 };
 
 #endif /* nsLineLayout_h___ */

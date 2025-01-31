@@ -10,11 +10,12 @@ Services.scriptloader.loadSubScript(
 
 ChromeUtils.defineESModuleGetters(this, {
   QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
+  sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
 const lazy = {};
 
-XPCOMUtils.defineLazyGetter(lazy, "QuickSuggestTestUtils", () => {
+ChromeUtils.defineLazyGetter(lazy, "QuickSuggestTestUtils", () => {
   const { QuickSuggestTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/QuickSuggestTestUtils.sys.mjs"
   );
@@ -22,7 +23,7 @@ XPCOMUtils.defineLazyGetter(lazy, "QuickSuggestTestUtils", () => {
   return module;
 });
 
-XPCOMUtils.defineLazyGetter(this, "MerinoTestUtils", () => {
+ChromeUtils.defineLazyGetter(this, "MerinoTestUtils", () => {
   const { MerinoTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/MerinoTestUtils.sys.mjs"
   );
@@ -35,6 +36,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
   sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
+ChromeUtils.defineLazyGetter(this, "PlacesFrecencyRecalculator", () => {
+  return Cc["@mozilla.org/places/frecency-recalculator;1"].getService(
+    Ci.nsIObserver
+  ).wrappedJSObject;
+});
+
 async function addTopSites(url) {
   for (let i = 0; i < 5; i++) {
     await PlacesTestUtils.addVisits(url);
@@ -45,23 +52,26 @@ async function addTopSites(url) {
 }
 
 function assertAbandonmentTelemetry(expectedExtraList) {
-  _assertGleanTelemetry("abandonment", expectedExtraList);
+  assertGleanTelemetry("abandonment", expectedExtraList);
 }
 
 function assertEngagementTelemetry(expectedExtraList) {
-  _assertGleanTelemetry("engagement", expectedExtraList);
-}
-
-function assertImpressionTelemetry(expectedExtraList) {
-  _assertGleanTelemetry("impression", expectedExtraList);
+  assertGleanTelemetry("engagement", expectedExtraList);
 }
 
 function assertExposureTelemetry(expectedExtraList) {
-  _assertGleanTelemetry("exposure", expectedExtraList);
+  assertGleanTelemetry("exposure", expectedExtraList);
 }
 
-function _assertGleanTelemetry(telemetryName, expectedExtraList) {
-  const telemetries = Glean.urlbar[telemetryName].testGetValue() ?? [];
+function assertGleanTelemetry(telemetryName, expectedExtraList) {
+  const camelName = telemetryName.replaceAll(/_(.)/g, (match, p1) =>
+    p1.toUpperCase()
+  );
+  const telemetries = Glean.urlbar[camelName].testGetValue() ?? [];
+  info(
+    "Asserting Glean telemetry is correct, actual events are: " +
+      JSON.stringify(telemetries)
+  );
   Assert.equal(
     telemetries.length,
     expectedExtraList.length,
@@ -84,44 +94,30 @@ function _assertGleanTelemetry(telemetryName, expectedExtraList) {
   }
 }
 
-async function ensureQuickSuggestInit({
-  merinoSuggestions = undefined,
-  config = undefined,
-} = {}) {
+async function ensureQuickSuggestInit({ ...args } = {}) {
   return lazy.QuickSuggestTestUtils.ensureQuickSuggestInit({
-    config,
-    merinoSuggestions,
-    remoteSettingsResults: [
+    remoteSettingsRecords: [
       {
         type: "data",
         attachment: [
-          {
-            id: 1,
-            url: "https://example.com/sponsored",
-            title: "Sponsored suggestion",
-            keywords: ["sponsored"],
-            click_url: "https://example.com/click",
-            impression_url: "https://example.com/impression",
-            advertiser: "TestAdvertiser",
-            iab_category: "22 - Shopping",
-          },
-          {
-            id: 2,
-            url: `https://example.com/nonsponsored`,
-            title: "Non-sponsored suggestion",
-            keywords: ["nonsponsored"],
-            click_url: "https://example.com/click",
-            impression_url: "https://example.com/impression",
-            advertiser: "TestAdvertiser",
-            iab_category: "5 - Education",
-          },
+          lazy.QuickSuggestTestUtils.ampRemoteSettings({
+            keywords: ["amp", "amp and wikipedia"],
+          }),
+          lazy.QuickSuggestTestUtils.wikipediaRemoteSettings({
+            keywords: ["wikipedia", "amp and wikipedia"],
+          }),
         ],
       },
+      lazy.QuickSuggestTestUtils.weatherRecord(),
       {
-        type: "weather",
-        weather: MerinoTestUtils.WEATHER_RS_DATA,
+        type: "exposure-suggestions",
+        suggestion_type: "aaa",
+        attachment: {
+          keywords: ["aaa keyword"],
+        },
       },
     ],
+    ...args,
   });
 }
 
@@ -196,14 +192,6 @@ async function doPasteAndGo(data) {
 async function doTest(testFn) {
   await Services.fog.testFlushAllChildren();
   Services.fog.testResetFOG();
-  // Enable recording telemetry for abandonment, engagement and impression.
-  Services.fog.setMetricsFeatureConfig(
-    JSON.stringify({
-      "urlbar.abandonment": true,
-      "urlbar.engagement": true,
-      "urlbar.impression": true,
-    })
-  );
 
   gURLBar.controller.engagementEvent.reset();
   await PlacesUtils.history.clear();
@@ -214,12 +202,7 @@ async function doTest(testFn) {
   await QuickSuggest.blockedSuggestions.clear();
   await QuickSuggest.blockedSuggestions._test_readyPromise;
   await updateTopSites(() => true);
-
-  try {
-    await BrowserTestUtils.withNewTab(gBrowser, testFn);
-  } finally {
-    Services.fog.setMetricsFeatureConfig("{}");
-  }
+  await BrowserTestUtils.withNewTab(gBrowser, testFn);
 }
 
 async function initGroupTest() {
@@ -253,6 +236,15 @@ async function initSapTest() {
   /* import-globals-from head-sap.js */
   Services.scriptloader.loadSubScript(
     "chrome://mochitests/content/browser/browser/components/urlbar/tests/engagementTelemetry/browser/head-sap.js",
+    this
+  );
+  await setup();
+}
+
+async function initSearchEngineDefaultIdTest() {
+  /* import-globals-from head-search_engine_default_id.js */
+  Services.scriptloader.loadSubScript(
+    "chrome://mochitests/content/browser/browser/components/urlbar/tests/engagementTelemetry/browser/head-search_engine_default_id.js",
     this
   );
   await setup();
@@ -306,7 +298,6 @@ async function loadRemoteTab(url) {
       ["browser.urlbar.maxHistoricalSearchSuggestions", 0],
       ["browser.urlbar.autoFill", false],
       ["services.sync.username", "fake"],
-      ["services.sync.syncedTabs.showRemoteTabs", true],
     ],
   });
 
@@ -405,17 +396,12 @@ async function setup() {
     set: [
       ["browser.urlbar.searchEngagementTelemetry.enabled", true],
       ["browser.urlbar.quickactions.enabled", true],
-      ["browser.urlbar.quickactions.minimumSearchString", 0],
-      ["browser.urlbar.suggest.quickactions", true],
-      ["browser.urlbar.shortcuts.quickactions", true],
-      [
-        "browser.urlbar.searchEngagementTelemetry.pauseImpressionIntervalMs",
-        100,
-      ],
+      ["browser.urlbar.secondaryActions.featureGate", true],
+      ["browser.urlbar.scotchBonnet.enableOverride", false],
     ],
   });
 
-  const engine = await SearchTestUtils.promiseNewSearchEngine({
+  const engine = await SearchTestUtils.installOpenSearchEngine({
     url: "chrome://mochitests/content/browser/browser/components/urlbar/tests/browser/searchSuggestionEngine.xml",
   });
   const originalDefaultEngine = await Services.search.getDefault();
@@ -447,12 +433,22 @@ async function showResultByArrowDown() {
   await UrlbarTestUtils.promiseSearchComplete(window);
 }
 
-async function waitForPauseImpression() {
-  await new Promise(r =>
-    setTimeout(
-      r,
-      UrlbarPrefs.get("searchEngagementTelemetry.pauseImpressionIntervalMs")
-    )
-  );
-  await Services.fog.testFlushAllChildren();
+async function expectNoConsoleErrors(task) {
+  let endConsoleListening = TestUtils.listenForConsoleMessages();
+  let msgs;
+  let taskResult;
+
+  try {
+    taskResult = await task();
+  } finally {
+    msgs = await endConsoleListening();
+  }
+
+  for (let msg of msgs) {
+    if (msg.level === "error") {
+      throw new Error(`Console error detected: ${msg.arguments[0]}`);
+    }
+  }
+
+  return taskResult;
 }

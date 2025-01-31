@@ -30,24 +30,28 @@ class nsClipboard : public nsBaseClipboard {
   static int32_t sSelectionCacheChangeCount;
 
   // Helper methods, used also by nsDragService
-  static NSDictionary* PasteboardDictFromTransferable(nsITransferable* aTransferable);
+  static NSDictionary* PasteboardDictFromTransferable(
+      nsITransferable* aTransferable);
   // aPasteboardType is being retained and needs to be released by the caller.
-  static bool IsStringType(const nsCString& aMIMEType, NSString** aPasteboardType);
+  static bool IsStringType(const nsCString& aMIMEType,
+                           NSString** aPasteboardType);
   static bool IsImageType(const nsACString& aMIMEType);
   static NSString* WrapHtmlForSystemPasteboard(NSString* aString);
-  static nsresult TransferableFromPasteboard(nsITransferable* aTransferable, NSPasteboard* pboard);
+  static nsresult TransferableFromPasteboard(nsITransferable* aTransferable,
+                                             NSPasteboard* pboard);
+  mozilla::Result<int32_t, nsresult> GetNativeClipboardSequenceNumber(
+      ClipboardType aWhichClipboard) override;
 
  protected:
   // Implement the native clipboard behavior.
-  NS_IMETHOD SetNativeClipboardData(nsITransferable* aTransferable, nsIClipboardOwner* aOwner,
-                                    int32_t aWhichClipboard) override;
+  NS_IMETHOD SetNativeClipboardData(nsITransferable* aTransferable,
+                                    ClipboardType aWhichClipboard) override;
   NS_IMETHOD GetNativeClipboardData(nsITransferable* aTransferable,
-                                    int32_t aWhichClipboard) override;
-  nsresult EmptyNativeClipboardData(int32_t aWhichClipboard) override;
-  mozilla::Result<int32_t, nsresult> GetNativeClipboardSequenceNumber(
-      int32_t aWhichClipboard) override;
+                                    ClipboardType aWhichClipboard) override;
+  nsresult EmptyNativeClipboardData(ClipboardType aWhichClipboard) override;
   mozilla::Result<bool, nsresult> HasNativeClipboardDataMatchingFlavors(
-      const nsTArray<nsCString>& aFlavorList, int32_t aWhichClipboard) override;
+      const nsTArray<nsCString>& aFlavorList,
+      ClipboardType aWhichClipboard) override;
 
   void ClearSelectionCache();
   void SetSelectionCache(nsITransferable* aTransferable);
@@ -55,7 +59,8 @@ class nsClipboard : public nsBaseClipboard {
  private:
   virtual ~nsClipboard();
 
-  static mozilla::Maybe<uint32_t> FindIndexOfImageFlavor(const nsTArray<nsCString>& aMIMETypes);
+  static mozilla::Maybe<uint32_t> FindIndexOfImageFlavor(
+      const nsTArray<nsCString>& aMIMETypes);
 };
 
 #endif  // nsClipboard_h_

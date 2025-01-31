@@ -5,7 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "js/experimental/JSStencil.h"  // JS::Stencil, JS::CompileModuleScriptToStencil, JS::InstantiateModuleStencil
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/loader/ModuleLoadRequest.h"
+#include "mozilla/dom/RequestBinding.h"
 #include "mozilla/dom/WorkerLoadContext.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/workerinternals/ScriptLoader.h"
@@ -30,9 +32,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WorkerModuleLoader)
 NS_INTERFACE_MAP_END_INHERITING(JS::loader::ModuleLoaderBase)
 
 WorkerModuleLoader::WorkerModuleLoader(WorkerScriptLoader* aScriptLoader,
-                                       nsIGlobalObject* aGlobalObject,
-                                       nsISerialEventTarget* aEventTarget)
-    : ModuleLoaderBase(aScriptLoader, aGlobalObject, aEventTarget) {}
+                                       nsIGlobalObject* aGlobalObject)
+    : ModuleLoaderBase(aScriptLoader, aGlobalObject) {}
 
 nsIURI* WorkerModuleLoader::GetBaseURI() const {
   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
@@ -40,7 +41,7 @@ nsIURI* WorkerModuleLoader::GetBaseURI() const {
 }
 
 already_AddRefed<ModuleLoadRequest> WorkerModuleLoader::CreateStaticImport(
-    nsIURI* aURI, ModuleLoadRequest* aParent) {
+    nsIURI* aURI, JS::ModuleType aModuleType, ModuleLoadRequest* aParent) {
   // We are intentionally deviating from the specification here and using the
   // worker's CSP rather than the document CSP. The spec otherwise requires our
   // service worker integration to be changed, and additionally the decision
@@ -49,16 +50,18 @@ already_AddRefed<ModuleLoadRequest> WorkerModuleLoader::CreateStaticImport(
   // See Discussion in https://github.com/w3c/webappsec-csp/issues/336
   Maybe<ClientInfo> clientInfo = GetGlobalObject()->GetClientInfo();
 
-  RefPtr<WorkerLoadContext> loadContext =
-      new WorkerLoadContext(WorkerLoadContext::Kind::StaticImport, clientInfo,
-                            aParent->GetWorkerLoadContext()->mScriptLoader);
+  RefPtr<WorkerLoadContext> loadContext = new WorkerLoadContext(
+      WorkerLoadContext::Kind::StaticImport, clientInfo,
+      aParent->GetWorkerLoadContext()->mScriptLoader,
+      aParent->GetWorkerLoadContext()->mOnlyExistingCachedResourcesAllowed);
   RefPtr<ModuleLoadRequest> request = new ModuleLoadRequest(
-      aURI, aParent->mFetchOptions, SRIMetadata(), aParent->mURI, loadContext,
-      false, /* is top level */
-      false, /* is dynamic import */
+      aURI, aModuleType, aParent->ReferrerPolicy(), aParent->mFetchOptions,
+      SRIMetadata(), aParent->mURI, loadContext, false, /* is top level */
+      false,                                            /* is dynamic import */
       this, aParent->mVisitedSet, aParent->GetRootModule());
 
   request->mURL = request->mURI->GetSpecOrDefault();
+  request->NoCacheEntryFound();
   return request.forget();
 }
 
@@ -67,7 +70,7 @@ bool WorkerModuleLoader::CreateDynamicImportLoader() {
   workerPrivate->AssertIsOnWorkerThread();
 
   IgnoredErrorResult rv;
-  RefPtr<WorkerScriptLoader> loader = new loader::WorkerScriptLoader(
+  RefPtr<WorkerScriptLoader> loader = loader::WorkerScriptLoader::Create(
       workerPrivate, nullptr, nullptr,
       GetCurrentScriptLoader()->GetWorkerScriptType(), rv);
   if (NS_WARN_IF(rv.Failed())) {
@@ -75,13 +78,12 @@ bool WorkerModuleLoader::CreateDynamicImportLoader() {
   }
 
   SetScriptLoader(loader);
-  SetEventTarget(GetCurrentSerialEventTarget());
   return true;
 }
 
 already_AddRefed<ModuleLoadRequest> WorkerModuleLoader::CreateDynamicImport(
-    JSContext* aCx, nsIURI* aURI, LoadedScript* aMaybeActiveScript,
-    JS::Handle<JS::Value> aReferencingPrivate, JS::Handle<JSString*> aSpecifier,
+    JSContext* aCx, nsIURI* aURI, JS::ModuleType aModuleType,
+    LoadedScript* aMaybeActiveScript, JS::Handle<JSString*> aSpecifier,
     JS::Handle<JSObject*> aPromise) {
   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
 
@@ -90,6 +92,8 @@ already_AddRefed<ModuleLoadRequest> WorkerModuleLoader::CreateDynamicImport(
   }
 
   // Not supported for Service Workers.
+  // https://github.com/w3c/ServiceWorker/issues/1585 covers existing discussion
+  // about potentially supporting use of import().
   if (workerPrivate->IsServiceWorker()) {
     return nullptr;
   }
@@ -114,32 +118,48 @@ already_AddRefed<ModuleLoadRequest> WorkerModuleLoader::CreateDynamicImport(
     // string, parser metadata is "not-parser-inserted", credentials mode is
     // "same-origin", referrer policy is the empty string, and fetch priority is
     // "auto".
-    ReferrerPolicy referrerPolicy = workerPrivate->GetReferrerPolicy();
     options = new ScriptFetchOptions(
-        CORSMode::CORS_NONE, referrerPolicy,
-        /* aNonce = */ u""_ns, JS::loader::ParserMetadata::NotParserInserted,
-        nullptr);
+        CORSMode::CORS_NONE, /* aNonce = */ u""_ns, RequestPriority::Auto,
+        JS::loader::ParserMetadata::NotParserInserted, nullptr);
     baseURL = GetBaseURI();
   }
 
   Maybe<ClientInfo> clientInfo = GetGlobalObject()->GetClientInfo();
 
-  RefPtr<WorkerLoadContext> context =
-      new WorkerLoadContext(WorkerLoadContext::Kind::DynamicImport, clientInfo,
-                            GetCurrentScriptLoader());
+  RefPtr<WorkerLoadContext> context = new WorkerLoadContext(
+      WorkerLoadContext::Kind::DynamicImport, clientInfo,
+      GetCurrentScriptLoader(),
+      // When dynamic import is supported in ServiceWorkers,
+      // the current plan in onlyExistingCachedResourcesAllowed
+      // is that only existing cached resources will be
+      // allowed.  (`import()` will not be used for caching
+      // side effects, but instead a specific method will be
+      // used during installation.)
+      true);
 
-  RefPtr<ModuleLoadRequest> request = new ModuleLoadRequest(
-      aURI, options, SRIMetadata(), baseURL, context, true,
-      /* is top level */ true, /* is dynamic import */
-      this, ModuleLoadRequest::NewVisitedSetForTopLevelImport(aURI), nullptr);
+  RefPtr<JS::loader::VisitedURLSet> visitedSet =
+      ModuleLoadRequest::NewVisitedSetForTopLevelImport(aURI, aModuleType);
 
-  request->mDynamicReferencingPrivate = aReferencingPrivate;
-  request->mDynamicSpecifier = aSpecifier;
-  request->mDynamicPromise = aPromise;
+  ReferrerPolicy referrerPolicy = workerPrivate->GetReferrerPolicy();
+  RefPtr<ModuleLoadRequest> request =
+      new ModuleLoadRequest(aURI, aModuleType, referrerPolicy, options,
+                            SRIMetadata(), baseURL, context, true,
+                            /* is top level */ true, /* is dynamic import */
+                            this, visitedSet, nullptr);
 
-  HoldJSObjects(request.get());
+  request->SetDynamicImport(aMaybeActiveScript, aSpecifier, aPromise);
+  request->NoCacheEntryFound();
 
   return request.forget();
+}
+
+bool WorkerModuleLoader::IsDynamicImportSupported() {
+  WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+  if (workerPrivate->IsServiceWorker()) {
+    return false;
+  }
+
+  return true;
 }
 
 bool WorkerModuleLoader::CanStartLoad(ModuleLoadRequest* aRequest,
@@ -157,11 +177,28 @@ nsresult WorkerModuleLoader::StartFetch(ModuleLoadRequest* aRequest) {
 nsresult WorkerModuleLoader::CompileFetchedModule(
     JSContext* aCx, JS::Handle<JSObject*> aGlobal, JS::CompileOptions& aOptions,
     ModuleLoadRequest* aRequest, JS::MutableHandle<JSObject*> aModuleScript) {
-  RefPtr<JS::Stencil> stencil;
+  switch (aRequest->mModuleType) {
+    case JS::ModuleType::Unknown:
+      MOZ_CRASH("Unexpected module type");
+    case JS::ModuleType::JavaScript:
+      return CompileJavaScriptModule(aCx, aOptions, aRequest, aModuleScript);
+    case JS::ModuleType::JSON:
+      return CompileJsonModule(aCx, aOptions, aRequest, aModuleScript);
+  }
+
+  MOZ_CRASH("Unhandled module type");
+}
+
+nsresult WorkerModuleLoader::CompileJavaScriptModule(
+    JSContext* aCx, JS::CompileOptions& aOptions, ModuleLoadRequest* aRequest,
+    JS::MutableHandle<JSObject*> aModuleScript) {
   MOZ_ASSERT(aRequest->IsTextSource());
   MaybeSourceText maybeSource;
-  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource);
+  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource,
+                                          aRequest->mLoadContext.get());
   NS_ENSURE_SUCCESS(rv, rv);
+
+  RefPtr<JS::Stencil> stencil;
 
   auto compile = [&](auto& source) {
     return JS::CompileModuleScriptToStencil(aCx, aOptions, source);
@@ -179,6 +216,28 @@ nsresult WorkerModuleLoader::CompileFetchedModule(
     return NS_ERROR_FAILURE;
   }
 
+  return NS_OK;
+}
+
+nsresult WorkerModuleLoader::CompileJsonModule(
+    JSContext* aCx, JS::CompileOptions& aOptions, ModuleLoadRequest* aRequest,
+    JS::MutableHandle<JSObject*> aModuleScript) {
+  MOZ_ASSERT(aRequest->IsTextSource());
+  MaybeSourceText maybeSource;
+  nsresult rv = aRequest->GetScriptSource(aCx, &maybeSource,
+                                          aRequest->mLoadContext.get());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  auto compile = [&](auto& source) {
+    return JS::CompileJsonModule(aCx, aOptions, source);
+  };
+
+  auto* jsonModule = maybeSource.mapNonEmpty(compile);
+  if (!jsonModule) {
+    return NS_ERROR_FAILURE;
+  }
+
+  aModuleScript.set(jsonModule);
   return NS_OK;
 }
 

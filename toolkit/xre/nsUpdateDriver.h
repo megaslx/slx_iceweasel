@@ -30,6 +30,7 @@ typedef PRProcess* ProcessType;
 #ifdef XP_WIN
 #  define UPDATER_BIN "updater.exe"
 #  define MAINTENANCE_SVC_NAME L"MozillaMaintenance"
+#  define MAYBE_WAIT_TIMEOUT_MS (60U * 1000U)
 #elif XP_MACOSX
 #  define UPDATER_APP "updater.app"
 #  define UPDATER_BIN "org.mozilla.updater"
@@ -60,6 +61,30 @@ typedef PRProcess* ProcessType;
 nsresult ProcessUpdates(nsIFile* greDir, nsIFile* appDir, nsIFile* updRootDir,
                         int argc, char** argv, const char* appVersion,
                         bool restart = true, ProcessType* pid = nullptr);
+
+/**
+ * Checks if the Multi Session Install Lockout is active. This is a window after
+ * an update is downloaded where we won't install updates at startup if another
+ * application instance is running.
+ *
+ * @param  updRootDir
+ *         The root update directory for this installation.
+ * @param  isActive
+ *         Outparam. On success, it is set to `true` if the MSIL lockout is
+ *         active or `false` if it is not.
+ */
+nsresult IsMultiSessionInstallLockoutActive(nsIFile* updRootDir,
+                                            bool& isActive);
+
+/**
+ * This function is only needed for testing. When Firefox is started up with
+ * `--test-process-updates`, we go through all the "update at startup" logic,
+ * apply an update and restart, if applicable, and then, instead of starting
+ * the browser, we call this function to write out a file signalling to the test
+ * that the process has completed since otherwise it's not totally clear to the
+ * the test when and if the browser relaunches and exits.
+ */
+nsresult WriteUpdateCompleteTestFile(nsIFile* updRootDir);
 
 // The implementation of the update processor handles the task of loading the
 // updater application for staging an update.

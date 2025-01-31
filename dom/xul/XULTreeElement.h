@@ -59,8 +59,6 @@ class XULTreeElement final : public nsXULElement {
 
   int32_t RowWidth();
 
-  int32_t HorizontalPosition();
-
   void EnsureCellIsVisible(int32_t row, nsTreeColumn* col, ErrorResult& aRv);
 
   void ScrollToRow(int32_t aRow);
@@ -101,7 +99,7 @@ class XULTreeElement final : public nsXULElement {
   void EndUpdateBatch(void);
   void ClearStyleAndImageCaches(void);
 
-  virtual void UnbindFromTree(bool aNullParent) override;
+  virtual void UnbindFromTree(UnbindContext&) override;
   virtual void DestroyContent() override;
 
   void BodyDestroyed(int32_t aFirstVisibleRow) {

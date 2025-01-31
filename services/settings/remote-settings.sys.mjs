@@ -11,15 +11,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
   Database: "resource://services-settings/Database.sys.mjs",
   FilterExpressions:
     "resource://gre/modules/components-utils/FilterExpressions.sys.mjs",
+  pushBroadcastService: "resource://gre/modules/PushBroadcastService.sys.mjs",
   RemoteSettingsClient:
     "resource://services-settings/RemoteSettingsClient.sys.mjs",
   SyncHistory: "resource://services-settings/SyncHistory.sys.mjs",
   UptakeTelemetry: "resource://services-common/uptake-telemetry.sys.mjs",
   Utils: "resource://services-settings/Utils.sys.mjs",
-});
-
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  pushBroadcastService: "resource://gre/modules/PushBroadcastService.jsm",
 });
 
 const PREF_SETTINGS_BRANCH = "services.settings.";
@@ -32,7 +29,7 @@ const PREF_SETTINGS_SYNC_HISTORY_ERROR_THRESHOLD =
   "sync_history_error_threshold";
 
 // Telemetry identifiers.
-const TELEMETRY_COMPONENT = "remotesettings";
+const TELEMETRY_COMPONENT = "Remotesettings";
 const TELEMETRY_SOURCE_POLL = "settings-changes-monitoring";
 const TELEMETRY_SOURCE_SYNC = "settings-sync";
 
@@ -41,6 +38,14 @@ const BROADCAST_ID = "remote-settings/monitor_changes";
 
 // Signer to be used when not specified (see Ci.nsIContentSignatureVerifier).
 const DEFAULT_SIGNER = "remote-settings.content-signature.mozilla.org";
+const SIGNERS_BY_BUCKET = {
+  "security-state": "onecrl.content-signature.mozilla.org",
+  "security-state-preview": "onecrl.content-signature.mozilla.org",
+  // All the other buckets use the default signer.
+  // This mapping would have to be modified if a consumer relies on
+  // changesets bundles and leverages a specific bucket and signer.
+  // This is very (very) unlikely though.
+};
 
 ChromeUtils.defineLazyGetter(lazy, "gPrefs", () => {
   return Services.prefs.getBranch(PREF_SETTINGS_BRANCH);
@@ -184,6 +189,104 @@ function remoteSettingsFunction() {
   }
 
   /**
+   * Pulls the startup changesets bundle if enabled.
+   *
+   * This function downloads and verifies a bundle of changesets for collections that sync
+   * data right on startup. In order to include a new collection in this bundle, add the
+   * `"startup"` flag in its metadata (see mozilla-services/remote-settings-permissions#524).
+   * If the bundle is already being processed by a client, it waits for the ongoing process
+   * to complete.
+   *
+   * @async
+   * @function pullStartupBundle
+   * @memberof remoteSettings
+   * @returns {Promise<Array<string>>} A promise that resolves to an array of imported collections identifiers.
+   *
+   * @throws {Error} If the signature of any bundled changeset is invalid.
+   */
+  remoteSettings.pullStartupBundle = async () => {
+    if (lazy.Utils.shouldSkipRemoteActivityDueToTests) {
+      return [];
+    }
+
+    if (remoteSettings._ongoingExtractBundlePromise) {
+      return await remoteSettings._ongoingExtractBundlePromise;
+    }
+
+    const startedAt = new Date();
+    let extractedAt;
+    remoteSettings._ongoingExtractBundlePromise = (async () => {
+      lazy.console.info("Download Remote Settings startup changesets bundle.");
+
+      let changesets;
+      try {
+        changesets = await lazy.Utils.fetchChangesetsBundle();
+      } catch (e) {
+        lazy.console.error(
+          `Remote Settings startup changesets bundle could not be extracted (${e})`
+        );
+        return [];
+      }
+
+      extractedAt = new Date();
+      const pulled = [];
+      for (const changeset of changesets) {
+        const bucket = lazy.Utils.actualBucketName(changeset.metadata.bucket);
+        const collection = changeset.metadata.id;
+        const identifier = `${bucket}/${collection}`;
+
+        if (pulled.includes(identifier)) {
+          // The startup bundles contain both main and preview changesets.
+          // Importing both increases complexity down the line, and brings no value.
+          // On preview mode, this will skip main, and vice-versa.
+          continue;
+        }
+
+        const { metadata, timestamp, changes: records } = changeset;
+
+        const signerName = SIGNERS_BY_BUCKET[bucket] || DEFAULT_SIGNER;
+        const client = RemoteSettings(collection, {
+          bucketName: bucket,
+          signerName,
+        });
+        if (client.verifySignature) {
+          lazy.console.debug(
+            `${identifier}: Verify signature of bundled changeset`
+          );
+          try {
+            await client.validateCollectionSignature(
+              records,
+              timestamp,
+              metadata
+            );
+          } catch (e) {
+            // Bundle content is not valid. Skip import.
+            lazy.console.error(
+              `${identifier}: Signature of bundled changeset is invalid: ${e}.`
+            );
+            continue;
+          }
+        }
+        // Only import changes if the signature succeeds.
+        await client.db.importChanges(metadata, timestamp, records, {
+          clear: true,
+        });
+        lazy.console.debug(`${identifier} imported from changesets bundle`);
+        pulled.push(identifier);
+      }
+      return pulled;
+    })();
+    const pulled = await RemoteSettings._ongoingExtractBundlePromise;
+    const durationMilliseconds = new Date() - startedAt;
+    const downloadMilliseconds = extractedAt - startedAt;
+    const extractMilliseconds = durationMilliseconds - downloadMilliseconds;
+    lazy.console.info(
+      `Import of changesets bundle done (duration=${durationMilliseconds}ms, download=${downloadMilliseconds}ms, extraction=${extractMilliseconds}ms)`
+    );
+    return pulled;
+  };
+
+  /**
    * Main polling method, called by the ping mechanism.
    *
    * @param {Object} options
@@ -197,6 +300,9 @@ function remoteSettingsFunction() {
     trigger = "manual",
     full = false,
   } = {}) => {
+    if (lazy.Utils.shouldSkipRemoteActivityDueToTests) {
+      return;
+    }
     // When running in full mode, we ignore last polling status.
     if (full) {
       lazy.gPrefs.clearUserPref(PREF_SETTINGS_SERVER_BACKOFF);
@@ -223,7 +329,7 @@ function remoteSettingsFunction() {
 
     // Check if the server backoff time is elapsed.
     if (lazy.gPrefs.prefHasUserValue(PREF_SETTINGS_SERVER_BACKOFF)) {
-      const backoffReleaseTime = lazy.gPrefs.getCharPref(
+      const backoffReleaseTime = lazy.gPrefs.getStringPref(
         PREF_SETTINGS_SERVER_BACKOFF
       );
       const remainingMilliseconds =
@@ -277,7 +383,7 @@ function remoteSettingsFunction() {
       }
     }
 
-    lazy.console.info("Start polling for changes");
+    lazy.console.info(`Start polling for changes (trigger=${trigger})`);
     Services.obs.notifyObservers(
       null,
       "remote-settings:changes-poll-start",
@@ -288,7 +394,7 @@ function remoteSettingsFunction() {
     // Every time we register a new client, we have to fetch the whole list again.
     const lastEtag = _invalidatePolling
       ? ""
-      : lazy.gPrefs.getCharPref(PREF_SETTINGS_LAST_ETAG, "");
+      : lazy.gPrefs.getStringPref(PREF_SETTINGS_LAST_ETAG, "");
 
     let pollResult;
     try {
@@ -352,7 +458,10 @@ function remoteSettingsFunction() {
         "Server asks clients to backoff for ${backoffSeconds} seconds"
       );
       const backoffReleaseTime = Date.now() + backoffSeconds * 1000;
-      lazy.gPrefs.setCharPref(PREF_SETTINGS_SERVER_BACKOFF, backoffReleaseTime);
+      lazy.gPrefs.setStringPref(
+        PREF_SETTINGS_SERVER_BACKOFF,
+        backoffReleaseTime
+      );
     }
 
     // Record new update time and the difference between local and server time.
@@ -450,7 +559,7 @@ function remoteSettingsFunction() {
     }
 
     // Save current Etag for next poll.
-    lazy.gPrefs.setCharPref(PREF_SETTINGS_LAST_ETAG, currentEtag);
+    lazy.gPrefs.setStringPref(PREF_SETTINGS_LAST_ETAG, currentEtag);
 
     // Report the global synchronization success.
     const status = lazy.UptakeTelemetry.STATUS.SUCCESS;
@@ -464,7 +573,9 @@ function remoteSettingsFunction() {
       .store(currentEtag, status)
       .catch(error => console.error(error));
 
-    lazy.console.info("Polling for changes done");
+    lazy.console.info(
+      `Polling for changes done (duration=${durationMilliseconds}ms)`
+    );
     Services.obs.notifyObservers(null, "remote-settings:changes-poll-end");
   };
 
@@ -487,15 +598,22 @@ function remoteSettingsFunction() {
   /**
    * Returns an object with polling status information and the list of
    * known remote settings collections.
+   * @param {Object} options
+   * @param {boolean?} options.localOnly (optional) If set to `true`, do not contact the server.
    */
-  remoteSettings.inspect = async () => {
-    // Make sure we fetch the latest server info, use a random cache bust value.
-    const randomCacheBust = 99990000 + Math.floor(Math.random() * 9999);
-    const { changes, currentEtag: serverTimestamp } =
-      await lazy.Utils.fetchLatestChanges(lazy.Utils.SERVER_URL, {
-        expected: randomCacheBust,
-      });
+  remoteSettings.inspect = async (options = {}) => {
+    const { localOnly = false } = options;
 
+    let changes = [];
+    let serverTimestamp = null;
+    if (!localOnly) {
+      // Make sure we fetch the latest server info, use a random cache bust value.
+      const randomCacheBust = 99990000 + Math.floor(Math.random() * 9999);
+      ({ changes, currentEtag: serverTimestamp } =
+        await lazy.Utils.fetchLatestChanges(lazy.Utils.SERVER_URL, {
+          expected: randomCacheBust,
+        }));
+    }
     const collections = await Promise.all(
       changes.map(async change => {
         const { bucket, collection, last_modified: serverTimestamp } = change;
@@ -523,7 +641,7 @@ function remoteSettingsFunction() {
       serverURL: lazy.Utils.SERVER_URL,
       pollingEndpoint: lazy.Utils.SERVER_URL + lazy.Utils.CHANGES_PATH,
       serverTimestamp,
-      localTimestamp: lazy.gPrefs.getCharPref(PREF_SETTINGS_LAST_ETAG, null),
+      localTimestamp: lazy.gPrefs.getStringPref(PREF_SETTINGS_LAST_ETAG, null),
       lastCheck: lazy.gPrefs.getIntPref(PREF_SETTINGS_LAST_UPDATE, 0),
       mainBucket: lazy.Utils.actualBucketName(
         AppConstants.REMOTE_SETTINGS_DEFAULT_BUCKET
@@ -534,6 +652,7 @@ function remoteSettingsFunction() {
       history: {
         [TELEMETRY_SOURCE_SYNC]: await lazy.gSyncHistory.list(),
       },
+      isSynchronizationBroken: await isSynchronizationBroken(),
     };
   };
 

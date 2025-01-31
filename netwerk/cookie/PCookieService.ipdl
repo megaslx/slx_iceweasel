@@ -10,6 +10,8 @@ include NeckoChannelParams;
 
 using mozilla::OriginAttributes from "mozilla/ipc/BackgroundUtils.h";
 [RefCounted] using class nsIURI from "mozilla/ipc/URIUtils.h";
+using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
+using struct nsID from "nsID.h";
 
 namespace mozilla {
 namespace net {
@@ -36,27 +38,29 @@ parent:
                                         OriginAttributes attrs,
                                         nullable nsIURI host,
                                         bool fromHttp,
+                                        bool isThirdParty,
                                         CookieStruct[] cookies);
 
-  async PrepareCookieList(nullable nsIURI host,
-                          bool isForeign,
-                          bool isThirdPartyTrackingResource,
-                          bool isThirdPartySocialTrackingResource,
-                          bool firstPartyStorageAccessPermissionGranted,
-                          uint32_t rejectedReason,
-                          bool isSafeTopLevelNav,
-                          bool isSameSiteForeign,
-                          bool hadCrossSiteRedirects,
-                          OriginAttributes attrs);
+  async GetCookieList(nullable nsIURI host,
+                        bool isForeign,
+                        bool isThirdPartyTrackingResource,
+                        bool isThirdPartySocialTrackingResource,
+                        bool firstPartyStorageAccessPermissionGranted,
+                        uint32_t rejectedReason,
+                        bool isSafeTopLevelNav,
+                        bool isSameSiteForeign,
+                        bool hadCrossSiteRedirects,
+                        OriginAttributes[] attrsList)
+                        returns (CookieStructTable[] cookies);
 
   async __delete__();
 
 child:
-  async TrackCookiesLoad(CookieStruct[] cookiesList,
-                         OriginAttributes attrs);
+  async TrackCookiesLoad(CookieStructTable[] cookiesListTable);
 
   async RemoveCookie(CookieStruct cookie,
-                     OriginAttributes attrs);
+                     OriginAttributes attrs,
+                     nsID? operationId);
 
   async RemoveBatchDeletedCookies(CookieStruct[] cookiesList,
                                   OriginAttributes[] attrsList);
@@ -64,8 +68,8 @@ child:
   async RemoveAll();
 
   async AddCookie(CookieStruct cookie,
-                  OriginAttributes attrs);
-
+                  OriginAttributes attrs,
+                  nsID? operationId);
 };
 
 }

@@ -142,7 +142,7 @@ class NotificationController final : public EventQueue,
     MOZ_ASSERT(aTextNode->GetPrimaryFrame()->StyleVisibility()->IsVisible(),
                "A text node is not visible");
 
-    mTextHash.Insert(aTextNode);
+    mTextArray.AppendElement(aTextNode);
 
     ScheduleProcessing();
   }
@@ -280,7 +280,13 @@ class NotificationController final : public EventQueue,
   void DropMutationEvent(AccTreeMutationEvent* aEvent);
 
   /**
-   * Fire all necessary mutation events.
+   * For content process documents:
+   *   Assess and queue all necessary mutation events. This function queues the
+   *   events on DocAccessibleChild. To fire the queued events, call
+   *   DocAccessibleChild::SendQueuedMutationEvents. This function may fire
+   *   events that must occur before mutation events.
+   * For parent process documents:
+   *   Fire all necessary mutation events immediately.
    */
   void ProcessMutationEvents();
 
@@ -340,8 +346,11 @@ class NotificationController final : public EventQueue,
 
   /**
    * Pending accessible tree update notifications for rendered text changes.
+   * When there are a lot of nearby text insertions (e.g. during a reflow), it
+   * is much more performant to process them in order because we then benefit
+   * from the layout line cursor. Therefore, we use an array here.
    */
-  nsTHashSet<nsCOMPtrHashKey<nsIContent>> mTextHash;
+  nsTArray<nsCOMPtr<nsIContent>> mTextArray;
 
   /**
    * Other notifications like DOM events. Don't make this an AutoTArray; we

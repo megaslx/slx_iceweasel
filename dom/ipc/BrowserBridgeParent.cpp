@@ -71,10 +71,19 @@ nsresult BrowserBridgeParent::InitWithProcess(
   browsingContext->Group()->EnsureHostProcess(aContentParent);
   browsingContext->SetOwnerProcessId(aContentParent->ChildID());
 
+  browsingContext->Group()->NotifyFocusedOrActiveBrowsingContextToProcess(
+      aContentParent);
+
   // Construct the BrowserParent object for our subframe.
   auto browserParent = MakeRefPtr<BrowserParent>(
       aContentParent, aTabId, *aParentBrowser, browsingContext, aChromeFlags);
   browserParent->SetBrowserBridgeParent(this);
+
+  ContentProcessManager* cpm = ContentProcessManager::GetSingleton();
+  if (!cpm) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  cpm->RegisterRemoteFrame(browserParent);
 
   // Open a remote endpoint for our PBrowser actor.
   ManagedEndpoint<PBrowserChild> childEp =
@@ -83,12 +92,6 @@ nsresult BrowserBridgeParent::InitWithProcess(
     MOZ_ASSERT(false, "Browser Open Endpoint Failed");
     return NS_ERROR_FAILURE;
   }
-
-  ContentProcessManager* cpm = ContentProcessManager::GetSingleton();
-  if (!cpm) {
-    return NS_ERROR_UNEXPECTED;
-  }
-  cpm->RegisterRemoteFrame(browserParent);
 
   RefPtr<WindowGlobalParent> windowParent =
       WindowGlobalParent::CreateDisconnected(aWindowInit);
@@ -177,7 +180,7 @@ IPCResult BrowserBridgeParent::RecvResumeLoad(uint64_t aPendingSwitchID) {
 }
 
 IPCResult BrowserBridgeParent::RecvUpdateDimensions(
-    const nsIntRect& aRect, const ScreenIntSize& aSize) {
+    const LayoutDeviceIntRect& aRect, const LayoutDeviceIntSize& aSize) {
   mBrowserParent->UpdateDimensions(aRect, aSize);
   return IPC_OK();
 }
@@ -193,9 +196,8 @@ IPCResult BrowserBridgeParent::RecvUpdateRemotePrintSettings(
   return IPC_OK();
 }
 
-IPCResult BrowserBridgeParent::RecvRenderLayers(
-    const bool& aEnabled, const layers::LayersObserverEpoch& aEpoch) {
-  Unused << mBrowserParent->SendRenderLayers(aEnabled, aEpoch);
+IPCResult BrowserBridgeParent::RecvRenderLayers(const bool& aEnabled) {
+  Unused << mBrowserParent->SendRenderLayers(aEnabled);
   return IPC_OK();
 }
 
@@ -217,7 +219,13 @@ IPCResult BrowserBridgeParent::RecvDispatchSynthesizedMouseEvent(
     return IPC_FAIL(this, "Unexpected event type");
   }
 
+  nsCOMPtr<nsIWidget> widget = Manager()->GetWidget();
+  if (!widget) {
+    return IPC_OK();
+  }
+
   WidgetMouseEvent event = aEvent;
+  event.mWidget = widget;
   // Convert mRefPoint from the dispatching child process coordinate space
   // to the parent coordinate space. The SendRealMouseEvent call will convert
   // it into the dispatchee child process coordinate space

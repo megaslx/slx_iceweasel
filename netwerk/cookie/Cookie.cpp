@@ -100,8 +100,8 @@ already_AddRefed<Cookie> Cookie::CreateValidated(
   if (cookie->mData.creationTime() > currentTimeInUsec) {
     uint64_t diffInSeconds =
         (cookie->mData.creationTime() - currentTimeInUsec) / PR_USEC_PER_SEC;
-    mozilla::glean::networking::cookie_creation_fixup_diff.AccumulateSamples(
-        {diffInSeconds});
+    mozilla::glean::networking::cookie_creation_fixup_diff
+        .AccumulateSingleSample(diffInSeconds);
     glean::networking::cookie_timestamp_fixed_count.Get("creationTime"_ns)
         .Add(1);
 
@@ -112,8 +112,8 @@ already_AddRefed<Cookie> Cookie::CreateValidated(
   if (cookie->mData.lastAccessed() > currentTimeInUsec) {
     uint64_t diffInSeconds =
         (cookie->mData.lastAccessed() - currentTimeInUsec) / PR_USEC_PER_SEC;
-    mozilla::glean::networking::cookie_access_fixup_diff.AccumulateSamples(
-        {diffInSeconds});
+    mozilla::glean::networking::cookie_access_fixup_diff.AccumulateSingleSample(
+        diffInSeconds);
     glean::networking::cookie_timestamp_fixed_count.Get("lastAccessed"_ns)
         .Add(1);
 
@@ -128,8 +128,7 @@ size_t Cookie::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
          mData.name().SizeOfExcludingThisIfUnshared(MallocSizeOf) +
          mData.value().SizeOfExcludingThisIfUnshared(MallocSizeOf) +
          mData.host().SizeOfExcludingThisIfUnshared(MallocSizeOf) +
-         mData.path().SizeOfExcludingThisIfUnshared(MallocSizeOf) +
-         mFilePathCache.SizeOfExcludingThisIfUnshared(MallocSizeOf);
+         mData.path().SizeOfExcludingThisIfUnshared(MallocSizeOf);
 }
 
 bool Cookie::IsStale() const {
@@ -185,6 +184,10 @@ NS_IMETHODIMP Cookie::GetIsHttpOnly(bool* aHttpOnly) {
   *aHttpOnly = IsHttpOnly();
   return NS_OK;
 }
+NS_IMETHODIMP Cookie::GetIsPartitioned(bool* aPartitioned) {
+  *aPartitioned = IsPartitioned();
+  return NS_OK;
+}
 NS_IMETHODIMP Cookie::GetCreationTime(int64_t* aCreation) {
   *aCreation = CreationTime();
   return NS_OK;
@@ -214,37 +217,11 @@ Cookie::GetOriginAttributes(JSContext* aCx, JS::MutableHandle<JS::Value> aVal) {
   return NS_OK;
 }
 
-const Cookie& Cookie::AsCookie() { return *this; }
-
-const nsCString& Cookie::GetFilePath() {
-  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
-
-  if (Path().IsEmpty()) {
-    // If we don't have a path, just return the (empty) file path cache.
-    return mFilePathCache;
-  }
-  if (!mFilePathCache.IsEmpty()) {
-    // If we've computed the answer before, just return it.
-    return mFilePathCache;
-  }
-
-  nsIURLParser* parser = net_GetStdURLParser();
-  NS_ENSURE_TRUE(parser, mFilePathCache);
-
-  int32_t pathLen = Path().Length();
-  int32_t filepathLen = 0;
-  uint32_t filepathPos = 0;
-
-  nsresult rv = parser->ParsePath(PromiseFlatCString(Path()).get(), pathLen,
-                                  &filepathPos, &filepathLen, nullptr,
-                                  nullptr,            // don't care about query
-                                  nullptr, nullptr);  // don't care about ref
-  NS_ENSURE_SUCCESS(rv, mFilePathCache);
-
-  mFilePathCache = Substring(Path(), filepathPos, filepathLen);
-
-  return mFilePathCache;
+const OriginAttributes& Cookie::OriginAttributesNative() {
+  return mOriginAttributes;
 }
+
+const Cookie& Cookie::AsCookie() { return *this; }
 
 // compatibility method, for use with the legacy nsICookie interface.
 // here, expires == 0 denotes a session cookie.

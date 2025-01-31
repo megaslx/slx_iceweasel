@@ -93,30 +93,15 @@ function createBrowserElementSessionContext(browserElement, config) {
  *        First object argument to describe the add-on.
  * @param {String} addon.addonId
  *        The web extension ID, to uniquely identify the debugged add-on.
- * @param {String} addon.browsingContextID
- *        The ID of the BrowsingContext into which this add-on is loaded.
- *        For now the top level target is associated with this one precise BrowsingContext.
- *        Knowing about it later helps associate resources to the same BrowsingContext ID and so the same target.
- * @param {String} addon.innerWindowId
- *        The ID of the WindowGlobal into which this add-on is loaded.
- *        This is used for the same reason as browsingContextID. It helps match the resource with the right target.
- *        We now also use the WindowGlobal ID/innerWindowId to identify the targets.
  * @param {Object} config
  *        An object with optional configuration. Only supports "isServerTargetSwitchingEnabled" attribute.
  *        See jsdoc in this file header for more info.
  */
-function createWebExtensionSessionContext(
-  { addonId, browsingContextID, innerWindowId },
-  config
-) {
+function createWebExtensionSessionContext({ addonId }, config) {
   const type = SESSION_TYPES.WEBEXTENSION;
   return {
     type,
     addonId,
-    addonBrowsingContextID: browsingContextID,
-    addonInnerWindowId: innerWindowId,
-    // For now, there is only one target (WebExtensionTargetActor), it is never replaced,
-    // and is only created via WebExtensionDescriptor.getTarget (and never by the watcher actor).
     isServerTargetSwitchingEnabled: config.isServerTargetSwitchingEnabled,
     supportedTargets: getWatcherSupportedTargets(type),
     supportedResources: getWatcherSupportedResources(type),
@@ -159,9 +144,13 @@ function getWatcherSupportedTargets(type) {
   return {
     [Targets.TYPES.FRAME]: true,
     [Targets.TYPES.PROCESS]: true,
-    [Targets.TYPES.WORKER]:
-      type == SESSION_TYPES.BROWSER_ELEMENT ||
-      type == SESSION_TYPES.WEBEXTENSION,
+    [Targets.TYPES.WORKER]: true,
+    [Targets.TYPES.SERVICE_WORKER]:
+      type == SESSION_TYPES.BROWSER_ELEMENT || type == SESSION_TYPES.ALL,
+    [Targets.TYPES.SHARED_WORKER]: type == SESSION_TYPES.ALL,
+    // Do not expose Web Extension content scripts in the Browser Toolbox
+    // as they should be debuggable via the content process targets.
+    [Targets.TYPES.CONTENT_SCRIPT]: type == SESSION_TYPES.BROWSER_ELEMENT,
   };
 }
 
@@ -184,6 +173,7 @@ function getWatcherSupportedResources(type) {
     [Resources.TYPES.CONSOLE_MESSAGE]: true,
     [Resources.TYPES.CSS_CHANGE]: isTabOrWebExtensionToolbox,
     [Resources.TYPES.CSS_MESSAGE]: true,
+    [Resources.TYPES.CSS_REGISTERED_PROPERTIES]: true,
     [Resources.TYPES.DOCUMENT_EVENT]: true,
     [Resources.TYPES.CACHE_STORAGE]: true,
     [Resources.TYPES.COOKIE]: true,
@@ -201,7 +191,8 @@ function getWatcherSupportedResources(type) {
     [Resources.TYPES.THREAD_STATE]: true,
     [Resources.TYPES.SERVER_SENT_EVENT]: true,
     [Resources.TYPES.WEBSOCKET]: true,
-    [Resources.TYPES.TRACING_STATE]: true,
+    [Resources.TYPES.JSTRACER_TRACE]: true,
+    [Resources.TYPES.JSTRACER_STATE]: true,
     [Resources.TYPES.LAST_PRIVATE_CONTEXT_EXIT]: true,
   };
 }
@@ -212,4 +203,5 @@ module.exports = {
   createWebExtensionSessionContext,
   createContentProcessSessionContext,
   createWorkerSessionContext,
+  SESSION_TYPES,
 };

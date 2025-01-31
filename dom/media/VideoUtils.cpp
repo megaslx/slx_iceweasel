@@ -4,24 +4,25 @@
 
 #include "VideoUtils.h"
 
-#include <functional>
 #include <stdint.h>
 
 #include "CubebUtils.h"
+#include "H264.h"
 #include "ImageContainer.h"
 #include "MediaContainerType.h"
 #include "MediaResource.h"
+#include "PDMFactory.h"
 #include "TimeUnits.h"
-#include "VorbisUtils.h"
 #include "mozilla/Base64.h"
+#include "mozilla/EnumeratedRange.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/StaticPrefs_accessibility.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "mozilla/TaskCategory.h"
 #include "mozilla/TaskQueue.h"
-#include "mozilla/Telemetry.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsContentTypeParser.h"
 #include "nsIConsoleService.h"
@@ -31,7 +32,10 @@
 #include "nsNetCID.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
-#include "AudioStream.h"
+
+#ifdef XP_WIN
+#  include "WMFDecoderModule.h"
+#endif
 
 namespace mozilla {
 
@@ -52,8 +56,8 @@ CheckedInt64 SaferMultDiv(int64_t aValue, uint64_t aMul, uint64_t aDiv) {
   if (aMul > INT64_MAX || aDiv > INT64_MAX) {
     return CheckedInt64(INT64_MAX) + 1;  // Return an invalid checked int.
   }
-  int64_t mul = aMul;
-  int64_t div = aDiv;
+  int64_t mul = AssertedCast<int64_t>(aMul);
+  int64_t div = AssertedCast<int64_t>(aDiv);
   int64_t major = aValue / div;
   int64_t remainder = aValue % div;
   return CheckedInt64(remainder) * mul / div + CheckedInt64(major) * mul;
@@ -96,10 +100,12 @@ static int32_t ConditionDimension(float aValue) {
 void ScaleDisplayByAspectRatio(gfx::IntSize& aDisplay, float aAspectRatio) {
   if (aAspectRatio > 1.0) {
     // Increase the intrinsic width
-    aDisplay.width = ConditionDimension(aAspectRatio * aDisplay.width);
+    aDisplay.width =
+        ConditionDimension(aAspectRatio * AssertedCast<float>(aDisplay.width));
   } else {
     // Increase the intrinsic height
-    aDisplay.height = ConditionDimension(aDisplay.height / aAspectRatio);
+    aDisplay.height =
+        ConditionDimension(AssertedCast<float>(aDisplay.height) / aAspectRatio);
   }
 }
 
@@ -191,12 +197,13 @@ uint32_t DecideAudioPlaybackSampleRate(const AudioInfo& aInfo,
     rate = 48000;
   } else if (aInfo.mRate >= 44100) {
     // The original rate is of good quality and we want to minimize unecessary
-    // resampling, so we let cubeb decide how to resample (if needed).
-    rate = aInfo.mRate;
+    // resampling, so we let cubeb decide how to resample (if needed). Cap to
+    // 384kHz for good measure.
+    rate = std::min<unsigned>(aInfo.mRate, 384000u);
   } else {
     // We will resample all data to match cubeb's preferred sampling rate.
     rate = CubebUtils::PreferredSampleRate(aShouldResistFingerprinting);
-    if (rate > 384000) {
+    if (rate > 768000) {
       // bogus rate, fall back to something else;
       rate = 48000;
     }
@@ -442,7 +449,8 @@ bool ExtractVPXCodecDetails(const nsAString& aCodec, uint8_t& aProfile,
 }
 
 bool ExtractH264CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
-                             uint8_t& aConstraint, uint8_t& aLevel) {
+                             uint8_t& aConstraint, H264_LEVEL& aLevel,
+                             H264CodecStringStrictness aStrictness) {
   // H.264 codecs parameters have a type defined as avcN.PPCCLL, where
   // N = avc type. avc3 is avcc with SPS & PPS implicit (within stream)
   // PP = profile_idc, CC = constraint_set flags, LL = level_idc.
@@ -471,13 +479,30 @@ bool ExtractH264CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
   aConstraint = Substring(aCodec, 7, 2).ToInteger(&rv, 16);
   NS_ENSURE_SUCCESS(rv, false);
 
-  aLevel = Substring(aCodec, 9, 2).ToInteger(&rv, 16);
+  uint8_t level = Substring(aCodec, 9, 2).ToInteger(&rv, 16);
   NS_ENSURE_SUCCESS(rv, false);
 
-  if (aLevel == 9) {
-    aLevel = H264_LEVEL_1_b;
-  } else if (aLevel <= 5) {
-    aLevel *= 10;
+  if (level == 9) {
+    level = static_cast<uint8_t>(H264_LEVEL::H264_LEVEL_1_b);
+  } else if (level <= 5) {
+    level *= 10;
+  }
+
+  if (aStrictness == H264CodecStringStrictness::Lenient) {
+    aLevel = static_cast<H264_LEVEL>(level);
+    return true;
+  }
+
+  // Check if valid level value
+  aLevel = static_cast<H264_LEVEL>(level);
+  if (aLevel < H264_LEVEL::H264_LEVEL_1 ||
+      aLevel > H264_LEVEL::H264_LEVEL_6_2) {
+    return false;
+  }
+  if ((level % 10) > 2) {
+    if (level != 13) {
+      return false;
+    }
   }
 
   return true;
@@ -1027,7 +1052,7 @@ void LogToBrowserConsole(const nsAString& aMsg) {
     nsString msg(aMsg);
     nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
         "LogToBrowserConsole", [msg]() { LogToBrowserConsole(msg); });
-    SchedulerGroup::Dispatch(TaskCategory::Other, task.forget());
+    SchedulerGroup::Dispatch(task.forget());
     return;
   }
   nsCOMPtr<nsIConsoleService> console(
@@ -1050,11 +1075,7 @@ bool ParseCodecsString(const nsAString& aCodecs,
     expectMoreTokens = tokenizer.separatorAfterCurrentToken();
     aOutCodecs.AppendElement(token);
   }
-  if (expectMoreTokens) {
-    // Last codec name was empty
-    return false;
-  }
-  return true;
+  return !expectMoreTokens;
 }
 
 bool ParseMIMETypeString(const nsAString& aMIMEType,
@@ -1082,8 +1103,9 @@ static bool StartsWith(const nsACString& string, const char (&prefix)[N]) {
 bool IsH264CodecString(const nsAString& aCodec) {
   uint8_t profile = 0;
   uint8_t constraint = 0;
-  uint8_t level = 0;
-  return ExtractH264CodecDetails(aCodec, profile, constraint, level);
+  H264_LEVEL level;
+  return ExtractH264CodecDetails(aCodec, profile, constraint, level,
+                                 H264CodecStringStrictness::Lenient);
 }
 
 bool IsH265CodecString(const nsAString& aCodec) {
@@ -1218,6 +1240,53 @@ bool OnCellularConnection() {
   }
 
   return false;
+}
+
+bool IsWaveMimetype(const nsACString& aMimeType) {
+  return aMimeType.EqualsLiteral("audio/x-wav") ||
+         aMimeType.EqualsLiteral("audio/wave; codecs=1") ||
+         aMimeType.EqualsLiteral("audio/wave; codecs=3") ||
+         aMimeType.EqualsLiteral("audio/wave; codecs=6") ||
+         aMimeType.EqualsLiteral("audio/wave; codecs=7") ||
+         aMimeType.EqualsLiteral("audio/wave; codecs=65534");
+}
+
+void DetermineResolutionForTelemetry(const MediaInfo& aInfo,
+                                     nsCString& aResolutionOut) {
+  if (aInfo.HasAudio()) {
+    aResolutionOut.AppendASCII("AV,");
+  } else {
+    aResolutionOut.AppendASCII("V,");
+  }
+  static const struct {
+    int32_t mH;
+    const char* mRes;
+  } sResolutions[] = {{240, "0<h<=240"},     {480, "240<h<=480"},
+                      {576, "480<h<=576"},   {720, "576<h<=720"},
+                      {1080, "720<h<=1080"}, {2160, "1080<h<=2160"}};
+  const char* resolution = "h>2160";
+  int32_t height = aInfo.mVideo.mDisplay.height;
+  for (const auto& res : sResolutions) {
+    if (height <= res.mH) {
+      resolution = res.mRes;
+      break;
+    }
+  }
+  aResolutionOut.AppendASCII(resolution);
+}
+
+bool ContainHardwareCodecsSupported(
+    const media::MediaCodecsSupported& aSupport) {
+  return aSupport.contains(
+             mozilla::media::MediaCodecsSupport::H264HardwareDecode) ||
+         aSupport.contains(
+             mozilla::media::MediaCodecsSupport::VP8HardwareDecode) ||
+         aSupport.contains(
+             mozilla::media::MediaCodecsSupport::VP9HardwareDecode) ||
+         aSupport.contains(
+             mozilla::media::MediaCodecsSupport::AV1HardwareDecode) ||
+         aSupport.contains(
+             mozilla::media::MediaCodecsSupport::HEVCHardwareDecode);
 }
 
 }  // end namespace mozilla

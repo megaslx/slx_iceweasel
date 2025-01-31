@@ -9,6 +9,7 @@
 
 #include "mozilla/LinkedList.h"
 
+#include "jit/CompilationDependencyTracker.h"
 #include "jit/MIRGenerator.h"
 
 #include "js/Utility.h"
@@ -64,24 +65,31 @@ class IonCompileTask final : public HelperThreadTask,
   ThreadType threadType() override { return THREAD_TYPE_ION; }
   void runTask();
   void runHelperThreadTask(AutoLockHelperThreadState& locked) override;
+
+  const char* getName() override { return "IonCompileTask"; }
 };
 
 class IonFreeTask : public HelperThreadTask {
+  IonFreeCompileTasks tasks_;
+
  public:
-  explicit IonFreeTask(IonCompileTask* task) : task_(task) {}
-  IonCompileTask* compileTask() { return task_; }
+  explicit IonFreeTask(IonFreeCompileTasks&& tasks) : tasks_(std::move(tasks)) {
+    MOZ_ASSERT(!tasks_.empty());
+  }
+
+  const IonFreeCompileTasks& compileTasks() const { return tasks_; }
 
   ThreadType threadType() override { return THREAD_TYPE_ION_FREE; }
   void runHelperThreadTask(AutoLockHelperThreadState& locked) override;
 
- private:
-  IonCompileTask* task_;
+  const char* getName() override { return "IonFreeTask"; }
 };
 
 void AttachFinishedCompilations(JSContext* cx);
-void FinishOffThreadTask(JSRuntime* runtime, IonCompileTask* task,
-                         const AutoLockHelperThreadState& lock);
-void FreeIonCompileTask(IonCompileTask* task);
+void FinishOffThreadTask(JSRuntime* runtime, AutoStartIonFreeTask& freeTask,
+                         IonCompileTask* task);
+void FreeIonCompileTasks(const IonFreeCompileTasks& tasks);
+UniquePtr<LifoAlloc> FreeIonCompileTaskAndReuseLifoAlloc(IonCompileTask* task);
 
 }  // namespace jit
 }  // namespace js

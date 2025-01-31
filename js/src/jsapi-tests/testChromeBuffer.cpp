@@ -9,20 +9,23 @@
 #include "js/CallAndConstruct.h"          // JS_CallFunctionValue
 #include "js/CompilationAndEvaluation.h"  // JS::CompileFunction
 #include "js/ContextOptions.h"
+#include "js/EnvironmentChain.h"    // JS::EnvironmentChain
 #include "js/GlobalObject.h"        // JS_NewGlobalObject
 #include "js/PropertyAndElement.h"  // JS_DefineProperty
 #include "js/SourceText.h"          // JS::Source{Ownership,Text}
 #include "jsapi-tests/tests.h"
 #include "util/Text.h"
 
-static TestJSPrincipals system_principals(1);
+MOZ_RUNINIT static TestJSPrincipals system_principals(1);
 
-static const JSClass global_class = {"global",
-                                     JSCLASS_IS_GLOBAL | JSCLASS_GLOBAL_FLAGS,
-                                     &JS::DefaultGlobalClassOps};
+static const JSClass global_class = {
+    "global",
+    JSCLASS_IS_GLOBAL | JSCLASS_GLOBAL_FLAGS,
+    &JS::DefaultGlobalClassOps,
+};
 
-static JS::PersistentRootedObject trusted_glob;
-static JS::PersistentRootedObject trusted_fun;
+MOZ_RUNINIT static JS::PersistentRootedObject trusted_glob;
+MOZ_RUNINIT static JS::PersistentRootedObject trusted_fun;
 
 static bool CallTrusted(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
@@ -65,6 +68,14 @@ BEGIN_TEST(testChromeBuffer) {
     CHECK(JS_GetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE,
                                         &oldBaselineJitEnabled));
     JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE, 0);
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+    uint32_t oldPortableBaselineInterpreterEnabled;
+    CHECK(JS_GetGlobalJitCompilerOption(
+        cx, JSJITCOMPILER_PORTABLE_BASELINE_ENABLE,
+        &oldPortableBaselineInterpreterEnabled));
+    JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_PORTABLE_BASELINE_ENABLE,
+                                  0);
+#endif
     {
       JSAutoRealm ar(cx, trusted_glob);
       const char* paramName = "x";
@@ -77,8 +88,8 @@ BEGIN_TEST(testChromeBuffer) {
       JS::CompileOptions options(cx);
       options.setFileAndLine("", 0);
 
-      JS::RootedObjectVector emptyScopeChain(cx);
-      fun = JS::CompileFunction(cx, emptyScopeChain, options, "trusted", 1,
+      JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+      fun = JS::CompileFunction(cx, emptyEnvChain, options, "trusted", 1,
                                 &paramName, srcBuf);
       CHECK(fun);
       CHECK(JS_DefineProperty(cx, trusted_glob, "trusted", fun,
@@ -108,8 +119,8 @@ BEGIN_TEST(testChromeBuffer) {
     JS::CompileOptions options(cx);
     options.setFileAndLine("", 0);
 
-    JS::RootedObjectVector emptyScopeChain(cx);
-    fun = JS::CompileFunction(cx, emptyScopeChain, options, "untrusted", 1,
+    JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+    fun = JS::CompileFunction(cx, emptyEnvChain, options, "untrusted", 1,
                               &paramName, srcBuf);
     CHECK(fun);
     CHECK(JS_DefineProperty(cx, global, "untrusted", fun, JSPROP_ENUMERATE));
@@ -121,6 +132,10 @@ BEGIN_TEST(testChromeBuffer) {
                                   oldBaselineInterpreterEnabled);
     JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE,
                                   oldBaselineJitEnabled);
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+    JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_PORTABLE_BASELINE_ENABLE,
+                                  oldPortableBaselineInterpreterEnabled);
+#endif
   }
 
   /*
@@ -151,8 +166,8 @@ BEGIN_TEST(testChromeBuffer) {
       JS::CompileOptions options(cx);
       options.setFileAndLine("", 0);
 
-      JS::RootedObjectVector emptyScopeChain(cx);
-      fun = JS::CompileFunction(cx, emptyScopeChain, options, "trusted", 1,
+      JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+      fun = JS::CompileFunction(cx, emptyEnvChain, options, "trusted", 1,
                                 &paramName, srcBuf);
       CHECK(fun);
       CHECK(JS_DefineProperty(cx, trusted_glob, "trusted", fun,
@@ -178,8 +193,8 @@ BEGIN_TEST(testChromeBuffer) {
     JS::CompileOptions options(cx);
     options.setFileAndLine("", 0);
 
-    JS::RootedObjectVector emptyScopeChain(cx);
-    fun = JS::CompileFunction(cx, emptyScopeChain, options, "untrusted", 1,
+    JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+    fun = JS::CompileFunction(cx, emptyEnvChain, options, "untrusted", 1,
                               &paramName, srcBuf);
     CHECK(fun);
     CHECK(JS_DefineProperty(cx, global, "untrusted", fun, JSPROP_ENUMERATE));
@@ -212,8 +227,8 @@ BEGIN_TEST(testChromeBuffer) {
       JS::CompileOptions options(cx);
       options.setFileAndLine("", 0);
 
-      JS::RootedObjectVector emptyScopeChain(cx);
-      fun = JS::CompileFunction(cx, emptyScopeChain, options, "trusted", 0,
+      JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+      fun = JS::CompileFunction(cx, emptyEnvChain, options, "trusted", 0,
                                 nullptr, srcBuf);
       CHECK(fun);
       CHECK(JS_DefineProperty(cx, trusted_glob, "trusted", fun,
@@ -240,8 +255,8 @@ BEGIN_TEST(testChromeBuffer) {
     JS::CompileOptions options(cx);
     options.setFileAndLine("", 0);
 
-    JS::RootedObjectVector emptyScopeChain(cx);
-    fun = JS::CompileFunction(cx, emptyScopeChain, options, "untrusted", 1,
+    JS::EnvironmentChain emptyEnvChain(cx, JS::SupportUnscopables::No);
+    fun = JS::CompileFunction(cx, emptyEnvChain, options, "untrusted", 1,
                               &paramName, srcBuf);
     CHECK(fun);
     CHECK(JS_DefineProperty(cx, global, "untrusted", fun, JSPROP_ENUMERATE));

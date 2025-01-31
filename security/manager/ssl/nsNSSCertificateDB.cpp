@@ -8,8 +8,8 @@
 #include "CryptoTask.h"
 #include "ExtendedValidation.h"
 #include "NSSCertDBTrustDomain.h"
-#include "SharedSSLState.h"
 #include "certdb.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Base64.h"
 #include "mozilla/Casting.h"
@@ -54,6 +54,24 @@ using namespace mozilla::psm;
 extern LazyLogModule gPIPNSSLog;
 
 NS_IMPL_ISUPPORTS(nsNSSCertificateDB, nsIX509CertDB)
+
+NS_IMETHODIMP
+nsNSSCertificateDB::CountTrustObjects(uint32_t* aCount) {
+  UniquePK11SlotInfo slot(PK11_GetInternalKeySlot());
+  PK11GenericObject* objects =
+      PK11_FindGenericObjects(slot.get(), CKO_NSS_TRUST);
+  int count = 0;
+  for (PK11GenericObject* cursor = objects; cursor;
+       cursor = PK11_GetNextGenericObject(cursor)) {
+    count++;
+  }
+  PK11_DestroyGenericObjects(objects);
+
+  mozilla::glean::cert_verifier::trust_obj_count.Set(count);
+
+  *aCount = count;
+  return NS_OK;
+}
 
 NS_IMETHODIMP
 nsNSSCertificateDB::FindCertByDBKey(const nsACString& aDBKey,
@@ -172,11 +190,25 @@ SECStatus ChangeCertTrustWithPossibleAuthentication(
     PR_SetError(SEC_ERROR_LIBRARY_FAILURE, 0);
     return SECFailure;
   }
+
+  RefPtr<SharedCertVerifier> certVerifier(GetDefaultCertVerifier());
+  if (!certVerifier) {
+    PR_SetError(SEC_ERROR_LIBRARY_FAILURE, 0);
+    return SECFailure;
+  }
+
   // NSS ignores the first argument to CERT_ChangeCertTrust
   SECStatus srv = CERT_ChangeCertTrust(nullptr, cert.get(), &trust);
-  if (srv == SECSuccess || PR_GetError() != SEC_ERROR_TOKEN_NOT_LOGGED_IN) {
-    return srv;
+  if (srv != SECSuccess && PR_GetError() != SEC_ERROR_TOKEN_NOT_LOGGED_IN) {
+    return SECFailure;
   }
+  if (srv == SECSuccess) {
+    certVerifier->ClearTrustCache();
+    return SECSuccess;
+  }
+
+  // CERT_ChangeCertTrust failed with SEC_ERROR_TOKEN_NOT_LOGGED_IN, so
+  // authenticate and try again.
   if (cert->slot) {
     // If this certificate is on an external PKCS#11 token, we have to
     // authenticate to that token.
@@ -189,7 +221,13 @@ SECStatus ChangeCertTrustWithPossibleAuthentication(
   if (srv != SECSuccess) {
     return srv;
   }
-  return CERT_ChangeCertTrust(nullptr, cert.get(), &trust);
+  srv = CERT_ChangeCertTrust(nullptr, cert.get(), &trust);
+  if (srv != SECSuccess) {
+    return srv;
+  }
+
+  certVerifier->ClearTrustCache();
+  return SECSuccess;
 }
 
 static nsresult ImportCertsIntoPermanentStorage(
@@ -1166,6 +1204,25 @@ nsNSSCertificateDB::GetCerts(nsTArray<RefPtr<nsIX509Cert>>& _retval) {
                                                                   _retval);
 }
 
+nsresult IsCertBuiltInRoot(const RefPtr<nsIX509Cert>& cert,
+                           bool& isBuiltInRoot) {
+  nsTArray<uint8_t> der;
+  nsresult rv = cert->GetRawDER(der);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  pkix::Input certInput;
+  pkix::Result result = certInput.Init(der.Elements(), der.Length());
+  if (result != pkix::Result::Success) {
+    return NS_ERROR_FAILURE;
+  }
+  result = IsCertBuiltInRoot(certInput, isBuiltInRoot);
+  if (result != pkix::Result::Success) {
+    return NS_ERROR_FAILURE;
+  }
+  return NS_OK;
+}
+
 NS_IMETHODIMP
 nsNSSCertificateDB::AsyncHasThirdPartyRoots(nsIAsyncBoolCallback* aCallback) {
   NS_ENSURE_ARG_POINTER(aCallback);
@@ -1198,7 +1255,7 @@ nsNSSCertificateDB::AsyncHasThirdPartyRoots(nsIAsyncBoolCallback* aCallback) {
                 }
 
                 bool isBuiltInRoot = false;
-                rv = cert->GetIsBuiltInRoot(&isBuiltInRoot);
+                rv = IsCertBuiltInRoot(cert, isBuiltInRoot);
                 if (NS_FAILED(rv)) {
                   return false;
                 }

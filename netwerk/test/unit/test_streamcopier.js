@@ -10,7 +10,7 @@ function run_test() {
   var inStr = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  inStr.setData(testStr, testStr.length);
+  inStr.setByteStringData(testStr);
 
   // Set up our destination stream.  Make sure to use segments a good
   // bit smaller than our data length.
@@ -36,7 +36,7 @@ function run_test() {
   ctx.wrappedJSObject = ctx;
 
   var observer = {
-    onStartRequest(aRequest) {},
+    onStartRequest() {},
     onStopRequest(aRequest, aStatusCode) {
       Assert.equal(aStatusCode, 0);
       var sis = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(

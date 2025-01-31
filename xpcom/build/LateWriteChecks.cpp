@@ -10,7 +10,6 @@
 #include "mozilla/PoisonIOInterposer.h"
 #include "mozilla/ProcessedStack.h"
 #include "mozilla/SHA1.h"
-#include "mozilla/Scoped.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
@@ -207,8 +206,10 @@ void LateWriteObserver::Observe(
   for (int i = 0; i < 20; ++i) {
     finalName.AppendPrintf("%02x", sha1[i]);
   }
-  RefPtr<nsLocalFile> file = new nsLocalFile(nameAux);
-  file->RenameTo(nullptr, finalName);
+  RefPtr<nsIFile> file;
+  if (NS_SUCCEEDED(NS_NewPathStringLocalFile(nameAux, getter_AddRefs(file)))) {
+    file->RenameTo(nullptr, finalName);
+  }
 }
 
 /******************************* Setup/Teardown *******************************/

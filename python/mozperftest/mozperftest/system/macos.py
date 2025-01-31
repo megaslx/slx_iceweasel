@@ -16,6 +16,7 @@ from mozperftest.layers import Layer
 POTENTIAL_DMGS = {
     "browsertime-binary": "Contents/MacOS/firefox",
     "xpcshell-xre-path": "Contents/MacOS",
+    "mochitest-binary": "Contents/MacOS/firefox",
 }
 
 
@@ -40,7 +41,7 @@ class MacosDevice(Layer):
         stdout, stderr = p.communicate(timeout=45)
         if p.returncode != 0:
             raise subprocess.CalledProcessError(
-                stdout=stdout, stderr=stderr, returncode=p.returncode
+                p.returncode, args, output=stdout, stderr=stderr
             )
 
         return stdout
@@ -112,6 +113,7 @@ class MacosDevice(Layer):
             # ... and swap the browsertime argument
             self.info(f"Using {path} for {option}")
             self.env.set_arg(option, str(path))
+            metadata.binary = str(path)
         return metadata
 
     def teardown(self):

@@ -211,15 +211,15 @@ static void UpdateOldAnimationPropertiesWithNew(
 
 static already_AddRefed<dom::AnimationTimeline> GetNamedProgressTimeline(
     dom::Document* aDocument, const NonOwningAnimationTarget& aTarget,
-    const nsAtom* aName) {
+    nsAtom* aName) {
   // A named progress timeline is referenceable in animation-timeline by:
   // 1. the declaring element itself
   // 2. that element’s descendants
   // 3. that element’s following siblings and their descendants
   // https://drafts.csswg.org/scroll-animations-1/#timeline-scope
   // FIXME: Bug 1823500. Reduce default scoping to ancestors only.
-  for (Element* curr = AnimationUtils::GetElementForRestyle(
-           aTarget.mElement, aTarget.mPseudoType);
+  for (Element* curr =
+           aTarget.mElement->GetPseudoElement(aTarget.mPseudoRequest);
        curr; curr = curr->GetParentElement()) {
     // If multiple elements have declared the same timeline name, the matching
     // timeline is the one declared on the nearest element in tree order, which
@@ -229,17 +229,16 @@ static already_AddRefed<dom::AnimationTimeline> GetNamedProgressTimeline(
     for (Element* e = curr; e; e = e->GetPreviousElementSibling()) {
       // In case of a name conflict on the same element, scroll progress
       // timelines take precedence over view progress timelines.
-      const auto [element, pseudoType] =
-          AnimationUtils::GetElementPseudoPair(e);
+      const auto [element, pseudo] = AnimationUtils::GetElementPseudoPair(e);
       if (auto* collection =
-              TimelineCollection<ScrollTimeline>::Get(element, pseudoType)) {
+              TimelineCollection<ScrollTimeline>::Get(element, pseudo)) {
         if (RefPtr<ScrollTimeline> timeline = collection->Lookup(aName)) {
           return timeline.forget();
         }
       }
 
       if (auto* collection =
-              TimelineCollection<ViewTimeline>::Get(element, pseudoType)) {
+              TimelineCollection<ViewTimeline>::Get(element, pseudo)) {
         if (RefPtr<ViewTimeline> timeline = collection->Lookup(aName)) {
           return timeline.forget();
         }
@@ -259,7 +258,7 @@ static already_AddRefed<dom::AnimationTimeline> GetTimeline(
   switch (aStyleTimeline.tag) {
     case StyleAnimationTimeline::Tag::Timeline: {
       // Check scroll-timeline-name property or view-timeline-property.
-      const nsAtom* name = aStyleTimeline.AsTimeline().AsAtom();
+      nsAtom* name = aStyleTimeline.AsTimeline().AsAtom();
       return name != nsGkAtoms::_empty
                  ? GetNamedProgressTimeline(aPresContext->Document(), aTarget,
                                             name)
@@ -300,8 +299,9 @@ static already_AddRefed<CSSAnimation> BuildAnimation(
     return nullptr;
   }
 
+  const StyleAnimationDuration& duration = aStyle.GetAnimationDuration(animIdx);
   TimingParams timing = TimingParamsFromCSSParams(
-      aStyle.GetAnimationDuration(animIdx).ToMilliseconds(),
+      duration.IsAuto() ? Nothing() : Some(duration.AsTime().ToMilliseconds()),
       aStyle.GetAnimationDelay(animIdx).ToMilliseconds(),
       aStyle.GetAnimationIterationCount(animIdx),
       aStyle.GetAnimationDirection(animIdx),
@@ -318,6 +318,7 @@ static already_AddRefed<CSSAnimation> BuildAnimation(
   RefPtr<CSSAnimation> oldAnim =
       PopExistingAnimation(animationName, aCollection);
 
+  const auto composition = StyleToDom(aStyle.GetAnimationComposition(animIdx));
   if (oldAnim) {
     // Copy over the start times and (if still paused) pause starts
     // for each animation (matching on name only) that was also in the
@@ -329,23 +330,22 @@ static already_AddRefed<CSSAnimation> BuildAnimation(
     // In order to honor what the spec said, we'd copy more data over.
     UpdateOldAnimationPropertiesWithNew(
         *oldAnim, std::move(timing), std::move(keyframes), isStylePaused,
-        oldAnim->GetOverriddenProperties(), aBuilder, timeline,
-        aStyle.GetAnimationComposition(animIdx));
+        oldAnim->GetOverriddenProperties(), aBuilder, timeline, composition);
     return oldAnim.forget();
   }
 
-  KeyframeEffectParams effectOptions(aStyle.GetAnimationComposition(animIdx));
-  RefPtr<KeyframeEffect> effect = new dom::CSSAnimationKeyframeEffect(
+  KeyframeEffectParams effectOptions(composition);
+  auto effect = MakeRefPtr<dom::CSSAnimationKeyframeEffect>(
       aPresContext->Document(),
-      OwningAnimationTarget(aTarget.mElement, aTarget.mPseudoType),
+      OwningAnimationTarget(aTarget.mElement, aTarget.mPseudoRequest),
       std::move(timing), effectOptions);
 
   aBuilder.SetKeyframes(*effect, std::move(keyframes), timeline);
 
-  RefPtr<CSSAnimation> animation = new CSSAnimation(
+  auto animation = MakeRefPtr<CSSAnimation>(
       aPresContext->Document()->GetScopeObject(), animationName);
   animation->SetOwningElement(
-      OwningElementRef(*aTarget.mElement, aTarget.mPseudoType));
+      OwningElementRef(*aTarget.mElement, aTarget.mPseudoRequest));
 
   animation->SetTimelineNoUpdate(timeline);
   animation->SetEffectNoUpdate(effect);
@@ -392,9 +392,9 @@ static nsAnimationManager::OwningCSSAnimationPtrArray BuildAnimations(
   return result;
 }
 
-void nsAnimationManager::UpdateAnimations(dom::Element* aElement,
-                                          PseudoStyleType aPseudoType,
-                                          const ComputedStyle* aComputedStyle) {
+void nsAnimationManager::UpdateAnimations(
+    dom::Element* aElement, const PseudoStyleRequest& aPseudoRequest,
+    const ComputedStyle* aComputedStyle) {
   MOZ_ASSERT(mPresContext->IsDynamic(),
              "Should not update animations for print or print preview");
   MOZ_ASSERT(aElement->IsInComposedDoc(),
@@ -409,11 +409,11 @@ void nsAnimationManager::UpdateAnimations(dom::Element* aElement,
     // In either case, since CSS animations should not run in display:none
     // subtrees we should stop (actually, destroy) any animations on this
     // element here.
-    StopAnimationsForElement(aElement, aPseudoType);
+    StopAnimationsForElement(aElement, aPseudoRequest);
     return;
   }
 
-  NonOwningAnimationTarget target(aElement, aPseudoType);
+  NonOwningAnimationTarget target(aElement, aPseudoRequest);
   ServoCSSAnimationBuilder builder(aComputedStyle);
 
   DoUpdateAnimations(target, *aComputedStyle->StyleUIReset(), builder);
@@ -428,7 +428,7 @@ void nsAnimationManager::DoUpdateAnimations(
   // style change, but also not in an animation restyle.
 
   auto* collection =
-      CSSAnimationCollection::Get(aTarget.mElement, aTarget.mPseudoType);
+      CSSAnimationCollection::Get(aTarget.mElement, aTarget.mPseudoRequest);
   if (!collection && aStyle.mAnimationNameCount == 1 &&
       aStyle.mAnimations[0].GetName() == nsGkAtoms::_empty) {
     return;
@@ -452,7 +452,7 @@ void nsAnimationManager::DoUpdateAnimations(
   if (!collection) {
     collection =
         &aTarget.mElement->EnsureAnimationData().EnsureAnimationCollection(
-            *aTarget.mElement, aTarget.mPseudoType);
+            *aTarget.mElement, aTarget.mPseudoRequest);
     if (!collection->isInList()) {
       AddElementCollection(collection);
     }

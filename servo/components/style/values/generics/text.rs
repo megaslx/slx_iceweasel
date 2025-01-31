@@ -4,10 +4,9 @@
 
 //! Generic types for text properties.
 
-use crate::parser::ParserContext;
-use crate::values::animated::ToAnimatedZero;
-use cssparser::Parser;
-use style_traits::ParseError;
+use crate::Zero;
+use std::fmt::{self, Write};
+use style_traits::{CssWriter, ToCss};
 
 /// A generic value for the `initial-letter` property.
 #[derive(
@@ -18,110 +17,43 @@ use style_traits::ParseError;
     PartialEq,
     SpecifiedValueInfo,
     ToComputedValue,
-    ToCss,
     ToResolvedValue,
     ToShmem,
 )]
-pub enum InitialLetter<Number, Integer> {
-    /// `normal`
-    Normal,
-    /// `<number> <integer>?`
-    Specified(Number, Option<Integer>),
+#[repr(C)]
+pub struct GenericInitialLetter<Number, Integer> {
+    /// The size, >=1, or 0 if `normal`.
+    pub size: Number,
+    /// The sink, >=1, if specified, 0 otherwise.
+    pub sink: Integer,
 }
 
-impl<N, I> InitialLetter<N, I> {
+pub use self::GenericInitialLetter as InitialLetter;
+impl<N: Zero, I: Zero> InitialLetter<N, I> {
     /// Returns `normal`.
     #[inline]
     pub fn normal() -> Self {
-        InitialLetter::Normal
-    }
-}
-
-/// A generic spacing value for the `letter-spacing` and `word-spacing` properties.
-#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
-pub enum Spacing<Value> {
-    /// `normal`
-    Normal,
-    /// `<value>`
-    Value(Value),
-}
-
-impl<Value> Spacing<Value> {
-    /// Returns `normal`.
-    #[inline]
-    pub fn normal() -> Self {
-        Spacing::Normal
-    }
-
-    /// Parses.
-    #[inline]
-    pub fn parse_with<'i, 't, F>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-        parse: F,
-    ) -> Result<Self, ParseError<'i>>
-    where
-        F: FnOnce(&ParserContext, &mut Parser<'i, 't>) -> Result<Value, ParseError<'i>>,
-    {
-        if input
-            .try_parse(|i| i.expect_ident_matching("normal"))
-            .is_ok()
-        {
-            return Ok(Spacing::Normal);
+        InitialLetter {
+            size: N::zero(),
+            sink: I::zero(),
         }
-        parse(context, input).map(Spacing::Value)
     }
 }
 
-#[cfg(feature = "gecko")]
-fn line_height_moz_block_height_enabled(context: &ParserContext) -> bool {
-    context.in_ua_sheet() ||
-        static_prefs::pref!("layout.css.line-height-moz-block-height.content.enabled")
-}
-
-/// A generic value for the `line-height` property.
-#[derive(
-    Animate,
-    Clone,
-    ComputeSquaredDistance,
-    Copy,
-    Debug,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToAnimatedValue,
-    ToCss,
-    ToShmem,
-    Parse,
-)]
-#[repr(C, u8)]
-pub enum GenericLineHeight<N, L> {
-    /// `normal`
-    Normal,
-    /// `-moz-block-height`
-    #[cfg(feature = "gecko")]
-    #[parse(condition = "line_height_moz_block_height_enabled")]
-    MozBlockHeight,
-    /// `<number>`
-    Number(N),
-    /// `<length-percentage>`
-    Length(L),
-}
-
-pub use self::GenericLineHeight as LineHeight;
-
-impl<N, L> ToAnimatedZero for LineHeight<N, L> {
-    #[inline]
-    fn to_animated_zero(&self) -> Result<Self, ()> {
-        Err(())
-    }
-}
-
-impl<N, L> LineHeight<N, L> {
-    /// Returns `normal`.
-    #[inline]
-    pub fn normal() -> Self {
-        LineHeight::Normal
+impl<N: ToCss + Zero, I: ToCss + Zero> ToCss for InitialLetter<N, I> {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        if self.size.is_zero() {
+            return dest.write_str("normal");
+        }
+        self.size.to_css(dest)?;
+        if !self.sink.is_zero() {
+            dest.write_char(' ')?;
+            self.sink.to_css(dest)?;
+        }
+        Ok(())
     }
 }
 
@@ -136,13 +68,14 @@ impl<N, L> LineHeight<N, L> {
     Clone,
     Copy,
     ComputeSquaredDistance,
-    ToAnimatedZero,
     Debug,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
     SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToAnimatedZero,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
@@ -153,4 +86,49 @@ pub enum GenericTextDecorationLength<L> {
     LengthPercentage(L),
     Auto,
     FromFont,
+}
+
+/// Implements type for text-indent
+/// which takes the grammar of [<length-percentage>] && hanging? && each-line?
+///
+/// https://drafts.csswg.org/css-text/#propdef-text-indent
+#[repr(C)]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToAnimatedZero,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+pub struct GenericTextIndent<LengthPercentage> {
+    /// The amount of indent to be applied to the inline-start of the first line.
+    pub length: LengthPercentage,
+    /// Apply indent to non-first lines instead of first.
+    #[animation(constant)]
+    #[css(represents_keyword)]
+    pub hanging: bool,
+    /// Apply to each line after a hard break, not only first in block.
+    #[animation(constant)]
+    #[css(represents_keyword)]
+    pub each_line: bool,
+}
+
+impl<LengthPercentage: Zero> GenericTextIndent<LengthPercentage> {
+    /// Return the initial zero value.
+    pub fn zero() -> Self {
+        Self {
+            length: LengthPercentage::zero(),
+            hanging: false,
+            each_line: false,
+        }
+    }
 }

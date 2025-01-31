@@ -15,7 +15,7 @@ CachingDatabaseConnection::CachingDatabaseConnection(
     MovingNotNull<nsCOMPtr<mozIStorageConnection>> aStorageConnection)
     :
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
-      mOwningThread{nsAutoOwningThread{}},
+      mOwningEventTarget{nsAutoOwningEventTarget{}},
 #endif
       mStorageConnection(std::move(aStorageConnection)) {
 }
@@ -23,7 +23,7 @@ CachingDatabaseConnection::CachingDatabaseConnection(
 void CachingDatabaseConnection::LazyInit(
     MovingNotNull<nsCOMPtr<mozIStorageConnection>> aStorageConnection) {
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
-  mOwningThread.init();
+  mOwningEventTarget.init();
 #endif
   mStorageConnection.init(std::move(aStorageConnection));
 }
@@ -40,8 +40,8 @@ CachingDatabaseConnection::GetCachedStatement(const nsACString& aQuery) {
       auto stmt,
       mCachedStatements.TryLookupOrInsertWith(
           aQuery, [&]() -> Result<nsCOMPtr<mozIStorageStatement>, nsresult> {
-            const auto extraInfo =
-                ScopedLogExtraInfo{ScopedLogExtraInfo::kTagQuery, aQuery};
+            const auto extraInfo = ScopedLogExtraInfo{
+                ScopedLogExtraInfo::kTagQueryTainted, aQuery};
 
             QM_TRY_RETURN(
                 MOZ_TO_RESULT_INVOKE_MEMBER_TYPED(
@@ -93,6 +93,8 @@ void CachingDatabaseConnection::Close() {
 
   MOZ_ALWAYS_SUCCEEDS((*mStorageConnection)->Close());
   mStorageConnection.destroy();
+
+  mClosed = true;
 }
 
 #if defined(DEBUG) || defined(NS_BUILD_REFCNT_LOGGING)

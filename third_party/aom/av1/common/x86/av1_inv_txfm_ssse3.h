@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -19,7 +19,6 @@
 
 #include "aom/aom_integer.h"
 #include "aom_dsp/x86/transpose_sse2.h"
-#include "aom_dsp/x86/txfm_common_sse2.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,7 +57,7 @@ extern "C" {
     out1 = _mm_subs_epi16(_in0, _in1);                  \
   } while (0)
 
-static INLINE void round_shift_16bit_ssse3(__m128i *in, int size, int bit) {
+static inline void round_shift_16bit_ssse3(__m128i *in, int size, int bit) {
   if (bit < 0) {
     const __m128i scale = _mm_set1_epi16(1 << (15 + bit));
     for (int i = 0; i < size; ++i) {
@@ -72,13 +71,13 @@ static INLINE void round_shift_16bit_ssse3(__m128i *in, int size, int bit) {
 }
 
 // 1D itx types
-typedef enum ATTRIBUTE_PACKED {
+enum {
   IDCT_1D,
   IADST_1D,
   IFLIPADST_1D = IADST_1D,
   IIDENTITY_1D,
   ITX_TYPES_1D,
-} ITX_TYPE_1D;
+} UENUM1BYTE(ITX_TYPE_1D);
 
 static const ITX_TYPE_1D vitx_1d_tab[TX_TYPES] = {
   IDCT_1D,      IADST_1D,     IDCT_1D,      IADST_1D,
@@ -179,7 +178,7 @@ static const int tx_size_wide_log2_eob[TX_SIZES_ALL] = {
   2, 3, 4, 5, 5, 2, 3, 3, 4, 4, 5, 5, 5, 2, 4, 3, 5, 4, 5,
 };
 
-static INLINE void get_eobx_eoby_scan_default(int *eobx, int *eoby,
+static inline void get_eobx_eoby_scan_default(int *eobx, int *eoby,
                                               TX_SIZE tx_size, int eob) {
   if (eob == 1) {
     *eobx = 0;
@@ -194,12 +193,12 @@ static INLINE void get_eobx_eoby_scan_default(int *eobx, int *eoby,
   *eoby = eobxy >> 8;
 }
 
-static int eob_fill[32] = {
+static const int eob_fill[32] = {
   0,  7,  7,  7,  7,  7,  7,  7,  15, 15, 15, 15, 15, 15, 15, 15,
   31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31,
 };
 
-static INLINE void get_eobx_eoby_scan_h_identity(int *eobx, int *eoby,
+static inline void get_eobx_eoby_scan_h_identity(int *eobx, int *eoby,
                                                  TX_SIZE tx_size, int eob) {
   eob -= 1;
   const int txfm_size_col = tx_size_wide[tx_size];
@@ -210,21 +209,37 @@ static INLINE void get_eobx_eoby_scan_h_identity(int *eobx, int *eoby,
   *eoby = eob_fill[temp_eoby];
 }
 
-static INLINE void get_eobx_eoby_scan_v_identity(int *eobx, int *eoby,
+static inline void get_eobx_eoby_scan_v_identity(int *eobx, int *eoby,
                                                  TX_SIZE tx_size, int eob) {
   eob -= 1;
   const int txfm_size_row = tx_size_high[tx_size];
   const int eoby_max = AOMMIN(32, txfm_size_row) - 1;
-  *eobx = eob / (eoby_max + 1);
+  *eobx = eob_fill[eob / (eoby_max + 1)];
   *eoby = (eob >= eoby_max) ? eoby_max : eob_fill[eob];
 }
 
-typedef void (*transform_1d_ssse3)(const __m128i *input, __m128i *output,
-                                   int8_t cos_bit);
+typedef void (*transform_1d_ssse3)(const __m128i *input, __m128i *output);
 
 void av1_lowbd_inv_txfm2d_add_ssse3(const int32_t *input, uint8_t *output,
                                     int stride, TX_TYPE tx_type,
                                     TX_SIZE tx_size, int eob);
+
+void av1_lowbd_inv_txfm2d_add_idtx_ssse3(const int32_t *input, uint8_t *output,
+                                         int stride, TX_SIZE tx_size);
+
+void av1_lowbd_inv_txfm2d_add_h_identity_ssse3(const int32_t *input,
+                                               uint8_t *output, int stride,
+                                               TX_TYPE tx_type, TX_SIZE tx_size,
+                                               int eob);
+void av1_lowbd_inv_txfm2d_add_v_identity_ssse3(const int32_t *input,
+                                               uint8_t *output, int stride,
+                                               TX_TYPE tx_type, TX_SIZE tx_size,
+                                               int eob);
+
+void av1_iadst8_low1_ssse3(const __m128i *input, __m128i *output);
+
+void av1_idct8_low1_ssse3(const __m128i *input, __m128i *output);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

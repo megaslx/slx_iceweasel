@@ -75,11 +75,16 @@ size_t AudioConverter::ProcessInternal(void* aOut, const void* aIn,
   if (!aFrames) {
     return 0;
   }
+
   if (mIn.Channels() > mOut.Channels()) {
     return DownmixAudio(aOut, aIn, aFrames);
-  } else if (mIn.Channels() < mOut.Channels()) {
+  }
+
+  if (mIn.Channels() < mOut.Channels()) {
     return UpmixAudio(aOut, aIn, aFrames);
-  } else if (mIn.Layout() != mOut.Layout() && CanReorderAudio()) {
+  }
+
+  if (mIn.Layout() != mOut.Layout() && CanReorderAudio()) {
     ReOrderInterleavedChannels(aOut, aIn, aFrames);
   } else if (aIn != aOut) {
     memmove(aOut, aIn, FramesOutToBytes(aFrames));
@@ -191,7 +196,7 @@ size_t AudioConverter::DownmixAudio(void* aOut, const void* aIn,
       dumbUpDownMix(static_cast<int16_t*>(aOut), outChannels,
                     static_cast<const int16_t*>(aIn), inChannels, aFrames);
     } else {
-      MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+      MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
     }
     return aFrames;
   }
@@ -307,7 +312,7 @@ size_t AudioConverter::DownmixAudio(void* aOut, const void* aIn,
         }
       }
     } else {
-      MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+      MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
     }
     return aFrames;
   }
@@ -332,7 +337,7 @@ size_t AudioConverter::DownmixAudio(void* aOut, const void* aIn,
       *out++ = sample;
     }
   } else {
-    MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+    MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
   }
   return aFrames;
 }
@@ -357,7 +362,7 @@ size_t AudioConverter::ResampleAudio(void* aOut, const void* aIn,
     error = speex_resampler_process_interleaved_int(mResampler, in, &inframes,
                                                     out, &outframes);
   } else {
-    MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+    MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
     error = RESAMPLER_ERR_ALLOC_FAILED;
   }
   MOZ_ASSERT(error == RESAMPLER_ERR_SUCCESS);
@@ -420,7 +425,7 @@ size_t AudioConverter::UpmixAudio(void* aOut, const void* aIn,
       dumbUpDownMix(static_cast<int16_t*>(aOut), mOut.Channels(),
                     static_cast<const int16_t*>(aIn), mIn.Channels(), aFrames);
     } else {
-      MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+      MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
     }
     return aFrames;
   }
@@ -449,7 +454,7 @@ size_t AudioConverter::UpmixAudio(void* aOut, const void* aIn,
       *out++ = sample;
     }
   } else {
-    MOZ_DIAGNOSTIC_ASSERT(false, "Unsupported data type");
+    MOZ_DIAGNOSTIC_CRASH("Unsupported data type");
   }
 
   return aFrames;

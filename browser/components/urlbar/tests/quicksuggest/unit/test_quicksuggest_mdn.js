@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Tests Pocket quick suggest results.
+// Tests MDN quick suggest results.
 
 "use strict";
 
@@ -15,16 +15,16 @@ const REMOTE_SETTINGS_DATA = [
         title: "Array.prototype.filter()",
         description:
           "The filter() method creates a shallow copy of a portion of a given array, filtered down to just the elements from the given array that pass the test implemented by the provided function.",
-        is_top_pick: true,
         keywords: ["array filter"],
+        score: 0.24,
       },
       {
         url: "https://example.com/input",
         title: "<input>: The Input (Form Input) element",
         description:
           "The <input> HTML element is used to create interactive controls for web-based forms in order to accept data from the user; a wide variety of types of input data and control widgets are available, depending on the device and user agent. The <input> element is one of the most powerful and complex in all of HTML due to the sheer number of combinations of input types and attributes.",
-        is_top_pick: false,
         keywords: ["input"],
+        score: 0.24,
       },
       {
         url: "https://example.com/grid",
@@ -32,26 +32,23 @@ const REMOTE_SETTINGS_DATA = [
         description:
           "CSS Grid Layout excels at dividing a page into major regions or defining the relationship in terms of size, position, and layer, between parts of a control built from HTML primitives.",
         keywords: ["grid"],
+        score: 0.24,
       },
     ],
   },
 ];
 
 add_setup(async function init() {
-  UrlbarPrefs.set("quicksuggest.enabled", true);
-  UrlbarPrefs.set("bestMatch.enabled", true);
-  UrlbarPrefs.set("suggest.quicksuggest.nonsponsored", true);
-  UrlbarPrefs.set("suggest.quicksuggest.sponsored", false);
-  UrlbarPrefs.set("suggest.mdn", true);
-  UrlbarPrefs.set("mdn.featureGate", true);
-
   // Disable search suggestions so we don't hit the network.
   Services.prefs.setBoolPref("browser.search.suggest.enabled", false);
 
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
-    remoteSettingsResults: REMOTE_SETTINGS_DATA,
+    remoteSettingsRecords: REMOTE_SETTINGS_DATA,
+    prefs: [
+      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quicksuggest.sponsored", false],
+    ],
   });
-  await waitForSuggestions();
 });
 
 add_task(async function basic() {
@@ -62,7 +59,7 @@ add_task(async function basic() {
       const keyword = fullKeyword.substring(0, i);
       const shouldMatch = i >= firstWord.length;
       const matches = shouldMatch
-        ? [makeExpectedResult({ searchString: keyword, suggestion })]
+        ? [QuickSuggestTestUtils.mdnResult(suggestion)]
         : [];
       await check_results({
         context: createContext(keyword, {
@@ -78,7 +75,9 @@ add_task(async function basic() {
         providers: [UrlbarProviderQuickSuggest.name],
         isPrivate: false,
       }),
-      matches: [],
+      matches: !fullKeyword.includes(" ")
+        ? [QuickSuggestTestUtils.mdnResult(suggestion)]
+        : [],
     });
   }
 });
@@ -101,12 +100,7 @@ add_task(async function disableByLocalPref() {
         providers: [UrlbarProviderQuickSuggest.name],
         isPrivate: false,
       }),
-      matches: [
-        makeExpectedResult({
-          searchString: keyword,
-          suggestion,
-        }),
-      ],
+      matches: [QuickSuggestTestUtils.mdnResult(suggestion)],
     });
 
     // Now disable them.
@@ -121,18 +115,13 @@ add_task(async function disableByLocalPref() {
 
     // Revert.
     UrlbarPrefs.set(pref, true);
-    await waitForSuggestions();
+    await QuickSuggestTestUtils.forceSync();
   }
 });
 
 // Check wheather the MDN suggestions will be shown by the setup of Nimbus
 // variable.
 add_task(async function nimbus() {
-  // Nimbus variable mdn.featureGate changes the pref in default branch
-  // (by setPref in FeatureManifest). So, as it will not override the user branch
-  // pref, should use default branch if the test needs Nimbus and needs to change
-  // mdn.featureGate in local.
-  UrlbarPrefs.clear("mdn.featureGate");
   const defaultPrefs = Services.prefs.getDefaultBranch("browser.urlbar.");
 
   const suggestion = REMOTE_SETTINGS_DATA[0].attachment[0];
@@ -154,19 +143,19 @@ add_task(async function nimbus() {
     "urlbar",
     "config"
   );
-  await waitForSuggestions();
+  await QuickSuggestTestUtils.forceSync();
   await check_results({
     context: createContext(keyword, {
       providers: [UrlbarProviderQuickSuggest.name],
       isPrivate: false,
     }),
-    matches: [makeExpectedResult({ searchString: keyword, suggestion })],
+    matches: [QuickSuggestTestUtils.mdnResult(suggestion)],
   });
   await cleanUpNimbusEnable();
 
   // Enable locally.
   defaultPrefs.setBoolPref("mdn.featureGate", true);
-  await waitForSuggestions();
+  await QuickSuggestTestUtils.forceSync();
 
   // Disable by Nimbus.
   const cleanUpNimbusDisable = await UrlbarTestUtils.initNimbusFeature(
@@ -185,40 +174,18 @@ add_task(async function nimbus() {
 
   // Revert.
   defaultPrefs.setBoolPref("mdn.featureGate", true);
-  await waitForSuggestions();
+  await QuickSuggestTestUtils.forceSync();
 });
 
-function makeExpectedResult({
-  searchString,
-  suggestion,
-  source = "remote-settings",
-} = {}) {
-  const isTopPick = !!suggestion.is_top_pick;
-  return {
-    isBestMatch: isTopPick,
-    suggestedIndex: isTopPick ? 1 : -1,
-    type: UrlbarUtils.RESULT_TYPE.URL,
-    source: UrlbarUtils.RESULT_SOURCE.OTHER_NETWORK,
-    heuristic: false,
-    payload: {
-      source,
-      provider: source == "remote-settings" ? "MDNSuggestions" : "mdn",
-      telemetryType: "mdn",
-      title: suggestion.title,
-      url: suggestion.url,
-      displayUrl: suggestion.url.replace(/^https:\/\//, ""),
-      description: isTopPick ? suggestion.description : "",
-      icon: "chrome://global/skin/icons/mdn.svg",
-      shouldShowUrl: true,
-    },
-  };
-}
+add_task(async function mixedCaseQuery() {
+  const suggestion = REMOTE_SETTINGS_DATA[0].attachment[1];
+  const keyword = "InPuT";
 
-async function waitForSuggestions() {
-  let keyword = REMOTE_SETTINGS_DATA[0].attachment[0].keywords[0];
-  let feature = QuickSuggest.getFeature("MDNSuggestions");
-  await TestUtils.waitForCondition(async () => {
-    let suggestions = await feature.queryRemoteSettings(keyword);
-    return !!suggestions.length;
-  }, "Waiting for MDNSuggestions to serve remote settings suggestions");
-}
+  await check_results({
+    context: createContext(keyword, {
+      providers: [UrlbarProviderQuickSuggest.name],
+      isPrivate: false,
+    }),
+    matches: [QuickSuggestTestUtils.mdnResult(suggestion)],
+  });
+});

@@ -206,7 +206,7 @@ nsGNOMEShellService::IsDefaultBrowser(bool aForAllTypes,
   nsAutoCString handler;
   nsCOMPtr<nsIGIOMimeApp> gioApp;
 
-  for (unsigned int i = 0; i < ArrayLength(appProtocols); ++i) {
+  for (unsigned int i = 0; i < std::size(appProtocols); ++i) {
     if (!appProtocols[i].essential) continue;
 
     if (!IsDefaultForSchemeHelper(nsDependentCString(appProtocols[i].name),
@@ -253,7 +253,7 @@ nsGNOMEShellService::IsDefaultForScheme(const nsACString& aScheme,
 }
 
 NS_IMETHODIMP
-nsGNOMEShellService::SetDefaultBrowser(bool aClaimAllTypes, bool aForAllUsers) {
+nsGNOMEShellService::SetDefaultBrowser(bool aForAllUsers) {
 #ifdef DEBUG
   if (aForAllUsers)
     NS_WARNING(
@@ -298,23 +298,19 @@ nsGNOMEShellService::SetDefaultBrowser(bool aClaimAllTypes, bool aForAllUsers) {
     }
 
     // set handler for the protocols
-    for (unsigned int i = 0; i < ArrayLength(appProtocols); ++i) {
-      if (appProtocols[i].essential || aClaimAllTypes) {
-        appInfo->SetAsDefaultForURIScheme(
-            nsDependentCString(appProtocols[i].name));
-      }
+    for (unsigned int i = 0; i < std::size(appProtocols); ++i) {
+      appInfo->SetAsDefaultForURIScheme(
+          nsDependentCString(appProtocols[i].name));
     }
 
     // set handler for .html and xhtml files and MIME types:
-    if (aClaimAllTypes) {
-      // Add mime types for html, xhtml extension and set app to just created
-      // appinfo.
-      for (unsigned int i = 0; i < ArrayLength(appTypes); ++i) {
-        appInfo->SetAsDefaultForMimeType(
-            nsDependentCString(appTypes[i].mimeType));
-        appInfo->SetAsDefaultForFileExtensions(
-            nsDependentCString(appTypes[i].extensions));
-      }
+    // Add mime types for html, xhtml extension and set app to just created
+    // appinfo.
+    for (unsigned int i = 0; i < std::size(appTypes); ++i) {
+      appInfo->SetAsDefaultForMimeType(
+          nsDependentCString(appTypes[i].mimeType));
+      appInfo->SetAsDefaultForFileExtensions(
+          nsDependentCString(appTypes[i].extensions));
     }
   }
 

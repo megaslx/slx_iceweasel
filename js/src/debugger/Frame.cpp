@@ -6,13 +6,13 @@
 
 #include "debugger/Frame-inl.h"
 
-#include "mozilla/Assertions.h"   // for AssertionConditionType
+#include "mozilla/Assertions.h"   // for MOZ_ASSERT, MOZ_ASSERT_IF, MOZ_CRASH
 #include "mozilla/HashTable.h"    // for HashMapEntry
 #include "mozilla/Maybe.h"        // for Maybe
 #include "mozilla/Range.h"        // for Range
 #include "mozilla/RangedPtr.h"    // for RangedPtr
 #include "mozilla/Result.h"       // for Result
-#include "mozilla/ScopeExit.h"    // for MakeScopeExit, ScopeExit
+#include "mozilla/ScopeExit.h"    // for ScopeExit
 #include "mozilla/ThreadLocal.h"  // for ThreadLocal
 #include "mozilla/Vector.h"       // for Vector
 
@@ -30,48 +30,50 @@
 #include "debugger/NoExecute.h"         // for LeaveDebuggeeNoExecute
 #include "debugger/Object.h"            // for DebuggerObject
 #include "debugger/Script.h"            // for DebuggerScript
-#include "frontend/BytecodeCompiler.h"  // for CompileGlobalScript, CompileEvalScript
-#include "frontend/FrontendContext.h"  // for AutoReportFrontendContext
-#include "gc/Barrier.h"                // for HeapPtr
-#include "gc/GC.h"                     // for MemoryUse
-#include "gc/GCContext.h"              // for JS::GCContext
-#include "gc/Marking.h"                // for IsAboutToBeFinalized
-#include "gc/Tracer.h"                 // for TraceCrossCompartmentEdge
-#include "gc/ZoneAllocator.h"          // for AddCellMemory
-#include "jit/JSJitFrameIter.h"        // for InlineFrameIterator
-#include "jit/RematerializedFrame.h"   // for RematerializedFrame
-#include "js/CallArgs.h"               // for CallArgs
-#include "js/friend/ErrorMessages.h"   // for GetErrorMessage, JSMSG_*
-#include "js/Object.h"                 // for SetReservedSlot
-#include "js/Proxy.h"                  // for PrivateValue
-#include "js/RootingAPI.h"             // for Handle
-#include "js/SourceText.h"             // for SourceText, SourceOwnership
-#include "js/StableStringChars.h"      // for AutoStableStringChars
-#include "vm/ArgumentsObject.h"        // for ArgumentsObject
-#include "vm/ArrayObject.h"            // for ArrayObject
-#include "vm/AsyncFunction.h"          // for AsyncFunctionGeneratorObject
-#include "vm/AsyncIteration.h"         // for AsyncGeneratorObject
-#include "vm/BytecodeUtil.h"           // for JSDVG_SEARCH_STACK
-#include "vm/Compartment.h"            // for Compartment
-#include "vm/EnvironmentObject.h"      // for IsGlobalLexicalEnvironment
-#include "vm/GeneratorObject.h"        // for AbstractGeneratorObject
-#include "vm/GlobalObject.h"           // for GlobalObject
-#include "vm/Interpreter.h"            // for Call, ExecuteKernel
-#include "vm/JSAtomUtils.h"            // for Atomize, AtomizeUTF8Chars
-#include "vm/JSContext.h"              // for JSContext, ReportValueError
-#include "vm/JSFunction.h"             // for JSFunction, NewNativeFunction
-#include "vm/JSObject.h"               // for JSObject, RequireObject
-#include "vm/JSScript.h"               // for JSScript
-#include "vm/NativeObject.h"           // for NativeDefineDataProperty
-#include "vm/Realm.h"                  // for AutoRealm
-#include "vm/Runtime.h"                // for JSAtomState
-#include "vm/Scope.h"                  // for PositionalFormalParameterIter
-#include "vm/Stack.h"                  // for AbstractFramePtr, FrameIter
-#include "vm/StringType.h"             // for PropertyName, JSString
-#include "wasm/WasmDebug.h"            // for DebugState
-#include "wasm/WasmDebugFrame.h"       // for DebugFrame
-#include "wasm/WasmInstance.h"         // for Instance
-#include "wasm/WasmJS.h"               // for WasmInstanceObject
+#include "frontend/BytecodeCompiler.h"  // for CompileGlobalScript, CompileGlobalScriptWithExtraBindings, CompileEvalScript
+#include "frontend/FrontendContext.h"   // for AutoReportFrontendContext
+#include "gc/Barrier.h"                 // for HeapPtr
+#include "gc/GC.h"                      // for MemoryUse
+#include "gc/GCContext.h"               // for JS::GCContext
+#include "gc/Marking.h"                 // for IsAboutToBeFinalized
+#include "gc/Tracer.h"                  // for TraceCrossCompartmentEdge
+#include "gc/ZoneAllocator.h"           // for AddCellMemory
+#include "jit/JSJitFrameIter.h"         // for InlineFrameIterator
+#include "jit/RematerializedFrame.h"    // for RematerializedFrame
+#include "js/CallArgs.h"                // for CallArgs
+#include "js/EnvironmentChain.h"        // JS::EnvironmentChain
+#include "js/friend/ErrorMessages.h"    // for GetErrorMessage, JSMSG_*
+#include "js/GCVector.h"                // for JS::StackGCVector
+#include "js/Object.h"                  // for SetReservedSlot
+#include "js/Proxy.h"                   // for PrivateValue
+#include "js/RootingAPI.h"  // for JS::Rooted, JS::Handle, JS::MutableHandle
+#include "js/SourceText.h"  // for SourceText, SourceOwnership
+#include "js/StableStringChars.h"  // for AutoStableStringChars
+#include "vm/ArgumentsObject.h"    // for ArgumentsObject
+#include "vm/ArrayObject.h"        // for ArrayObject
+#include "vm/AsyncFunction.h"      // for AsyncFunctionGeneratorObject
+#include "vm/AsyncIteration.h"     // for AsyncGeneratorObject
+#include "vm/BytecodeUtil.h"       // for JSDVG_SEARCH_STACK
+#include "vm/Compartment.h"        // for Compartment
+#include "vm/EnvironmentObject.h"  // for GlobalLexicalEnvironmentObject
+#include "vm/GeneratorObject.h"    // for AbstractGeneratorObject
+#include "vm/GlobalObject.h"       // for GlobalObject
+#include "vm/Interpreter.h"        // for Call, ExecuteKernel
+#include "vm/JSAtomUtils.h"        // for Atomize, AtomizeUTF8Chars
+#include "vm/JSContext.h"          // for JSContext, ReportValueError
+#include "vm/JSFunction.h"         // for JSFunction, NewNativeFunction
+#include "vm/JSObject.h"           // for JSObject, RequireObject
+#include "vm/JSScript.h"           // for JSScript
+#include "vm/NativeObject.h"       // for NativeDefineDataProperty
+#include "vm/Realm.h"              // for AutoRealm
+#include "vm/Runtime.h"            // for JSAtomState
+#include "vm/Scope.h"              // for PositionalFormalParameterIter
+#include "vm/Stack.h"              // for AbstractFramePtr, FrameIter
+#include "vm/StringType.h"         // for PropertyName, JSString
+#include "wasm/WasmDebug.h"        // for DebugState
+#include "wasm/WasmDebugFrame.h"   // for DebugFrame
+#include "wasm/WasmInstance.h"     // for Instance
+#include "wasm/WasmJS.h"           // for WasmInstanceObject
 
 #include "debugger/Debugger-inl.h"    // for Debugger::fromJSObject
 #include "gc/WeakMap-inl.h"           // for WeakMap::remove
@@ -95,7 +97,6 @@ using JS::AutoStableStringChars;
 using JS::CompileOptions;
 using JS::SourceOwnership;
 using JS::SourceText;
-using mozilla::MakeScopeExit;
 using mozilla::Maybe;
 
 ScriptedOnStepHandler::ScriptedOnStepHandler(JSObject* object)
@@ -195,12 +196,15 @@ const JSClass DebuggerFrame::class_ = {
         // We require foreground finalization so we can destruct GeneratorInfo's
         // HeapPtrs.
         JSCLASS_FOREGROUND_FINALIZE,
-    &DebuggerFrame::classOps_};
+    &DebuggerFrame::classOps_,
+};
 
 enum { JSSLOT_DEBUGARGUMENTS_FRAME, JSSLOT_DEBUGARGUMENTS_COUNT };
 
 const JSClass DebuggerArguments::class_ = {
-    "Arguments", JSCLASS_HAS_RESERVED_SLOTS(JSSLOT_DEBUGARGUMENTS_COUNT)};
+    "Arguments",
+    JSCLASS_HAS_RESERVED_SLOTS(JSSLOT_DEBUGARGUMENTS_COUNT),
+};
 
 bool DebuggerFrame::resume(const FrameIter& iter) {
   FrameIter::Data* data = iter.copyData();
@@ -209,6 +213,10 @@ bool DebuggerFrame::resume(const FrameIter& iter) {
   }
   setFrameIterData(data);
   return true;
+}
+
+void DebuggerFrame::suspendWasmFrame(JS::GCContext* gcx) {
+  freeFrameIterData(gcx);
 }
 
 bool DebuggerFrame::hasAnyHooks() const {
@@ -436,6 +444,24 @@ void DebuggerFrame::terminate(JS::GCContext* gcx, AbstractFramePtr frame) {
   // 1) The DebuggerFrame must no longer point to the AbstractGeneratorObject.
   setReservedSlot(GENERATOR_INFO_SLOT, UndefinedValue());
   gcx->delete_(this, info, MemoryUse::DebuggerFrameGeneratorInfo);
+}
+
+void DebuggerFrame::onGeneratorClosed(JS::GCContext* gcx) {
+  GeneratorInfo* info = generatorInfo();
+
+  // If the generator is closed, eagerly drop the onStep handler, to make sure
+  // the stepper counter matches in the assertion in DebugAPI::onSingleStep.
+  // Also clear the slot in order to suppress the decrementStepperCounter in
+  // DebuggerFrame::terminate.
+  if (!info->isGeneratorScriptAboutToBeFinalized()) {
+    JSScript* generatorScript = info->generatorScript();
+    OnStepHandler* handler = onStepHandler();
+    if (handler) {
+      decrementStepperCounter(gcx, generatorScript);
+      setReservedSlot(ONSTEP_HANDLER_SLOT, UndefinedValue());
+      handler->drop(gcx, this);
+    }
+  }
 }
 
 void DebuggerFrame::suspend(JS::GCContext* gcx) {
@@ -908,23 +934,77 @@ bool DebuggerFrame::getArguments(JSContext* cx, Handle<DebuggerFrame*> frame,
   return true;
 }
 
+static WithEnvironmentObject* CreateBindingsEnv(
+    JSContext* cx, JS::Handle<JSObject*> enclosingEnv,
+    JS::Handle<JS::StackGCVector<JS::PropertyKey>> bindingKeys,
+    JS::Handle<JS::StackGCVector<JS::Value>> bindingValues) {
+  JS::Rooted<PlainObject*> bindingsObj(cx,
+                                       NewPlainObjectWithProto(cx, nullptr));
+  if (!bindingsObj) {
+    return nullptr;
+  }
+  JS::Rooted<JS::PropertyKey> id(cx);
+  JS::Rooted<JS::Value> val(cx);
+  for (size_t i = 0; i < bindingKeys.length(); i++) {
+    id = bindingKeys[i];
+    cx->markId(id);
+    val = bindingValues[i];
+    if (!cx->compartment()->wrap(cx, &val) ||
+        !NativeDefineDataProperty(cx, bindingsObj, id, val, 0)) {
+      return nullptr;
+    }
+  }
+
+  JS::EnvironmentChain envChain(cx, JS::SupportUnscopables::No);
+  if (!envChain.append(bindingsObj)) {
+    return nullptr;
+  }
+
+  return CreateObjectsForEnvironmentChain(cx, envChain, enclosingEnv);
+}
+
 /*
- * Evaluate |chars[0..length-1]| in the environment |env|, treating that
- * source as appearing starting at |lineno| in |filename|. Store the return
- * value in |*rval|. Use |thisv| as the 'this' value.
+ * Evaluate |chars| in the environment |envArg|, treating that source as
+ * appearing starting at |evalOptions.lineno()| in |evalOptions.filename()|.
+ * Store the return value in |*rval|.
  *
- * If |frame| is non-nullptr, evaluate as for a direct eval in that frame; |env|
- * must be either |frame|'s DebugScopeObject, or some extension of that
- * environment; either way, |frame|'s scope is where newly declared variables
- * go. In this case, |frame| must have a computed 'this' value, equal to
- * |thisv|.
+ * If |evalOptions.kind()| is either `Frame` or |FrameWithExtraBindings|,
+ * evaluate as for a direct eval in |frame|; |envArg| must be |frame|'s
+ * DebugScopeObject; either way,
+ * |frame|'s scope is where newly declared variables go. In this case,
+ * |frame| must have a computed 'this' value.
+ *
+ * If |evalOptions.kind()| is one of the following, |bindingKeys| and
+ * |bindingValues| should represent the bindings, and a new
+ * |WithEnvironmentObject| is created with |envArg| as enclosing environment,
+ * and used for the evaluation.
+ *   - FrameWithExtraBindings
+ *   - GlobalWithExtraInnerBindings
+ *   - GlobalWithExtraOuterBindings
  */
-static bool EvaluateInEnv(JSContext* cx, Handle<Env*> env,
-                          AbstractFramePtr frame,
-                          mozilla::Range<const char16_t> chars,
-                          const EvalOptions& evalOptions,
-                          MutableHandleValue rval) {
-  cx->check(env, frame);
+static bool EvaluateInEnv(
+    JSContext* cx, Handle<Env*> envArg, AbstractFramePtr frame,
+    mozilla::Range<const char16_t> chars, const EvalOptions& evalOptions,
+    JS::Handle<JS::StackGCVector<JS::PropertyKey>> bindingKeys,
+    JS::Handle<JS::StackGCVector<JS::Value>> bindingValues,
+    MutableHandleValue rval) {
+#ifdef DEBUG
+  switch (evalOptions.kind()) {
+    case EvalOptions::EnvKind::Frame:
+    case EvalOptions::EnvKind::FrameWithExtraBindings:
+      MOZ_ASSERT(frame);
+      break;
+    case EvalOptions::EnvKind::Global:
+      MOZ_ASSERT(!frame);
+      break;
+    case EvalOptions::EnvKind::GlobalWithExtraInnerBindings:
+    case EvalOptions::EnvKind::GlobalWithExtraOuterBindings:
+      MOZ_ASSERT(!frame);
+      break;
+  }
+#endif
+
+  cx->check(envArg, frame);
 
   CompileOptions options(cx);
   const char* filename =
@@ -954,44 +1034,82 @@ static bool EvaluateInEnv(JSContext* cx, Handle<Env*> env,
     return false;
   }
 
-  RootedScript callerScript(
-      cx, frame && frame.hasScript() ? frame.script() : nullptr);
-  RootedScript script(cx);
-
-  ScopeKind scopeKind;
-  if (IsGlobalLexicalEnvironment(env)) {
-    scopeKind = ScopeKind::Global;
-  } else {
-    scopeKind = ScopeKind::NonSyntactic;
-    options.setNonSyntacticScope(true);
-  }
-
-  if (frame) {
-    MOZ_ASSERT(scopeKind == ScopeKind::NonSyntactic);
-    Rooted<Scope*> scope(cx,
-                         GlobalScope::createEmpty(cx, ScopeKind::NonSyntactic));
-    if (!scope) {
-      return false;
+  // Compile the script and compute the environment object.
+  JS::Rooted<JSScript*> script(cx);
+  JS::Rooted<JSObject*> env(cx);
+  switch (evalOptions.kind()) {
+    case EvalOptions::EnvKind::FrameWithExtraBindings: {
+      env = CreateBindingsEnv(cx, envArg, bindingKeys, bindingValues);
+      if (!env) {
+        return false;
+      }
+      [[fallthrough]];
     }
+    case EvalOptions::EnvKind::Frame: {
+      // Default to |envArg| when no extra bindings are used.
+      if (!env) {
+        env = envArg;
+      }
 
-    script = frontend::CompileEvalScript(cx, options, srcBuf, scope, env);
-    if (!script) {
-      return false;
+      options.setNonSyntacticScope(true);
+
+      Rooted<Scope*> scope(
+          cx, GlobalScope::createEmpty(cx, ScopeKind::NonSyntactic));
+      if (!scope) {
+        return false;
+      }
+
+      script = frontend::CompileEvalScript(cx, options, srcBuf, scope, env);
+      if (!script) {
+        return false;
+      }
+      break;
     }
-  } else {
-    // Do not consider executeInGlobal{WithBindings} as an eval, but instead
-    // as executing a series of statements at the global level. This is to
-    // circumvent the fresh lexical scope that all eval have, so that the
-    // users of executeInGlobal, like the web console, may add new bindings to
-    // the global scope.
+    case EvalOptions::EnvKind::Global: {
+      AutoReportFrontendContext fc(cx);
+      script = frontend::CompileGlobalScript(cx, &fc, options, srcBuf,
+                                             ScopeKind::Global);
+      if (!script) {
+        return false;
+      }
 
-    MOZ_ASSERT(scopeKind == ScopeKind::Global ||
-               scopeKind == ScopeKind::NonSyntactic);
+      env = envArg;
+      break;
+    }
+    case EvalOptions::EnvKind::GlobalWithExtraOuterBindings: {
+      // Do not consider executeInGlobal{,WithBindings} as an eval, but instead
+      // as executing a series of statements at the global level. This is to
+      // circumvent the fresh lexical scope that all eval have, so that the
+      // users of executeInGlobal{,WithBindings}, like the web console, may add
+      // new bindings to the global scope.
 
-    AutoReportFrontendContext fc(cx);
-    script = frontend::CompileGlobalScript(cx, &fc, options, srcBuf, scopeKind);
-    if (!script) {
-      return false;
+      MOZ_ASSERT(envArg == &cx->global()->lexicalEnvironment());
+
+      options.setNonSyntacticScope(true);
+
+      AutoReportFrontendContext fc(cx);
+      script = frontend::CompileGlobalScriptWithExtraBindings(
+          cx, &fc, options, srcBuf, bindingKeys, bindingValues, &env);
+      if (!script) {
+        return false;
+      }
+      break;
+    }
+    case EvalOptions::EnvKind::GlobalWithExtraInnerBindings: {
+      env = CreateBindingsEnv(cx, envArg, bindingKeys, bindingValues);
+      if (!env) {
+        return false;
+      }
+
+      options.setNonSyntacticScope(true);
+
+      AutoReportFrontendContext fc(cx);
+      script = frontend::CompileGlobalScript(cx, &fc, options, srcBuf,
+                                             ScopeKind::NonSyntactic);
+      if (!script) {
+        return false;
+      }
+      break;
     }
   }
 
@@ -1002,9 +1120,33 @@ Result<Completion> js::DebuggerGenericEval(
     JSContext* cx, const mozilla::Range<const char16_t> chars,
     HandleObject bindings, const EvalOptions& options, Debugger* dbg,
     HandleObject envArg, FrameIter* iter) {
-  // Either we're specifying the frame, or a global.
-  MOZ_ASSERT_IF(iter, !envArg);
-  MOZ_ASSERT_IF(!iter, envArg && IsGlobalLexicalEnvironment(envArg));
+#ifdef DEBUG
+  switch (options.kind()) {
+    case EvalOptions::EnvKind::Frame:
+      MOZ_ASSERT(iter);
+      MOZ_ASSERT(!envArg);
+      MOZ_ASSERT(!bindings);
+      break;
+    case EvalOptions::EnvKind::FrameWithExtraBindings:
+      MOZ_ASSERT(iter);
+      MOZ_ASSERT(!envArg);
+      MOZ_ASSERT(bindings);
+      break;
+    case EvalOptions::EnvKind::Global:
+      MOZ_ASSERT(!iter);
+      MOZ_ASSERT(envArg);
+      MOZ_ASSERT(envArg->is<GlobalLexicalEnvironmentObject>());
+      MOZ_ASSERT(!bindings);
+      break;
+    case EvalOptions::EnvKind::GlobalWithExtraInnerBindings:
+    case EvalOptions::EnvKind::GlobalWithExtraOuterBindings:
+      MOZ_ASSERT(!iter);
+      MOZ_ASSERT(envArg);
+      MOZ_ASSERT(envArg->is<GlobalLexicalEnvironmentObject>());
+      MOZ_ASSERT(bindings);
+      break;
+  }
+#endif
 
   // Gather keys and values of bindings, if any. This must be done in the
   // debugger compartment, since that is where any exceptions must be thrown.
@@ -1041,47 +1183,28 @@ Result<Completion> js::DebuggerGenericEval(
     env = envArg;
   }
 
-  // If evalWithBindings, create the inner environment.
-  if (bindings) {
-    Rooted<PlainObject*> nenv(cx, NewPlainObjectWithProto(cx, nullptr));
-    if (!nenv) {
-      return cx->alreadyReportedError();
-    }
-    RootedId id(cx);
-    for (size_t i = 0; i < keys.length(); i++) {
-      id = keys[i];
-      cx->markId(id);
-      MutableHandleValue val = values[i];
-      if (!cx->compartment()->wrap(cx, val) ||
-          !NativeDefineDataProperty(cx, nenv, id, val, 0)) {
-        return cx->alreadyReportedError();
-      }
-    }
-
-    RootedObjectVector envChain(cx);
-    if (!envChain.append(nenv)) {
-      return cx->alreadyReportedError();
-    }
-
-    RootedObject newEnv(cx);
-    if (!CreateObjectsForEnvironmentChain(cx, envChain, env, &newEnv)) {
-      return cx->alreadyReportedError();
-    }
-
-    env = newEnv;
+  if (iter && iter->hasScript() && iter->script()->allowRelazify()) {
+    // This is a function that was first lazy, and delazified, and it's marked
+    // as relazifyable because there was no inner function.
+    //
+    // Evaluating a script can create inner function, which should prevent the
+    // relazification.
+    iter->script()->clearAllowRelazify();
   }
 
   // Note whether we are in an evaluation that might invoke the OnNativeCall
   // hook, so that the JITs will be disabled.
-  AutoNoteDebuggerEvaluationWithOnNativeCallHook noteEvaluation(
-      cx, dbg->observesNativeCalls() ? dbg : nullptr);
+  Maybe<AutoNoteExclusiveDebuggerOnEval> noteEvaluation;
+  if (dbg->isExclusiveDebuggerOnEval()) {
+    noteEvaluation.emplace(cx, dbg);
+  }
 
   // Run the code and produce the completion value.
   LeaveDebuggeeNoExecute nnx(cx);
   RootedValue rval(cx);
   AbstractFramePtr frame = iter ? iter->abstractFramePtr() : NullFramePtr();
 
-  bool ok = EvaluateInEnv(cx, env, frame, chars, options, &rval);
+  bool ok = EvaluateInEnv(cx, env, frame, chars, options, keys, values, &rval);
   Rooted<Completion> completion(cx, Completion::fromJSResult(cx, ok, rval));
   ar.reset();
   return completion.get();
@@ -1093,6 +1216,8 @@ Result<Completion> DebuggerFrame::eval(JSContext* cx,
                                        mozilla::Range<const char16_t> chars,
                                        HandleObject bindings,
                                        const EvalOptions& options) {
+  MOZ_ASSERT(options.kind() == EvalOptions::EnvKind::Frame ||
+             options.kind() == EvalOptions::EnvKind::FrameWithExtraBindings);
   MOZ_ASSERT(frame->isOnStack());
 
   Debugger* dbg = frame->owner();
@@ -1104,9 +1229,16 @@ Result<Completion> DebuggerFrame::eval(JSContext* cx,
 }
 
 bool DebuggerFrame::isOnStack() const {
-  // Note: this is equivalent to checking frameIterData() != nullptr, but works
-  // also when called from the trace hook during a moving GC.
+  // Note: this is equivalent to checking frameIterData() != nullptr.
   return !getFixedSlot(FRAME_ITER_SLOT).isUndefined();
+}
+
+bool DebuggerFrame::isOnStackOrSuspendedWasmStack() const {
+  // Note: this is equivalent to checking `frameIterData() != nullptr &&
+  // !hasGeneratorInfo()`, but works also when called from the trace hook
+  // during a moving GC.
+  return !getFixedSlot(FRAME_ITER_SLOT).isUndefined() ||
+         getFixedSlot(GENERATOR_INFO_SLOT).isUndefined();
 }
 
 OnStepHandler* DebuggerFrame::onStepHandler() const {
@@ -1836,7 +1968,7 @@ bool DebuggerFrame::CallData::evalMethod() {
   }
   mozilla::Range<const char16_t> chars = stableChars.twoByteRange();
 
-  EvalOptions options;
+  EvalOptions options(EvalOptions::EnvKind::Frame);
   if (!ParseEvalOptions(cx, args.get(1), options)) {
     return false;
   }
@@ -1869,7 +2001,7 @@ bool DebuggerFrame::CallData::evalWithBindingsMethod() {
     return false;
   }
 
-  EvalOptions options;
+  EvalOptions options(EvalOptions::EnvKind::FrameWithExtraBindings);
   if (!ParseEvalOptions(cx, args.get(2), options)) {
     return false;
   }
@@ -1906,11 +2038,14 @@ const JSPropertySpec DebuggerFrame::properties_[] = {
     JS_DEBUG_PSG("implementation", implementationGetter),
     JS_DEBUG_PSGS("onStep", onStepGetter, onStepSetter),
     JS_DEBUG_PSGS("onPop", onPopGetter, onPopSetter),
-    JS_PS_END};
+    JS_PS_END,
+};
 
 const JSFunctionSpec DebuggerFrame::methods_[] = {
     JS_DEBUG_FN("eval", evalMethod, 1),
-    JS_DEBUG_FN("evalWithBindings", evalWithBindingsMethod, 1), JS_FS_END};
+    JS_DEBUG_FN("evalWithBindings", evalWithBindingsMethod, 1),
+    JS_FS_END,
+};
 
 JSObject* js::IdVectorToArray(JSContext* cx, HandleIdVector ids) {
   if (MOZ_UNLIKELY(ids.length() > UINT32_MAX)) {

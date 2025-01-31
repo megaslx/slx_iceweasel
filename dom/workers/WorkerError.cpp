@@ -48,7 +48,7 @@
 #include "mozilla/fallible.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
-#include "nsGlobalWindowOuter.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIConsoleService.h"
 #include "nsIScriptError.h"
 #include "nsScriptError.h"
@@ -62,13 +62,14 @@ namespace mozilla::dom {
 
 namespace {
 
-class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
+class ReportErrorRunnable final : public WorkerParentDebuggeeRunnable {
   UniquePtr<WorkerErrorReport> mReport;
 
  public:
   ReportErrorRunnable(WorkerPrivate* aWorkerPrivate,
                       UniquePtr<WorkerErrorReport> aReport)
-      : WorkerDebuggeeRunnable(aWorkerPrivate), mReport(std::move(aReport)) {}
+      : WorkerParentDebuggeeRunnable("ReportErrorRunnable"),
+        mReport(std::move(aReport)) {}
 
  private:
   virtual void PostDispatch(WorkerPrivate* aWorkerPrivate,
@@ -91,18 +92,6 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
       innerWindowId = 0;
     } else {
       AssertIsOnMainThread();
-
-      // Once a window has frozen its workers, their
-      // mMainThreadDebuggeeEventTargets should be paused, and their
-      // WorkerDebuggeeRunnables should not be being executed. The same goes for
-      // WorkerDebuggeeRunnables sent from child to parent workers, but since a
-      // frozen parent worker runs only control runnables anyway, that is taken
-      // care of naturally.
-      MOZ_ASSERT(!aWorkerPrivate->IsFrozen());
-
-      // Similarly for paused windows; all its workers should have been
-      // informed. (Subworkers are unaffected by paused windows.)
-      MOZ_ASSERT(!aWorkerPrivate->IsParentWindowPaused());
 
       if (aWorkerPrivate->IsSharedWorker()) {
         aWorkerPrivate->GetRemoteWorkerController()
@@ -149,7 +138,7 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
   }
 };
 
-class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
+class ReportGenericErrorRunnable final : public WorkerParentDebuggeeRunnable {
  public:
   static void CreateAndDispatch(WorkerPrivate* aWorkerPrivate) {
     MOZ_ASSERT(aWorkerPrivate);
@@ -157,12 +146,12 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 
     RefPtr<ReportGenericErrorRunnable> runnable =
         new ReportGenericErrorRunnable(aWorkerPrivate);
-    runnable->Dispatch();
+    runnable->Dispatch(aWorkerPrivate);
   }
 
  private:
   explicit ReportGenericErrorRunnable(WorkerPrivate* aWorkerPrivate)
-      : WorkerDebuggeeRunnable(aWorkerPrivate) {
+      : WorkerParentDebuggeeRunnable("ReportGenericErrorRunnable") {
     aWorkerPrivate->AssertIsOnWorkerThread();
   }
 
@@ -175,17 +164,9 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
   }
 
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
-    // Once a window has frozen its workers, their
-    // mMainThreadDebuggeeEventTargets should be paused, and their
-    // WorkerDebuggeeRunnables should not be being executed. The same goes for
-    // WorkerDebuggeeRunnables sent from child to parent workers, but since a
-    // frozen parent worker runs only control runnables anyway, that is taken
-    // care of naturally.
-    MOZ_ASSERT(!aWorkerPrivate->IsFrozen());
-
-    // Similarly for paused windows; all its workers should have been informed.
-    // (Subworkers are unaffected by paused windows.)
-    MOZ_ASSERT(!aWorkerPrivate->IsParentWindowPaused());
+    if (!aWorkerPrivate->IsAcceptingEvents()) {
+      return true;
+    }
 
     if (aWorkerPrivate->IsSharedWorker()) {
       aWorkerPrivate->GetRemoteWorkerController()->ErrorPropagationOnMainThread(
@@ -206,10 +187,6 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
       return true;
     }
 
-    if (!aWorkerPrivate->IsAcceptingEvents()) {
-      return true;
-    }
-
     RefPtr<mozilla::dom::EventTarget> parentEventTarget =
         aWorkerPrivate->ParentEventTargetRef();
     RefPtr<Event> event =
@@ -224,9 +201,9 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 }  // namespace
 
 void WorkerErrorBase::AssignErrorBase(JSErrorBase* aReport) {
-  CopyUTF8toUTF16(MakeStringSpan(aReport->filename.c_str()), mFilename);
+  mFilename.Assign(aReport->filename.c_str());
   mLineNumber = aReport->lineno;
-  mColumnNumber = aReport->column;
+  mColumnNumber = aReport->column.oneOriginValue();
   mErrorNumber = aReport->errorNumber;
 }
 
@@ -241,8 +218,6 @@ WorkerErrorReport::WorkerErrorReport()
 void WorkerErrorReport::AssignErrorReport(JSErrorReport* aReport) {
   WorkerErrorBase::AssignErrorBase(aReport);
   xpc::ErrorReport::ErrorReportToMessageString(aReport, mMessage);
-
-  mLine.Assign(aReport->linebuf(), aReport->linebufLength());
   mIsWarning = aReport->isWarning();
   MOZ_ASSERT(aReport->exnType >= JSEXN_FIRST && aReport->exnType < JSEXN_LIMIT);
   mExnType = JSExnType(aReport->exnType);
@@ -348,14 +323,12 @@ void WorkerErrorReport::ReportError(
 
         MOZ_ASSERT(globalScope->GetWrapperPreserveColor() == global);
 
-        RefPtr<ErrorEvent> event =
-            ErrorEvent::Constructor(aTarget, u"error"_ns, init);
+        RefPtr<ErrorEvent> event = ErrorEvent::Constructor(
+            aTarget ? aTarget : globalScope, u"error"_ns, init);
         event->SetTrusted(true);
 
-        // TODO: Bug 1506441
         if (NS_FAILED(EventDispatcher::DispatchDOMEvent(
-                MOZ_KnownLive(ToSupports(globalScope)), nullptr, event, nullptr,
-                &status))) {
+                globalScope, nullptr, event, nullptr, &status))) {
           NS_WARNING("Failed to dispatch worker thread error event!");
           status = nsEventStatus_eIgnore;
         }
@@ -379,7 +352,7 @@ void WorkerErrorReport::ReportError(
   if (aWorkerPrivate) {
     RefPtr<ReportErrorRunnable> runnable =
         new ReportErrorRunnable(aWorkerPrivate, std::move(aReport));
-    runnable->Dispatch();
+    runnable->Dispatch(aWorkerPrivate);
     return;
   }
 
@@ -396,7 +369,7 @@ void WorkerErrorReport::LogErrorToConsole(JSContext* aCx,
 
   ErrorData errorData(
       aReport.mIsWarning, aReport.mLineNumber, aReport.mColumnNumber,
-      aReport.mMessage, aReport.mFilename, aReport.mLine,
+      aReport.mMessage, aReport.mFilename,
       TransformIntoNewArray(aReport.mNotes, [](const WorkerErrorNote& note) {
         return ErrorDataNote(note.mLineNumber, note.mColumnNumber,
                              note.mMessage, note.mFilename);
@@ -421,9 +394,8 @@ void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
     uint32_t flags = aReport.isWarning() ? nsIScriptError::warningFlag
                                          : nsIScriptError::errorFlag;
     if (NS_FAILED(scriptError->nsIScriptError::InitWithWindowID(
-            aReport.message(), aReport.filename(), aReport.line(),
-            aReport.lineNumber(), aReport.columnNumber(), flags, category,
-            aInnerWindowId))) {
+            aReport.message(), aReport.filename(), aReport.lineNumber(),
+            aReport.columnNumber(), flags, category, aInnerWindowId))) {
       NS_WARNING("Failed to init script error!");
       scriptError = nullptr;
     }
@@ -454,18 +426,28 @@ void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
   }
 
   NS_ConvertUTF16toUTF8 msg(aReport.message());
-  NS_ConvertUTF16toUTF8 filename(aReport.filename());
 
   static const char kErrorString[] = "JS error in Web Worker: %s [%s:%u]";
 
 #ifdef ANDROID
   __android_log_print(ANDROID_LOG_INFO, "Gecko", kErrorString, msg.get(),
-                      filename.get(), aReport.lineNumber());
+                      aReport.filename().get(), aReport.lineNumber());
 #endif
 
-  fprintf(stderr, kErrorString, msg.get(), filename.get(),
+  fprintf(stderr, kErrorString, msg.get(), aReport.filename().get(),
           aReport.lineNumber());
   fflush(stderr);
+}
+
+/* static */
+void WorkerErrorReport::LogErrorToConsole(const nsAString& aMessage) {
+  AssertIsOnMainThread();
+
+  nsCOMPtr<nsIConsoleService> consoleService =
+      do_GetService(NS_CONSOLESERVICE_CONTRACTID);
+  NS_WARNING_ASSERTION(consoleService, "Failed to get console service!");
+
+  consoleService->LogStringMessage(aMessage.BeginReading());
 }
 
 /* static */

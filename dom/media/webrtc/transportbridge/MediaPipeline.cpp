@@ -19,7 +19,7 @@
 #include "ImageTypes.h"
 #include "MediaEngine.h"
 #include "MediaSegment.h"
-#include "MediaTrackGraphImpl.h"
+#include "MediaTrackGraph.h"
 #include "MediaTrackListener.h"
 #include "MediaStreamTrack.h"
 #include "RtpLogger.h"
@@ -259,11 +259,9 @@ MediaPipeline::MediaPipeline(const std::string& aPc,
       mRtpPacketsSent(0),
       mRtcpPacketsSent(0),
       mRtpPacketsReceived(0),
-      mRtcpPacketsReceived(0),
       mRtpBytesSent(0),
       mRtpBytesReceived(0),
       mPc(aPc),
-      mFilter(),
       mRtpHeaderExtensionMap(new webrtc::RtpHeaderExtensionMap()),
       mPacketDumper(PacketDumper::GetPacketDumper(mPc)) {}
 
@@ -426,13 +424,11 @@ void MediaPipeline::CheckTransportStates() {
 
   if (mRtpState == TransportLayer::TS_OPEN && mRtcpState == mRtpState) {
     if (mDirection == DirectionType::TRANSMIT) {
-      mConduit->ConnectSenderRtcpEvent(mSenderRtcpReceiveEvent);
       mRtpSendEventListener = mConduit->SenderRtpSendEvent().Connect(
           mStsThread, this, &MediaPipeline::SendPacket);
       mSenderRtcpSendEventListener = mConduit->SenderRtcpSendEvent().Connect(
           mStsThread, this, &MediaPipeline::SendPacket);
     } else {
-      mConduit->ConnectReceiverRtcpEvent(mReceiverRtcpReceiveEvent);
       mConduit->ConnectReceiverRtpEvent(mRtpReceiveEvent);
       mReceiverRtcpSendEventListener =
           mConduit->ReceiverRtcpSendEvent().Connect(mStsThread, this,
@@ -513,18 +509,19 @@ void MediaPipeline::IncrementRtpPacketsReceived(int32_t aBytes) {
   }
 }
 
-void MediaPipeline::IncrementRtcpPacketsReceived() {
+void MediaPipeline::PacketReceived(const std::string& aTransportId,
+                                   const MediaPacket& packet) {
   ASSERT_ON_THREAD(mStsThread);
-  ++mRtcpPacketsReceived;
-  if (!(mRtcpPacketsReceived % 100)) {
-    MOZ_LOG(gMediaPipelineLog, LogLevel::Info,
-            ("RTCP received packet count for %s Pipeline %p: %u",
-             mDescription.c_str(), this, mRtcpPacketsReceived));
-  }
-}
 
-void MediaPipeline::RtpPacketReceived(const MediaPacket& packet) {
-  ASSERT_ON_THREAD(mStsThread);
+  if (mTransportId != aTransportId) {
+    return;
+  }
+
+  MOZ_ASSERT(mRtpState == TransportLayer::TS_OPEN);
+
+  if (packet.type() != MediaPacket::RTP) {
+    return;
+  }
 
   if (mDirection == DirectionType::TRANSMIT) {
     return;
@@ -593,68 +590,6 @@ void MediaPipeline::RtpPacketReceived(const MediaPacket& packet) {
                       packet.len());
 
   mRtpReceiveEvent.Notify(std::move(parsedPacket), header);
-}
-
-void MediaPipeline::RtcpPacketReceived(const MediaPacket& packet) {
-  ASSERT_ON_THREAD(mStsThread);
-
-  if (!packet.len()) {
-    return;
-  }
-
-  // We do not filter RTCP. This is because a compound RTCP packet can contain
-  // any collection of RTCP packets, and webrtc.org already knows how to filter
-  // out what it is interested in, and what it is not. Maybe someday we should
-  // have a TransportLayer that breaks up compound RTCP so we can filter them
-  // individually, but I doubt that will matter much.
-
-  MOZ_LOG(gMediaPipelineLog, LogLevel::Debug,
-          ("%s received RTCP packet.", mDescription.c_str()));
-  IncrementRtcpPacketsReceived();
-
-  RtpLogger::LogPacket(packet, true, mDescription);
-
-  // Might be nice to pass ownership of the buffer in this case, but it is a
-  // small optimization in a rare case.
-  mPacketDumper->Dump(mLevel, dom::mozPacketDumpType::Srtcp, false,
-                      packet.encrypted_data(), packet.encrypted_len());
-
-  mPacketDumper->Dump(mLevel, dom::mozPacketDumpType::Rtcp, false,
-                      packet.data(), packet.len());
-
-  if (StaticPrefs::media_webrtc_net_force_disable_rtcp_reception()) {
-    MOZ_LOG(gMediaPipelineLog, LogLevel::Debug,
-            ("%s RTCP packet forced to be dropped", mDescription.c_str()));
-    return;
-  }
-
-  if (mDirection == DirectionType::TRANSMIT) {
-    mSenderRtcpReceiveEvent.Notify(packet.Clone());
-  } else {
-    mReceiverRtcpReceiveEvent.Notify(packet.Clone());
-  }
-}
-
-void MediaPipeline::PacketReceived(const std::string& aTransportId,
-                                   const MediaPacket& packet) {
-  ASSERT_ON_THREAD(mStsThread);
-
-  if (mTransportId != aTransportId) {
-    return;
-  }
-
-  MOZ_ASSERT(mRtpState == TransportLayer::TS_OPEN);
-  MOZ_ASSERT(mRtcpState == mRtpState);
-
-  switch (packet.type()) {
-    case MediaPacket::RTP:
-      RtpPacketReceived(packet);
-      break;
-    case MediaPacket::RTCP:
-      RtcpPacketReceived(packet);
-      break;
-    default:;
-  }
 }
 
 void MediaPipeline::AlpnNegotiated(const std::string& aAlpn,
@@ -791,6 +726,7 @@ void MediaPipelineTransmit::RegisterListener() {
     return;
   }
   mConverter = VideoFrameConverter::Create(GetTimestampMaker());
+  mConverter->SetIdleFrameDuplicationInterval(TimeDuration::FromSeconds(1));
   mFrameListener = mConverter->VideoFrameConvertedEvent().Connect(
       mConverter->mTaskQueue,
       [listener = mListener](webrtc::VideoFrame aFrame) {
@@ -1288,33 +1224,20 @@ class MediaPipelineReceiveAudio::PipelineListener
   void SetPrivatePrincipal(PrincipalHandle aHandle) {
     MOZ_ASSERT(NS_IsMainThread());
 
-    class Message : public ControlMessage {
-     public:
-      Message(RefPtr<PipelineListener> aListener,
-              PrincipalHandle aPrivatePrincipal)
-          : ControlMessage(nullptr),
-            mListener(std::move(aListener)),
-            mPrivatePrincipal(std::move(aPrivatePrincipal)) {}
-
-      void Run() override {
-        if (mListener->mPrivacy == PrincipalPrivacy::Private) {
-          return;
-        }
-        mListener->mPrincipalHandle = mPrivatePrincipal;
-        mListener->mPrivacy = PrincipalPrivacy::Private;
-        mListener->mForceSilence = false;
-      }
-
-      const RefPtr<PipelineListener> mListener;
-      PrincipalHandle mPrivatePrincipal;
-    };
-
     if (mSource->IsDestroyed()) {
       return;
     }
 
-    mSource->GraphImpl()->AppendMessage(
-        MakeUnique<Message>(this, std::move(aHandle)));
+    mSource->QueueControlMessageWithNoShutdown(
+        [self = RefPtr{this}, this,
+         privatePrincipal = std::move(aHandle)]() mutable {
+          if (mPrivacy == PrincipalPrivacy::Private) {
+            return;
+          }
+          mPrincipalHandle = std::move(privatePrincipal);
+          mPrivacy = PrincipalPrivacy::Private;
+          mForceSilence = false;
+        });
   }
 
  private:
@@ -1476,8 +1399,8 @@ class MediaPipelineReceiveVideo::PipelineListener
   PipelineListener(RefPtr<SourceMediaTrack> aSource, TrackingId aTrackingId,
                    PrincipalHandle aPrincipalHandle, PrincipalPrivacy aPrivacy)
       : GenericReceiveListener(std::move(aSource), std::move(aTrackingId)),
-        mImageContainer(
-            MakeAndAddRef<ImageContainer>(ImageContainer::ASYNCHRONOUS)),
+        mImageContainer(MakeAndAddRef<ImageContainer>(
+            ImageUsageType::Webrtc, ImageContainer::ASYNCHRONOUS)),
         mMutex("MediaPipelineReceiveVideo::PipelineListener::mMutex"),
         mPrincipalHandle(std::move(aPrincipalHandle)),
         mPrivacy(aPrivacy) {}
@@ -1499,8 +1422,7 @@ class MediaPipelineReceiveVideo::PipelineListener
     mForceDropFrames = false;
   }
 
-  void RenderVideoFrame(const webrtc::VideoFrameBuffer& aBuffer,
-                        uint32_t aTimeStamp, int64_t aRenderTime) {
+  void RenderVideoFrame(const webrtc::VideoFrame& aVideoFrame) {
     PrincipalHandle principal;
     {
       MutexAutoLock lock(mMutex);
@@ -1510,16 +1432,16 @@ class MediaPipelineReceiveVideo::PipelineListener
       principal = mPrincipalHandle;
     }
     RefPtr<Image> image;
-    if (aBuffer.type() == webrtc::VideoFrameBuffer::Type::kNative) {
+    const webrtc::VideoFrameBuffer& buffer = *aVideoFrame.video_frame_buffer();
+    if (buffer.type() == webrtc::VideoFrameBuffer::Type::kNative) {
       // We assume that only native handles are used with the
       // WebrtcMediaDataCodec decoder.
-      const ImageBuffer* imageBuffer =
-          static_cast<const ImageBuffer*>(&aBuffer);
+      const ImageBuffer* imageBuffer = static_cast<const ImageBuffer*>(&buffer);
       image = imageBuffer->GetNativeImage();
     } else {
-      MOZ_ASSERT(aBuffer.type() == webrtc::VideoFrameBuffer::Type::kI420);
+      MOZ_ASSERT(buffer.type() == webrtc::VideoFrameBuffer::Type::kI420);
       rtc::scoped_refptr<const webrtc::I420BufferInterface> i420(
-          aBuffer.GetI420());
+          buffer.GetI420());
 
       MOZ_ASSERT(i420->DataY());
       // Create a video frame using |buffer|.
@@ -1544,7 +1466,7 @@ class MediaPipelineReceiveVideo::PipelineListener
       yuvData.mChromaSubsampling =
           gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT;
 
-      if (!yuvImage->CopyData(yuvData)) {
+      if (NS_FAILED(yuvImage->CopyData(yuvData))) {
         MOZ_ASSERT(false);
         return;
       }
@@ -1553,9 +1475,25 @@ class MediaPipelineReceiveVideo::PipelineListener
       image = std::move(yuvImage);
     }
 
+    Maybe<webrtc::Timestamp> receiveTime;
+    for (const auto& packet : aVideoFrame.packet_infos()) {
+      if (!receiveTime || *receiveTime < packet.receive_time()) {
+        receiveTime = Some(packet.receive_time());
+      }
+    }
+
     VideoSegment segment;
     auto size = image->GetSize();
-    segment.AppendFrame(image.forget(), size, principal);
+    auto processingDuration =
+        aVideoFrame.processing_time()
+            ? media::TimeUnit::FromMicroseconds(
+                  aVideoFrame.processing_time()->Elapsed().us())
+            : media::TimeUnit::Invalid();
+    segment.AppendWebrtcRemoteFrame(
+        image.forget(), size, principal,
+        /* aForceBlack */ false, TimeStamp::Now(), processingDuration,
+        aVideoFrame.rtp_timestamp(), aVideoFrame.ntp_time_ms(),
+        receiveTime ? receiveTime->us() : 0);
     mSource->AppendData(&segment);
   }
 
@@ -1579,9 +1517,8 @@ class MediaPipelineReceiveVideo::PipelineRenderer
 
   // Implement VideoRenderer
   void FrameSizeChange(unsigned int aWidth, unsigned int aHeight) override {}
-  void RenderVideoFrame(const webrtc::VideoFrameBuffer& aBuffer,
-                        uint32_t aTimeStamp, int64_t aRenderTime) override {
-    mPipeline->mListener->RenderVideoFrame(aBuffer, aTimeStamp, aRenderTime);
+  void RenderVideoFrame(const webrtc::VideoFrame& aVideoFrame) override {
+    mPipeline->mListener->RenderVideoFrame(aVideoFrame);
   }
 
  private:

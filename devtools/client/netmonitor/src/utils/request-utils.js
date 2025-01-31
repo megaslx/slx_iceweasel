@@ -363,10 +363,14 @@ function parseFormData(sections) {
     .replace(/^&/, "")
     .split("&")
     .map(e => {
-      const param = e.split("=");
+      const firstEqualSignIndex = e.indexOf("=");
+      const paramName =
+        firstEqualSignIndex !== -1 ? e.slice(0, firstEqualSignIndex) : e;
+      const paramValue =
+        firstEqualSignIndex !== -1 ? e.slice(firstEqualSignIndex + 1) : "";
       return {
-        name: param[0] ? getUnicodeUrlPath(param[0]) : "",
-        value: param[1] ? getUnicodeUrlPath(param[1]) : "",
+        name: paramName ? getUnicodeUrlPath(paramName) : "",
+        value: paramValue ? getUnicodeUrlPath(paramValue) : "",
       };
     });
 }
@@ -501,7 +505,7 @@ function getFormattedProtocol(item) {
  */
 function getResponseHeader(item, header) {
   const { responseHeaders } = item;
-  if (!responseHeaders || !responseHeaders.headers.length) {
+  if (!responseHeaders?.headers?.length) {
     return null;
   }
   header = header.toLowerCase();
@@ -519,7 +523,7 @@ function getResponseHeader(item, header) {
  */
 function getRequestHeader(item, header) {
   const { requestHeaders } = item;
-  if (!requestHeaders || !requestHeaders.headers.length) {
+  if (!requestHeaders?.headers?.length) {
     return null;
   }
   header = header.toLowerCase();

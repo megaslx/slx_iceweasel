@@ -36,8 +36,10 @@ using namespace js;
 using namespace js::jit;
 using namespace js::wasm;
 
+using mozilla::CheckedInt32;
 using mozilla::CheckedUint32;
 using mozilla::IsPowerOfTwo;
+using mozilla::MallocSizeOf;
 
 // [SMDOC] Immediate type signature encoding
 //
@@ -218,7 +220,28 @@ static ImmediateType EncodeImmediateFuncType(const FuncType& funcType) {
 //=========================================================================
 // FuncType
 
-void FuncType::initImmediateTypeId() {
+void FuncType::initImmediateTypeId(bool isFinal, const TypeDef* superTypeDef,
+                                   uint32_t recGroupLength) {
+  // To improve the performance of the structural type check in
+  // the call_indirect function prologue, we attempt to encode the
+  // entire function type into an immediate such that bitwise equality
+  // implies structural equality. With the GC proposal, we don't
+  // want to generalize the immediate form for the new type system, so
+  // we don't use it when a type is non-final (i.e. may have sub types), or
+  // has super types, or is in a recursion group with other types.
+  //
+  // If non-final types are allowed, then the type can have subtypes, and we
+  // should therefore do a full subtype check on call_indirect, which
+  // doesn't work well with immediates. If the type has a super type, the
+  // same reason applies. And finally, types in recursion groups of
+  // size > 1 may not be considered equivalent even if they are
+  // structurally equivalent in every respect.
+  if (!isFinal || superTypeDef || recGroupLength != 1) {
+    immediateTypeId_ = NO_IMMEDIATE_TYPE_ID;
+    return;
+  }
+
+  // Otherwise, try to encode this function type into an immediate.
   if (!IsImmediateFuncType(*this)) {
     immediateTypeId_ = NO_IMMEDIATE_TYPE_ID;
     return;
@@ -261,7 +284,7 @@ static inline CheckedInt32 RoundUpToAlignment(CheckedInt32 address,
   return ((address + (align - 1)) / align) * align;
 }
 
-CheckedInt32 StructLayout::addField(FieldType type) {
+CheckedInt32 StructLayout::addField(StorageType type) {
   uint32_t fieldSize = type.size();
   uint32_t fieldAlignment = type.alignmentInStruct();
 
@@ -307,20 +330,33 @@ CheckedInt32 StructLayout::close() {
 }
 
 bool StructType::init() {
+  bool isDefaultable = true;
+
   StructLayout layout;
-  for (StructField& field : fields_) {
+  for (FieldType& field : fields_) {
     CheckedInt32 offset = layout.addField(field.type);
     if (!offset.isValid()) {
       return false;
     }
-    field.offset = offset.value();
+
+    // Add the offset to the list
+    if (!fieldOffsets_.append(offset.value())) {
+      return false;
+    }
+
+    // If any field is not defaultable, this whole struct is not defaultable
+    if (!field.type.isDefaultable()) {
+      isDefaultable = false;
+    }
+
+    // If this field is not a ref, then don't add it to the trace lists
     if (!field.type.isRefRepr()) {
       continue;
     }
 
     bool isOutline;
     uint32_t adjustedOffset;
-    WasmStructObject::fieldOffsetToAreaAndOffset(field.type, field.offset,
+    WasmStructObject::fieldOffsetToAreaAndOffset(field.type, offset.value(),
                                                  &isOutline, &adjustedOffset);
     if (isOutline) {
       if (!outlineTraceOffsets_.append(adjustedOffset)) {
@@ -337,9 +373,25 @@ bool StructType::init() {
   if (!size.isValid()) {
     return false;
   }
-  size_ = size.value();
 
+  size_ = size.value();
+  isDefaultable_ = isDefaultable;
   return true;
+}
+
+/* static */
+bool StructType::createImmutable(const ValTypeVector& types,
+                                 StructType* struct_) {
+  FieldTypeVector fields;
+  if (!fields.resize(types.length())) {
+    return false;
+  }
+  for (size_t i = 0; i < types.length(); i++) {
+    fields[i].type = StorageType(types[i].packed());
+    fields[i].isMutable = false;
+  }
+  *struct_ = StructType(std::move(fields));
+  return struct_->init();
 }
 
 size_t StructType::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
@@ -375,8 +427,8 @@ size_t TypeDef::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
 // SuperTypeVector
 
 /* static */
-size_t SuperTypeVector::offsetOfTypeDefInVector(uint32_t typeDefDepth) {
-  return offsetof(SuperTypeVector, types_) + sizeof(void*) * typeDefDepth;
+size_t SuperTypeVector::offsetOfSTVInVector(uint32_t subTypingDepth) {
+  return offsetof(SuperTypeVector, types_) + sizeof(void*) * subTypingDepth;
 }
 
 /* static */
@@ -425,10 +477,11 @@ const SuperTypeVector* SuperTypeVector::createMultipleForRecGroup(
 
     // Make the typedef and the vector point at each other.
     typeDef.setSuperTypeVector(currentVector);
-    currentVector->setTypeDef(&typeDef);
+    currentVector->typeDef_ = &typeDef;
+    currentVector->subTypingDepth_ = typeDef.subTypingDepth();
 
     // Every vector stores all ancestor types and itself.
-    currentVector->setLength(SuperTypeVector::lengthForTypeDef(typeDef));
+    currentVector->length_ = SuperTypeVector::lengthForTypeDef(typeDef);
 
     // Initialize the entries in the vector
     const TypeDef* currentTypeDef = &typeDef;
@@ -438,7 +491,7 @@ const SuperTypeVector* SuperTypeVector::createMultipleForRecGroup(
       // If this entry is required just to hit the minimum size, then
       // initialize it to null.
       if (reverseIndex > typeDef.subTypingDepth()) {
-        currentVector->setType(reverseIndex, nullptr);
+        currentVector->types_[reverseIndex] = nullptr;
         continue;
       }
 
@@ -446,7 +499,7 @@ const SuperTypeVector* SuperTypeVector::createMultipleForRecGroup(
       // currentTypeDef.
       MOZ_ASSERT(reverseIndex == currentTypeDef->subTypingDepth());
 
-      currentVector->setType(reverseIndex, currentTypeDef->superTypeVector());
+      currentVector->types_[reverseIndex] = currentTypeDef->superTypeVector();
       currentTypeDef = currentTypeDef->superTypeDef();
     }
 
@@ -470,7 +523,7 @@ struct RecGroupHashPolicy {
   static HashNumber hash(Lookup lookup) { return lookup->hash(); }
 
   static bool match(const SharedRecGroup& lhs, Lookup rhs) {
-    return RecGroup::matches(*rhs, *lhs);
+    return RecGroup::isoEquals(*rhs, *lhs);
   }
 };
 
@@ -528,7 +581,7 @@ class TypeIdSet {
   }
 };
 
-ExclusiveData<TypeIdSet> typeIdSet(mutexid::WasmTypeIdSet);
+MOZ_RUNINIT ExclusiveData<TypeIdSet> typeIdSet(mutexid::WasmTypeIdSet);
 
 void wasm::PurgeCanonicalTypes() {
   ExclusiveData<TypeIdSet>::Guard locked = typeIdSet.lock();

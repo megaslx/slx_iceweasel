@@ -9,8 +9,9 @@ use minidump_writer::{
     errors::*,
     maps_reader::{MappingEntry, MappingInfo, SystemMappingInfo},
     minidump_writer::MinidumpWriter,
+    module_reader::{BuildId, ReadFromModule},
     ptrace_dumper::PtraceDumper,
-    thread_info::Pid,
+    Pid,
 };
 use nix::{errno::Errno, sys::signal::Signal};
 use procfs_core::process::MMPermissions;
@@ -72,31 +73,31 @@ fn get_crash_context(tid: Pid) -> CrashContext {
     }
 }
 
-macro_rules! contextual_tests {
-    () => {};
-    ( fn $name:ident ($ctx:ident : Context) $body:block $($rest:tt)* ) => {
+macro_rules! contextual_test {
+    ( $(#[$attr:meta])? fn $name:ident ($ctx:ident : Context) $body:block ) => {
         mod $name {
             use super::*;
 
             fn test($ctx: Context) $body
 
             #[test]
-            fn run() {
+            $(#[$attr])?
+            fn without_context() {
                 test(Context::Without)
             }
 
             #[cfg(not(target_arch = "mips"))]
             #[test]
-            fn run_with_context() {
+            $(#[$attr])?
+            fn with_context() {
                 test(Context::With)
             }
         }
-        contextual_tests! { $($rest)* }
     }
 }
 
-contextual_tests! {
-    fn test_write_dump(context: Context) {
+contextual_test! {
+    fn write_dump(context: Context) {
         let num_of_threads = 3;
         let mut child = start_child_and_wait_for_threads(num_of_threads);
         let pid = child.id() as i32;
@@ -123,8 +124,11 @@ contextual_tests! {
         assert_eq!(mem_slice.len(), in_memory_buffer.len());
         assert_eq!(mem_slice, in_memory_buffer);
     }
+}
 
-    fn test_write_and_read_dump_from_parent(context: Context) {
+contextual_test! {
+    #[ignore]
+    fn write_and_read_dump_from_parent(context: Context) {
         let mut child = start_child_and_return(&["spawn_mmap_wait"]);
         let pid = child.id() as i32;
 
@@ -224,9 +228,14 @@ contextual_tests! {
         let _ = dump
             .get_raw_stream(LinuxDsoDebug as u32)
             .expect("Couldn't find LinuxDsoDebug");
+        let _ = dump
+            .get_raw_stream(MozLinuxLimits as u32)
+            .expect("Couldn't find MozLinuxLimits");
     }
+}
 
-    fn test_write_with_additional_memory(context: Context) {
+contextual_test! {
+    fn write_with_additional_memory(context: Context) {
         let mut child = start_child_and_return(&["spawn_alloc_wait"]);
         let pid = child.id() as i32;
 
@@ -286,8 +295,10 @@ contextual_tests! {
         // Verify memory contents.
         assert_eq!(region.bytes, values);
     }
+}
 
-    fn test_skip_if_requested(context: Context) {
+contextual_test! {
+    fn skip_if_requested(context: Context) {
         let num_of_threads = 1;
         let mut child = start_child_and_wait_for_threads(num_of_threads);
         let pid = child.id() as i32;
@@ -322,8 +333,10 @@ contextual_tests! {
 
         assert!(res.is_err());
     }
+}
 
-    fn test_sanitized_stacks(context: Context) {
+contextual_test! {
+    fn sanitized_stacks(context: Context) {
         if context == Context::With {
             // FIXME the context's stack pointer very often doesn't lie in mapped memory, resulting
             // in the stack memory having 0 size (so no slice will match `defaced` in the
@@ -375,8 +388,10 @@ contextual_tests! {
             assert!(slice.windows(defaced.len()).any(|window| window == defaced));
         }
     }
+}
 
-    fn test_write_early_abort(context: Context) {
+contextual_test! {
+    fn write_early_abort(context: Context) {
         let mut child = start_child_and_return(&["spawn_alloc_wait"]);
         let pid = child.id() as i32;
 
@@ -431,8 +446,10 @@ contextual_tests! {
         // Should be missing:
         assert!(dump.get_stream::<MinidumpMemoryList>().is_err());
     }
+}
 
-    fn test_named_threads(context: Context) {
+contextual_test! {
+    fn named_threads(context: Context) {
         let num_of_threads = 5;
         let mut child = start_child_and_wait_for_named_threads(num_of_threads);
         let pid = child.id() as i32;
@@ -476,8 +493,59 @@ contextual_tests! {
     }
 }
 
+contextual_test! {
+    fn file_descriptors(context: Context) {
+        let num_of_files = 5;
+        let mut child = start_child_and_wait_for_create_files(num_of_files);
+        let pid = child.id() as i32;
+
+        let mut tmpfile = tempfile::Builder::new()
+            .prefix("testfiles")
+            .tempfile()
+            .unwrap();
+
+        let mut tmp = context.minidump_writer(pid);
+        let _ = tmp.dump(&mut tmpfile).expect("Could not write minidump");
+        child.kill().expect("Failed to kill process");
+
+        // Reap child
+        let waitres = child.wait().expect("Failed to wait for child");
+        let status = waitres.signal().expect("Child did not die due to signal");
+        assert_eq!(waitres.code(), None);
+        assert_eq!(status, Signal::SIGKILL as i32);
+
+        // Read dump file and check its contents. There should be a truncated minidump available
+        let dump = Minidump::read_path(tmpfile.path()).expect("Failed to read minidump");
+        let fds: MinidumpHandleDataStream = dump.get_stream().expect("Couldn't find MinidumpHandleDataStream");
+        // We check that we create num_of_files plus stdin, stdout and stderr
+        for i in 0..3 {
+            let descriptor = fds.handles.get(i).expect("Descriptor should be present");
+            let fd = *descriptor.raw.handle().expect("Handle should be populated");
+            assert_eq!(fd, i as u64);
+        }
+
+        let non_std_files = &fds.handles[3..];
+
+        // We need to handle the android case where additional pipes might be opened and
+        // interspersed with the test_files (emulator? adb?) so that CI doesn't sporadically fail
+        for i in 0..num_of_files {
+            if !non_std_files.iter().any(|descriptor| {
+                let Some(name) = &descriptor.object_name else { return false; };
+                let Some(file_name) = name.rsplit_once('/').map(|(_, fname)| fname) else { return false; };
+                if !file_name.starts_with("test_file") {
+                    return false;
+                }
+
+                file_name.ends_with(&i.to_string())
+            }) {
+                panic!("unable to locate expected file `test_file{i}` in file handle stream");
+            }
+        }
+    }
+}
+
 #[test]
-fn test_minidump_size_limit() {
+fn minidump_size_limit() {
     let num_of_threads = 40;
     let mut child = start_child_and_wait_for_threads(num_of_threads);
     let pid = child.id() as i32;
@@ -619,7 +687,7 @@ fn test_minidump_size_limit() {
 }
 
 #[test]
-fn test_with_deleted_binary() {
+fn with_deleted_binary() {
     let num_of_threads = 1;
     let binary_copy_dir = tempfile::Builder::new()
         .prefix("deleted_binary")
@@ -627,7 +695,11 @@ fn test_with_deleted_binary() {
         .unwrap();
     let binary_copy = binary_copy_dir.as_ref().join("binary_copy");
 
-    let path: &'static str = std::env!("CARGO_BIN_EXE_test");
+    let path: String = if let Ok(p) = std::env::var("TEST_HELPER") {
+        p
+    } else {
+        std::env!("CARGO_BIN_EXE_test").into()
+    };
 
     std::fs::copy(path, &binary_copy).expect("Failed to copy binary");
     let mem_slice = std::fs::read(&binary_copy).expect("Failed to read binary");
@@ -635,7 +707,7 @@ fn test_with_deleted_binary() {
     let mut child = Command::new(&binary_copy)
         .env("RUST_BACKTRACE", "1")
         .arg("spawn_and_wait")
-        .arg(format!("{}", num_of_threads))
+        .arg(num_of_threads.to_string())
         .stdout(Stdio::piped())
         .spawn()
         .expect("failed to execute child");
@@ -643,35 +715,8 @@ fn test_with_deleted_binary() {
 
     let pid = child.id() as i32;
 
-    let build_id = PtraceDumper::elf_file_identifier_from_mapped_file(&mem_slice)
-        .expect("Failed to get build_id");
-
-    let guid = GUID {
-        data1: u32::from_ne_bytes(build_id[0..4].try_into().unwrap()),
-        data2: u16::from_ne_bytes(build_id[4..6].try_into().unwrap()),
-        data3: u16::from_ne_bytes(build_id[6..8].try_into().unwrap()),
-        data4: build_id[8..16].try_into().unwrap(),
-    };
-
-    // guid_to_string() is not public in minidump, so copied it here
-    // And append a zero, because module IDs include an "age" field
-    // which is always zero on Linux.
-    let filtered = format!(
-        "{:08X}{:04X}{:04X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}0",
-        guid.data1,
-        guid.data2,
-        guid.data3,
-        guid.data4[0],
-        guid.data4[1],
-        guid.data4[2],
-        guid.data4[3],
-        guid.data4[4],
-        guid.data4[5],
-        guid.data4[6],
-        guid.data4[7],
-    );
-    // Strip out dashes
-    //let mut filtered: String = identifier.chars().filter(|x| *x != '-').collect();
+    let BuildId(mut build_id) =
+        BuildId::read_from_module(mem_slice.as_slice().into()).expect("Failed to get build_id");
 
     std::fs::remove_file(&binary_copy).expect("Failed to remove binary");
 
@@ -703,12 +748,35 @@ fn test_with_deleted_binary() {
     let main_module = module_list
         .main_module()
         .expect("Could not get main module");
-    assert_eq!(main_module.code_file(), binary_copy.to_string_lossy());
-    assert_eq!(main_module.debug_identifier(), filtered.parse().ok());
+    //assert_eq!(main_module.code_file(), binary_copy.to_string_lossy());
+
+    let did = main_module
+        .debug_identifier()
+        .expect("expected value debug id");
+    {
+        let uuid = did.uuid();
+        let uuid = uuid.as_bytes();
+
+        // Swap bytes in the original to match the expected uuid
+        if cfg!(target_endian = "little") {
+            build_id[..4].reverse();
+            build_id[4..6].reverse();
+            build_id[6..8].reverse();
+        }
+
+        // The build_id from the binary can be as little as 8 bytes, eg LLD uses
+        // xxhash to calculate the build_id by default from 10+
+        build_id.resize(16, 0);
+
+        assert_eq!(uuid.as_slice(), &build_id);
+    }
+
+    // The 'age'/appendix, always 0 on non-windows targets
+    assert_eq!(did.appendix(), 0);
 }
 
 #[test]
-fn test_memory_info_list_stream() {
+fn memory_info_list_stream() {
     let mut child = start_child_and_wait_for_threads(1);
     let pid = child.id() as i32;
 

@@ -6,9 +6,12 @@
 #include "WinIMEHandler.h"
 
 #include "IMMHandler.h"
+#include "KeyboardLayout.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_intl.h"
+#include "mozilla/StaticPrefs_ui.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/Unused.h"
 #include "mozilla/WindowsVersion.h"
 #include "nsWindowDefs.h"
 #include "WinTextEventDispatcherListener.h"
@@ -39,7 +42,6 @@
 
 const char* kOskEnabled = "ui.osk.enabled";
 const char* kOskDetectPhysicalKeyboard = "ui.osk.detect_physical_keyboard";
-const char* kOskRequireWin10 = "ui.osk.require_win10";
 const char* kOskDebugReason = "ui.osk.debug.keyboardDisplayReason";
 
 namespace mozilla {
@@ -135,6 +137,12 @@ void* IMEHandler::GetNativeData(nsWindow* aWindow, uint32_t aDataType) {
 
 // static
 bool IMEHandler::ProcessRawKeyMessage(const MSG& aMsg) {
+  if (StaticPrefs::ui_key_layout_load_when_first_needed()) {
+    // Getting instance creates the singleton instance and that will
+    // automatically load active keyboard layout data.  We should do that
+    // before TSF or TranslateMessage handles a key message.
+    Unused << KeyboardLayout::GetInstance();
+  }
   if (IsTSFAvailable()) {
     return TSFTextStore::ProcessRawKeyMessage(aMsg);
   }
@@ -287,16 +295,28 @@ nsresult IMEHandler::NotifyIME(nsWindow* aWindow,
         }
         return TSFTextStore::OnMouseButtonEvent(aIMENotification);
       case REQUEST_TO_COMMIT_COMPOSITION:
-        if (TSFTextStore::IsComposingOn(aWindow)) {
+        // In the TSF world, a DLL might manage hidden composition and that
+        // might cause a crash if we don't terminate it and disassociate the
+        // context.  Therefore, we should always try to commit composition.
+        if (IsTSFAvailable()) {
           TSFTextStore::CommitComposition(false);
-        } else if (IsIMMActive()) {
+        }
+        // Even if we're in the TSF mode, the active IME may be IMM.  Therefore,
+        // we need to use IMM handler too.
+        if (IsIMMActive()) {
           IMMHandler::CommitComposition(aWindow);
         }
         return NS_OK;
       case REQUEST_TO_CANCEL_COMPOSITION:
-        if (TSFTextStore::IsComposingOn(aWindow)) {
+        // In the TSF world, a DLL might manage hidden composition and that
+        // might cause a crash if we don't terminate it and disassociate the
+        // context.  Therefore, we should always try to commit composition.
+        if (IsTSFAvailable()) {
           TSFTextStore::CommitComposition(true);
-        } else if (IsIMMActive()) {
+        }
+        // Even if we're in the TSF mode, the active IME may be IMM.  Therefore,
+        // we need to use IMM handler too.
+        if (IsIMMActive()) {
           IMMHandler::CancelComposition(aWindow);
         }
         return NS_OK;
@@ -703,15 +723,13 @@ bool IMEHandler::IsOnScreenKeyboardSupported() {
     return false;
   }
 
-  // On Windows 10 we require tablet mode, unless the user has set the relevant
-  // Windows setting to enable the on-screen keyboard in desktop mode.
-  // We might be disabled specifically on Win8(.1), so we check that afterwards.
+  // On Windows 11, we ignore tablet mode (see bug 1722208)
   if (!IsWin11OrLater()) {
-    if (!IsInTabletMode() && !AutoInvokeOnScreenKeyboardInDesktopMode()) {
+    // On Windows 10 we require tablet mode, unless the user has set the
+    // relevant setting to enable the on-screen keyboard in desktop mode.
+    if (!IsInWin10TabletMode() && !AutoInvokeOnScreenKeyboardInDesktopMode()) {
       return false;
     }
-  } else if (Preferences::GetBool(kOskRequireWin10, true)) {
-    return false;
   }
 
   return true;
@@ -900,8 +918,8 @@ bool IMEHandler::IsKeyboardPresentOnSlate() {
 }
 
 // static
-bool IMEHandler::IsInTabletMode() {
-  bool isInTabletMode = WindowsUIUtils::GetInTabletMode();
+bool IMEHandler::IsInWin10TabletMode() {
+  bool isInTabletMode = WindowsUIUtils::GetInWin10TabletMode();
   if (isInTabletMode) {
     Preferences::SetString(kOskDebugReason, L"IITM: GetInTabletMode=true.");
   } else {

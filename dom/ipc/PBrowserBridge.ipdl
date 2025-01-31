@@ -17,14 +17,12 @@ include "mozilla/dom/BindingIPCUtils.h";
 include "mozilla/dom/DocShellMessageUtils.h";
 include "mozilla/dom/TabMessageUtils.h";
 
-using mozilla::layers::LayersObserverEpoch from "mozilla/layers/LayersTypes.h";
 using class mozilla::WidgetMouseEvent from "ipc/nsGUIEventIPC.h";
 using mozilla::dom::EffectsInfo from "mozilla/dom/EffectsInfo.h";
 using mozilla::ScrollAxis from "mozilla/PresShellForwards.h";
 using mozilla::ScrollFlags from "mozilla/PresShellForwards.h";
 using struct nsRect from "nsRect.h";
 using mozilla::dom::CallerType from "mozilla/dom/BindingDeclarations.h";
-using nsIntRect from "nsRect.h";
 using mozilla::dom::EmbedderElementEventType from "mozilla/dom/TabMessageTypes.h";
 [RefCounted] using class nsDocShellLoadState from "nsDocShellLoadState.h";
 using mozilla::IntrinsicSize from "nsIFrame.h";
@@ -93,8 +91,8 @@ parent:
   // Out of process rendering.
   async Show(OwnerShowInfo info);
   async ScrollbarPreferenceChanged(ScrollbarPreference pref);
-  [Compress=all] async UpdateDimensions(nsIntRect rect, ScreenIntSize size);
-  async RenderLayers(bool aEnabled, LayersObserverEpoch aEpoch);
+  [Compress=all] async UpdateDimensions(LayoutDeviceIntRect rect, LayoutDeviceIntSize size);
+  async RenderLayers(bool aEnabled);
 
   async UpdateEffects(EffectsInfo aEffects);
   async UpdateRemotePrintSettings(PrintData aPrintData);

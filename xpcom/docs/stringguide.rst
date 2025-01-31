@@ -130,7 +130,7 @@ As function parameters
 
 In general, use ``nsA[C]String`` references to pass strings across modules. For example:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     // when passing a string to a method, use const nsAString&
     nsFoo::PrintString(const nsAString& str);
@@ -157,6 +157,7 @@ and members in classes or structs.
     "ns[C]String" -> "nsLiteral[C]String" [style=dashed];
     "nsAuto[C]StringN" -> "nsPromiseFlat[C]String";
     "nsAuto[C]StringN" -> "nsPrintfCString";
+    "nsAuto[C]StringN" -> "nsFmtCString";
 
 The following is a list of the most common concrete classes. Once you are
 familiar with them, see the appendix describing What Class to Use When.
@@ -186,6 +187,11 @@ familiar with them, see the appendix describing What Class to Use When.
   construct a 8-bit string from a printf-style format string and parameter
   list.
 
+* ``nsFmtCString`` - derived from ``nsCString``, this string behaves like an
+  ``nsAutoCString``. The constructor takes parameters which allows it to
+  construct a 8-bit string from an {fmt}-style format string and parameter
+  list.
+
 There are also a number of concrete classes that are created as a side-effect
 of helper routines, etc. You should avoid direct use of these classes. Let
 the string library create the class for you.
@@ -204,7 +210,7 @@ Iterators
 Because Mozilla strings are always a single buffer, iteration over the
 characters in the string is done using raw pointers:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /**
      * Find whether there is a tab character in `data`
@@ -226,7 +232,7 @@ It should never be dereferenced.
 
 Writing to a mutable string is also simple:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /**
     * Replace every tab character in `data` with a space.
@@ -247,7 +253,7 @@ Iterators become invalid after changing the length of a string. If a string
 buffer becomes smaller while writing it, use ``SetLength`` to inform the
 string class of the new size:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /**
      * Remove every tab character from `data`
@@ -342,18 +348,19 @@ bucket could accommodate the new logical length.
 Helper Classes and Functions
 ----------------------------
 
-Converting Cocoa strings
-~~~~~~~~~~~~~~~~~~~~~~~~
+Converting NSString strings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use ``mozilla::CopyCocoaStringToXPCOMString()`` in
-``mozilla/MacStringHelpers.h`` to convert Cocoa strings to XPCOM strings.
+Use ``mozilla::CopyNSStringToXPCOMString()`` in
+``mozilla/MacStringHelpers.h`` to convert NSString strings to XPCOM strings.
 
 Searching strings - looking for substrings, characters, etc.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``nsReadableUtils.h`` header provides helper methods for searching in runnables.
+The ``nsReadableUtils.h`` header provides helper methods for searching in
+readables.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     bool FindInReadable(const nsAString& pattern,
                         nsAString::const_iterator start, nsAString::const_iterator end,
@@ -367,7 +374,7 @@ whether or not the string was found.
 
 An example:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     const nsAString& str = GetSomeString();
     nsAString::const_iterator start, end;
@@ -403,7 +410,7 @@ actually allocating new space and copying the characters into that substring.
 ``Substring()`` is the preferred method to create a reference to such a
 string.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     void ProcessString(const nsAString& str) {
         const nsAString& firstFive = Substring(str, 0, 5); // from index 0, length 5
@@ -466,7 +473,7 @@ Additionally, on Windows the are some rare cases (e.g. drag&drop) where it's
 necessary to call a system API with data encoded in the Windows
 locale-dependent legacy encoding instead of UTF-16. In those rare cases, use
 ``MultiByteToWideChar``/``WideCharToMultiByte`` from kernel32.dll. Do not use
-``iconv`` on *nix. We only support UTF-8-encoded file paths on *nix, non-path
+``iconv`` on \*nix. We only support UTF-8-encoded file paths on \*nix, non-path
 Gtk strings are always UTF-8 and Cocoa and Java strings are always UTF-16.
 
 When working with existing code, it is important to examine the current usage
@@ -534,7 +541,7 @@ UTF-8 / UTF-16 conversion
     or ``const char*`` to a 16-bit UTF-16 string. If you need a ``const
     char16_t*`` buffer, you can use the ``.get()`` method. For example:
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         /* signature: void HandleUnicodeString(const nsAString& str); */
         object->HandleUnicodeString(NS_ConvertUTF8toUTF16(utf8String));
@@ -548,7 +555,7 @@ UTF-8 / UTF-16 conversion
     to a UTF-8 encoded string. As above, you can use ``.get()`` to access a
     ``const char*`` buffer.
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         /* signature: void HandleUTF8String(const nsACString& str); */
         object->HandleUTF8String(NS_ConvertUTF16toUTF8(utf16String));
@@ -560,7 +567,7 @@ UTF-8 / UTF-16 conversion
 
     converts and copies:
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         // return a UTF-16 value
         void Foo::GetUnicodeValue(nsAString& result) {
@@ -571,7 +578,7 @@ UTF-8 / UTF-16 conversion
 
     converts and appends:
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         // return a UTF-16 value
         void Foo::GetUnicodeValue(nsAString& result) {
@@ -583,7 +590,7 @@ UTF-8 / UTF-16 conversion
 
     converts and copies:
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         // return a UTF-8 value
         void Foo::GetUTF8Value(nsACString& result) {
@@ -594,7 +601,7 @@ UTF-8 / UTF-16 conversion
 
     converts and appends:
 
-    .. code-block:: c++
+    .. code-block:: cpp
 
         // return a UTF-8 value
         void Foo::GetUnicodeValue(nsACString& result) {
@@ -709,7 +716,7 @@ advantage of the user-defined literals is twofold.
 Here are some examples of proper usage of the literals (both standard and
 user-defined):
 
-.. code-block:: c++
+.. code-block:: cpp
 
     // call Init(const nsLiteralString&) - enforces that it's only called with literals
     Init(u"start value"_ns);
@@ -746,7 +753,7 @@ least as long as the ``nsSubstringTuple`` object.
 For example, you can use the value of two strings and pass their
 concatenation on to another function which takes an ``const nsAString&``:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     void HandleTwoStrings(const nsAString& one, const nsAString& two) {
       // call HandleString(const nsAString&)
@@ -760,7 +767,7 @@ buffer will be shared in this case negating the cost of the intermediate
 temporary. You can concatenate N strings and store the result in a temporary
 variable:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     constexpr auto start = u"start "_ns;
     constexpr auto middle = u"middle "_ns;
@@ -775,7 +782,7 @@ It is safe to concatenate user-defined literals because the temporary
 ``nsLiteral[C]String`` objects will live as long as the temporary
 concatenation object (of type ``nsSubstringTuple``).
 
-.. code-block:: c++
+.. code-block:: cpp
 
     // call HandlePage(const nsAString&);
     // safe because the concatenated-string will live as long as its substrings
@@ -794,7 +801,7 @@ dealing with small strings. ``nsAutoStringN``/``nsAutoCStringN`` are more
 general alternatives that let you choose the number of characters in the
 inline buffer.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     ...
     nsAutoString value;
@@ -808,7 +815,7 @@ Member Variables
 In general, you should use the concrete classes ``nsString`` and
 ``nsCString`` for member variables.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     class Foo {
       ...
@@ -836,7 +843,7 @@ buffer if necessary. This is most often used in order to pass an
 In the following example, an ``nsAString`` is combined with a literal string,
 and the result is passed to an API which requires a simple character buffer.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     // Modify the URL and pass to AddPage(const char16_t* url)
     void AddModifiedPage(const nsAString& url) {
@@ -850,7 +857,7 @@ and the result is passed to an API which requires a simple character buffer.
 ``PromiseFlatString()`` is smart when handed a string that is already
 null-terminated. It avoids creating the temporary buffer in such cases.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     // Modify the URL and pass to AddPage(const char16_t* url)
     void AddModifiedPage(const nsAString& url, PRBool addPrefix) {
@@ -881,7 +888,7 @@ For debugging, it's useful to ``printf`` a UTF-16 string (``nsString``,
 ``nsAutoString``, etc). To do this usually requires converting it to an 8-bit
 string, because that's what ``printf`` expects. Use:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     printf("%s\n", NS_ConvertUTF16toUTF8(yourString).get());
 
@@ -903,6 +910,7 @@ list between the ``SetCapacity()`` call and operations from the list):
 * ``AppendASCII()``
 * ``AppendLiteral()``
 * ``AppendPrintf()``
+* ``AppendFmt()``
 * ``AppendInt()``
 * ``AppendFloat()``
 * ``LossyAppendUTF16toASCII()``
@@ -983,14 +991,14 @@ In XPIDL, ``in`` parameters are read-only, and the C++ signatures for
 nsAString&`` for these parameters. ``out`` and ``inout`` parameters are
 defined simply as ``nsAString&`` so that the callee can write to them.
 
-.. code-block::
+.. code-block:: cpp
 
     interface nsIFoo : nsISupports {
         attribute AString utf16String;
         AUTF8String getValue(in ACString key);
     };
 
-.. code-block:: c++
+.. code-block:: cpp
 
     class nsIFoo : public nsISupports {
       NS_IMETHOD GetUtf16String(nsAString& aResult) = 0;
@@ -1048,7 +1056,7 @@ Class Reference
 
     .. cpp:function:: const char_type* EndReading() const
 
-    .. cpp:function:: bool Equals(const self_type&, comparator_type = ...) const
+    .. cpp:function:: bool Equals(const self_type&, comparator_type) const
 
     .. cpp:function:: char_type First() const
 

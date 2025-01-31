@@ -1,6 +1,6 @@
 const HELPER_PAGE_URL =
-  "http://example.com/browser/dom/tests/browser/page_localstorage_snapshotting.html";
-const HELPER_PAGE_ORIGIN = "http://example.com/";
+  "https://example.com/browser/dom/tests/browser/page_localstorage_snapshotting.html";
+const HELPER_PAGE_ORIGIN = "https://example.com/";
 
 /* import-globals-from helper_localStorage.js */
 
@@ -12,11 +12,7 @@ function clearOrigin() {
     Services.scriptSecurityManager.createContentPrincipalFromOrigin(
       HELPER_PAGE_ORIGIN
     );
-  let request = Services.qms.clearStoragesForPrincipal(
-    principal,
-    "default",
-    "ls"
-  );
+  let request = Services.qms.clearStoragesForClient(principal, "ls", "default");
   let promise = new Promise(resolve => {
     request.callback = () => {
       resolve();
@@ -128,7 +124,7 @@ async function verifyParentState(expectedState) {
 }
 
 // We spin up a ton of child processes.
-requestLongerTimeout(4);
+requestLongerTimeout(6);
 
 /**
  * Verify snapshotting of our localStorage implementation in multi-e10s setup.

@@ -12,6 +12,7 @@
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
 const {ComponentUtils} = ChromeUtils.importESModule("resource://gre/modules/ComponentUtils.sys.mjs");
 const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Preferences.sys.mjs");
+const {TestUtils} = ChromeUtils.importESModule("resource://testing-common/TestUtils.sys.mjs");
 const {XPCOMUtils} = ChromeUtils.importESModule("resource://gre/modules/XPCOMUtils.sys.mjs");
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -42,33 +43,6 @@ add_test(function test_generateQI_string_names()
     } catch(e) {}
     run_next_test();
 });
-
-add_test(function test_defineLazyGetter()
-{
-    let accessCount = 0;
-    let obj = {
-      inScope: false
-    };
-    const TEST_VALUE = "test value";
-    XPCOMUtils.defineLazyGetter(obj, "foo", function() {
-        accessCount++;
-        this.inScope = true;
-        return TEST_VALUE;
-    });
-    Assert.equal(accessCount, 0);
-
-    // Get the property, making sure the access count has increased.
-    Assert.equal(obj.foo, TEST_VALUE);
-    Assert.equal(accessCount, 1);
-    Assert.ok(obj.inScope);
-
-    // Get the property once more, making sure the access count has not
-    // increased.
-    Assert.equal(obj.foo, TEST_VALUE);
-    Assert.equal(accessCount, 1);
-    run_next_test();
-});
-
 
 add_test(function test_defineLazyServiceGetter()
 {

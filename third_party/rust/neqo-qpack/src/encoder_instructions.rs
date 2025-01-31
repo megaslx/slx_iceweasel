@@ -4,15 +4,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::prefix::{
-    ENCODER_CAPACITY, ENCODER_DUPLICATE, ENCODER_INSERT_WITH_NAME_LITERAL,
-    ENCODER_INSERT_WITH_NAME_REF_DYNAMIC, ENCODER_INSERT_WITH_NAME_REF_STATIC, NO_PREFIX,
-};
-use crate::qpack_send_buf::QpackData;
-use crate::reader::{IntReader, LiteralReader, ReadByte, Reader};
-use crate::Res;
-use neqo_common::{qdebug, qtrace};
 use std::mem;
+
+use neqo_common::{qdebug, qtrace};
+
+use crate::{
+    prefix::{
+        ENCODER_CAPACITY, ENCODER_DUPLICATE, ENCODER_INSERT_WITH_NAME_LITERAL,
+        ENCODER_INSERT_WITH_NAME_REF_DYNAMIC, ENCODER_INSERT_WITH_NAME_REF_STATIC, NO_PREFIX,
+    },
+    qpack_send_buf::QpackData,
+    reader::{IntReader, LiteralReader, ReadByte, Reader},
+    Res,
+};
 
 // The encoder only uses InsertWithNameLiteral, therefore clippy is complaining about dead_code.
 // We may decide to use othe instruction in the future.
@@ -28,7 +32,7 @@ pub enum EncoderInstruction<'a> {
     NoInstruction,
 }
 
-impl<'a> EncoderInstruction<'a> {
+impl EncoderInstruction<'_> {
     pub(crate) fn marshal(&self, enc: &mut QpackData, use_huffman: bool) {
         match self {
             Self::Capacity { value } => {
@@ -118,7 +122,7 @@ impl ::std::fmt::Display for EncoderInstructionReader {
 }
 
 impl EncoderInstructionReader {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: EncoderInstructionReaderState::ReadInstruction,
             instruction: DecodedEncoderInstruction::NoInstruction,
@@ -183,10 +187,11 @@ impl EncoderInstructionReader {
         Ok(())
     }
 
-    /// ### Errors
-    ///  1) `NeedMoreData` if the reader needs more data
-    ///  2) `ClosedCriticalStream`
-    ///  3) other errors will be translated to `EncoderStream` by the caller of this function.
+    /// # Errors
+    ///
+    /// 1) `NeedMoreData` if the reader needs more data
+    /// 2) `ClosedCriticalStream`
+    /// 3) other errors will be translated to `EncoderStream` by the caller of this function.
     pub fn read_instructions<T: ReadByte + Reader>(
         &mut self,
         recv: &mut T,
@@ -265,8 +270,7 @@ impl EncoderInstructionReader {
 mod test {
 
     use super::{EncoderInstruction, EncoderInstructionReader, QpackData};
-    use crate::reader::test_receiver::TestReceiver;
-    use crate::Error;
+    use crate::{reader::test_receiver::TestReceiver, Error};
 
     fn test_encoding_decoding(instruction: &EncoderInstruction, use_huffman: bool) {
         let mut buf = QpackData::default();
@@ -281,7 +285,7 @@ mod test {
     }
 
     #[test]
-    fn test_encoding_decoding_instructions() {
+    fn encoding_decoding_instructions() {
         test_encoding_decoding(&EncoderInstruction::Capacity { value: 1 }, false);
         test_encoding_decoding(&EncoderInstruction::Capacity { value: 10_000 }, false);
 
@@ -382,7 +386,7 @@ mod test {
     }
 
     #[test]
-    fn test_encoding_decoding_instructions_slow_reader() {
+    fn encoding_decoding_instructions_slow_reader() {
         test_encoding_decoding_slow_reader(&EncoderInstruction::Capacity { value: 1 }, false);
         test_encoding_decoding_slow_reader(&EncoderInstruction::Capacity { value: 10_000 }, false);
 
@@ -464,7 +468,7 @@ mod test {
     }
 
     #[test]
-    fn test_decoding_error() {
+    fn decoding_error() {
         let mut test_receiver: TestReceiver = TestReceiver::default();
         // EncoderInstruction::Capacity with overflow
         test_receiver.write(&[

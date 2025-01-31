@@ -22,7 +22,7 @@ function run_test() {
 
 const REQUEST_DATA = "12345678901234567";
 
-function contentLength(request, response) {
+function contentLength(request) {
   Assert.equal(request.method, "POST");
   Assert.equal(request.getHeader("Content-Length"), "017");
 
@@ -41,7 +41,7 @@ function contentLength(request, response) {
  * BEGIN TESTS *
  ***************/
 
-XPCOMUtils.defineLazyGetter(this, "tests", function () {
+ChromeUtils.defineLazyGetter(this, "tests", function () {
   return [
     new Test(
       "http://localhost:" + srv.identity.primaryPort + "/content-length",
@@ -54,7 +54,7 @@ function init_content_length(ch) {
   var content = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  content.data = REQUEST_DATA;
+  content.setByteStringData(REQUEST_DATA);
 
   ch.QueryInterface(Ci.nsIUploadChannel).setUploadStream(
     content,

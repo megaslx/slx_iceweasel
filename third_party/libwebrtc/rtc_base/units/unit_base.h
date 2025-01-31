@@ -110,7 +110,6 @@ class UnitBase {
     } else if (value == -std::numeric_limits<T>::infinity()) {
       return MinusInfinity();
     } else {
-      RTC_DCHECK(!std::isnan(value));
       return FromValue(rtc::dchecked_cast<int64_t>(value));
     }
   }
@@ -141,10 +140,9 @@ class UnitBase {
   template <typename T>
   constexpr typename std::enable_if<std::is_floating_point<T>::value, T>::type
   ToValue() const {
-    return IsPlusInfinity()
-               ? std::numeric_limits<T>::infinity()
-               : IsMinusInfinity() ? -std::numeric_limits<T>::infinity()
-                                   : value_;
+    return IsPlusInfinity()    ? std::numeric_limits<T>::infinity()
+           : IsMinusInfinity() ? -std::numeric_limits<T>::infinity()
+                               : value_;
   }
   template <typename T>
   constexpr T ToValueOr(T fallback_value) const {

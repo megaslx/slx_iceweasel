@@ -13,7 +13,7 @@ const TEST_PROVIDER_INFO = [
     telemetryId: "example",
     searchPageRegexp:
       /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd/,
-    queryParamName: "s",
+    queryParamNames: ["s"],
     codeParamName: "abc",
     taggedCodes: ["ff"],
     adServerAttributes: ["mozAttr"],
@@ -78,22 +78,18 @@ const TEST_PROVIDER_INFO = [
         type: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
         default: true,
       },
+      {
+        type: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+        included: {
+          parent: {
+            selector: "#banner",
+          },
+        },
+        topDown: true,
+      },
     ],
   },
 ];
-
-async function promiseAdImpressionReceived() {
-  return TestUtils.waitForCondition(() => {
-    let adImpressions = Glean.serp.adImpression.testGetValue() ?? [];
-    return adImpressions.length;
-  }, "Should have received an ad impression.");
-}
-
-async function promiseResize(width, height) {
-  return TestUtils.waitForCondition(() => {
-    return window.outerWidth === width && window.outerHeight === height;
-  }, "Waiting for window to resize");
-}
 
 add_setup(async function () {
   SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
@@ -101,12 +97,6 @@ add_setup(async function () {
   // Enable local telemetry recording for the duration of the tests.
   let oldCanRecord = Services.telemetry.canRecordExtended;
   Services.telemetry.canRecordExtended = true;
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.search.log", true],
-      ["browser.search.serpEventTelemetry.enabled", true],
-    ],
-  });
 
   // The tests evaluate whether or not ads are visible depending on whether
   // they are within the view of the window. To ensure the test results
@@ -114,14 +104,12 @@ add_setup(async function () {
   // set the window size to something reasonable.
   let originalWidth = window.outerWidth;
   let originalHeight = window.outerHeight;
-  window.resizeTo(WINDOW_WIDTH, WINDOW_HEIGHT);
-  await promiseResize(WINDOW_WIDTH, WINDOW_HEIGHT);
+  await resizeWindow(window, WINDOW_WIDTH, WINDOW_HEIGHT);
 
   registerCleanupFunction(async () => {
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
     Services.telemetry.canRecordExtended = oldCanRecord;
-    window.resizeTo(originalWidth, originalHeight);
-    await promiseResize(originalWidth, originalHeight);
+    await resizeWindow(window, originalWidth, originalHeight);
     resetTelemetry();
   });
 });
@@ -131,14 +119,28 @@ add_task(async function test_ad_impressions_with_one_carousel() {
   let url = getSERPUrl("searchTelemetryAd_components_carousel.html");
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "4",
-      ads_visible: "3",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "3",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
 
@@ -162,14 +164,28 @@ add_task(async function test_ad_impressions_with_two_carousels() {
     content.scrollTo(0, el.top + el.height + 100);
   });
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "8",
-      ads_visible: "6",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "8",
+          ads_visible: "6",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
 
@@ -184,14 +200,33 @@ add_task(
     );
     let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-    await promiseAdImpressionReceived();
+    await waitForPageWithAdImpressions();
 
-    assertAdImpressionEvents([
+    // A common pattern for carousels is for one element to be the mask
+    // while a child element contains all individual elements. If we select the
+    // parent selector of an element that isn't the mask and is the container
+    // of all elements, we'll potentially end up counting all elements as
+    // visible.
+    assertSERPTelemetry([
       {
-        component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-        ads_loaded: "4",
-        ads_visible: "3",
-        ads_hidden: "0",
+        impression: {
+          provider: "example",
+          tagged: "true",
+          partner_code: "ff",
+          source: "unknown",
+          is_shopping_page: "false",
+          is_private: "false",
+          shopping_tab_displayed: "false",
+          is_signed_in: "false",
+        },
+        adImpressions: [
+          {
+            component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+            ads_loaded: "4",
+            ads_visible: "4",
+            ads_hidden: "0",
+          },
+        ],
       },
     ]);
 
@@ -203,18 +238,17 @@ add_task(async function test_ad_impressions_with_carousels_tabhistory() {
   resetTelemetry();
   let url = getSERPUrl("searchTelemetryAd_components_carousel.html");
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
-
-  await promiseAdImpressionReceived();
-
-  // Reset telemetry because we care about the telemetry upon going back.
-  resetTelemetry();
+  await waitForPageWithAdImpressions();
 
   let browserLoadedPromise = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  BrowserTestUtils.loadURIString(
+  BrowserTestUtils.startLoadingURIString(
     tab.linkedBrowser,
     "https://www.example.com/some_url"
   );
   await browserLoadedPromise;
+
+  // Reset telemetry because we care about the telemetry upon going back.
+  resetTelemetry();
 
   let pageShowPromise = BrowserTestUtils.waitForContentEvent(
     tab.linkedBrowser,
@@ -223,14 +257,28 @@ add_task(async function test_ad_impressions_with_carousels_tabhistory() {
   tab.linkedBrowser.goBack();
   await pageShowPromise;
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "4",
-      ads_visible: "3",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "tabhistory",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "3",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
 
@@ -242,14 +290,28 @@ add_task(async function test_ad_impressions_with_hidden_carousels() {
   let url = getSERPUrl("searchTelemetryAd_components_carousel_hidden.html");
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "4",
-      ads_visible: "0",
-      ads_hidden: "4",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "0",
+          ads_hidden: "4",
+        },
+      ],
     },
   ]);
 
@@ -263,14 +325,28 @@ add_task(async function test_ad_impressions_with_carousel_scrolled_left() {
   );
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "4",
-      ads_visible: "2",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "3",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
 
@@ -284,47 +360,137 @@ add_task(async function test_ad_impressions_with_carousel_below_the_fold() {
   );
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
-      ads_loaded: "4",
-      ads_visible: "0",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "0",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
 
   BrowserTestUtils.removeTab(tab);
 });
 
+// This test takes a carousel that's below the fold and places it at the fold
+// to check that when the ad impression is recorded,
+add_task(
+  async function test_ad_impressions_visibility_with_carousel_at_the_fold() {
+    resetTelemetry();
+    let url = getSERPUrl(
+      "searchTelemetryAd_components_carousel_below_the_fold.html"
+    );
+    let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+
+    // Position the carousel such that it only partially appears.
+    // The amount that should show depends on VISIBILITY_THRESHOLD.
+    await SpecialPowers.spawn(
+      gBrowser.selectedBrowser,
+      [VISIBILITY_THRESHOLD],
+      threshold => {
+        let el = content.document.querySelector(".moz-carousel-container");
+
+        let dimensions = el.getBoundingClientRect();
+        let adjustedHeight = dimensions.height * threshold;
+        // This is a tiny amount of added visibility as a precautionary
+        // measure to avoid intermittent failures.
+        let adjustment = 2;
+
+        let top = content.window.innerHeight - adjustedHeight - adjustment;
+        el.style.position = "absolute";
+        el.style.top = `${top}px`;
+      }
+    );
+
+    await waitForPageWithAdImpressions();
+
+    assertSERPTelemetry([
+      {
+        impression: {
+          provider: "example",
+          tagged: "true",
+          partner_code: "ff",
+          source: "unknown",
+          is_shopping_page: "false",
+          is_private: "false",
+          shopping_tab_displayed: "false",
+          is_signed_in: "false",
+        },
+        adImpressions: [
+          {
+            component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+            ads_loaded: "4",
+            // The fourth ad is not viewable because it requires the user
+            // to scroll the carousel.
+            ads_visible: "3",
+            ads_hidden: "0",
+          },
+        ],
+      },
+    ]);
+
+    BrowserTestUtils.removeTab(tab);
+  }
+);
+
 add_task(async function test_ad_impressions_with_text_links() {
   resetTelemetry();
   let url = getSERPUrl("searchTelemetryAd_components_text.html");
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
-      ads_loaded: "1",
-      ads_visible: "1",
-      ads_hidden: "0",
-    },
-    {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
-      ads_loaded: "2",
-      ads_visible: "2",
-      ads_hidden: "0",
-    },
-    {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_SIDEBAR,
-      ads_loaded: "1",
-      ads_visible: "1",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "2",
+          ads_visible: "2",
+          ads_hidden: "0",
+        },
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_SIDEBAR,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
+
   BrowserTestUtils.removeTab(tab);
 });
 
@@ -341,23 +507,38 @@ add_task(async function test_ad_visibility() {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
-    let el = content.document
-      .getElementById("second-ad")
-      .getBoundingClientRect();
-    // The 100 is just to guarantee we've scrolled past the element.
-    content.scrollTo(0, el.top + el.height + 100);
+    let el = content.document.getElementById("second-ad");
+    // There's top padding on the element to push it far down the page, so to
+    // ensure that we actually snapshot the ad, we want to scroll to the bottom
+    // of it.
+    el.scrollIntoView(false);
   });
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
-      ads_loaded: "6",
-      ads_visible: "4",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "6",
+          ads_visible: "4",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
+
   BrowserTestUtils.removeTab(tab);
 });
 
@@ -366,15 +547,63 @@ add_task(async function test_impressions_without_ads() {
   let url = getSERPUrl("searchTelemetryAd_searchbox_with_content.html");
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await promiseAdImpressionReceived();
+  await waitForPageWithAdImpressions();
 
-  assertAdImpressionEvents([
+  assertSERPTelemetry([
     {
-      component: SearchSERPTelemetryUtils.COMPONENTS.REFINED_SEARCH_BUTTONS,
-      ads_loaded: "1",
-      ads_visible: "1",
-      ads_hidden: "0",
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.REFINED_SEARCH_BUTTONS,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
+
+  BrowserTestUtils.removeTab(tab);
+});
+
+add_task(async function test_ad_impressions_with_cookie_banner() {
+  resetTelemetry();
+  let url = getSERPUrl("searchTelemetryAd_components_cookie_banner.html");
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+
+  await waitForPageWithAdImpressions();
+
+  assertSERPTelemetry([
+    {
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
   BrowserTestUtils.removeTab(tab);
 });

@@ -51,7 +51,6 @@
 @synthesize sdpSemantics = _sdpSemantics;
 @synthesize turnCustomizer = _turnCustomizer;
 @synthesize activeResetSrtpParams = _activeResetSrtpParams;
-@synthesize allowCodecSwitching = _allowCodecSwitching;
 @synthesize cryptoOptions = _cryptoOptions;
 @synthesize turnLoggingId = _turnLoggingId;
 @synthesize rtcpAudioReportIntervalMs = _rtcpAudioReportIntervalMs;
@@ -73,7 +72,8 @@
 
 - (instancetype)initWithNativeConfiguration:
     (const webrtc::PeerConnectionInterface::RTCConfiguration &)config {
-  if (self = [super init]) {
+  self = [super init];
+  if (self) {
     _enableDscp = config.dscp();
     NSMutableArray *iceServers = [NSMutableArray array];
     for (const webrtc::PeerConnectionInterface::IceServer& server : config.servers) {
@@ -139,7 +139,6 @@
     _turnLoggingId = [NSString stringWithUTF8String:config.turn_logging_id.c_str()];
     _rtcpAudioReportIntervalMs = config.audio_rtcp_report_interval_ms();
     _rtcpVideoReportIntervalMs = config.video_rtcp_report_interval_ms();
-    _allowCodecSwitching = config.allow_codec_switching.value_or(false);
     _enableImplicitRollback = config.enable_implicit_rollback;
     _offerExtmapAllowMixed = config.offer_extmap_allow_mixed;
     _iceCheckIntervalStrongConnectivity =
@@ -249,7 +248,7 @@
     if (keyType != rtc::KT_DEFAULT) {
       rtc::scoped_refptr<rtc::RTCCertificate> certificate =
           rtc::RTCCertificateGenerator::GenerateCertificate(rtc::KeyParams(keyType),
-                                                            absl::optional<uint64_t>());
+                                                            std::optional<uint64_t>());
       if (!certificate) {
         RTCLogError(@"Failed to generate certificate.");
         return nullptr;
@@ -264,7 +263,7 @@
   nativeConfig->surface_ice_candidates_on_ice_transport_type_changed =
       _shouldSurfaceIceCandidatesOnIceTransportTypeChanged ? true : false;
   if (_iceCheckMinInterval != nil) {
-    nativeConfig->ice_check_min_interval = absl::optional<int>(_iceCheckMinInterval.intValue);
+    nativeConfig->ice_check_min_interval = std::optional<int>(_iceCheckMinInterval.intValue);
   }
   nativeConfig->sdp_semantics = [[self class] nativeSdpSemanticsForSdpSemantics:_sdpSemantics];
   if (_turnCustomizer) {
@@ -281,30 +280,29 @@
         _cryptoOptions.srtpEnableEncryptedRtpHeaderExtensions ? true : false;
     nativeCryptoOptions.sframe.require_frame_encryption =
         _cryptoOptions.sframeRequireFrameEncryption ? true : false;
-    nativeConfig->crypto_options = absl::optional<webrtc::CryptoOptions>(nativeCryptoOptions);
+    nativeConfig->crypto_options = std::optional<webrtc::CryptoOptions>(nativeCryptoOptions);
   }
   nativeConfig->turn_logging_id = [_turnLoggingId UTF8String];
   nativeConfig->set_audio_rtcp_report_interval_ms(_rtcpAudioReportIntervalMs);
   nativeConfig->set_video_rtcp_report_interval_ms(_rtcpVideoReportIntervalMs);
-  nativeConfig->allow_codec_switching = _allowCodecSwitching;
   nativeConfig->enable_implicit_rollback = _enableImplicitRollback;
   nativeConfig->offer_extmap_allow_mixed = _offerExtmapAllowMixed;
   if (_iceCheckIntervalStrongConnectivity != nil) {
     nativeConfig->ice_check_interval_strong_connectivity =
-        absl::optional<int>(_iceCheckIntervalStrongConnectivity.intValue);
+        std::optional<int>(_iceCheckIntervalStrongConnectivity.intValue);
   }
   if (_iceCheckIntervalWeakConnectivity != nil) {
     nativeConfig->ice_check_interval_weak_connectivity =
-        absl::optional<int>(_iceCheckIntervalWeakConnectivity.intValue);
+        std::optional<int>(_iceCheckIntervalWeakConnectivity.intValue);
   }
   if (_iceUnwritableTimeout != nil) {
-    nativeConfig->ice_unwritable_timeout = absl::optional<int>(_iceUnwritableTimeout.intValue);
+    nativeConfig->ice_unwritable_timeout = std::optional<int>(_iceUnwritableTimeout.intValue);
   }
   if (_iceUnwritableMinChecks != nil) {
-    nativeConfig->ice_unwritable_min_checks = absl::optional<int>(_iceUnwritableMinChecks.intValue);
+    nativeConfig->ice_unwritable_min_checks = std::optional<int>(_iceUnwritableMinChecks.intValue);
   }
   if (_iceInactiveTimeout != nil) {
-    nativeConfig->ice_inactive_timeout = absl::optional<int>(_iceInactiveTimeout.intValue);
+    nativeConfig->ice_inactive_timeout = std::optional<int>(_iceInactiveTimeout.intValue);
   }
   return nativeConfig.release();
 }

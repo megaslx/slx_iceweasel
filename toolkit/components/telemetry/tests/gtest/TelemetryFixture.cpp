@@ -8,7 +8,15 @@
 using namespace mozilla;
 
 void TelemetryTestFixture::SetUp() {
+  ASSERT_FALSE(mSetupCalled)
+  << "TelemetryTestFixture::Setup() called multiple times! This does not "
+     "need to be called from TestSpecificSetUp().";
+  mSetupCalled = true;
   mTelemetry = do_GetService("@mozilla.org/base/telemetry;1");
+
+  // Run specific test setup here so mCleanGlobal won't get GC'd before the test
+  // run starts.
+  TestSpecificSetUp();
 
   mCleanGlobal = dom::SimpleGlobalObject::Create(
       dom::SimpleGlobalObject::GlobalType::BindingDetail);
@@ -18,11 +26,13 @@ void TelemetryTestFixture::SetUp() {
       << "SimpleGlobalObject must return a valid global object.";
 }
 
-AutoJSContextWithGlobal::AutoJSContextWithGlobal(JSObject* aGlobalObject)
-    : mCx(nullptr) {
+AutoJSContextWithGlobal::AutoJSContextWithGlobal(JSObject* aGlobalObject) {
   // The JS API must initialize correctly.
   JS::Rooted<JSObject*> globalObject(dom::RootingCx(), aGlobalObject);
-  MOZ_ALWAYS_TRUE(mJsAPI.Init(globalObject));
+  mJsAPI.emplace();
+  MOZ_ALWAYS_TRUE(mJsAPI->Init(globalObject));
 }
 
-JSContext* AutoJSContextWithGlobal::GetJSContext() const { return mJsAPI.cx(); }
+JSContext* AutoJSContextWithGlobal::GetJSContext() const {
+  return mJsAPI->cx();
+}

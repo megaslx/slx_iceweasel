@@ -181,7 +181,6 @@ async function testMessages() {
   scriptErrorMessage.initWithWindowID(
     "Error from Services.console.logMessage",
     gBrowser.currentURI.prePath,
-    null,
     0,
     0,
     Ci.nsIScriptError.warningFlag,
@@ -297,7 +296,7 @@ async function checkComponentExceptionMessage(hud, exception) {
   ok(framesNode, "The Components.Exception stack is displayed right away");
 
   const frameNodes = framesNode.querySelectorAll(".frame");
-  ok(frameNodes.length > 1, "Got at least one frame in the stack");
+  Assert.greater(frameNodes.length, 1, "Got at least one frame in the stack");
   is(
     frameNodes[0].querySelector(".line").textContent,
     String(exception.lineNumber),

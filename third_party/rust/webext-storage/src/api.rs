@@ -96,7 +96,7 @@ fn save_to_db(tx: &Transaction<'_>, ext_id: &str, val: &StorageChangeOp) -> Resu
             StorageChangeOp::Set(v) => {
                 let sv = v.to_string();
                 if sv.len() > SYNC_QUOTA_BYTES {
-                    return Err(ErrorKind::QuotaError(QuotaReason::TotalBytes).into());
+                    return Err(Error::QuotaError(QuotaReason::TotalBytes));
                 }
                 sv
             }
@@ -142,7 +142,7 @@ pub struct StorageValueChange {
 // be a plain vec
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StorageChanges {
-    changes: Vec<StorageValueChange>,
+    pub changes: Vec<StorageValueChange>,
 }
 
 impl StorageChanges {
@@ -167,7 +167,7 @@ impl StorageChanges {
 
 // and it serializes as a map.
 impl Serialize for StorageChanges {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -205,12 +205,12 @@ pub fn set(tx: &Transaction<'_>, ext_id: &str, val: JsonValue) -> Result<Storage
     for (k, v) in val_map.into_iter() {
         let old_value = current.remove(&k);
         if current.len() >= SYNC_MAX_ITEMS {
-            return Err(ErrorKind::QuotaError(QuotaReason::MaxItems).into());
+            return Err(Error::QuotaError(QuotaReason::MaxItems));
         }
         // Reading the chrome docs literally re the quota, the length of the key
         // is just the string len, but the value is the json val, as bytes
         if get_quota_size_of(&k, &v) > SYNC_QUOTA_BYTES_PER_ITEM {
-            return Err(ErrorKind::QuotaError(QuotaReason::ItemBytes).into());
+            return Err(Error::QuotaError(QuotaReason::ItemBytes));
         }
         let change = StorageValueChange {
             key: k.clone(),
@@ -438,8 +438,9 @@ mod tests {
     #[test]
     fn test_simple() -> Result<()> {
         let ext_id = "x";
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
 
         // an empty store.
         for q in vec![JsonValue::Null, json!("foo"), json!(["foo"])].into_iter() {
@@ -516,8 +517,8 @@ mod tests {
         assert_eq!(
             clear(&tx, ext_id)?,
             make_changes(&[
-                ("foo", Some(json!({"sub-object": "sub-value"})), None),
                 ("other", Some(json!("also new")), None),
+                ("foo", Some(json!({"sub-object": "sub-value"})), None),
             ]),
         );
         assert_eq!(get(&tx, ext_id, JsonValue::Null)?, json!({}));
@@ -529,8 +530,9 @@ mod tests {
     fn test_check_get_impl() -> Result<()> {
         // This is a port of checkGetImpl in test_ext_storage.js in Desktop.
         let ext_id = "x";
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
 
         let prop = "test-prop";
         let value = "test-value";
@@ -584,8 +586,9 @@ mod tests {
     fn test_bug_1621162() -> Result<()> {
         // apparently Firefox, unlike Chrome, will not optimize the changes.
         // See bug 1621162 for more!
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
         let ext_id = "xyz";
 
         set(&tx, ext_id, json!({"foo": "bar" }))?;
@@ -599,8 +602,9 @@ mod tests {
 
     #[test]
     fn test_quota_maxitems() -> Result<()> {
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
         let ext_id = "xyz";
         for i in 1..SYNC_MAX_ITEMS + 1 {
             set(
@@ -610,8 +614,8 @@ mod tests {
             )?;
         }
         let e = set(&tx, ext_id, json!({"another": "another"})).unwrap_err();
-        match e.kind() {
-            ErrorKind::QuotaError(QuotaReason::MaxItems) => {}
+        match e {
+            Error::QuotaError(QuotaReason::MaxItems) => {}
             _ => panic!("unexpected error type"),
         };
         Ok(())
@@ -619,8 +623,9 @@ mod tests {
 
     #[test]
     fn test_quota_bytesperitem() -> Result<()> {
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
         let ext_id = "xyz";
         // A string 5 bytes less than the max. This should be counted as being
         // 3 bytes less than the max as the quotes are counted. Plus the length
@@ -636,8 +641,8 @@ mod tests {
 
         // Key length does push it over.
         let e = set(&tx, ext_id, json!({ "xxxx": val })).unwrap_err();
-        match e.kind() {
-            ErrorKind::QuotaError(QuotaReason::ItemBytes) => {}
+        match e {
+            Error::QuotaError(QuotaReason::ItemBytes) => {}
             _ => panic!("unexpected error type"),
         };
         Ok(())
@@ -645,8 +650,9 @@ mod tests {
 
     #[test]
     fn test_quota_bytes() -> Result<()> {
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
         let ext_id = "xyz";
         let val = "x".repeat(SYNC_QUOTA_BYTES + 1);
 
@@ -659,8 +665,8 @@ mod tests {
 
         // Adding more data fails.
         let e = set(&tx, ext_id, json!({ "y": "newvalue" })).unwrap_err();
-        match e.kind() {
-            ErrorKind::QuotaError(QuotaReason::TotalBytes) => {}
+        match e {
+            Error::QuotaError(QuotaReason::TotalBytes) => {}
             _ => panic!("unexpected error type"),
         };
 
@@ -682,8 +688,9 @@ mod tests {
 
     #[test]
     fn test_get_bytes_in_use() -> Result<()> {
-        let mut db = new_mem_db();
-        let tx = db.transaction()?;
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction()?;
         let ext_id = "xyz";
 
         assert_eq!(get_bytes_in_use(&tx, ext_id, json!(null))?, 0);
@@ -714,8 +721,9 @@ mod tests {
 
     #[test]
     fn test_usage() {
-        let mut db = new_mem_db();
-        let tx = db.transaction().unwrap();
+        let db = new_mem_db();
+        let conn = db.get_connection().expect("should retrieve connection");
+        let tx = conn.unchecked_transaction().unwrap();
         // '{"a":"a","b":"bb","c":"ccc","n":999999}': 39 bytes
         set(&tx, "xyz", json!({ "a": "a" })).unwrap();
         set(&tx, "xyz", json!({ "b": "bb" })).unwrap();
@@ -727,7 +735,7 @@ mod tests {
 
         tx.commit().unwrap();
 
-        let usage = usage(&db).unwrap();
+        let usage = usage(conn).unwrap();
         let expect = [
             UsageInfo {
                 ext_id: "abc".to_string(),

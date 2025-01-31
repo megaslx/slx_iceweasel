@@ -18,6 +18,18 @@ const { TestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/TestUtils.sys.mjs"
 );
 
+add_task(async function test_scriptingstore_rkv_recovery_rename() {
+  ExtensionScriptingStore._getStoreForTesting()._uninitForTesting();
+  const databaseDir = await makeRkvDatabaseDir("extension-store", {
+    mockCorrupted: true,
+  });
+  await ExtensionScriptingStore._getStoreForTesting().lazyInit();
+  Assert.ok(
+    await IOUtils.exists(PathUtils.join(databaseDir, "data.safe.bin.corrupt")),
+    "Expect corrupt file to be found"
+  );
+});
+
 const makeExtension = ({ manifest: manifestProps, ...otherProps }) => {
   return ExtensionTestUtils.loadExtension({
     manifest: {
@@ -31,6 +43,8 @@ const makeExtension = ({ manifest: manifestProps, ...otherProps }) => {
 };
 
 const assertNumScriptsInStore = async (extension, expectedNum) => {
+  Assert.notEqual(extension.id, null, "Expect a non-null extension id");
+
   // `registerContentScripts`/`updateContentScripts()`/`unregisterContentScripts`
   // call `ExtensionScriptingStore.persistAll()` without awaiting it, which
   // isn't a problem in practice but this becomes a problem in this test given
@@ -97,9 +111,10 @@ const verifyRegisterContentScripts = async manifestVersion => {
   await extension.awaitStartup();
   await extension.awaitMessage("script-already-registered");
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 };
 
 add_task(async function test_registerContentScripts_mv2() {
@@ -165,9 +180,10 @@ const verifyUpdateContentScripts = async manifestVersion => {
   await extension.awaitMessage("script-registered");
   await assertNumScriptsInStore(extension, 1);
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 };
 
 add_task(async function test_updateContentScripts() {
@@ -233,9 +249,10 @@ const verifyUnregisterContentScripts = async manifestVersion => {
   await extension.awaitMessage("script-registered");
   await assertNumScriptsInStore(extension, 1);
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 };
 
 add_task(async function test_unregisterContentScripts() {
@@ -291,9 +308,10 @@ add_task(async function test_reload_extension() {
   await extension.awaitMessage("script-already-registered");
   await assertNumScriptsInStore(extension, 1);
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 });
 
 add_task(async function test_disable_and_reenable_extension() {
@@ -338,9 +356,10 @@ add_task(async function test_disable_and_reenable_extension() {
   await extension.awaitMessage("script-already-registered");
   await assertNumScriptsInStore(extension, 1);
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 });
 
 add_task(async function test_updateContentScripts_persistAcrossSessions_true() {
@@ -383,7 +402,9 @@ add_task(async function test_updateContentScripts_persistAcrossSessions_true() {
                   id: script.id,
                   allFrames: false,
                   matches: script.matches,
+                  matchOriginAsFallback: false,
                   runAt: "document_idle",
+                  world: "ISOLATED",
                   persistAcrossSessions: true,
                   js: ["script-1.js", "script-2.js"],
                 },
@@ -461,9 +482,10 @@ add_task(async function test_updateContentScripts_persistAcrossSessions_true() {
   extension.sendMessage("verify-script");
   await extension.awaitMessage("verify-script-done");
 
+  const extId = extension.id;
   await extension.unload();
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension, 0);
+  await assertNumScriptsInStore({ id: extId }, 0);
 });
 
 add_task(async function test_multiple_extensions_and_scripts() {
@@ -576,10 +598,12 @@ add_task(async function test_multiple_extensions_and_scripts() {
     extension2.awaitMessage("scripts-already-registered"),
   ]);
 
+  const ext1Id = extension1.id;
+  const ext2Id = extension2.id;
   await Promise.all([extension1.unload(), extension2.unload()]);
   await AddonTestUtils.promiseShutdownManager();
-  await assertNumScriptsInStore(extension1, 0);
-  await assertNumScriptsInStore(extension2, 0);
+  await assertNumScriptsInStore({ id: ext1Id }, 0);
+  await assertNumScriptsInStore({ id: ext2Id }, 0);
 });
 
 add_task(async function test_persisted_scripts_cleared_on_addon_updates() {
@@ -721,27 +745,40 @@ add_task(async function test_persisted_scripts_cleared_on_addon_updates() {
   info("Verify that scripts are cleared on upgrade to same version");
   await testOnAddonUpdates(extension1Data, "ADDON_UPGRADE");
 
+  const ext1Id = extension1.id;
+  const ext1Version = extension1.version;
+  const ext2Id = extension2.id;
+  const ext2Version = extension2.version;
   await extension1.unload();
   await extension2.unload();
 
-  await assertNumScriptsInStore(extension1, 0);
-  await assertIsPersistentScriptsCachedFlag(extension1, undefined);
-  await assertNumScriptsInStore(extension2, 0);
-  await assertIsPersistentScriptsCachedFlag(extension2, undefined);
+  await assertNumScriptsInStore({ id: ext1Id }, 0);
+  await assertIsPersistentScriptsCachedFlag(
+    { id: ext1Id, version: ext1Version },
+    undefined
+  );
+  await assertNumScriptsInStore({ id: ext2Id }, 0);
+  await assertIsPersistentScriptsCachedFlag(
+    { id: ext2Id, version: ext2Version },
+    undefined
+  );
 
   info("Verify stale persisted scripts cleared on re-install");
   // Inject a stale persisted script into the store.
-  await ExtensionScriptingStore._getStoreForTesting().writeMany(extension1.id, [
+
+  await ExtensionScriptingStore._getStoreForTesting().writeMany(ext1Id, [
     {
       id: "script-1.js",
       allFrames: false,
       matches: ["http://*/*/file_sample.html"],
+      matchOriginAsFallback: false,
       runAt: "document_idle",
+      world: "ISOLATED",
       persistAcrossSessions: true,
       js: ["script-1.js"],
     },
   ]);
-  await assertNumScriptsInStore(extension1, 1);
+  await assertNumScriptsInStore({ id: ext1Id }, 1);
   const extension1Reinstalled =
     ExtensionTestUtils.loadExtension(extension1Data);
   await extension1Reinstalled.startup();
@@ -753,8 +790,11 @@ add_task(async function test_persisted_scripts_cleared_on_addon_updates() {
   await assertNumScriptsInStore(extension1Reinstalled, 0);
   await assertIsPersistentScriptsCachedFlag(extension1Reinstalled, false);
   await extension1Reinstalled.unload();
-  await assertNumScriptsInStore(extension1Reinstalled, 0);
-  await assertIsPersistentScriptsCachedFlag(extension1Reinstalled, undefined);
+  await assertNumScriptsInStore({ id: ext1Id }, 0);
+  await assertIsPersistentScriptsCachedFlag(
+    { id: ext1Id, version: ext1Version },
+    undefined
+  );
 
   await AddonTestUtils.promiseShutdownManager();
 });

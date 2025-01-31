@@ -64,7 +64,7 @@ TEST(TimeUnit, BasicArithmetic)
     TimeUnit c = TimeUnit(9001, 90000);
     TimeUnit d = (b - c).ToBase(90000);
     EXPECT_EQ(d.mBase, 90000);
-    EXPECT_EQ(d.mTicks.value(), 530998);
+    EXPECT_EQ(d.mTicks.value(), 530999);
   }
 }
 
@@ -189,6 +189,23 @@ TEST(TimeUnit, Comparisons)
   EXPECT_LT(o, n);
   EXPECT_GE(n, o);
   EXPECT_GT(n, o);
+  // Comparison of very big numbers with different bases
+  TimeUnit p(12312312312312312, 100000000);
+  TimeUnit q(123123123123123119, 1000000000);
+  TimeUnit r(123123123123123120, 1000000000);
+  TimeUnit s(123123123123123121, 1000000000);
+  EXPECT_LE(q, p);
+  EXPECT_LT(q, p);
+  EXPECT_NE(q, p);
+  EXPECT_EQ(p, r);
+  EXPECT_GE(s, p);
+  EXPECT_GT(s, p);
+  EXPECT_NE(s, p);
+  // Comparison of different very big numbers.  There is intentionally only
+  // one factor of 3 in numerator or denominator to reproduce bug 1909614.
+  TimeUnit t = TimeUnit(123123123123124, 100000000 * 3);
+  TimeUnit u = TimeUnit(123123123123124 * 3, 100000000);
+  EXPECT_NE(t, u);
 
   // Values taken from a real website (this is about 53 years, Date.now() in
   // 2023).
@@ -278,4 +295,18 @@ TEST(TimeUnit, BaseConversion)
       frameCount += packetSize;
     } while (pts.ToSeconds() < 36000);
   }
+}
+
+TEST(TimeUnit, MinimumRoundingError)
+{
+  TimeUnit a(448, 48000);  // ≈9333 us
+  TimeUnit b(1, 1000000);  // 1 us
+  TimeUnit rv = a - b;     // should close to 9332 us as much as possible
+  EXPECT_EQ(rv.mTicks.value(), 448);  // ≈9333 us is closer to 9332 us
+  EXPECT_EQ(rv.mBase, 48000);
+
+  TimeUnit c(11, 1000000);  // 11 us
+  rv = a - c;               // should close to 9322 as much as possible
+  EXPECT_EQ(rv.mTicks.value(), 447);  // ≈9312 us is closer to 9322 us
+  EXPECT_EQ(rv.mBase, 48000);
 }

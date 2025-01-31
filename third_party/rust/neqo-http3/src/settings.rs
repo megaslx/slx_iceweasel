@@ -6,10 +6,12 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use crate::{Error, Http3Parameters, Res};
+use std::ops::Deref;
+
 use neqo_common::{Decoder, Encoder};
 use neqo_crypto::{ZeroRttCheckResult, ZeroRttChecker};
-use std::ops::Deref;
+
+use crate::{Error, Http3Parameters, Res};
 
 type SettingsType = u64;
 
@@ -39,7 +41,7 @@ pub enum HSettingType {
     EnableH3Datagram,
 }
 
-fn hsetting_default(setting_type: HSettingType) -> u64 {
+const fn hsetting_default(setting_type: HSettingType) -> u64 {
     match setting_type {
         HSettingType::MaxHeaderListSize => 1 << 62,
         HSettingType::MaxTableCapacity
@@ -57,7 +59,7 @@ pub struct HSetting {
 
 impl HSetting {
     #[must_use]
-    pub fn new(setting_type: HSettingType, value: u64) -> Self {
+    pub const fn new(setting_type: HSettingType, value: u64) -> Self {
         Self {
             setting_type,
             value,
@@ -80,10 +82,10 @@ impl HSettings {
 
     #[must_use]
     pub fn get(&self, setting: HSettingType) -> u64 {
-        match self.settings.iter().find(|s| s.setting_type == setting) {
-            Some(v) => v.value,
-            None => hsetting_default(setting),
-        }
+        self.settings
+            .iter()
+            .find(|s| s.setting_type == setting)
+            .map_or_else(|| hsetting_default(setting), |v| v.value)
     }
 
     pub fn encode_frame_contents(&self, enc: &mut Encoder) {
@@ -120,6 +122,7 @@ impl HSettings {
     }
 
     /// # Errors
+    ///
     /// Returns an error if settings types are reserved of settings value are not permitted.
     pub fn decode_frame_contents(&mut self, dec: &mut Decoder) -> Res<()> {
         while dec.remaining() > 0 {
@@ -223,7 +226,7 @@ pub struct HttpZeroRttChecker {
 impl HttpZeroRttChecker {
     /// Right now we only have QPACK settings, so that is all this takes.
     #[must_use]
-    pub fn new(settings: Http3Parameters) -> Self {
+    pub const fn new(settings: Http3Parameters) -> Self {
         Self { settings }
     }
 

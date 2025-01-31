@@ -11,7 +11,6 @@ from mach.decorators import Command
 from mach_commands_base import WebPlatformTestsRunner, create_parser_wpt
 from mozbuild.base import MachCommandConditions as conditions
 from mozbuild.base import MozbuildObject
-from six import iteritems
 
 here = os.path.abspath(os.path.dirname(__file__))
 INTEROP_REQUIREMENTS_PATH = os.path.join(here, "interop_requirements.txt")
@@ -34,47 +33,11 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
 
         tests_src_path = os.path.join(self._here, "tests")
 
-        if (
-            kwargs["product"] in {"firefox", "firefox_android"}
-            and kwargs["specialpowers_path"] is None
-        ):
-            kwargs["specialpowers_path"] = os.path.join(
-                self.distdir, "xpi-stage", "specialpowers@mozilla.org.xpi"
-            )
-
-        if kwargs["product"] == "firefox_android":
-            # package_name may be different in the future
-            package_name = kwargs["package_name"]
-            if not package_name:
-                kwargs[
-                    "package_name"
-                ] = package_name = "org.mozilla.geckoview.test_runner"
-
-            # Note that this import may fail in non-firefox-for-android trees
-            from mozrunner.devices.android_device import (
-                InstallIntent,
-                get_adb_path,
-                verify_android_device,
-            )
-
-            kwargs["adb_binary"] = get_adb_path(self)
-            install = (
-                InstallIntent.NO if kwargs.pop("no_install") else InstallIntent.YES
-            )
-            verify_android_device(
-                self, install=install, verbose=False, xre=True, app=package_name
-            )
-
-            if kwargs["certutil_binary"] is None:
-                kwargs["certutil_binary"] = os.path.join(
-                    os.environ.get("MOZ_HOST_BIN"), "certutil"
+        if kwargs["product"] in {"firefox", "firefox_android"}:
+            if kwargs["specialpowers_path"] is None:
+                kwargs["specialpowers_path"] = os.path.join(
+                    self.distdir, "xpi-stage", "specialpowers@mozilla.org.xpi"
                 )
-
-            if kwargs["install_fonts"] is None:
-                kwargs["install_fonts"] = True
-
-            if not kwargs["device_serial"]:
-                kwargs["device_serial"] = ["emulator-5554"]
 
         if kwargs["config"] is None:
             kwargs["config"] = os.path.join(
@@ -112,7 +75,6 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
 
     def kwargs_firefox(self, kwargs):
         """Setup kwargs specific to running Firefox and other gecko browsers"""
-        import mozinfo
         from wptrunner import wptcommandline
 
         kwargs = self.kwargs_common(kwargs)
@@ -120,25 +82,14 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
         if kwargs["binary"] is None:
             kwargs["binary"] = self.get_binary_path()
 
+        if kwargs["webdriver_binary"] is None:
+            kwargs["webdriver_binary"] = self.find_webdriver_binary()
+
         if kwargs["certutil_binary"] is None:
             kwargs["certutil_binary"] = self.get_binary_path("certutil")
 
-        if kwargs["webdriver_binary"] is None:
-            kwargs["webdriver_binary"] = self.get_binary_path(
-                "geckodriver", validate_exists=False
-            )
-
         if kwargs["install_fonts"] is None:
             kwargs["install_fonts"] = True
-
-        if (
-            kwargs["install_fonts"]
-            and mozinfo.info["os"] == "win"
-            and mozinfo.info["os_version"] == "6.1"
-        ):
-            # On Windows 7 --install-fonts fails, so fall back to a Firefox-specific codepath
-            self.setup_fonts_firefox()
-            kwargs["install_fonts"] = False
 
         if kwargs["preload_browser"] is None:
             kwargs["preload_browser"] = False
@@ -148,6 +99,52 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
 
         if kwargs["stackfix_dir"] is None:
             kwargs["stackfix_dir"] = self.bindir
+
+        kwargs["gmp_path"] = os.pathsep.join(
+            os.path.join(self.distdir, "bin", p, "1.0")
+            for p in ("gmp-fake", "gmp-fakeopenh264")
+        )
+
+        kwargs = wptcommandline.check_args(kwargs)
+
+        return kwargs
+
+    def kwargs_firefox_android(self, kwargs):
+        from wptrunner import wptcommandline
+
+        kwargs = self.kwargs_common(kwargs)
+
+        # package_name may be different in the future
+        package_name = kwargs["package_name"]
+        if not package_name:
+            kwargs["package_name"] = package_name = "org.mozilla.geckoview.test_runner"
+
+        # Note that this import may fail in non-firefox-for-android trees
+        from mozrunner.devices.android_device import (
+            InstallIntent,
+            get_adb_path,
+            verify_android_device,
+        )
+
+        kwargs["adb_binary"] = get_adb_path(self)
+        install = InstallIntent.NO if kwargs.pop("no_install") else InstallIntent.YES
+        verify_android_device(
+            self, install=install, verbose=False, xre=True, app=package_name
+        )
+
+        if kwargs["webdriver_binary"] is None:
+            kwargs["webdriver_binary"] = self.find_webdriver_binary()
+
+        if kwargs["certutil_binary"] is None:
+            kwargs["certutil_binary"] = os.path.join(
+                os.environ.get("MOZ_HOST_BIN"), "certutil"
+            )
+
+        if kwargs["install_fonts"] is None:
+            kwargs["install_fonts"] = True
+
+        if not kwargs["device_serial"]:
+            kwargs["device_serial"] = ["emulator-5554"]
 
         kwargs = wptcommandline.check_args(kwargs)
 
@@ -159,13 +156,16 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
 
         kwargs = self.kwargs_common(kwargs)
 
-        # Add additional kwargs consumed by the run frontend. Currently we don't
-        # have a way to set these through mach
-        kwargs["channel"] = None
-        kwargs["prompt"] = True
-        kwargs["install_browser"] = False
-        kwargs["install_webdriver"] = None
-        kwargs["affected"] = None
+        # Our existing kwargs corresponds to the wptrunner command line arguments.
+        # `wpt run` extends this with some additional arguments that are consumed by
+        # the frontend. Copy over the default values of these extra arguments so they
+        # are present when we call into that frontend.
+        run_parser = run.create_parser()
+        run_kwargs = run_parser.parse_args([kwargs["product"], kwargs["test_list"]])
+
+        for key, value in vars(run_kwargs).items():
+            if key not in kwargs:
+                kwargs[key] = value
 
         # Install the deps
         # We do this explicitly to avoid calling pip with options that aren't
@@ -173,7 +173,10 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
         wptrunner_path = os.path.join(self._here, "tests", "tools", "wptrunner")
         browser_cls = run.product_setup[kwargs["product"]].browser_cls
         requirements = ["requirements.txt"]
-        if hasattr(browser_cls, "requirements"):
+        if (
+            hasattr(browser_cls, "requirements")
+            and browser_cls.requirements is not None
+        ):
             requirements.append(browser_cls.requirements)
 
         for filename in requirements:
@@ -187,19 +190,19 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
             self.virtualenv_manager.virtualenv_root, skip_virtualenv_setup=True
         )
         try:
-            kwargs = run.setup_wptrunner(venv, **kwargs)
+            browser_cls, kwargs = run.setup_wptrunner(venv, **kwargs)
         except run.WptrunError as e:
             print(e, file=sys.stderr)
             sys.exit(1)
 
         # This is kind of a hack; override the metadata paths so we don't use
         # gecko metadata for non-gecko products
-        for key, value in list(iteritems(kwargs["test_paths"])):
-            meta_suffix = key.strip("/")
+        for url_base, test_root in kwargs["test_paths"].items():
+            meta_suffix = url_base.strip("/")
             meta_dir = os.path.join(
-                self._here, "products", kwargs["product"], meta_suffix
+                self._here, "products", kwargs["product"].name, meta_suffix
             )
-            value["metadata_path"] = meta_dir
+            test_root.metadata_path = meta_dir
             if not os.path.exists(meta_dir):
                 os.makedirs(meta_dir)
         return kwargs
@@ -224,13 +227,32 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
             with open(ahem_src, "rb") as src, open(ahem_dest, "wb") as dest:
                 dest.write(src.read())
 
+    def find_webdriver_binary(self):
+        ext = ".exe" if sys.platform in ["win32", "msys", "cygwin"] else ""
+        try_paths = [
+            self.get_binary_path("geckodriver", validate_exists=False),
+            os.path.join(self.topobjdir, "dist", "host", "bin", f"geckodriver{ext}"),
+        ]
+
+        for build_type in ["release", "debug"]:
+            try_paths.append(
+                os.path.join(self.topsrcdir, "target", build_type, f"geckodriver{ext}")
+            )
+        found_paths = []
+        for path in try_paths:
+            if os.path.exists(path):
+                found_paths.append(path)
+
+        if found_paths:
+            # Pick the most recently modified version
+            found_paths.sort(key=os.path.getmtime)
+            return found_paths[-1]
+
 
 class WebPlatformTestsServeRunner(MozbuildObject):
     def run(self, **kwargs):
-        sys.path.insert(
-            0,
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "tests", "tools")),
-        )
+        sys.path.insert(0, os.path.join(here, "tests"))
+        sys.path.insert(0, os.path.join(here, "tests", "tools"))
         import logging
 
         import manifestupdate
@@ -258,9 +280,9 @@ class WebPlatformTestsServeRunner(MozbuildObject):
         def get_route_builder(*args, **kwargs):
             route_builder = serve.get_route_builder(*args, **kwargs)
 
-            for url_base, paths in iteritems(test_paths):
+            for url_base, paths in test_paths.items():
                 if url_base != "/":
-                    route_builder.add_mount_point(url_base, paths["tests_path"])
+                    route_builder.add_mount_point(url_base, paths.tests_path)
 
             return route_builder
 
@@ -346,7 +368,7 @@ class WebPlatformTestsTestPathsRunner(MozbuildObject):
             wptcommandline.config.read(config_path)
         )
         results = {}
-        for url_base, paths in iteritems(test_paths):
+        for url_base, paths in test_paths.items():
             if "manifest_path" not in paths:
                 paths["manifest_path"] = os.path.join(
                     paths["metadata_path"], "MANIFEST.json"
@@ -365,25 +387,6 @@ class WebPlatformTestsTestPathsRunner(MozbuildObject):
             )
         testpaths.write_output(results, kwargs["json"])
         return True
-
-
-class WebPlatformTestsFissionRegressionsRunner(MozbuildObject):
-    def run(self, **kwargs):
-        import fissionregressions
-        import mozlog
-
-        src_root = self.topsrcdir
-        obj_root = self.topobjdir
-        logger = mozlog.structuredlog.StructuredLogger("web-platform-tests")
-
-        try:
-            return fissionregressions.run(logger, src_root, obj_root, **kwargs)
-        except Exception:
-            import pdb
-            import traceback
-
-            traceback.print_exc()
-            pdb.post_mortem()
 
 
 def create_parser_update():
@@ -423,12 +426,6 @@ def create_parser_unittest():
     import unittestrunner
 
     return unittestrunner.get_parser()
-
-
-def create_parser_fission_regressions():
-    import fissionregressions
-
-    return fissionregressions.get_parser()
 
 
 def create_parser_fetch_logs():
@@ -502,6 +499,9 @@ def run_web_platform_tests(command_context, **params):
             params["test_types"] = list(test_types)
         params["include"] = include
         del params["test_objects"]
+        # subsuite coming from `mach test` means something more like `test type`, so remove that argument
+        if "subsuite" in params:
+            del params["subsuite"]
     if params.get("debugger", None):
         import mozdebug
 
@@ -647,19 +647,6 @@ def wpt_unittest(command_context, **params):
 )
 def wpt_test_paths(command_context, **params):
     runner = command_context._spawn(WebPlatformTestsTestPathsRunner)
-    runner.run(**params)
-    return 0
-
-
-@Command(
-    "wpt-fission-regressions",
-    category="testing",
-    description="Dump a list of fission-specific regressions",
-    parser=create_parser_fission_regressions,
-    virtualenv_name="wpt",
-)
-def wpt_fission_regressions(command_context, **params):
-    runner = command_context._spawn(WebPlatformTestsFissionRegressionsRunner)
     runner.run(**params)
     return 0
 

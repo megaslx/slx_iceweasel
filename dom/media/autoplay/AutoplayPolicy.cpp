@@ -114,6 +114,12 @@ static bool IsWindowAllowedToPlayByTraits(nsPIDOMWindowInner* aWindow) {
     return true;
   }
 
+  if (currentDoc->GetPrincipal()->Equals(
+          nsContentUtils::GetFingerprintingProtectionPrincipal())) {
+    AUTOPLAY_LOG("Allow autoplay as in fingerprinting protection document.");
+    return true;
+  }
+
   return false;
 }
 
@@ -148,16 +154,9 @@ static bool IsMediaElementInaudible(const HTMLMediaElement& aElement) {
   return false;
 }
 
-static bool IsAudioContextAllowedToPlay(const AudioContext& aContext) {
-  // Offline context won't directly output sound to audio devices.
-  return aContext.IsOffline() ||
-         IsWindowAllowedToPlayOverall(aContext.GetParentObject());
-}
-
 static bool IsEnableBlockingWebAudioByUserGesturePolicy() {
-  return StaticPrefs::media_autoplay_block_webaudio() &&
-         StaticPrefs::media_autoplay_blocking_policy() ==
-             sPOLICY_STICKY_ACTIVATION;
+  return StaticPrefs::media_autoplay_blocking_policy() ==
+         sPOLICY_STICKY_ACTIVATION;
 }
 
 static bool IsAllowedToPlayByBlockingModel(const HTMLMediaElement& aElement) {
@@ -298,7 +297,7 @@ bool AutoplayPolicy::IsAllowedToPlay(const AudioContext& aContext) {
     return true;
   }
 
-  nsPIDOMWindowInner* window = aContext.GetParentObject();
+  nsPIDOMWindowInner* window = aContext.GetOwnerWindow();
   uint32_t sitePermission = SiteAutoplayPerm(window);
 
   if (sitePermission == nsIPermissionManager::ALLOW_ACTION) {
@@ -394,12 +393,6 @@ uint32_t AutoplayPolicy::GetSiteAutoplayPermission(nsIPrincipal* aPrincipal) {
   permMgr->TestExactPermissionFromPrincipal(aPrincipal, "autoplay-media"_ns,
                                             &perm);
   return perm;
-}
-
-/* static */
-bool AutoplayPolicyTelemetryUtils::WouldBeAllowedToPlayIfAutoplayDisabled(
-    const AudioContext& aContext) {
-  return IsAudioContextAllowedToPlay(aContext);
 }
 
 /* static */

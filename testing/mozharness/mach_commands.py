@@ -94,6 +94,11 @@ class MozharnessRunner(MozbuildObject):
                 "config": desktop_unittest_config
                 + ["--mochitest-suite", "mochitest-browser-media"],
             },
+            "mochitest-browser-translations": {
+                "script": "desktop_unittest.py",
+                "config": desktop_unittest_config
+                + ["--mochitest-suite", "mochitest-browser-translations"],
+            },
             "mochitest-devtools-chrome": {
                 "script": "desktop_unittest.py",
                 "config": desktop_unittest_config
@@ -115,11 +120,6 @@ class MozharnessRunner(MozbuildObject):
             "reftest": {
                 "script": "desktop_unittest.py",
                 "config": desktop_unittest_config + ["--reftest-suite", "reftest"],
-            },
-            "reftest-no-accel": {
-                "script": "desktop_unittest.py",
-                "config": desktop_unittest_config
-                + ["--reftest-suite", "reftest-no-accel"],
             },
             "cppunittest": {
                 "script": "desktop_unittest.py",
@@ -160,9 +160,9 @@ class MozharnessRunner(MozbuildObject):
 
     def _installer_url(self):
         package_re = {
-            "linux": re.compile("^firefox-\d+\..+\.tar\.bz2$"),
-            "win": re.compile("^firefox-\d+\..+\.installer\.exe$"),
-            "mac": re.compile("^firefox-\d+\..+\.mac(?:64)?\.dmg$"),
+            "linux": re.compile(r"^firefox-\d+\..+\.tar\.(bz2|xz)$"),
+            "win": re.compile(r"^firefox-\d+\..+\.installer\.exe$"),
+            "mac": re.compile(r"^firefox-\d+\..+\.mac(?:64)?\.dmg$"),
         }[mozinfo.info["os"]]
         dist_path = os.path.join(self.topobjdir, "dist")
         filenames = [item for item in os.listdir(dist_path) if package_re.match(item)]

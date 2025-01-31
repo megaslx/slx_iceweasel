@@ -51,6 +51,10 @@
 #  define PROFILER_SET_JS_CONTEXT(cx)
 #  define PROFILER_CLEAR_JS_CONTEXT()
 
+namespace mozilla {
+class CycleCollectedJSContext;
+}
+
 // Function stubs for when MOZ_GECKO_PROFILER is not defined.
 
 // This won't be used, it's just there to allow the empty definition of
@@ -227,7 +231,7 @@ void profiler_js_interrupt_callback();
 // Set and clear the current thread's JSContext.
 #  define PROFILER_SET_JS_CONTEXT(cx) profiler_set_js_context(cx)
 #  define PROFILER_CLEAR_JS_CONTEXT() profiler_clear_js_context()
-void profiler_set_js_context(JSContext* aCx);
+void profiler_set_js_context(mozilla::CycleCollectedJSContext* aCx);
 void profiler_clear_js_context();
 
 //---------------------------------------------------------------------------
@@ -269,7 +273,8 @@ class ProfilerStackCollector {
 
   virtual void CollectJitReturnAddr(void* aAddr) = 0;
 
-  virtual void CollectWasmFrame(const char* aLabel) = 0;
+  virtual void CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
+                                const char* aLabel) = 0;
 
   virtual void CollectProfilingStackFrame(
       const js::ProfilingStackFrame& aFrame) = 0;

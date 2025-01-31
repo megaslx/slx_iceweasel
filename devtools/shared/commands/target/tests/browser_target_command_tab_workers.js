@@ -51,6 +51,7 @@ add_task(async function () {
   const mainPageWorker = workers.find(
     worker => worker.url == `${WORKER_URL}#simple-worker`
   );
+  is(mainPageWorker.name, "Simple worker", "The custom worker name is exposed on the target object");
   const iframeWorker = workers.find(worker => {
     return worker.url == `${REMOTE_IFRAME_WORKER_URL}#simple-worker-in-iframe`;
   });
@@ -276,7 +277,7 @@ add_task(async function () {
   );
 
   info("Check that navigating away does destroy all targets");
-  BrowserTestUtils.loadURIString(
+  BrowserTestUtils.startLoadingURIString(
     tab.linkedBrowser,
     "data:text/html,<meta charset=utf8>Away"
   );

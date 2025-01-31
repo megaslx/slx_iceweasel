@@ -17,8 +17,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LoginExport: "resource://gre/modules/LoginExport.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
   MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
-  OSKeyStore: "resource://gre/modules/OSKeyStore.sys.mjs",
   UIState: "resource://services-sync/UIState.sys.mjs",
+  FxAccounts: "resource://gre/modules/FxAccounts.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
@@ -35,12 +35,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "FXA_ENABLED",
   "identity.fxaccounts.enabled",
   false
-);
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "OS_AUTH_ENABLED",
-  "signon.management.page.os-auth.enabled",
-  true
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
@@ -78,6 +72,11 @@ const augmentVanillaLoginObject = login => {
   });
 };
 
+const EXPORT_PASSWORD_OS_AUTH_DIALOG_MESSAGE_IDS = {
+  win: "about-logins-export-password-os-auth-dialog-message2-win",
+  macosx: "about-logins-export-password-os-auth-dialog-message2-macosx",
+};
+
 export class AboutLoginsParent extends JSWindowActorParent {
   async receiveMessage(message) {
     if (!this.browsingContext.embedderElement) {
@@ -113,10 +112,6 @@ export class AboutLoginsParent extends JSWindowActorParent {
       }
       case "AboutLogins:SyncEnable": {
         this.#syncEnable();
-        break;
-      }
-      case "AboutLogins:SyncOptions": {
-        this.#syncOptions();
         break;
       }
       case "AboutLogins:ImportFromBrowser": {
@@ -163,7 +158,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
   }
 
   get #ownerGlobal() {
-    return this.browsingContext.embedderElement.ownerGlobal;
+    return this.browsingContext.embedderElement?.ownerGlobal;
   }
 
   async #createLogin(newLogin) {
@@ -201,6 +196,14 @@ export class AboutLoginsParent extends JSWindowActorParent {
     }
   }
 
+  get preselectedLogin() {
+    const preselectedLogin =
+      this.#ownerGlobal?.gBrowser.selectedTab.getAttribute("preselect-login") ||
+      this.browsingContext.currentURI?.ref;
+    this.#ownerGlobal?.gBrowser.selectedTab.removeAttribute("preselect-login");
+    return preselectedLogin || null;
+  }
+
   #deleteLogin(loginObject) {
     let login = lazy.LoginHelper.vanillaObjectToLogin(loginObject);
     Services.logins.removeLogin(login);
@@ -212,10 +215,6 @@ export class AboutLoginsParent extends JSWindowActorParent {
 
   #syncEnable() {
     this.#ownerGlobal.gSync.openFxAEmailFirstPage("password-manager");
-  }
-
-  #syncOptions() {
-    this.#ownerGlobal.gSync.openFxAManagePage("password-manager");
   }
 
   #importFromBrowser() {
@@ -253,11 +252,15 @@ export class AboutLoginsParent extends JSWindowActorParent {
     let messageText = { value: "NOT SUPPORTED" };
     let captionText = { value: "" };
 
+    const isOSAuthEnabled = lazy.LoginHelper.getOSAuthEnabled(
+      lazy.LoginHelper.OS_AUTH_FOR_PASSWORDS_PREF
+    );
+
     // This feature is only supported on Windows and macOS
     // but we still call in to OSKeyStore on Linux to get
     // the proper auth_details for Telemetry.
     // See bug 1614874 for Linux support.
-    if (lazy.OS_AUTH_ENABLED && lazy.OSKeyStore.canReauth()) {
+    if (isOSAuthEnabled) {
       messageId += "-" + AppConstants.platform;
       [messageText, captionText] = await lazy.AboutLoginsL10n.formatMessages([
         {
@@ -271,7 +274,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
 
     let { isAuthorized, telemetryEvent } = await lazy.LoginHelper.requestReauth(
       this.browsingContext.embedderElement,
-      lazy.OS_AUTH_ENABLED,
+      isOSAuthEnabled,
       AboutLogins._authExpirationTime,
       messageText.value,
       captionText.value
@@ -296,7 +299,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
 
     const logins = await AboutLogins.getAllLogins();
     try {
-      let syncState = AboutLogins.getSyncState();
+      let syncState = await AboutLogins.getSyncState();
 
       let selectedSort = Services.prefs.getCharPref(
         "signon.management.page.sort",
@@ -316,6 +319,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
         importVisible:
           Services.policies.isAllowed("profileImport") &&
           AppConstants.platform != "linux",
+        preselectedLogin: this.preselectedLogin,
       });
 
       await AboutLogins.sendAllLoginRelatedObjects(
@@ -364,14 +368,22 @@ export class AboutLoginsParent extends JSWindowActorParent {
     let messageText = { value: "NOT SUPPORTED" };
     let captionText = { value: "" };
 
+    const isOSAuthEnabled = lazy.LoginHelper.getOSAuthEnabled(
+      lazy.LoginHelper.OS_AUTH_FOR_PASSWORDS_PREF
+    );
+
     // This feature is only supported on Windows and macOS
     // but we still call in to OSKeyStore on Linux to get
     // the proper auth_details for Telemetry.
     // See bug 1614874 for Linux support.
-    if (lazy.OSKeyStore.canReauth()) {
-      let messageId =
-        "about-logins-export-password-os-auth-dialog-message-" +
-        AppConstants.platform;
+    if (isOSAuthEnabled) {
+      const messageId =
+        EXPORT_PASSWORD_OS_AUTH_DIALOG_MESSAGE_IDS[AppConstants.platform];
+      if (!messageId) {
+        throw new Error(
+          `AboutLoginsParent: Cannot find l10n id for platform ${AppConstants.platform} for export passwords os auth dialog message`
+        );
+      }
       [messageText, captionText] = await lazy.AboutLoginsL10n.formatMessages([
         {
           id: messageId,
@@ -390,8 +402,11 @@ export class AboutLoginsParent extends JSWindowActorParent {
       captionText.value
     );
 
-    let { method, object, extra = {}, value = null } = telemetryEvent;
-    Services.telemetry.recordEvent("pwmgr", method, object, value, extra);
+    let { name, extra = {}, value = null } = telemetryEvent;
+    if (value) {
+      extra.value = value;
+    }
+    Glean.pwmgr[name].record(extra);
 
     if (!isAuthorized) {
       return;
@@ -401,20 +416,16 @@ export class AboutLoginsParent extends JSWindowActorParent {
     function fpCallback(aResult) {
       if (aResult != Ci.nsIFilePicker.returnCancel) {
         lazy.LoginExport.exportAsCSV(fp.file.path);
-        Services.telemetry.recordEvent(
-          "pwmgr",
-          "mgmt_menu_item_used",
-          "export_complete"
-        );
+        Glean.pwmgr.mgmtMenuItemUsedExportComplete.record();
       }
     }
     let [title, defaultFilename, okButtonLabel, csvFilterTitle] =
       await lazy.AboutLoginsL10n.formatValues([
         {
-          id: "about-logins-export-file-picker-title",
+          id: "about-logins-export-file-picker-title2",
         },
         {
-          id: "about-logins-export-file-picker-default-filename",
+          id: "about-logins-export-file-picker-default-filename2",
         },
         {
           id: "about-logins-export-file-picker-export-button",
@@ -424,7 +435,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
         },
       ]);
 
-    fp.init(this.#ownerGlobal, title, Ci.nsIFilePicker.modeSave);
+    fp.init(this.browsingContext, title, Ci.nsIFilePicker.modeSave);
     fp.appendFilter(csvFilterTitle, "*.csv");
     fp.appendFilters(Ci.nsIFilePicker.filterAll);
     fp.defaultString = defaultFilename;
@@ -437,7 +448,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
     let [title, okButtonLabel, csvFilterTitle, tsvFilterTitle] =
       await lazy.AboutLoginsL10n.formatValues([
         {
-          id: "about-logins-import-file-picker-title",
+          id: "about-logins-import-file-picker-title2",
         },
         {
           id: "about-logins-import-file-picker-import-button",
@@ -461,8 +472,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
           title: tsvFilterTitle,
           extensionPattern: "*.tsv",
         },
-      ],
-      this.#ownerGlobal
+      ]
     );
 
     if (result != Ci.nsIFilePicker.returnCancel) {
@@ -478,11 +488,7 @@ export class AboutLoginsParent extends JSWindowActorParent {
       }
       if (summary) {
         this.sendAsyncMessage("AboutLogins:ImportPasswordsDialog", summary);
-        Services.telemetry.recordEvent(
-          "pwmgr",
-          "mgmt_menu_item_used",
-          "import_csv_complete"
-        );
+        Glean.pwmgr.mgmtMenuItemUsedImportCsvComplete.record();
       }
     }
   }
@@ -508,10 +514,10 @@ export class AboutLoginsParent extends JSWindowActorParent {
     this.sendAsyncMessage("AboutLogins:ShowLoginItemError", messageObject);
   }
 
-  async openFilePickerDialog(title, okButtonLabel, appendFilters, ownerGlobal) {
+  async openFilePickerDialog(title, okButtonLabel, appendFilters) {
     return new Promise(resolve => {
       let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(ownerGlobal, title, Ci.nsIFilePicker.modeOpen);
+      fp.init(this.browsingContext, title, Ci.nsIFilePicker.modeOpen);
       for (const appendFilter of appendFilters) {
         fp.appendFilter(appendFilter.title, appendFilter.extensionPattern);
       }
@@ -550,7 +556,10 @@ class AboutLoginsInternal {
         break;
       }
       case lazy.UIState.ON_UPDATE: {
-        this.#messageSubscribers("AboutLogins:SyncState", this.getSyncState());
+        this.#messageSubscribers(
+          "AboutLogins:SyncState",
+          await this.getSyncState()
+        );
         break;
       }
       case "passwordmgr-storage-changed": {
@@ -808,13 +817,15 @@ class AboutLoginsInternal {
     }
   }
 
-  getSyncState() {
+  async getSyncState() {
     const state = lazy.UIState.get();
     // As long as Sync is configured, about:logins will treat it as
     // authenticated. More diagnostics and error states can be handled
     // by other more Sync-specific pages.
     const loggedIn = state.status != lazy.UIState.STATUS_NOT_CONFIGURED;
     const passwordSyncEnabled = state.syncEnabled && lazy.PASSWORD_SYNC_ENABLED;
+    const accountURL =
+      await lazy.FxAccounts.config.promiseManageURI("password-manager");
 
     return {
       loggedIn,
@@ -822,11 +833,15 @@ class AboutLoginsInternal {
       avatarURL: state.avatarURL,
       fxAccountsEnabled: lazy.FXA_ENABLED,
       passwordSyncEnabled,
+      accountURL,
     };
   }
 
-  onPasswordSyncEnabledPreferenceChange(data, previous, latest) {
-    this.#messageSubscribers("AboutLogins:SyncState", this.getSyncState());
+  async onPasswordSyncEnabledPreferenceChange(_data, _previous, _latest) {
+    this.#messageSubscribers(
+      "AboutLogins:SyncState",
+      await this.getSyncState()
+    );
   }
 
   #observedTopics = [
@@ -862,5 +877,5 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "PASSWORD_SYNC_ENABLED",
   "services.sync.engine.passwords",
   false,
-  AboutLogins.onPasswordSyncEnabledPreferenceChange
+  AboutLogins.onPasswordSyncEnabledPreferenceChange.bind(AboutLogins)
 );

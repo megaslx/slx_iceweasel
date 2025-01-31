@@ -7,6 +7,7 @@
 #include "frontend/ForOfLoopControl.h"
 
 #include "frontend/BytecodeEmitter.h"  // BytecodeEmitter
+#include "frontend/EmitterScope.h"     // EmitterScope
 #include "frontend/IfEmitter.h"        // InternalIfEmitter
 #include "vm/CompletionKind.h"         // CompletionKind
 #include "vm/Opcodes.h"                // JSOp
@@ -37,23 +38,50 @@ bool ForOfLoopControl::emitBeginCodeNeedingIteratorClose(BytecodeEmitter* bce) {
   return true;
 }
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+bool ForOfLoopControl::prepareForForOfLoopIteration(
+    BytecodeEmitter* bce, const EmitterScope* headLexicalEmitterScope,
+    bool hasAwaitUsing) {
+  MOZ_ASSERT(headLexicalEmitterScope);
+  if (headLexicalEmitterScope->hasDisposables()) {
+    forOfDisposalEmitter_.emplace(bce, hasAwaitUsing);
+    return forOfDisposalEmitter_->prepareForForOfLoopIteration();
+  }
+  return true;
+}
+#endif
+
 bool ForOfLoopControl::emitEndCodeNeedingIteratorClose(BytecodeEmitter* bce) {
-  if (!tryCatch_->emitCatch()) {
-    //              [stack] ITER ... EXCEPTION
+  if (!tryCatch_->emitCatch(TryEmitter::ExceptionStack::Yes)) {
+    //              [stack] ITER ... EXCEPTION STACK
     return false;
   }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  // Explicit Resource Management Proposal
+  // https://arai-a.github.io/ecma262-compare/?pr=3000&id=sec-runtime-semantics-forin-div-ofbodyevaluation-lhs-stmt-iterator-lhskind-labelset
+  // Step 9.i.i.1 Set result to
+  // Completion(DisposeResources(iterationEnv.[[DisposeCapability]], result)).
+  if (forOfDisposalEmitter_.isSome()) {
+    if (!forOfDisposalEmitter_->emitEnd()) {
+      //              [stack] ITER ... EXCEPTION STACK
+      return false;
+    }
+  }
+#endif
 
   unsigned slotFromTop = bce->bytecodeSection().stackDepth() - iterDepth_;
   if (!bce->emitDupAt(slotFromTop)) {
-    //              [stack] ITER ... EXCEPTION ITER
+    //              [stack] ITER ... EXCEPTION STACK ITER
     return false;
   }
+
   if (!emitIteratorCloseInInnermostScopeWithTryNote(bce,
                                                     CompletionKind::Throw)) {
-    return false;  // ITER ... EXCEPTION
+    return false;  // ITER ... EXCEPTION STACK
   }
 
-  if (!bce->emit1(JSOp::Throw)) {
+  if (!bce->emit1(JSOp::ThrowWithStack)) {
     //              [stack] ITER ...
     return false;
   }
@@ -61,7 +89,7 @@ bool ForOfLoopControl::emitEndCodeNeedingIteratorClose(BytecodeEmitter* bce) {
   // If any yields were emitted, then this for-of loop is inside a star
   // generator and must handle the case of Generator.return. Like in
   // yield*, it is handled with a finally block. If the generator is
-  // closing, then the exception/resumeindex value (second value on
+  // closing, then the exception/resumeindex value (third value on
   // the stack) will be a magic JS_GENERATOR_CLOSING value.
   // TODO: Refactor this to eliminate the swaps.
   uint32_t numYieldsEmitted = bce->bytecodeSection().numYields();
@@ -69,35 +97,35 @@ bool ForOfLoopControl::emitEndCodeNeedingIteratorClose(BytecodeEmitter* bce) {
     if (!tryCatch_->emitFinally()) {
       return false;
     }
-    //              [stack] ITER ... FVALUE FTYPE
+    //              [stack] ITER ... FVALUE FSTACK FTHROWING
     InternalIfEmitter ifGeneratorClosing(bce);
-    if (!bce->emit1(JSOp::Swap)) {
-      //            [stack] ITER ... FTYPE FVALUE
+    if (!bce->emitPickN(2)) {
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE
       return false;
     }
     if (!bce->emit1(JSOp::IsGenClosing)) {
-      //            [stack] ITER ... FTYPE FVALUE CLOSING
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE CLOSING
       return false;
     }
     if (!ifGeneratorClosing.emitThen()) {
-      //            [stack] ITER ... FTYPE FVALUE
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE
       return false;
     }
     if (!bce->emitDupAt(slotFromTop + 1)) {
-      //            [stack] ITER ... FTYPE FVALUE ITER
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE ITER
       return false;
     }
     if (!emitIteratorCloseInInnermostScopeWithTryNote(bce,
                                                       CompletionKind::Normal)) {
-      //            [stack] ITER ... FTYPE FVALUE
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE
       return false;
     }
     if (!ifGeneratorClosing.emitEnd()) {
-      //            [stack] ITER ... FTYPE FVALUE
+      //            [stack] ITER ... FSTACK FTHROWING FVALUE
       return false;
     }
-    if (!bce->emit1(JSOp::Swap)) {
-      //            [stack] ITER ... FVALUE FTYPE
+    if (!bce->emitUnpickN(2)) {
+      //            [stack] ITER ... FVALUE FSTACK FTHROWING
       return false;
     }
   }
@@ -162,16 +190,36 @@ bool ForOfLoopControl::emitPrepareForNonLocalJumpFromScope(
     return false;
   }
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  // Explicit Resource Management Proposal
+  // https://arai-a.github.io/ecma262-compare/?pr=3000&id=sec-runtime-semantics-forin-div-ofbodyevaluation-lhs-stmt-iterator-lhskind-labelset
+  // Step 9.k.i. Set result to
+  // Completion(DisposeResources(iterationEnv.[[DisposeCapability]], result)).
+  NonLocalIteratorCloseUsingEmitter disposeBeforeIterClose(bce);
+
+  if (!disposeBeforeIterClose.prepareForIteratorClose(currentScope)) {
+    //              [stack] EXC-DISPOSE? DISPOSE-THROWING? ITER
+    return false;
+  }
+#endif
+
   if (!bce->emit1(JSOp::Dup)) {
-    //              [stack] ITER ITER
+    //              [stack] EXC-DISPOSE? DISPOSE-THROWING? ITER ITER
     return false;
   }
 
   *tryNoteStart = bce->bytecodeSection().offset();
   if (!emitIteratorCloseInScope(bce, currentScope, CompletionKind::Normal)) {
+    //              [stack] EXC-DISPOSE? DISPOSE-THROWING? ITER
+    return false;
+  }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  if (!disposeBeforeIterClose.emitEnd()) {
     //              [stack] ITER
     return false;
   }
+#endif
 
   if (isTarget) {
     // At the level of the target block, there's bytecode after the

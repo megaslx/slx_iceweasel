@@ -93,6 +93,11 @@ VOID NTAPI RtlAcquireSRWLockShared(PSRWLOCK aLock);
 VOID NTAPI RtlReleaseSRWLockExclusive(PSRWLOCK aLock);
 VOID NTAPI RtlReleaseSRWLockShared(PSRWLOCK aLock);
 
+NTSTATUS NTAPI RtlSleepConditionVariableSRW(
+    PCONDITION_VARIABLE aConditionVariable, PSRWLOCK aSRWLock,
+    PLARGE_INTEGER aTimeOut, ULONG aFlags);
+VOID NTAPI RtlWakeAllConditionVariable(PCONDITION_VARIABLE aConditionVariable);
+
 ULONG NTAPI RtlNtStatusToDosError(NTSTATUS aStatus);
 VOID NTAPI RtlSetLastWin32Error(DWORD aError);
 DWORD NTAPI RtlGetLastWin32Error();
@@ -549,7 +554,7 @@ class MOZ_RAII PEHeaders final {
     WORD wLength;
     WORD wValueLength;
     WORD wType;
-    WCHAR szKey[16];  // ArrayLength(L"VS_VERSION_INFO")
+    WCHAR szKey[16];  // std::size(L"VS_VERSION_INFO")
     // Additional data goes here, aligned on a 4-byte boundary
   };
 
@@ -908,6 +913,12 @@ class MOZ_RAII PEHeaders final {
                                     IMAGE_SCN_MEM_READ);
   }
 
+  // There may be other data sections in the binary besides .data
+  Maybe<Span<const uint8_t>> GetDataSectionInfo() const {
+    return FindSection(".data", IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                    IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE);
+  }
+
   static bool IsValid(PIMAGE_IMPORT_DESCRIPTOR aImpDesc) {
     return aImpDesc && aImpDesc->OriginalFirstThunk != 0;
   }
@@ -1019,8 +1030,8 @@ class MOZ_RAII PEHeaders final {
 
     const wchar_t kVersionInfoKey[] = L"VS_VERSION_INFO";
     if (::RtlCompareMemory(aVerInfo->szKey, kVersionInfoKey,
-                           ArrayLength(kVersionInfoKey)) !=
-        ArrayLength(kVersionInfoKey)) {
+                           std::size(kVersionInfoKey)) !=
+        std::size(kVersionInfoKey)) {
       return nullptr;
     }
 
@@ -1282,6 +1293,14 @@ inline DWORD RtlGetCurrentThreadId() {
   CLIENT_ID* cid = reinterpret_cast<CLIENT_ID*>(&teb->Reserved1[8]);
   return static_cast<DWORD>(reinterpret_cast<uintptr_t>(cid->UniqueThread) &
                             0xFFFFFFFFUL);
+}
+
+inline PVOID RtlGetThreadStackBase() {
+  return reinterpret_cast<_NT_TIB*>(::NtCurrentTeb())->StackBase;
+}
+
+inline PVOID RtlGetThreadStackLimit() {
+  return reinterpret_cast<_NT_TIB*>(::NtCurrentTeb())->StackLimit;
 }
 
 const HANDLE kCurrentProcess = reinterpret_cast<HANDLE>(-1);
@@ -1722,6 +1741,22 @@ class AutoMappedView final {
     return p;
   }
 };
+
+#if defined(_M_X64)
+// CheckStack ensures that stack memory pages are committed up to a given size
+// in bytes from the current stack pointer. It updates the thread stack limit,
+// which points to the lowest committed stack address.
+MOZ_NEVER_INLINE MOZ_NAKED inline void CheckStack(uint32_t size) {
+  asm volatile(
+      "mov %ecx, %eax;"
+#  if defined(__MINGW32__)
+      "jmp ___chkstk_ms;"
+#  else
+      "jmp __chkstk;"
+#  endif  // __MINGW32__
+  );
+}
+#endif  // _M_X64
 
 }  // namespace nt
 }  // namespace mozilla

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -14,7 +14,7 @@
 
 #include "common/video_common.h"
 
-typedef enum { kContainerIVF } AvxContainer;
+enum { kContainerIVF } UENUM1BYTE(AvxContainer);
 
 struct AvxVideoWriterStruct;
 typedef struct AvxVideoWriterStruct AvxVideoWriter;
@@ -37,6 +37,8 @@ void aom_video_writer_close(AvxVideoWriter *writer);
 // Writes frame bytes to the file.
 int aom_video_writer_write_frame(AvxVideoWriter *writer, const uint8_t *buffer,
                                  size_t size, int64_t pts);
+// Set fourcc.
+void aom_video_writer_set_fourcc(AvxVideoWriter *writer, uint32_t fourcc);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -21,11 +21,11 @@ async function doTest(profile) {
 
   let length = storage.length;
 
-  ok(length === 0, "Correct length");
+  Assert.strictEqual(length, 0, "Correct length");
 
-  info("Resetting origin");
+  info("Resetting client");
 
-  request = resetOrigin(principal);
+  request = resetClient(principal);
   await requestFinished(request);
 
   info("Getting usage");

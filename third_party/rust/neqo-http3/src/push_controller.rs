@@ -1,30 +1,35 @@
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::client_events::{Http3ClientEvent, Http3ClientEvents};
-use crate::connection::Http3Connection;
-use crate::frames::HFrame;
-use crate::{CloseType, Error, Http3StreamInfo, HttpRecvStreamEvents, RecvStreamEvents, Res};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    fmt::{Debug, Display},
+    mem,
+    rc::Rc,
+    slice::SliceIndex,
+};
+
 use neqo_common::{qerror, qinfo, qtrace, Header};
 use neqo_transport::{Connection, StreamId};
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::convert::TryFrom;
-use std::fmt::Debug;
-use std::fmt::Display;
-use std::mem;
-use std::rc::Rc;
-use std::slice::SliceIndex;
+
+use crate::{
+    client_events::{Http3ClientEvent, Http3ClientEvents},
+    connection::Http3Connection,
+    frames::HFrame,
+    CloseType, Error, Http3StreamInfo, HttpRecvStreamEvents, RecvStreamEvents, Res,
+};
 
 /// `PushStates`:
-///   `Init`: there is no push stream nor a push promise. This state is only used to keep track of opened and closed
-///           push streams.
+///   `Init`: there is no push stream nor a push promise. This state is only used to keep track of
+/// opened and closed           push streams.
 ///   `PushPromise`: the push has only ever receive a pushpromise frame
-///   `OnlyPushStream`: there is only a push stream. All push stream events, i.e. `PushHeaderReady` and
-///                     `PushDataReadable` will be delayed until a push promise is received (they are kept in
-///                     `events`).
+///   `OnlyPushStream`: there is only a push stream. All push stream events, i.e. `PushHeaderReady`
+/// and                     `PushDataReadable` will be delayed until a push promise is received
+/// (they are kept in                     `events`).
 ///   `Active`: there is a push steam and at least one push promise frame.
 ///   `Close`: the push stream has been closed or reset already.
 #[derive(Debug, PartialEq, Clone)]
@@ -56,7 +61,7 @@ struct ActivePushStreams {
 }
 
 impl ActivePushStreams {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             push_streams: VecDeque::new(),
             first_push_id: 0,
@@ -93,9 +98,7 @@ impl ActivePushStreams {
             None | Some(PushState::Closed) => None,
             Some(s) => {
                 let res = mem::replace(s, PushState::Closed);
-                while self.push_streams.get(0).is_some()
-                    && *self.push_streams.get(0).unwrap() == PushState::Closed
-                {
+                while self.push_streams.front() == Some(&PushState::Closed) {
                     self.push_streams.pop_front();
                     self.first_push_id += 1;
                 }
@@ -124,37 +127,38 @@ impl ActivePushStreams {
 
 /// `PushController` keeps information about push stream states.
 ///
-/// A `PushStream` calls `add_new_push_stream` that may change the push state from Init to `OnlyPushStream` or from
-/// `PushPromise` to `Active`. If a stream has already been closed `add_new_push_stream` returns false (the `PushStream`
-/// will close the transport stream).
+/// A `PushStream` calls `add_new_push_stream` that may change the push state from Init to
+/// `OnlyPushStream` or from `PushPromise` to `Active`. If a stream has already been closed
+/// `add_new_push_stream` returns false (the `PushStream` will close the transport stream).
 /// A `PushStream` calls `push_stream_reset` if the transport stream has been canceled.
 /// When a push stream is done it calls `close`.
 ///
 /// The `PushController` handles:
-///  `PUSH_PROMISE` frame: frames may change the push state from Init to `PushPromise` and from `OnlyPushStream` to
-///                        `Active`. Frames for a closed steams are ignored.
-///  `CANCEL_PUSH` frame: (`handle_cancel_push` will be called). If a push is in state `PushPromise` or `Active`, any
-///                       posted events will be removed and a `PushCanceled` event will be posted. If a push is in
-///                       state `OnlyPushStream` or `Active` the transport stream and the `PushStream` will be closed.
-///                       The frame will be ignored for already closed pushes.
-///  Application calling cancel: the actions are similar to the `CANCEL_PUSH` frame. The difference is that
-///                              `PushCanceled` will not be posted and a `CANCEL_PUSH` frame may be sent.
+///  `PUSH_PROMISE` frame: frames may change the push state from Init to `PushPromise` and from
+/// `OnlyPushStream` to                        `Active`. Frames for a closed steams are ignored.
+///  `CANCEL_PUSH` frame: (`handle_cancel_push` will be called). If a push is in state `PushPromise`
+/// or `Active`, any                       posted events will be removed and a `PushCanceled` event
+/// will be posted. If a push is in                       state `OnlyPushStream` or `Active` the
+/// transport stream and the `PushStream` will be closed.                       The frame will be
+/// ignored for already closed pushes.  Application calling cancel: the actions are similar to the
+/// `CANCEL_PUSH` frame. The difference is that                              `PushCanceled` will not
+/// be posted and a `CANCEL_PUSH` frame may be sent.
 #[derive(Debug)]
-pub(crate) struct PushController {
+pub struct PushController {
     max_concurent_push: u64,
     current_max_push_id: u64,
     // push_streams holds the states of push streams.
     // We keep a stream until the stream has been closed.
     push_streams: ActivePushStreams,
     // The keeps the next consecutive push_id that should be open.
-    // All push_id < next_push_id_to_open are in the push_stream lists. If they are not in the list they have
-    // been already closed.
+    // All push_id < next_push_id_to_open are in the push_stream lists. If they are not in the list
+    // they have been already closed.
     conn_events: Http3ClientEvents,
 }
 
 impl PushController {
-    pub fn new(max_concurent_push: u64, conn_events: Http3ClientEvents) -> Self {
-        PushController {
+    pub const fn new(max_concurent_push: u64, conn_events: Http3ClientEvents) -> Self {
+        Self {
             max_concurent_push,
             current_max_push_id: 0,
             push_streams: ActivePushStreams::new(),
@@ -171,7 +175,9 @@ impl Display for PushController {
 
 impl PushController {
     /// A new `push_promise` has been received.
+    ///
     /// # Errors
+    ///
     /// `HttpId` if `push_id` greater than it is allowed has been received.
     pub fn new_push_promise(
         &mut self,
@@ -239,12 +245,12 @@ impl PushController {
 
         self.check_push_id(push_id)?;
 
-        match self.push_streams.get_mut(push_id) {
-            None => {
+        self.push_streams.get_mut(push_id).map_or_else(
+            || {
                 qinfo!("Push has been closed already.");
                 Ok(false)
-            }
-            Some(push_state) => match push_state {
+            },
+            |push_state| match push_state {
                 PushState::Init => {
                     *push_state = PushState::OnlyPushStream {
                         stream_id,
@@ -267,10 +273,10 @@ impl PushController {
                     Err(Error::HttpId)
                 }
             },
-        }
+        )
     }
 
-    fn check_push_id(&mut self, push_id: u64) -> Res<()> {
+    fn check_push_id(&self, push_id: u64) -> Res<()> {
         // Check if push id is greater than what we allow.
         if push_id > self.current_max_push_id {
             qerror!("Push id is greater than current_max_push_id.");
@@ -340,8 +346,9 @@ impl PushController {
         match self.push_streams.get(push_id) {
             None => {
                 qtrace!("Push has already been closed.");
-                // If we have some events for the push_id in the event queue, the caller still does not
-                // not know that the push has been closed. Otherwise return InvalidStreamId.
+                // If we have some events for the push_id in the event queue, the caller still does
+                // not not know that the push has been closed. Otherwise return
+                // InvalidStreamId.
                 if self.conn_events.has_push(push_id) {
                     self.conn_events.remove_events_for_push_id(push_id);
                     Ok(())
@@ -357,7 +364,7 @@ impl PushController {
             }
             Some(PushState::Active { stream_id, .. }) => {
                 self.conn_events.remove_events_for_push_id(push_id);
-                // Cancel the stream. the transport steam may already be done, so ignore an error.
+                // Cancel the stream. The transport stream may already be done, so ignore an error.
                 mem::drop(base_handler.stream_stop_sending(
                     conn,
                     *stream_id,
@@ -424,7 +431,7 @@ impl PushController {
         self.push_streams.clear();
     }
 
-    pub fn can_receive_push(&self) -> bool {
+    pub const fn can_receive_push(&self) -> bool {
         self.max_concurent_push > 0
     }
 
@@ -452,13 +459,13 @@ impl PushController {
 /// `PushHeaderReady` and `PushDataReadable` events or to postpone them if
 /// a `push_promise` has not been yet received for the stream.
 #[derive(Debug)]
-pub(crate) struct RecvPushEvents {
+pub struct RecvPushEvents {
     push_id: u64,
     push_handler: Rc<RefCell<PushController>>,
 }
 
 impl RecvPushEvents {
-    pub fn new(push_id: u64, push_handler: Rc<RefCell<PushController>>) -> Self {
+    pub const fn new(push_id: u64, push_handler: Rc<RefCell<PushController>>) -> Self {
         Self {
             push_id,
             push_handler,

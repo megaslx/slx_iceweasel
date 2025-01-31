@@ -19,7 +19,6 @@ const TP_PB_PREF = "privacy.trackingprotection.pbmode.enabled";
 const APS_PREF =
   "privacy.partition.always_partition_third_party_non_cookie_storage";
 const TPC_PREF = "network.cookie.cookieBehavior";
-const DTSCBN_PREF = "dom.testing.sync-content-blocking-notifications";
 const BENIGN_PAGE =
   // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://tracking.example.org/browser/browser/base/content/test/protectionsUI/benignPage.html";
@@ -35,20 +34,6 @@ var ThirdPartyCookies = null;
 var tabbrowser = null;
 var gTrackingPageURL = TRACKING_PAGE;
 
-const sBrandBundle = Services.strings.createBundle(
-  "chrome://branding/locale/brand.properties"
-);
-const sNoTrackerIconTooltip = gNavigatorBundle.getFormattedString(
-  "trackingProtection.icon.noTrackersDetectedTooltip",
-  [sBrandBundle.GetStringFromName("brandShortName")]
-);
-const sActiveIconTooltip = gNavigatorBundle.getString(
-  "trackingProtection.icon.activeTooltip2"
-);
-const sDisabledIconTooltip = gNavigatorBundle.getString(
-  "trackingProtection.icon.disabledTooltip2"
-);
-
 registerCleanupFunction(function () {
   TrackingProtection =
     gProtectionsHandler =
@@ -59,7 +44,6 @@ registerCleanupFunction(function () {
   Services.prefs.clearUserPref(TP_PREF);
   Services.prefs.clearUserPref(TP_PB_PREF);
   Services.prefs.clearUserPref(TPC_PREF);
-  Services.prefs.clearUserPref(DTSCBN_PREF);
 });
 
 function notFound(id) {
@@ -81,12 +65,14 @@ async function testBenignPage() {
     "icon box shows no exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    sNoTrackerIconTooltip,
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    "tracking-protection-icon-no-trackers-detected",
     "correct tooltip"
   );
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is visible"
   );
 
@@ -117,13 +103,15 @@ async function testBenignPageWithException() {
     "shield shows exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    sDisabledIconTooltip,
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    "tracking-protection-icon-disabled",
     "correct tooltip"
   );
 
   ok(
-    !BrowserTestUtils.is_hidden(gProtectionsHandler.iconBox),
+    !BrowserTestUtils.isHidden(gProtectionsHandler.iconBox),
     "icon box is not hidden"
   );
 
@@ -159,7 +147,7 @@ async function testTrackingPage(window) {
   let isWindowPrivate = PrivateBrowsingUtils.isWindowPrivate(window);
   let blockedByTP = areTrackersBlocked(isWindowPrivate);
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is always visible"
   );
   is(
@@ -172,8 +160,12 @@ async function testTrackingPage(window) {
     "icon box shows no exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    blockedByTP ? sActiveIconTooltip : sNoTrackerIconTooltip,
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    blockedByTP
+      ? "tracking-protection-icon-active"
+      : "tracking-protection-icon-no-trackers-detected",
     "correct tooltip"
   );
 
@@ -210,13 +202,15 @@ async function testTrackingPageUnblocked(blockedByTP, window) {
     "shield shows exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    sDisabledIconTooltip,
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    "tracking-protection-icon-disabled",
     "correct tooltip"
   );
 
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is visible"
   );
 
@@ -284,8 +278,6 @@ add_task(async function testNormalBrowsing() {
   await SpecialPowers.pushPrefEnv({ set: [[APS_PREF, false]] });
 
   await UrlClassifierTestUtils.addTestTrackers();
-
-  Services.prefs.setBoolPref(DTSCBN_PREF, true);
 
   tabbrowser = gBrowser;
   let tab = (tabbrowser.selectedTab = BrowserTestUtils.addTab(tabbrowser));
@@ -365,6 +357,8 @@ add_task(async function testPrivateBrowsing() {
 });
 
 add_task(async function testThirdPartyCookies() {
+  requestLongerTimeout(3);
+
   await SpecialPowers.pushPrefEnv({ set: [[APS_PREF, false]] });
 
   await UrlClassifierTestUtils.addTestTrackers();

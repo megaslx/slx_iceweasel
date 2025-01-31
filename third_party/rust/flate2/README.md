@@ -6,7 +6,7 @@
 A streaming compression/decompression library DEFLATE-based streams in Rust.
 
 This crate by default uses the `miniz_oxide` crate, a port of `miniz.c` to pure
-Rust. This crate also supports other [backends](#Backends), such as the widely
+Rust. This crate also supports other [backends](#backends), such as the widely
 available zlib library or the high-performance zlib-ng library.
 
 Supported formats:
@@ -20,6 +20,12 @@ Supported formats:
 [dependencies]
 flate2 = "1.0"
 ```
+
+## MSRV (Minimum Supported Rust Version) Policy
+
+This crate supports the current stable and the last stable for the latest version.
+For example, if the current stable is 1.64, this crate supports 1.64 and 1.63.
+Older stables may work, but we don't guarantee these will continue to work.
 
 ## Compression
 

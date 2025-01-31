@@ -63,7 +63,7 @@ function extend(obj, /* optional */ skip) {
   return ret;
 }
 
-function flattenArguments(lst /* ...*/) {
+function flattenArguments(/* ...*/) {
   var res = [];
   var args = extend(arguments);
   while (args.length) {
@@ -205,7 +205,10 @@ TestRunner._checkForHangs = function () {
 
   if (TestRunner._currentTest < TestRunner._urls.length) {
     var runtime = new Date().valueOf() - TestRunner._currentTestStartTime;
-    if (runtime >= TestRunner.timeout * TestRunner._timeoutFactor) {
+    if (
+      !TestRunner.interactiveDebugger &&
+      runtime >= TestRunner.timeout * TestRunner._timeoutFactor
+    ) {
       let testIframe = $("testframe");
       var frameWindow =
         (!testInXOriginFrame() && testIframe.contentWindow.wrappedJSObject) ||
@@ -215,7 +218,10 @@ TestRunner._checkForHangs = function () {
 
       // If we have too many timeouts, give up. We don't want to wait hours
       // for results if some bug causes lots of tests to time out.
-      if (++TestRunner._numTimeouts >= TestRunner.maxTimeouts) {
+      if (
+        ++TestRunner._numTimeouts >= TestRunner.maxTimeouts ||
+        TestRunner.runUntilFailure
+      ) {
         TestRunner._haltTests = true;
 
         TestRunner.currentTestURL = "(SimpleTest/TestRunner.js)";
@@ -596,6 +602,11 @@ async function _runNextTest() {
         { type: "allowXULXBL", allow: true, context: "http://example.org" },
       ]);
     }
+    if (TestRunner._urls[TestRunner._currentTest].test.https_first_disabled) {
+      await SpecialPowers.pushPrefEnv({
+        set: [["dom.security.https_first", false]],
+      });
+    }
     TestRunner._makeIframe(url, 0);
   } else {
     $("current-test").innerHTML = "<b>Finished</b>";
@@ -833,25 +844,49 @@ TestRunner.testFinished = function (tests) {
       if (!testInXOriginFrame()) {
         $("testframe").contentWindow.addEventListener("unload", function () {
           var testwin = $("testframe").contentWindow;
-          if (
-            testwin.SimpleTest &&
-            testwin.SimpleTest._tests.length != testwin.SimpleTest.testsLength
-          ) {
-            var wrongtestlength =
-              testwin.SimpleTest._tests.length - testwin.SimpleTest.testsLength;
-            var wrongtestname = "";
-            for (var i = 0; i < wrongtestlength; i++) {
-              wrongtestname =
-                testwin.SimpleTest._tests[testwin.SimpleTest.testsLength + i]
-                  .name;
+          if (testwin.SimpleTest) {
+            if (typeof testwin.SimpleTest.testsLength === "undefined") {
               TestRunner.structuredLogger.error(
                 "TEST-UNEXPECTED-FAIL | " +
                   TestRunner.currentTestURL +
-                  " logged result after SimpleTest.finish(): " +
-                  wrongtestname
+                  " fired an unload callback with missing test data," +
+                  " possibly due to the test navigating or reloading"
               );
+              TestRunner.updateUI([{ result: false }]);
+            } else if (
+              testwin.SimpleTest._tests.length != testwin.SimpleTest.testsLength
+            ) {
+              var didReportError = false;
+              var wrongtestlength =
+                testwin.SimpleTest._tests.length -
+                testwin.SimpleTest.testsLength;
+              var wrongtestname = "";
+              for (var i = 0; i < wrongtestlength; i++) {
+                wrongtestname =
+                  testwin.SimpleTest._tests[testwin.SimpleTest.testsLength + i]
+                    .name;
+                TestRunner.structuredLogger.error(
+                  "TEST-UNEXPECTED-FAIL | " +
+                    TestRunner.currentTestURL +
+                    " logged result after SimpleTest.finish(): " +
+                    wrongtestname
+                );
+                didReportError = true;
+              }
+              if (!didReportError) {
+                // This clause shouldn't be reachable, but if we somehow get
+                // here (e.g. if wrongtestlength is somehow negative), it's
+                // important that we log *something* for the { result: false }
+                // test-failure that we're about to post.
+                TestRunner.structuredLogger.error(
+                  "TEST-UNEXPECTED-FAIL | " +
+                    TestRunner.currentTestURL +
+                    " hit an unexpected condition when checking for" +
+                    " logged results after SimpleTest.finish()"
+                );
+              }
+              TestRunner.updateUI([{ result: false }]);
             }
-            TestRunner.updateUI([{ result: false }]);
           }
         });
       }
@@ -863,6 +898,7 @@ TestRunner.testFinished = function (tests) {
       await cleanUpCrashDumpFiles();
       await SpecialPowers.flushPermissions();
       await SpecialPowers.flushPrefEnv();
+      SpecialPowers.cleanupAllClipboard(window);
       runNextTest();
     });
   });

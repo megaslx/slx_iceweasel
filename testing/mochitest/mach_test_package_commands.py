@@ -8,7 +8,6 @@ import sys
 from argparse import Namespace
 from functools import partial
 
-import six
 from mach.decorators import Command
 
 here = os.path.abspath(os.path.dirname(__file__))
@@ -27,7 +26,7 @@ def run_test(context, is_junit, **kwargs):
 
     flavor = kwargs.get("flavor") or "mochitest"
     if flavor not in ALL_FLAVORS:
-        for fname, fobj in six.iteritems(ALL_FLAVORS):
+        for fname, fobj in ALL_FLAVORS.items():
             if flavor in fobj["aliases"]:
                 flavor = fname
                 break
@@ -59,7 +58,7 @@ def run_test(context, is_junit, **kwargs):
         "mochitest-chrome-gpu": "gpu",
         "mochitest-plain-gpu": "gpu",
         "mochitest-media": "media",
-        "mochitest-browser-chrome-screenshots": "screenshots",
+        "mochitest-browser-screenshots": "screenshots",
         "mochitest-webgl1-core": "webgl1-core",
         "mochitest-webgl1-ext": "webgl1-ext",
         "mochitest-webgl2-core": "webgl2-core",

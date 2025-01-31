@@ -9,6 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   getSeenNodesForBrowsingContext:
     "chrome://remote/content/shared/webdriver/Session.sys.mjs",
+  json: "chrome://remote/content/marionette/json.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
 });
 
@@ -21,13 +22,38 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () =>
 let webDriverSessionId = null;
 
 export class MarionetteCommandsParent extends JSWindowActorParent {
+  #deferredDialogOpened;
+
   actorCreated() {
-    this._resolveDialogOpened = null;
+    this.#deferredDialogOpened = null;
   }
 
-  dialogOpenedPromise() {
-    return new Promise(resolve => {
-      this._resolveDialogOpened = resolve;
+  assertInViewPort(target, _context) {
+    return this.sendQuery("MarionetteCommandsParent:_assertInViewPort", {
+      target,
+    });
+  }
+
+  dispatchEvent(eventName, details) {
+    return this.sendQuery("MarionetteCommandsParent:_dispatchEvent", {
+      eventName,
+      details,
+    });
+  }
+
+  finalizeAction() {
+    return this.sendQuery("MarionetteCommandsParent:_finalizeAction");
+  }
+
+  getClientRects(element, _context) {
+    return this.executeScript("return arguments[0].getClientRects()", [
+      element,
+    ]);
+  }
+
+  getInViewCentrePoint(rect, _context) {
+    return this.sendQuery("MarionetteCommandsParent:_getInViewCentrePoint", {
+      rect,
     });
   }
 
@@ -38,38 +64,51 @@ export class MarionetteCommandsParent extends JSWindowActorParent {
     );
 
     // return early if a dialog is opened
-    const {
+    this.#deferredDialogOpened = Promise.withResolvers();
+    let {
       error,
+      isWebDriverError,
       seenNodeIds,
       serializedValue: serializedResult,
+      hasSerializedWindows,
     } = await Promise.race([
       super.sendQuery(name, serializedValue),
-      this.dialogOpenedPromise(),
+      this.#deferredDialogOpened.promise,
     ]).finally(() => {
-      this._resolveDialogOpened = null;
+      this.#deferredDialogOpened = null;
     });
 
     if (error) {
-      const err = lazy.error.WebDriverError.fromJSON(error);
-      this.#handleError(err, seenNodes);
+      if (isWebDriverError) {
+        // If it's a WebDriver error we need to deserialize it.
+        error = lazy.error.WebDriverError.fromJSON(error);
+      }
+
+      this.#handleError(error, seenNodes);
     }
 
     // Update seen nodes for serialized element and shadow root nodes.
     seenNodeIds?.forEach(nodeId => seenNodes.add(nodeId));
 
+    if (hasSerializedWindows) {
+      // The serialized data contains WebWindow references that need to be
+      // converted to unique identifiers.
+      serializedResult = lazy.json.mapToNavigableIds(serializedResult);
+    }
+
     return serializedResult;
   }
 
   /**
-   * Handle WebDriver error and replace error type if necessary.
+   * Handle an error and replace error type if necessary.
    *
-   * @param {WebDriverError} error
-   *     The WebDriver error to handle.
+   * @param {Error} error
+   *     The error to handle.
    * @param {Set<string>} seenNodes
    *     List of node ids already seen in this navigable.
    *
-   * @throws {WebDriverError}
-   *     The original or replaced WebDriver error.
+   * @throws {Error}
+   *     The original or replaced error.
    */
   #handleError(error, seenNodes) {
     // If an element hasn't been found during deserialization check if it
@@ -96,8 +135,8 @@ export class MarionetteCommandsParent extends JSWindowActorParent {
   }
 
   notifyDialogOpened() {
-    if (this._resolveDialogOpened) {
-      this._resolveDialogOpened({ data: null });
+    if (this.#deferredDialogOpened) {
+      this.#deferredDialogOpened.resolve({ data: null });
     }
   }
 
@@ -119,7 +158,7 @@ export class MarionetteCommandsParent extends JSWindowActorParent {
   async executeScript(script, args, opts) {
     return this.sendQuery("MarionetteCommandsParent:executeScript", {
       script,
-      args,
+      args: lazy.json.mapFromNavigableIds(args),
       opts,
     });
   }
@@ -237,13 +276,19 @@ export class MarionetteCommandsParent extends JSWindowActorParent {
     });
   }
 
-  async performActions(actions) {
+  performActions(actions) {
     return this.sendQuery("MarionetteCommandsParent:performActions", {
       actions,
     });
   }
 
-  async releaseActions() {
+  /**
+   * The release actions command is used to release all the keys and pointer
+   * buttons that are currently depressed. This causes events to be fired
+   * as if the state was released by an explicit series of actions. It also
+   * clears all the internal state of the virtual devices.
+   */
+  releaseActions() {
     return this.sendQuery("MarionetteCommandsParent:releaseActions");
   }
 
@@ -298,7 +343,7 @@ export class MarionetteCommandsParent extends JSWindowActorParent {
         return lazy.capture.toHash(canvas);
 
       case lazy.capture.Format.Base64:
-        return lazy.capture.toBase64(canvas);
+        return lazy.capture.toBase64(canvas, "image/png");
 
       default:
         throw new TypeError(`Invalid capture format: ${format}`);
@@ -336,18 +381,29 @@ export function getMarionetteCommandsActorProxy(browsingContextFn) {
       get(target, methodName) {
         return async (...args) => {
           let attempts = 0;
+          // eslint-disable-next-line no-constant-condition
           while (true) {
-            try {
-              const browsingContext = browsingContextFn();
-              if (!browsingContext) {
-                throw new DOMException(
-                  "No BrowsingContext found",
-                  "NoBrowsingContext"
-                );
-              }
+            let browsingContext = browsingContextFn();
 
-              // TODO: Scenarios where the window/tab got closed and
-              // currentWindowGlobal is null will be handled in Bug 1662808.
+            // If a top-level browsing context was replaced and retrying is allowed,
+            // retrieve the new one for the current browser.
+            if (
+              browsingContext?.isReplaced &&
+              browsingContext.top === browsingContext &&
+              !NO_RETRY_METHODS.includes(methodName)
+            ) {
+              browsingContext = BrowsingContext.getCurrentTopByBrowserId(
+                browsingContext.browserId
+              );
+            }
+
+            if (!browsingContext || browsingContext.isDiscarded) {
+              throw new lazy.error.NoSuchWindowError(
+                `BrowsingContext does no longer exist`
+              );
+            }
+
+            try {
               const actor =
                 browsingContext.currentWindowGlobal.getActor(
                   "MarionetteCommands"
@@ -363,25 +419,27 @@ export function getMarionetteCommandsActorProxy(browsingContextFn) {
               }
 
               if (NO_RETRY_METHODS.includes(methodName)) {
-                const browsingContextId = browsingContextFn()?.id;
                 lazy.logger.trace(
-                  `[${browsingContextId}] Querying "${methodName}" failed with` +
-                    ` ${e.name}, returning "null" as fallback`
+                  `[${browsingContext.id}] Querying "${methodName}"` +
+                    ` failed with ${e.name}, returning "null" as fallback`
                 );
                 return null;
               }
 
               if (++attempts > MAX_ATTEMPTS) {
-                const browsingContextId = browsingContextFn()?.id;
                 lazy.logger.trace(
-                  `[${browsingContextId}] Querying "${methodName} "` +
-                    `reached the limit of retry attempts (${MAX_ATTEMPTS})`
+                  `[${browsingContext.id}] Querying "${methodName}"` +
+                    ` reached the limit of retry attempts (${MAX_ATTEMPTS})`
                 );
                 throw e;
               }
 
               lazy.logger.trace(
-                `Retrying "${methodName}", attempt: ${attempts}`
+                `[${browsingContext.id}] Retrying "${methodName}"` +
+                  `, attempt: ${attempts}`
+              );
+              await new Promise(resolve =>
+                Services.tm.dispatchToMainThread(resolve)
               );
             }
           }

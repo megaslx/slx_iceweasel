@@ -7,6 +7,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 use std::fmt::{Debug, Formatter};
+
 use url::{ParseError, Url};
 
 pub trait RequestTarget: Debug {
@@ -37,7 +38,7 @@ impl RequestTarget for RefRequestTarget<'_, '_, '_> {
 
 impl<'s, 'a, 'p> RefRequestTarget<'s, 'a, 'p> {
     #[must_use]
-    pub fn new(scheme: &'s str, authority: &'a str, path: &'p str) -> Self {
+    pub const fn new(scheme: &'s str, authority: &'a str, path: &'p str) -> Self {
         Self {
             scheme,
             authority,
@@ -58,7 +59,9 @@ pub trait AsRequestTarget<'x> {
     type Target: RequestTarget;
     type Error;
     /// Produce a `RequestTarget` that refers to `self`.
+    ///
     /// # Errors
+    ///
     /// This method can generate an error of type `Self::Error`
     /// if the conversion is unsuccessful.
     fn as_request_target(&'x self) -> Result<Self::Target, Self::Error>;

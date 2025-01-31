@@ -7,15 +7,25 @@
 
 "use strict";
 
-add_task(async function setup() {
-  await SearchTestUtils.useTestEngines("data", null);
-  await AddonTestUtils.promiseStartupManager();
+const CONFIG = [
+  {
+    identifier: "appDefault",
+    base: {
+      urls: {
+        search: { base: "https://www.example.com", searchTermParamName: "q" },
+      },
+    },
+  },
+];
+
+add_setup(async function () {
+  SearchTestUtils.setRemoteSettingsConfig(CONFIG);
 });
 
 add_task(async function test_resultDomain() {
   await Services.search.init();
 
-  let engine = Services.search.getEngineByName("Test search engine");
+  let engine = Services.search.getEngineById("appDefault");
 
-  Assert.equal(engine.searchUrlDomain, "www.google.com");
+  Assert.equal(engine.searchUrlDomain, "www.example.com");
 });

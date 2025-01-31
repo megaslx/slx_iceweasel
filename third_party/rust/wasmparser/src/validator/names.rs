@@ -1,12 +1,14 @@
 //! Definitions of name-related helpers and newtypes, primarily for the
 //! component model.
 
-use crate::{ComponentExternName, Result};
+use crate::prelude::*;
+use crate::{Result, WasmFeatures};
+use core::borrow::Borrow;
+use core::cmp::Ordering;
+use core::fmt;
+use core::hash::{Hash, Hasher};
+use core::ops::Deref;
 use semver::Version;
-use std::borrow::Borrow;
-use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::ops::Deref;
 
 /// Represents a kebab string slice used in validation.
 ///
@@ -36,7 +38,10 @@ impl KebabStr {
     pub(crate) fn new_unchecked<'a>(s: impl AsRef<str> + 'a) -> &'a Self {
         // Safety: `KebabStr` is a transparent wrapper around `str`
         // Therefore transmuting `&str` to `&KebabStr` is safe.
-        unsafe { std::mem::transmute::<_, &Self>(s.as_ref()) }
+        #[allow(unsafe_code)]
+        unsafe {
+            core::mem::transmute::<_, &Self>(s.as_ref())
+        }
     }
 
     /// Gets the underlying string slice.
@@ -94,6 +99,20 @@ impl PartialEq for KebabStr {
 impl PartialEq<KebabString> for KebabStr {
     fn eq(&self, other: &KebabString) -> bool {
         self.eq(other.as_kebab_str())
+    }
+}
+
+impl Ord for KebabStr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_chars = self.chars().map(|c| c.to_ascii_lowercase());
+        let other_chars = other.chars().map(|c| c.to_ascii_lowercase());
+        self_chars.cmp(other_chars)
+    }
+}
+
+impl PartialOrd for KebabStr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -171,6 +190,18 @@ impl Borrow<KebabStr> for KebabString {
     }
 }
 
+impl Ord for KebabString {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_kebab_str().cmp(other.as_kebab_str())
+    }
+}
+
+impl PartialOrd for KebabString {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.as_kebab_str().partial_cmp(other.as_kebab_str())
+    }
+}
+
 impl PartialEq for KebabString {
     fn eq(&self, other: &Self) -> bool {
         self.as_kebab_str().eq(other.as_kebab_str())
@@ -201,174 +232,115 @@ impl From<KebabString> for String {
     }
 }
 
-/// A "kebab name" in the component model which is backed by `T`, which defaults
-/// to `String`.
+/// An import or export name in the component model which is backed by `T`,
+/// which defaults to `String`.
 ///
 /// This name can be either:
 ///
-/// * a `KebabStr`: `a-b-c`
-/// * a method name : `[method]a-b.c-d`
-/// * a static method name : `[static]a-b.c-d`
-/// * a constructor: `[constructor]a-b`
+/// * a plain label or "kebab string": `a-b-c`
+/// * a plain method name : `[method]a-b.c-d`
+/// * a plain static method name : `[static]a-b.c-d`
+/// * a plain constructor: `[constructor]a-b`
+/// * an interface name: `wasi:cli/reactor@0.1.0`
+/// * a dependency name: `locked-dep=foo:bar/baz`
+/// * a URL name: `url=https://..`
+/// * a hash name: `integrity=sha256:...`
 ///
 /// # Equality and hashing
 ///
-/// Note that this type the `Method` and `Static` variants are considered equal
-/// and hash to the same value. This enables disallowing clashes between the two
-/// where method name overlap cannot happen.
+/// Note that this type the `[method]...` and `[static]...` variants are
+/// considered equal and hash to the same value. This enables disallowing
+/// clashes between the two where method name overlap cannot happen.
 #[derive(Clone)]
-pub struct KebabName {
+pub struct ComponentName {
     raw: String,
-    parsed: ParsedKebabName,
+    kind: ParsedComponentNameKind,
 }
 
-#[derive(Copy, Clone)]
-enum ParsedKebabName {
-    Normal,
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ParsedComponentNameKind {
+    Label,
     Constructor,
-    Method {
-        dot: u32,
-    },
-    Static {
-        dot: u32,
-    },
-    Id {
-        colon: u32,
-        slash: u32,
-        at: Option<u32>,
-    },
+    Method,
+    Static,
+    Interface,
+    Dependency,
+    Url,
+    Hash,
 }
 
-/// Created via [`KebabName::kind`] and classifies a name.
+/// Created via [`ComponentName::kind`] and classifies a name.
 #[derive(Debug, Clone)]
-pub enum KebabNameKind<'a> {
+pub enum ComponentNameKind<'a> {
     /// `a-b-c`
-    Normal(&'a KebabStr),
+    Label(&'a KebabStr),
     /// `[constructor]a-b`
     Constructor(&'a KebabStr),
     /// `[method]a-b.c-d`
     #[allow(missing_docs)]
-    Method {
-        resource: &'a KebabStr,
-        name: &'a KebabStr,
-    },
+    Method(ResourceFunc<'a>),
     /// `[static]a-b.c-d`
     #[allow(missing_docs)]
-    Static {
-        resource: &'a KebabStr,
-        name: &'a KebabStr,
-    },
+    Static(ResourceFunc<'a>),
     /// `wasi:http/types@2.0`
     #[allow(missing_docs)]
-    Id {
-        namespace: &'a KebabStr,
-        package: &'a KebabStr,
-        interface: &'a KebabStr,
-        version: Option<Version>,
-    },
+    Interface(InterfaceName<'a>),
+    /// `locked-dep=foo:bar/baz`
+    #[allow(missing_docs)]
+    Dependency(DependencyName<'a>),
+    /// `url=https://...`
+    #[allow(missing_docs)]
+    Url(UrlName<'a>),
+    /// `integrity=sha256:...`
+    #[allow(missing_docs)]
+    Hash(HashName<'a>),
 }
 
 const CONSTRUCTOR: &str = "[constructor]";
 const METHOD: &str = "[method]";
 const STATIC: &str = "[static]";
 
-impl KebabName {
-    /// Attempts to parse `name` as a kebab name, returning `None` if it's not
-    /// valid.
-    pub fn new(name: ComponentExternName<'_>, offset: usize) -> Result<KebabName> {
-        let validate_kebab = |s: &str| {
-            if KebabStr::new(s).is_none() {
-                bail!(offset, "`{s}` is not in kebab case")
-            } else {
-                Ok(())
-            }
+impl ComponentName {
+    /// Attempts to parse `name` as a valid component name, returning `Err` if
+    /// it's not valid.
+    pub fn new(name: &str, offset: usize) -> Result<ComponentName> {
+        Self::new_with_features(name, offset, WasmFeatures::default())
+    }
+
+    /// Attempts to parse `name` as a valid component name, returning `Err` if
+    /// it's not valid.
+    ///
+    /// `features` can be used to enable or disable validation of certain forms
+    /// of supported import names.
+    pub fn new_with_features(name: &str, offset: usize, features: WasmFeatures) -> Result<Self> {
+        let mut parser = ComponentNameParser {
+            next: name,
+            offset,
+            features,
         };
-        let find = |s: &str, c: char| match s.find(c) {
-            Some(i) => Ok(i),
-            None => bail!(offset, "failed to find `{c}` character"),
-        };
-        let parsed = match name {
-            ComponentExternName::Kebab(s) => {
-                if let Some(s) = s.strip_prefix(CONSTRUCTOR) {
-                    validate_kebab(s)?;
-                    ParsedKebabName::Constructor
-                } else if let Some(s) = s.strip_prefix(METHOD) {
-                    let dot = find(s, '.')?;
-                    validate_kebab(&s[..dot])?;
-                    validate_kebab(&s[dot + 1..])?;
-                    ParsedKebabName::Method { dot: dot as u32 }
-                } else if let Some(s) = s.strip_prefix(STATIC) {
-                    let dot = find(s, '.')?;
-                    validate_kebab(&s[..dot])?;
-                    validate_kebab(&s[dot + 1..])?;
-                    ParsedKebabName::Static { dot: dot as u32 }
-                } else {
-                    validate_kebab(s)?;
-                    ParsedKebabName::Normal
-                }
-            }
-            ComponentExternName::Interface(s) => {
-                let colon = find(s, ':')?;
-                validate_kebab(&s[..colon])?;
-                let slash = find(s, '/')?;
-                let at = s[slash..].find('@').map(|i| i + slash);
-                validate_kebab(&s[colon + 1..slash])?;
-                validate_kebab(&s[slash + 1..at.unwrap_or(s.len())])?;
-                if let Some(at) = at {
-                    let version = &s[at + 1..];
-                    if let Err(e) = version.parse::<Version>() {
-                        bail!(offset, "failed to parse version: {e}")
-                    }
-                }
-                ParsedKebabName::Id {
-                    colon: colon as u32,
-                    slash: slash as u32,
-                    at: at.map(|i| i as u32),
-                }
-            }
-        };
-        Ok(KebabName {
-            raw: name.as_str().to_string(),
-            parsed,
+        let kind = parser.parse()?;
+        if !parser.next.is_empty() {
+            bail!(offset, "trailing characters found: `{}`", parser.next);
+        }
+        Ok(ComponentName {
+            raw: name.to_string(),
+            kind,
         })
     }
 
-    /// Returns the [`KebabNameKind`] corresponding to this name.
-    pub fn kind(&self) -> KebabNameKind<'_> {
-        match self.parsed {
-            ParsedKebabName::Normal => KebabNameKind::Normal(KebabStr::new_unchecked(&self.raw)),
-            ParsedKebabName::Constructor => {
-                let kebab = &self.raw[CONSTRUCTOR.len()..];
-                KebabNameKind::Constructor(KebabStr::new_unchecked(kebab))
-            }
-            ParsedKebabName::Method { dot } => {
-                let dotted = &self.raw[METHOD.len()..];
-                let resource = KebabStr::new_unchecked(&dotted[..dot as usize]);
-                let name = KebabStr::new_unchecked(&dotted[dot as usize + 1..]);
-                KebabNameKind::Method { resource, name }
-            }
-            ParsedKebabName::Static { dot } => {
-                let dotted = &self.raw[METHOD.len()..];
-                let resource = KebabStr::new_unchecked(&dotted[..dot as usize]);
-                let name = KebabStr::new_unchecked(&dotted[dot as usize + 1..]);
-                KebabNameKind::Static { resource, name }
-            }
-            ParsedKebabName::Id { colon, slash, at } => {
-                let colon = colon as usize;
-                let slash = slash as usize;
-                let at = at.map(|i| i as usize);
-                let namespace = KebabStr::new_unchecked(&self.raw[..colon]);
-                let package = KebabStr::new_unchecked(&self.raw[colon + 1..slash]);
-                let interface =
-                    KebabStr::new_unchecked(&self.raw[slash + 1..at.unwrap_or(self.raw.len())]);
-                let version = at.map(|i| Version::parse(&self.raw[i + 1..]).unwrap());
-                KebabNameKind::Id {
-                    namespace,
-                    package,
-                    interface,
-                    version,
-                }
-            }
+    /// Returns the [`ComponentNameKind`] corresponding to this name.
+    pub fn kind(&self) -> ComponentNameKind<'_> {
+        use ComponentNameKind::*;
+        use ParsedComponentNameKind as PK;
+        match self.kind {
+            PK::Label => Label(KebabStr::new_unchecked(&self.raw)),
+            PK::Constructor => Constructor(KebabStr::new_unchecked(&self.raw[CONSTRUCTOR.len()..])),
+            PK::Method => Method(ResourceFunc(&self.raw[METHOD.len()..])),
+            PK::Static => Static(ResourceFunc(&self.raw[STATIC.len()..])),
+            PK::Interface => Interface(InterfaceName(&self.raw)),
+            PK::Dependency => Dependency(DependencyName(&self.raw)),
+            PK::Url => Url(UrlName(&self.raw)),
+            PK::Hash => Hash(HashName(&self.raw)),
         }
     }
 
@@ -378,153 +350,587 @@ impl KebabName {
     }
 }
 
-impl From<KebabName> for String {
-    fn from(name: KebabName) -> String {
+impl From<ComponentName> for String {
+    fn from(name: ComponentName) -> String {
         name.raw
     }
 }
 
-impl Hash for KebabName {
+impl Hash for ComponentName {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         self.kind().hash(hasher)
     }
 }
 
-impl PartialEq for KebabName {
-    fn eq(&self, other: &KebabName) -> bool {
+impl PartialEq for ComponentName {
+    fn eq(&self, other: &ComponentName) -> bool {
         self.kind().eq(&other.kind())
     }
 }
 
-impl Eq for KebabName {}
+impl Eq for ComponentName {}
 
-impl fmt::Display for KebabName {
+impl Ord for ComponentName {
+    fn cmp(&self, other: &ComponentName) -> Ordering {
+        self.kind().cmp(&other.kind())
+    }
+}
+
+impl PartialOrd for ComponentName {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.kind.partial_cmp(&other.kind)
+    }
+}
+
+impl fmt::Display for ComponentName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.raw.fmt(f)
     }
 }
 
-impl fmt::Debug for KebabName {
+impl fmt::Debug for ComponentName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.raw.fmt(f)
     }
 }
 
-impl Hash for KebabNameKind<'_> {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
+impl ComponentNameKind<'_> {
+    /// Returns the [`ParsedComponentNameKind`] of the [`ComponentNameKind`].
+    fn kind(&self) -> ParsedComponentNameKind {
         match self {
-            KebabNameKind::Normal(name) => {
-                hasher.write_u8(0);
-                name.hash(hasher);
-            }
-            KebabNameKind::Constructor(name) => {
-                hasher.write_u8(1);
-                name.hash(hasher);
-            }
-            // for hashing method == static
-            KebabNameKind::Method { resource, name } | KebabNameKind::Static { resource, name } => {
-                hasher.write_u8(2);
-                resource.hash(hasher);
-                name.hash(hasher);
-            }
-            KebabNameKind::Id {
-                namespace,
-                package,
-                interface,
-                version,
-            } => {
-                hasher.write_u8(3);
-                namespace.hash(hasher);
-                package.hash(hasher);
-                interface.hash(hasher);
-                version.hash(hasher);
-            }
+            Self::Label(_) => ParsedComponentNameKind::Label,
+            Self::Constructor(_) => ParsedComponentNameKind::Constructor,
+            Self::Method(_) => ParsedComponentNameKind::Method,
+            Self::Static(_) => ParsedComponentNameKind::Static,
+            Self::Interface(_) => ParsedComponentNameKind::Interface,
+            Self::Dependency(_) => ParsedComponentNameKind::Dependency,
+            Self::Url(_) => ParsedComponentNameKind::Url,
+            Self::Hash(_) => ParsedComponentNameKind::Hash,
         }
     }
 }
 
-impl PartialEq for KebabNameKind<'_> {
-    fn eq(&self, other: &KebabNameKind<'_>) -> bool {
+impl Ord for ComponentNameKind<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.kind().cmp(&other.kind()) {
+            Ordering::Equal => (),
+            unequal => return unequal,
+        }
         match (self, other) {
-            (KebabNameKind::Normal(a), KebabNameKind::Normal(b)) => a == b,
-            (KebabNameKind::Normal(_), _) => false,
-            (KebabNameKind::Constructor(a), KebabNameKind::Constructor(b)) => a == b,
-            (KebabNameKind::Constructor(_), _) => false,
+            (ComponentNameKind::Label(lhs), ComponentNameKind::Label(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Constructor(lhs), ComponentNameKind::Constructor(rhs)) => {
+                lhs.cmp(rhs)
+            }
+            (ComponentNameKind::Method(lhs), ComponentNameKind::Method(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Method(lhs), ComponentNameKind::Static(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Static(lhs), ComponentNameKind::Method(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Static(lhs), ComponentNameKind::Static(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Interface(lhs), ComponentNameKind::Interface(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Dependency(lhs), ComponentNameKind::Dependency(rhs)) => {
+                lhs.cmp(rhs)
+            }
+            (ComponentNameKind::Url(lhs), ComponentNameKind::Url(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Hash(lhs), ComponentNameKind::Hash(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("already compared for different kinds above"),
+        }
+    }
+}
+
+impl PartialOrd for ComponentNameKind<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for ComponentNameKind<'_> {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        use ComponentNameKind::*;
+        match self {
+            Label(name) => (0u8, name).hash(hasher),
+            Constructor(name) => (1u8, name).hash(hasher),
+            // for hashing method == static
+            Method(name) | Static(name) => (2u8, name).hash(hasher),
+            Interface(name) => (3u8, name).hash(hasher),
+            Dependency(name) => (4u8, name).hash(hasher),
+            Url(name) => (5u8, name).hash(hasher),
+            Hash(name) => (6u8, name).hash(hasher),
+        }
+    }
+}
+
+impl PartialEq for ComponentNameKind<'_> {
+    fn eq(&self, other: &ComponentNameKind<'_>) -> bool {
+        use ComponentNameKind::*;
+        match (self, other) {
+            (Label(a), Label(b)) => a == b,
+            (Label(_), _) => false,
+            (Constructor(a), Constructor(b)) => a == b,
+            (Constructor(_), _) => false,
 
             // method == static for the purposes of hashing so equate them here
             // as well.
-            (
-                KebabNameKind::Method {
-                    resource: ar,
-                    name: an,
-                },
-                KebabNameKind::Method {
-                    resource: br,
-                    name: bn,
-                },
-            )
-            | (
-                KebabNameKind::Static {
-                    resource: ar,
-                    name: an,
-                },
-                KebabNameKind::Static {
-                    resource: br,
-                    name: bn,
-                },
-            )
-            | (
-                KebabNameKind::Method {
-                    resource: ar,
-                    name: an,
-                },
-                KebabNameKind::Static {
-                    resource: br,
-                    name: bn,
-                },
-            )
-            | (
-                KebabNameKind::Static {
-                    resource: ar,
-                    name: an,
-                },
-                KebabNameKind::Method {
-                    resource: br,
-                    name: bn,
-                },
-            ) => ar == br && an == bn,
+            (Method(a), Method(b))
+            | (Static(a), Static(b))
+            | (Method(a), Static(b))
+            | (Static(a), Method(b)) => a == b,
 
-            (KebabNameKind::Method { .. }, _) => false,
-            (KebabNameKind::Static { .. }, _) => false,
+            (Method(_), _) => false,
+            (Static(_), _) => false,
 
-            (
-                KebabNameKind::Id {
-                    namespace: an,
-                    package: ap,
-                    interface: ai,
-                    version: av,
-                },
-                KebabNameKind::Id {
-                    namespace: bn,
-                    package: bp,
-                    interface: bi,
-                    version: bv,
-                },
-            ) => an == bn && ap == bp && ai == bi && av == bv,
-            (KebabNameKind::Id { .. }, _) => false,
+            (Interface(a), Interface(b)) => a == b,
+            (Interface(_), _) => false,
+            (Dependency(a), Dependency(b)) => a == b,
+            (Dependency(_), _) => false,
+            (Url(a), Url(b)) => a == b,
+            (Url(_), _) => false,
+            (Hash(a), Hash(b)) => a == b,
+            (Hash(_), _) => false,
         }
     }
 }
 
-impl Eq for KebabNameKind<'_> {}
+impl Eq for ComponentNameKind<'_> {}
+
+/// A resource name and its function, stored as `a.b`.
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ResourceFunc<'a>(&'a str);
+
+impl<'a> ResourceFunc<'a> {
+    /// Returns the the underlying string as `a.b`
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+
+    /// Returns the resource name or the `a` in `a.b`
+    pub fn resource(&self) -> &'a KebabStr {
+        let dot = self.0.find('.').unwrap();
+        KebabStr::new_unchecked(&self.0[..dot])
+    }
+}
+
+/// An interface name, stored as `a:b/c@1.2.3`
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct InterfaceName<'a>(&'a str);
+
+impl<'a> InterfaceName<'a> {
+    /// Returns the entire underlying string.
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+
+    /// Returns the `a:b` in `a:b:c/d/e`
+    pub fn namespace(&self) -> &'a KebabStr {
+        let colon = self.0.rfind(':').unwrap();
+        KebabStr::new_unchecked(&self.0[..colon])
+    }
+
+    /// Returns the `c` in `a:b:c/d/e`
+    pub fn package(&self) -> &'a KebabStr {
+        let colon = self.0.rfind(':').unwrap();
+        let slash = self.0.find('/').unwrap();
+        KebabStr::new_unchecked(&self.0[colon + 1..slash])
+    }
+
+    /// Returns the `d` in `a:b:c/d/e`.
+    pub fn interface(&self) -> &'a KebabStr {
+        let projection = self.projection();
+        let slash = projection.find('/').unwrap_or(projection.len());
+        KebabStr::new_unchecked(&projection[..slash])
+    }
+
+    /// Returns the `d/e` in `a:b:c/d/e`
+    pub fn projection(&self) -> &'a KebabStr {
+        let slash = self.0.find('/').unwrap();
+        let at = self.0.find('@').unwrap_or(self.0.len());
+        KebabStr::new_unchecked(&self.0[slash + 1..at])
+    }
+
+    /// Returns the `1.2.3` in `a:b:c/d/e@1.2.3`
+    pub fn version(&self) -> Option<Version> {
+        let at = self.0.find('@')?;
+        Some(Version::parse(&self.0[at + 1..]).unwrap())
+    }
+}
+
+/// A dependency on an implementation either as `locked-dep=...` or
+/// `unlocked-dep=...`
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct DependencyName<'a>(&'a str);
+
+impl<'a> DependencyName<'a> {
+    /// Returns entire underlying import string
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+}
+
+/// A dependency on an implementation either as `url=...`
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct UrlName<'a>(&'a str);
+
+impl<'a> UrlName<'a> {
+    /// Returns entire underlying import string
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+}
+
+/// A dependency on an implementation either as `integrity=...`.
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct HashName<'a>(&'a str);
+
+impl<'a> HashName<'a> {
+    /// Returns entire underlying import string.
+    pub fn as_str(&self) -> &'a str {
+        self.0
+    }
+}
+
+// A small helper structure to parse `self.next` which is an import or export
+// name.
+//
+// Methods will update `self.next` as they go along and `self.offset` is used
+// for error messages.
+struct ComponentNameParser<'a> {
+    next: &'a str,
+    offset: usize,
+    features: WasmFeatures,
+}
+
+impl<'a> ComponentNameParser<'a> {
+    fn parse(&mut self) -> Result<ParsedComponentNameKind> {
+        if self.eat_str(CONSTRUCTOR) {
+            self.expect_kebab()?;
+            return Ok(ParsedComponentNameKind::Constructor);
+        }
+        if self.eat_str(METHOD) {
+            let resource = self.take_until('.')?;
+            self.kebab(resource)?;
+            self.expect_kebab()?;
+            return Ok(ParsedComponentNameKind::Method);
+        }
+        if self.eat_str(STATIC) {
+            let resource = self.take_until('.')?;
+            self.kebab(resource)?;
+            self.expect_kebab()?;
+            return Ok(ParsedComponentNameKind::Static);
+        }
+
+        // 'unlocked-dep=<' <pkgnamequery> '>'
+        if self.eat_str("unlocked-dep=") {
+            self.expect_str("<")?;
+            self.pkg_name_query()?;
+            self.expect_str(">")?;
+            return Ok(ParsedComponentNameKind::Dependency);
+        }
+
+        // 'locked-dep=<' <pkgname> '>' ( ',' <hashname> )?
+        if self.eat_str("locked-dep=") {
+            self.expect_str("<")?;
+            self.pkg_name(false)?;
+            self.expect_str(">")?;
+            self.eat_optional_hash()?;
+            return Ok(ParsedComponentNameKind::Dependency);
+        }
+
+        // 'url=<' <nonbrackets> '>' (',' <hashname>)?
+        if self.eat_str("url=") {
+            self.expect_str("<")?;
+            let url = self.take_up_to('>')?;
+            if url.contains('<') {
+                bail!(self.offset, "url cannot contain `<`");
+            }
+            self.expect_str(">")?;
+            self.eat_optional_hash()?;
+            return Ok(ParsedComponentNameKind::Url);
+        }
+
+        // 'integrity=<' <integrity-metadata> '>'
+        if self.eat_str("integrity=") {
+            self.expect_str("<")?;
+            let _hash = self.parse_hash()?;
+            self.expect_str(">")?;
+            return Ok(ParsedComponentNameKind::Hash);
+        }
+
+        if self.next.contains(':') {
+            self.pkg_name(true)?;
+            Ok(ParsedComponentNameKind::Interface)
+        } else {
+            self.expect_kebab()?;
+            Ok(ParsedComponentNameKind::Label)
+        }
+    }
+
+    // pkgnamequery ::= <pkgpath> <verrange>?
+    fn pkg_name_query(&mut self) -> Result<()> {
+        self.pkg_path(false)?;
+
+        if self.eat_str("@") {
+            if self.eat_str("*") {
+                return Ok(());
+            }
+
+            self.expect_str("{")?;
+            let range = self.take_up_to('}')?;
+            self.expect_str("}")?;
+            self.semver_range(range)?;
+        }
+
+        Ok(())
+    }
+
+    // pkgname ::= <pkgpath> <version>?
+    fn pkg_name(&mut self, require_projection: bool) -> Result<()> {
+        self.pkg_path(require_projection)?;
+
+        if self.eat_str("@") {
+            let version = match self.eat_up_to('>') {
+                Some(version) => version,
+                None => self.take_rest(),
+            };
+
+            self.semver(version)?;
+        }
+
+        Ok(())
+    }
+
+    // pkgpath ::= <namespace>+ <label> <projection>*
+    fn pkg_path(&mut self, require_projection: bool) -> Result<()> {
+        // There must be at least one package namespace
+        self.take_lowercase_kebab()?;
+        self.expect_str(":")?;
+        self.take_lowercase_kebab()?;
+
+        if self.features.component_model_nested_names() {
+            // Take the remaining package namespaces and name
+            while self.next.starts_with(':') {
+                self.expect_str(":")?;
+                self.take_lowercase_kebab()?;
+            }
+        }
+
+        // Take the projections
+        if self.next.starts_with('/') {
+            self.expect_str("/")?;
+            self.take_kebab()?;
+
+            if self.features.component_model_nested_names() {
+                while self.next.starts_with('/') {
+                    self.expect_str("/")?;
+                    self.take_kebab()?;
+                }
+            }
+        } else if require_projection {
+            bail!(self.offset, "expected `/` after package name");
+        }
+
+        Ok(())
+    }
+
+    // verrange ::= '@*'
+    //            | '@{' <verlower> '}'
+    //            | '@{' <verupper> '}'
+    //            | '@{' <verlower> ' ' <verupper> '}'
+    // verlower ::= '>=' <valid semver>
+    // verupper ::= '<' <valid semver>
+    fn semver_range(&self, range: &str) -> Result<()> {
+        if range == "*" {
+            return Ok(());
+        }
+
+        if let Some(range) = range.strip_prefix(">=") {
+            let (lower, upper) = range
+                .split_once(' ')
+                .map(|(l, u)| (l, Some(u)))
+                .unwrap_or((range, None));
+            self.semver(lower)?;
+
+            if let Some(upper) = upper {
+                match upper.strip_prefix('<') {
+                    Some(upper) => {
+                        self.semver(upper)?;
+                    }
+                    None => bail!(
+                        self.offset,
+                        "expected `<` at start of version range upper bounds"
+                    ),
+                }
+            }
+        } else if let Some(upper) = range.strip_prefix('<') {
+            self.semver(upper)?;
+        } else {
+            bail!(
+                self.offset,
+                "expected `>=` or `<` at start of version range"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn parse_hash(&mut self) -> Result<&'a str> {
+        let integrity = self.take_up_to('>')?;
+        let mut any = false;
+        for hash in integrity.split_whitespace() {
+            any = true;
+            let rest = hash
+                .strip_prefix("sha256")
+                .or_else(|| hash.strip_prefix("sha384"))
+                .or_else(|| hash.strip_prefix("sha512"));
+            let rest = match rest {
+                Some(s) => s,
+                None => bail!(self.offset, "unrecognized hash algorithm: `{hash}`"),
+            };
+            let rest = match rest.strip_prefix('-') {
+                Some(s) => s,
+                None => bail!(self.offset, "expected `-` after hash algorithm: {hash}"),
+            };
+            let (base64, _options) = match rest.find('?') {
+                Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+                None => (rest, None),
+            };
+            if !is_base64(base64) {
+                bail!(self.offset, "not valid base64: `{base64}`");
+            }
+        }
+        if !any {
+            bail!(self.offset, "integrity hash cannot be empty");
+        }
+        Ok(integrity)
+    }
+
+    fn eat_optional_hash(&mut self) -> Result<Option<&'a str>> {
+        if !self.eat_str(",") {
+            return Ok(None);
+        }
+        self.expect_str("integrity=<")?;
+        let ret = self.parse_hash()?;
+        self.expect_str(">")?;
+        Ok(Some(ret))
+    }
+
+    fn eat_str(&mut self, prefix: &str) -> bool {
+        match self.next.strip_prefix(prefix) {
+            Some(rest) => {
+                self.next = rest;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn expect_str(&mut self, prefix: &str) -> Result<()> {
+        if self.eat_str(prefix) {
+            Ok(())
+        } else {
+            bail!(self.offset, "expected `{prefix}` at `{}`", self.next);
+        }
+    }
+
+    fn eat_until(&mut self, c: char) -> Option<&'a str> {
+        let ret = self.eat_up_to(c);
+        if ret.is_some() {
+            self.next = &self.next[c.len_utf8()..];
+        }
+        ret
+    }
+
+    fn eat_up_to(&mut self, c: char) -> Option<&'a str> {
+        let i = self.next.find(c)?;
+        let (a, b) = self.next.split_at(i);
+        self.next = b;
+        Some(a)
+    }
+
+    fn kebab(&self, s: &'a str) -> Result<&'a KebabStr> {
+        match KebabStr::new(s) {
+            Some(name) => Ok(name),
+            None => bail!(self.offset, "`{s}` is not in kebab case"),
+        }
+    }
+
+    fn semver(&self, s: &str) -> Result<Version> {
+        match Version::parse(s) {
+            Ok(v) => Ok(v),
+            Err(e) => bail!(self.offset, "`{s}` is not a valid semver: {e}"),
+        }
+    }
+
+    fn take_until(&mut self, c: char) -> Result<&'a str> {
+        match self.eat_until(c) {
+            Some(s) => Ok(s),
+            None => bail!(self.offset, "failed to find `{c}` character"),
+        }
+    }
+
+    fn take_up_to(&mut self, c: char) -> Result<&'a str> {
+        match self.eat_up_to(c) {
+            Some(s) => Ok(s),
+            None => bail!(self.offset, "failed to find `{c}` character"),
+        }
+    }
+
+    fn take_rest(&mut self) -> &'a str {
+        let ret = self.next;
+        self.next = "";
+        ret
+    }
+
+    fn take_kebab(&mut self) -> Result<&'a KebabStr> {
+        self.next
+            .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+            .map(|i| {
+                let (kebab, next) = self.next.split_at(i);
+                self.next = next;
+                self.kebab(kebab)
+            })
+            .unwrap_or_else(|| self.expect_kebab())
+    }
+
+    fn take_lowercase_kebab(&mut self) -> Result<&'a KebabStr> {
+        let kebab = self.take_kebab()?;
+        if let Some(c) = kebab
+            .chars()
+            .find(|c| c.is_alphabetic() && !c.is_lowercase())
+        {
+            bail!(
+                self.offset,
+                "character `{c}` is not lowercase in package name/namespace"
+            );
+        }
+        Ok(kebab)
+    }
+
+    fn expect_kebab(&mut self) -> Result<&'a KebabStr> {
+        let s = self.take_rest();
+        self.kebab(s)
+    }
+}
+
+fn is_base64(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut equals = 0;
+    for (i, byte) in s.as_bytes().iter().enumerate() {
+        match byte {
+            b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'+' | b'/' if equals == 0 => {}
+            b'=' if i > 0 && equals < 2 => equals += 1,
+            _ => return false,
+        }
+    }
+    true
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn parse_kebab_name(s: &str) -> Option<KebabName> {
-        KebabName::new(ComponentExternName::Kebab(s), 0).ok()
+    fn parse_kebab_name(s: &str) -> Option<ComponentName> {
+        ComponentName::new(s, 0).ok()
     }
 
     #[test]

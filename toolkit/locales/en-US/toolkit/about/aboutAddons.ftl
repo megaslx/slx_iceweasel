@@ -206,14 +206,18 @@ addon-sitepermission-host = Site Permissions for { $host }
 
 ## These are global warnings
 
-extensions-warning-safe-mode = All add-ons have been disabled by safe mode.
-extensions-warning-check-compatibility = Add-on compatibility checking is disabled. You may have incompatible add-ons.
+extensions-warning-safe-mode2 =
+    .message = All add-ons have been disabled by safe mode.
+extensions-warning-check-compatibility2 =
+    .message = Add-on compatibility checking is disabled. You may have incompatible add-ons.
 extensions-warning-check-compatibility-button = Enable
     .title = Enable add-on compatibility checking
-extensions-warning-update-security = Add-on update security checking is disabled. You may be compromised by updates.
+extensions-warning-update-security2 =
+    .message = Add-on update security checking is disabled. You may be compromised by updates.
 extensions-warning-update-security-button = Enable
     .title = Enable add-on update security checking
-extensions-warning-imported-addons = Please finalize the installation of extensions that were imported to { -brand-short-name }.
+extensions-warning-imported-addons2 =
+    .message = Please finalize the installation of extensions that were imported to { -brand-short-name }.
 extensions-warning-imported-addons-button = Install Extensions
 
 ## Strings connected to add-on updates
@@ -266,6 +270,9 @@ shortcuts-no-addons = You don’t have any extensions enabled.
 shortcuts-no-commands = The following extensions do not have shortcuts:
 shortcuts-input =
   .placeholder = Type a shortcut
+# Accessible name for a trashcan icon button that removes an existent shortcut
+shortcuts-remove-button =
+  .aria-label = Remove shortcut
 
 shortcuts-browserAction2 = Activate toolbar button
 shortcuts-pageAction = Activate page action
@@ -283,7 +290,8 @@ shortcuts-duplicate = Duplicate shortcut
 # String displayed when a keyboard shortcut is already assigned to more than one add-on
 # Variables:
 #   $shortcut (string) - Shortcut string for the add-on
-shortcuts-duplicate-warning-message = { $shortcut } is being used as a shortcut in more than one case. Duplicate shortcuts may cause unexpected behavior.
+shortcuts-duplicate-warning-message2 =
+    .message = { $shortcut } is being used as a shortcut in more than one case. Duplicate shortcuts may cause unexpected behavior.
 
 # String displayed when a keyboard shortcut is already used by another add-on
 # Variables:
@@ -306,18 +314,18 @@ header-back-button =
 
 # Explanatory introduction to the list of recommended add-ons. The action word
 # ("recommends") in the final sentence is a link to external documentation.
-discopane-intro =
-    Extensions and themes are like apps for your browser, and they let you
-    protect passwords, download videos, find deals, block annoying ads, change
-    how your browser looks, and much more. These small software programs are
-    often developed by a third party. Here’s a selection { -brand-product-name }
-    <a data-l10n-name="learn-more-trigger">recommends</a> for exceptional
-    security, performance, and functionality.
+discopane-intro2 =
+    Extensions and themes let you customize { -brand-product-name }. They can boost privacy,
+    enhance productivity, improve media, change the way { -brand-product-name } looks, and
+    so much more. These small software programs are often developed by a third party. Here’s
+    a selection { -brand-product-name } <a data-l10n-name="learn-more-trigger">recommends</a>
+    for exceptional security, performance, and functionality.
 
 # Notice to make user aware that the recommendations are personalized.
-discopane-notice-recommendations =
-    Some of these recommendations are personalized. They are based on other
-    extensions you’ve installed, profile preferences, and usage statistics.
+discopane-notice-recommendations2 =
+    .message =
+        Some of these recommendations are personalized. They are based on other
+        extensions you’ve installed, profile preferences, and usage statistics.
 discopane-notice-learn-more = Learn more
 
 privacy-policy = Privacy Policy
@@ -392,7 +400,8 @@ addon-detail-homepage-label = Homepage
 addon-detail-rating-label = Rating
 
 # Message for add-ons with a staged pending update.
-install-postponed-message = This extension will be updated when { -brand-short-name } restarts.
+install-postponed-message2 =
+    .message = This extension will be updated when { -brand-short-name } restarts.
 install-postponed-button = Update Now
 
 # This string is used to show that an add-on is disabled.
@@ -413,7 +422,8 @@ addon-detail-reviews-link =
 
 # Variables:
 #   $addon (string) - Name of the add-on
-pending-uninstall-description = <span data-l10n-name="addon-name">{ $addon }</span> has been removed.
+pending-uninstall-description2 =
+    .message = { $addon } has been removed.
 pending-uninstall-undo-button = Undo
 
 addon-detail-updates-label = Allow automatic updates
@@ -477,7 +487,7 @@ recent-updates-heading = Recent Updates
 release-notes-loading = Loading…
 release-notes-error = Sorry, but there was an error loading the release notes.
 
-addon-permissions-empty = This extension doesn’t require any permissions
+addon-permissions-empty2 = This extension doesn’t require any permissions.
 addon-permissions-required = Required permissions for core functionality:
 addon-permissions-optional = Optional permissions for added functionality:
 addon-permissions-learnmore = Learn more about permissions
@@ -518,19 +528,41 @@ addon-page-options-button =
 
 # Variables:
 #   $version (string) - Application version.
-details-notification-incompatible = { $name } is incompatible with { -brand-short-name } { $version }.
-details-notification-incompatible-link = More Information
+details-notification-incompatible2 =
+    .message = { $name } is incompatible with { -brand-short-name } { $version }.
 
-details-notification-unsigned-and-disabled = { $name } could not be verified for use in { -brand-short-name } and has been disabled.
-details-notification-unsigned-and-disabled-link = More Information
+details-notification-unsigned-and-disabled2 =
+    .message = { $name } could not be verified for use in { -brand-short-name } and has been disabled.
 
-details-notification-unsigned = { $name } could not be verified for use in { -brand-short-name }. Proceed with caution.
-details-notification-unsigned-link = More Information
+details-notification-unsigned2 =
+    .message = { $name } could not be verified for use in { -brand-short-name }. Proceed with caution.
 
-details-notification-blocked = { $name } has been disabled due to security or stability issues.
-details-notification-blocked-link = More Information
+details-notification-hard-blocked-extension =
+    .message = This extension is blocked for violating Mozilla’s policies and has been disabled.
+details-notification-hard-blocked-other =
+    .message = This add-on is blocked for violating Mozilla’s policies and has been disabled.
+details-notification-blocked-link2 = See Details
 
-details-notification-softblocked = { $name } is known to cause security or stability issues.
-details-notification-softblocked-link = More Information
+details-notification-soft-blocked-extension-disabled =
+    .message = This extension is restricted for violating Mozilla’s policies and has been disabled. You can enable it, but this may be risky.
+details-notification-soft-blocked-extension-enabled =
+    .message = This extension violates Mozilla’s policies. Using it may be risky.
+details-notification-soft-blocked-other-disabled =
+    .message = This add-on is restricted for violating Mozilla’s policies and has been disabled. You can enable it, but this may be risky.
+details-notification-soft-blocked-other-enabled =
+    .message = This add-on violates Mozilla’s policies. Using it may be risky.
+details-notification-softblocked-link2 = See Details
 
-details-notification-gmp-pending = { $name } will be installed shortly.
+details-notification-gmp-pending2 =
+    .message = { $name } will be installed shortly.
+
+## Gecko Media Plugins (GMPs)
+
+plugins-gmp-license-info = License information
+plugins-gmp-privacy-info = Privacy Information
+
+plugins-openh264-name = OpenH264 Video Codec provided by Cisco Systems, Inc.
+plugins-openh264-description = This plugin is automatically installed by Mozilla to comply with the WebRTC specification and to enable WebRTC calls with devices that require the H.264 video codec. Visit https://www.openh264.org/ to view the codec source code and learn more about the implementation.
+
+plugins-widevine-name = Widevine Content Decryption Module provided by Google Inc.
+plugins-widevine-description = This plugin enables playback of encrypted media in compliance with the Encrypted Media Extensions specification. Encrypted media is typically used by sites to protect against copying of premium media content. Visit https://www.w3.org/TR/encrypted-media/ for more information on Encrypted Media Extensions.

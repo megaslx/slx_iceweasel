@@ -1,7 +1,7 @@
 const PAGE_URI =
-  "http://example.com/tests/toolkit/components/places/tests/browser/history_post.html";
+  "https://example.com/tests/toolkit/components/places/tests/browser/history_post.html";
 const SJS_URI = NetUtil.newURI(
-  "http://example.com/tests/toolkit/components/places/tests/browser/history_post.sjs"
+  "https://example.com/tests/toolkit/components/places/tests/browser/history_post.sjs"
 );
 
 add_task(async function () {
@@ -12,7 +12,7 @@ add_task(async function () {
         let doc = content.document;
         let submit = doc.getElementById("submit");
         let iframe = doc.getElementById("post_iframe");
-        let p = new Promise((resolve, reject) => {
+        let p = new Promise(resolve => {
           iframe.addEventListener(
             "load",
             function () {

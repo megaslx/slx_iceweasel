@@ -30,8 +30,7 @@
 const nodeConstants = require("resource://devtools/shared/dom-node-constants.js");
 const {
   getBindingElementAndPseudo,
-  getCSSStyleRules,
-  l10n,
+  getMatchingCSSRules,
   hasVisitedState,
   isAgentStylesheet,
   isAuthorStylesheet,
@@ -254,18 +253,28 @@ class CssLogic {
     if (cssSheet._passId != this._passId) {
       cssSheet._passId = this._passId;
 
-      // Find import and keyframes rules.
-      for (const aDomRule of cssSheet.getCssRules()) {
-        if (
-          aDomRule.type == CSSRule.IMPORT_RULE &&
-          aDomRule.styleSheet &&
-          this.mediaMatches(aDomRule)
-        ) {
-          this._cacheSheet(aDomRule.styleSheet);
-        } else if (aDomRule.type == CSSRule.KEYFRAMES_RULE) {
-          this._keyframesRules.push(aDomRule);
+      // Find import and keyframes rules. We loop through all the stylesheet recursively,
+      // so we can go through nested rules.
+      const traverseRules = ruleList => {
+        for (const aDomRule of ruleList) {
+          const ruleClassName = ChromeUtils.getClassName(aDomRule);
+          if (
+            ruleClassName === "CSSImportRule" &&
+            aDomRule.styleSheet &&
+            this.mediaMatches(aDomRule)
+          ) {
+            this._cacheSheet(aDomRule.styleSheet);
+          } else if (ruleClassName === "CSSKeyframesRule") {
+            this._keyframesRules.push(aDomRule);
+          }
+
+          if (aDomRule.cssRules) {
+            traverseRules(aDomRule.cssRules);
+          }
         }
-      }
+      };
+
+      traverseRules(cssSheet.getCssRules());
     }
   }
 
@@ -485,40 +494,62 @@ class CssLogic {
   }
 
   /**
-   * Check if the highlighted element or it's parents have matched selectors.
+   * Check if the highlighted element or its parents have matched selectors.
    *
-   * @param {array} aProperties The list of properties you want to check if they
-   * have matched selectors or not.
-   * @return {object} An object that tells for each property if it has matched
-   * selectors or not. Object keys are property names and values are booleans.
+   * @param {Array<String>} properties: The list of properties you want to check if they
+   * have matched selectors or not. For CSS variables, this will check if the variable
+   * is set OR used in a matching rule.
+   * @return {Set<String>} A Set containing the properties that do have matched selectors.
    */
   hasMatchedSelectors(properties) {
     if (!this._matchedRules) {
       this._buildMatchedRules();
     }
 
-    const result = {};
+    const result = new Set();
 
-    this._matchedRules.some(function (value) {
-      const rule = value[0];
-      const status = value[1];
-      properties = properties.filter(property => {
+    for (const [rule, status] of this._matchedRules) {
+      // Getting the rule cssText can be costly, so cache it
+      let cssText;
+      const getCssText = () => {
+        if (cssText === undefined) {
+          cssText = rule.domRule.cssText;
+        }
+        return cssText;
+      };
+
+      // Loop through properties in reverse as we're removing items from it and we don't
+      // want to mess with the iteration.
+      for (let i = properties.length - 1; i >= 0; i--) {
+        const property = properties[i];
         // We just need to find if a rule has this property while it matches
         // the viewedElement (or its parents).
         if (
-          rule.getPropertyValue(property) &&
+          // check if the property is assigned
+          (rule.getPropertyValue(property) ||
+            // or if this is a css variable, if it's being used in the rule.
+            (property.startsWith("--") &&
+              // we may have false positive for dashed ident or the variable being
+              // used in comment/string, but the tradeoff seems okay, as we would have
+              // to parse the value of each declaration, which could be costly.
+              new RegExp(`${property}[^A-Za-z0-9_-]`).test(getCssText()))) &&
           (status == STATUS.MATCHED ||
             (status == STATUS.PARENT_MATCH &&
-              InspectorUtils.isInheritedProperty(property)))
+              InspectorUtils.isInheritedProperty(
+                this.viewedDocument,
+                property
+              )))
         ) {
-          result[property] = true;
-          return false;
+          result.add(property);
+          // Once the property has a matched selector, we can remove it from the array
+          properties.splice(i, 1);
         }
-        // Keep the property for the next rule.
-        return true;
-      });
-      return !properties.length;
-    }, this);
+      }
+
+      if (!properties.length) {
+        return result;
+      }
+    }
 
     return result;
   }
@@ -555,7 +586,7 @@ class CssLogic {
         this.viewedElement === element ? STATUS.MATCHED : STATUS.PARENT_MATCH;
 
       try {
-        domRules = getCSSStyleRules(element);
+        domRules = getMatchingCSSRules(element);
       } catch (ex) {
         console.log("CL__buildMatchedRules error: " + ex);
         continue;
@@ -570,17 +601,13 @@ class CssLogic {
         this._matchedRules.push([rule, status, distance]);
       }
 
-      // getCSSStyleRules can return null with a shadow DOM element.
+      // getMatchingCSSRules can return null with a shadow DOM element.
       if (domRules !== null) {
-        // getCSSStyleRules returns ordered from least-specific to most-specific,
+        // getMatchingCSSRules returns ordered from least-specific to most-specific,
         // but we do want them from most-specific to least specific, so we need to loop
         // through the rules backward.
         for (let i = domRules.length - 1; i >= 0; i--) {
           const domRule = domRules[i];
-          if (domRule.type !== CSSRule.STYLE_RULE) {
-            continue;
-          }
-
           const sheet = this.getSheet(domRule.parentStyleSheet, -1);
           if (sheet._passId !== this._passId) {
             sheet.index = sheetIndex++;
@@ -663,7 +690,7 @@ CssLogic.getShortName = function (element) {
  *         An array of string selectors.
  */
 CssLogic.getSelectors = function (domRule, desugared = false) {
-  if (domRule.type !== CSSRule.STYLE_RULE) {
+  if (ChromeUtils.getClassName(domRule) !== "CSSStyleRule") {
     // Return empty array since CSSRule#selectorCount assumes only STYLE_RULE type.
     return [];
   }
@@ -959,20 +986,11 @@ class CssRule {
     this._cssSheet = cssSheet;
     this.domRule = domRule;
 
-    const parentRule = domRule.parentRule;
-    if (parentRule && parentRule.type == CSSRule.MEDIA_RULE) {
-      this.mediaText = parentRule.media.mediaText;
-    }
-
     if (this._cssSheet) {
       // parse domRule.selectorText on call to this.selectors
       this._selectors = null;
       this.line = InspectorUtils.getRelativeRuleLine(this.domRule);
       this.column = InspectorUtils.getRuleColumn(this.domRule);
-      this.source = this._cssSheet.shortSource + ":" + this.line;
-      if (this.mediaText) {
-        this.source += " @media " + this.mediaText;
-      }
       this.href = this._cssSheet.href;
       this.authorRule = this._cssSheet.authorSheet;
       this.userRule = this._cssSheet.userSheet;
@@ -980,7 +998,6 @@ class CssRule {
     } else if (element) {
       this._selectors = [new CssSelector(this, "@element.style", 0)];
       this.line = -1;
-      this.source = l10n("rule.sourceElement");
       this.href = "#";
       this.authorRule = true;
       this.userRule = false;
@@ -990,12 +1007,6 @@ class CssRule {
   }
 
   _passId = null;
-
-  mediaText = "";
-
-  get isMediaRule() {
-    return !!this.mediaText;
-  }
 
   /**
    * Check if the parent stylesheet is allowed by the CssLogic.sourceFilter.
@@ -1090,16 +1101,6 @@ class CssSelector {
   }
 
   _matchId = null;
-
-  /**
-   * Retrieve the CssSelector source, which is the source of the CssSheet owning
-   * the selector.
-   *
-   * @return {string} the selector source.
-   */
-  get source() {
-    return this.cssRule.source;
-  }
 
   /**
    * Retrieve the CssSelector source element, which is the source of the CssRule
@@ -1317,8 +1318,9 @@ class CssPropertyInfo {
    * Process a matched CssSelector object.
    *
    * @private
-   * @param {CssSelector} selector the matched CssSelector object.
-   * @param {STATUS} status the CssSelector match status.
+   * @param {CssSelector} selector: the matched CssSelector object.
+   * @param {STATUS} status: the CssSelector match status.
+   * @param {Int} distance: See CssLogic._buildMatchedRules for definition.
    */
   _processMatchedSelector(selector, status, distance) {
     const cssRule = selector.cssRule;
@@ -1327,7 +1329,10 @@ class CssPropertyInfo {
       value &&
       (status == STATUS.MATCHED ||
         (status == STATUS.PARENT_MATCH &&
-          InspectorUtils.isInheritedProperty(this.property)))
+          InspectorUtils.isInheritedProperty(
+            this._cssLogic.viewedDocument,
+            this.property
+          )))
     ) {
       const selectorInfo = new CssSelectorInfo(
         selector,
@@ -1416,16 +1421,6 @@ class CssSelectorInfo {
       // for `@import url(path/to/file.css) layer`)
       rule = rule.parentRule || rule.parentStyleSheet?.ownerRule;
     }
-  }
-
-  /**
-   * Retrieve the CssSelector source, which is the source of the CssSheet owning
-   * the selector.
-   *
-   * @return {string} the selector source.
-   */
-  get source() {
-    return this.selector.source;
   }
 
   /**
@@ -1542,7 +1537,7 @@ class CssSelectorInfo {
 
   /**
    * Compare the current CssSelectorInfo instance to another instance.
-   * Since selectorInfos is computed from `InspectorUtils.getCSSStyleRules`,
+   * Since selectorInfos is computed from `InspectorUtils.getMatchingCSSRules`,
    * it's already sorted for regular cases. We only need to handle important values.
    *
    * @param  {CssSelectorInfo} that

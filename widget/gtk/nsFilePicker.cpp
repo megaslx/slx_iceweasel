@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "mozilla/Types.h"
+#include "AsyncDBus.h"
 #include "nsGtkUtils.h"
 #include "nsIFileURL.h"
 #include "nsIGIOService.h"
@@ -19,6 +20,7 @@
 #include "nsIStringBundle.h"
 #include "mozilla/Components.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/dom/Promise.h"
 
 #include "nsArrayEnumerator.h"
 #include "nsEnumeratorUtils.h"
@@ -27,6 +29,7 @@
 #include "MozContainer.h"
 #include "WidgetUtilsGtk.h"
 
+#include "gfxPlatform.h"
 #include "nsFilePicker.h"
 
 #undef LOG
@@ -41,10 +44,11 @@ extern mozilla::LazyLogModule gWidgetLog;
 #endif /* MOZ_LOGGING */
 
 using namespace mozilla;
+using mozilla::dom::Promise;
 
 #define MAX_PREVIEW_SIZE 180
-// bug 1184009
-#define MAX_PREVIEW_SOURCE_SIZE 4096
+// bug 1935858
+#define MAX_PREVIEW_SOURCE_SIZE 8192
 
 nsIFile* nsFilePicker::mPrevDisplayDirectory = nullptr;
 
@@ -168,13 +172,8 @@ static nsAutoCString MakeCaseInsensitiveShellGlob(const char* aPattern) {
 NS_IMPL_ISUPPORTS(nsFilePicker, nsIFilePicker)
 
 nsFilePicker::nsFilePicker()
-    : mSelectedType(0),
-      mRunning(false),
-      mAllowURLs(false),
-      mFileChooserDelegate(nullptr) {
-  mUseNativeFileChooser =
-      widget::ShouldUsePortal(widget::PortalKind::FilePicker);
-}
+    : mUseNativeFileChooser(
+          widget::ShouldUsePortal(widget::PortalKind::FilePicker)) {}
 
 nsFilePicker::~nsFilePicker() = default;
 
@@ -182,7 +181,7 @@ void ReadMultipleFiles(gpointer filename, gpointer array) {
   nsCOMPtr<nsIFile> localfile;
   nsresult rv =
       NS_NewNativeLocalFile(nsDependentCString(static_cast<char*>(filename)),
-                            false, getter_AddRefs(localfile));
+                            getter_AddRefs(localfile));
   if (NS_SUCCEEDED(rv)) {
     nsCOMArray<nsIFile>& files = *static_cast<nsCOMArray<nsIFile>*>(array);
     files.AppendObject(localfile);
@@ -230,6 +229,71 @@ void nsFilePicker::ReadValuesFromFileChooser(void* file_chooser) {
 void nsFilePicker::InitNative(nsIWidget* aParent, const nsAString& aTitle) {
   mParentWidget = aParent;
   mTitle.Assign(aTitle);
+}
+
+NS_IMETHODIMP
+nsFilePicker::IsModeSupported(nsIFilePicker::Mode aMode, JSContext* aCx,
+                              Promise** aRetPromise) {
+#ifdef MOZ_ENABLE_DBUS
+  if (!widget::ShouldUsePortal(widget::PortalKind::FilePicker) ||
+      aMode != nsIFilePicker::modeGetFolder) {
+    return nsBaseFilePicker::IsModeSupported(aMode, aCx, aRetPromise);
+  }
+
+  const char kFreedesktopPortalName[] = "org.freedesktop.portal.Desktop";
+  const char kFreedesktopPortalPath[] = "/org/freedesktop/portal/desktop";
+  const char kFreedesktopPortalFileChooser[] =
+      "org.freedesktop.portal.FileChooser";
+
+  MOZ_ASSERT(aCx);
+  MOZ_ASSERT(aRetPromise);
+
+  nsIGlobalObject* globalObject = xpc::CurrentNativeGlobal(aCx);
+  if (NS_WARN_IF(!globalObject)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  ErrorResult result;
+  RefPtr<Promise> retPromise = Promise::Create(globalObject, result);
+  if (NS_WARN_IF(result.Failed())) {
+    return result.StealNSResult();
+  }
+
+  widget::CreateDBusProxyForBus(
+      G_BUS_TYPE_SESSION,
+      GDBusProxyFlags(G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS),
+      /* aInterfaceInfo = */ nullptr, kFreedesktopPortalName,
+      kFreedesktopPortalPath, kFreedesktopPortalFileChooser)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [retPromise](RefPtr<GDBusProxy>&& aProxy) {
+            const char kFreedesktopPortalVersionProperty[] = "version";
+            // Folder selection was added in version 3 of xdg-desktop-portal
+            const uint32_t kFreedesktopPortalMinimumVersion = 3;
+            uint32_t foundVersion = 0;
+
+            RefPtr<GVariant> property =
+                dont_AddRef(g_dbus_proxy_get_cached_property(
+                    aProxy, kFreedesktopPortalVersionProperty));
+
+            if (property) {
+              foundVersion = g_variant_get_uint32(property);
+              LOG(("Found portal version: %u", foundVersion));
+            }
+
+            retPromise->MaybeResolve(foundVersion >=
+                                     kFreedesktopPortalMinimumVersion);
+          },
+          [retPromise](GUniquePtr<GError>&& aError) {
+            g_printerr("Failed to create DBUS proxy: %s\n", aError->message);
+            retPromise->MaybeReject(NS_ERROR_FAILURE);
+          });
+
+  retPromise.forget(aRetPromise);
+  return NS_OK;
+#else
+  return nsBaseFilePicker::IsModeSupported(aMode, aCx, aRetPromise);
+#endif
 }
 
 NS_IMETHODIMP
@@ -303,7 +367,9 @@ nsFilePicker::GetFile(nsIFile** aFile) {
   *aFile = nullptr;
   nsCOMPtr<nsIURI> uri;
   nsresult rv = GetFileURL(getter_AddRefs(uri));
-  if (!uri) return rv;
+  if (!uri) {
+    return rv;
+  }
 
   nsCOMPtr<nsIFileURL> fileURL(do_QueryInterface(uri, &rv));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -333,24 +399,21 @@ nsFilePicker::GetFiles(nsISimpleEnumerator** aFiles) {
   return NS_ERROR_FAILURE;
 }
 
-nsresult nsFilePicker::Show(nsIFilePicker::ResultCode* aReturn) {
-  NS_ENSURE_ARG_POINTER(aReturn);
-
-  nsresult rv = Open(nullptr);
-  if (NS_FAILED(rv)) return rv;
-
-  while (mRunning) {
-    g_main_context_iteration(nullptr, TRUE);
-  }
-
-  *aReturn = mResult;
-  return NS_OK;
-}
-
 NS_IMETHODIMP
 nsFilePicker::Open(nsIFilePickerShownCallback* aCallback) {
   // Can't show two dialogs concurrently with the same filepicker
-  if (mRunning) return NS_ERROR_NOT_AVAILABLE;
+  if (mFileChooser) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  if (MaybeBlockFilePicker(aCallback)) {
+    return NS_OK;
+  }
+
+  // Don't attempt to open a real file-picker in headless mode.
+  if (gfxPlatform::IsHeadless()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
 
   NS_ConvertUTF16toUTF8 title(mTitle);
 
@@ -496,7 +559,7 @@ nsFilePicker::Open(nsIFilePickerShownCallback* aCallback) {
   gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(file_chooser),
                                                  TRUE);
 
-  mRunning = true;
+  mFileChooser = file_chooser;
   mCallback = aCallback;
   NS_ADDREF_THIS();
   g_signal_connect(file_chooser, "response", G_CALLBACK(OnResponse), this);
@@ -562,7 +625,7 @@ bool nsFilePicker::WarnForNonReadableFile(void* file_chooser) {
 }
 
 void nsFilePicker::Done(void* file_chooser, gint response) {
-  mRunning = false;
+  mFileChooser = nullptr;
 
   nsIFilePicker::ResultCode result;
   switch (response) {
@@ -576,7 +639,9 @@ void nsFilePicker::Done(void* file_chooser, gint response) {
         if (file) {
           bool exists = false;
           file->Exists(&exists);
-          if (exists) result = nsIFilePicker::returnReplace;
+          if (exists) {
+            result = nsIFilePicker::returnReplace;
+          }
         }
       } else if (mMode == nsIFilePicker::modeOpen) {
         if (WarnForNonReadableFile(file_chooser)) {
@@ -627,8 +692,6 @@ void nsFilePicker::Done(void* file_chooser, gint response) {
   if (mCallback) {
     mCallback->Done(result);
     mCallback = nullptr;
-  } else {
-    mResult = result;
   }
   NS_RELEASE_THIS();
 }

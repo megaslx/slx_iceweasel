@@ -16,6 +16,7 @@
 #include "js/ProfilingFrameIterator.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/Logging.h"
 #include "mozilla/JSONStringWriteFuncs.h"
 #include "mozilla/ScopeExit.h"
@@ -1034,6 +1035,158 @@ struct StreamingParametersForThread {
         mPreviousStack(aPreviousStack) {}
 };
 
+#ifdef MOZ_EXECUTION_TRACING
+
+template <typename GetStreamingParametersForThreadCallback>
+void ProfileBuffer::MaybeStreamExecutionTraceToJSON(
+    GetStreamingParametersForThreadCallback&&
+        aGetStreamingParametersForThreadCallback,
+    double aSinceTime) const {
+  JS::ExecutionTrace trace;
+  if (!JS_TracerSnapshotTrace(trace)) {
+    return;
+  }
+
+  for (const JS::ExecutionTrace::TracedJSContext& context : trace.contexts) {
+    Maybe<StreamingParametersForThread> streamingParameters =
+        std::forward<GetStreamingParametersForThreadCallback>(
+            aGetStreamingParametersForThreadCallback)(context.id);
+
+    // Ignore samples that are for the wrong thread.
+    if (!streamingParameters) {
+      continue;
+    }
+
+    SpliceableJSONWriter& writer = streamingParameters->mWriter;
+    UniqueStacks& uniqueStacks = streamingParameters->mUniqueStacks;
+
+    mozilla::Vector<UniqueStacks::StackKey> frameStack;
+
+    Maybe<UniqueStacks::StackKey> maybeStack =
+        uniqueStacks.BeginStack(UniqueStacks::FrameKey("(root)"));
+    if (!maybeStack) {
+      writer.SetFailure("BeginStack failure");
+      continue;
+    }
+
+    UniqueStacks::StackKey stack = *maybeStack;
+    if (!frameStack.append(stack)) {
+      writer.SetFailure("frameStack append failure");
+      continue;
+    }
+
+    for (const JS::ExecutionTrace::TracedEvent& event : context.events) {
+      if (event.time < aSinceTime) {
+        continue;
+      }
+
+      if (event.kind == JS::ExecutionTrace::EventKind::Error) {
+        writer.SetFailure("Error during tracing (likely OOM)");
+        continue;
+      }
+
+      if (event.kind == JS::ExecutionTrace::EventKind::FunctionEnter) {
+        HashMap<uint32_t, size_t>::Ptr functionName =
+            context.atoms.lookup(event.functionEvent.functionNameId);
+        // This is uncommon, but if one of our ring buffers wraps around, we
+        // can end up with missing function name entries
+        const char* functionNameStr = "<expired>";
+        if (functionName) {
+          functionNameStr = &trace.stringBuffer[functionName->value()];
+        }
+        HashMap<uint32_t, size_t>::Ptr scriptUrl =
+            context.scriptUrls.lookup(event.functionEvent.scriptId);
+        // See the comment above functionNameStr
+        const char* scriptUrlStr = "<expired>";
+        if (scriptUrl) {
+          scriptUrlStr = &trace.stringBuffer[scriptUrl->value()];
+        }
+        nsAutoCStringN<1024> name(functionNameStr);
+        name.AppendPrintf(" (%s:%u:%u)", scriptUrlStr,
+                          event.functionEvent.lineNumber,
+                          event.functionEvent.column);
+        JS::ProfilingCategoryPair categoryPair;
+        switch (event.functionEvent.implementation) {
+          case JS::ExecutionTrace::ImplementationType::Interpreter:
+            categoryPair = JS::ProfilingCategoryPair::JS;
+            break;
+          case JS::ExecutionTrace::ImplementationType::Baseline:
+            categoryPair = JS::ProfilingCategoryPair::JS_Baseline;
+            break;
+          case JS::ExecutionTrace::ImplementationType::Ion:
+            categoryPair = JS::ProfilingCategoryPair::JS_IonMonkey;
+            break;
+          case JS::ExecutionTrace::ImplementationType::Wasm:
+            categoryPair = JS::ProfilingCategoryPair::JS_WasmOther;
+            break;
+        }
+
+        UniqueStacks::FrameKey newFrame(nsCString(name.get()), true, false,
+                                        event.functionEvent.realmID, Nothing{},
+                                        Nothing{}, Some(categoryPair));
+        maybeStack = uniqueStacks.AppendFrame(stack, newFrame);
+        if (!maybeStack) {
+          writer.SetFailure("AppendFrame failure");
+          continue;
+        }
+        stack = *maybeStack;
+        if (!frameStack.append(stack)) {
+          writer.SetFailure("frameStack append failure");
+          continue;
+        }
+
+      } else if (event.kind == JS::ExecutionTrace::EventKind::LabelEnter) {
+        UniqueStacks::FrameKey newFrame(
+            nsCString(&trace.stringBuffer[event.labelEvent.label]), true, false,
+            0, Nothing{}, Nothing{}, Some(JS::ProfilingCategoryPair::DOM));
+        maybeStack = uniqueStacks.AppendFrame(stack, newFrame);
+        if (!maybeStack) {
+          writer.SetFailure("AppendFrame failure");
+          continue;
+        }
+        stack = *maybeStack;
+        if (!frameStack.append(stack)) {
+          writer.SetFailure("frameStack append failure");
+          continue;
+        }
+
+      } else {
+        MOZ_ASSERT(event.kind == JS::ExecutionTrace::EventKind::LabelLeave ||
+                   event.kind == JS::ExecutionTrace::EventKind::FunctionLeave);
+        if (frameStack.length() > 0) {
+          frameStack.popBack();
+        }
+        if (frameStack.length() > 0) {
+          stack = frameStack[frameStack.length() - 1];
+        } else {
+          maybeStack =
+              uniqueStacks.BeginStack(UniqueStacks::FrameKey("(root)"));
+          if (!maybeStack) {
+            writer.SetFailure("BeginStack failure");
+            continue;
+          }
+
+          stack = *maybeStack;
+          if (!frameStack.append(stack)) {
+            writer.SetFailure("frameStack append failure");
+            continue;
+          }
+        }
+      }
+
+      const Maybe<uint32_t> stackIndex = uniqueStacks.GetOrAddStackIndex(stack);
+      if (!stackIndex) {
+        writer.SetFailure("Can't add unique string for stack");
+        continue;
+      }
+
+      WriteSample(writer, ProfileSample{*stackIndex, event.time, Nothing{},
+                                        RunningTimes{}});
+    }
+  }
+}
+#endif
+
 // GetStreamingParametersForThreadCallback:
 //   (ProfilerThreadId) -> Maybe<StreamingParametersForThread>
 template <typename GetStreamingParametersForThreadCallback>
@@ -1458,6 +1611,7 @@ ProfilerThreadId ProfileBuffer::StreamSamplesToJSON(
 #ifdef DEBUG
   int processedCount = 0;
 #endif  // DEBUG
+
   return DoStreamSamplesAndMarkersToJSON(
       aWriter.SourceFailureLatch(),
       [&](ProfilerThreadId aReadThreadId) {
@@ -1482,19 +1636,25 @@ ProfilerThreadId ProfileBuffer::StreamSamplesToJSON(
 void ProfileBuffer::StreamSamplesAndMarkersToJSON(
     ProcessStreamingContext& aProcessStreamingContext,
     mozilla::ProgressLogger aProgressLogger) const {
+  auto getStreamingParamsCallback = [&](ProfilerThreadId aReadThreadId) {
+    Maybe<StreamingParametersForThread> streamingParameters;
+    ThreadStreamingContext* threadData =
+        aProcessStreamingContext.GetThreadStreamingContext(aReadThreadId);
+    if (threadData) {
+      streamingParameters.emplace(
+          threadData->mSamplesDataWriter, *threadData->mUniqueStacks,
+          threadData->mPreviousStackState, threadData->mPreviousStack);
+    }
+    return streamingParameters;
+  };
+
+#ifdef MOZ_EXECUTION_TRACING
+  MaybeStreamExecutionTraceToJSON(getStreamingParamsCallback,
+                                  aProcessStreamingContext.GetSinceTime());
+#endif
+
   (void)DoStreamSamplesAndMarkersToJSON(
-      aProcessStreamingContext.SourceFailureLatch(),
-      [&](ProfilerThreadId aReadThreadId) {
-        Maybe<StreamingParametersForThread> streamingParameters;
-        ThreadStreamingContext* threadData =
-            aProcessStreamingContext.GetThreadStreamingContext(aReadThreadId);
-        if (threadData) {
-          streamingParameters.emplace(
-              threadData->mSamplesDataWriter, *threadData->mUniqueStacks,
-              threadData->mPreviousStackState, threadData->mPreviousStack);
-        }
-        return streamingParameters;
-      },
+      aProcessStreamingContext.SourceFailureLatch(), getStreamingParamsCallback,
       aProcessStreamingContext.GetSinceTime(), &aProcessStreamingContext,
       std::move(aProgressLogger));
 }
@@ -1652,6 +1812,12 @@ void ProfileBuffer::StreamMarkersToJSON(
 void ProfileBuffer::StreamProfilerOverheadToJSON(
     SpliceableJSONWriter& aWriter, const TimeStamp& aProcessStartTime,
     double aSinceTime, mozilla::ProgressLogger aProgressLogger) const {
+  const char* recordOverheads = getenv("MOZ_PROFILER_RECORD_OVERHEADS");
+  if (!recordOverheads || recordOverheads[0] == '\0') {
+    // Overheads were not recorded, return early.
+    return;
+  }
+
   mEntries.Read([&](ProfileChunkedBuffer::Reader* aReader) {
     MOZ_ASSERT(aReader,
                "ProfileChunkedBuffer cannot be out-of-session when sampler is "
@@ -1774,17 +1940,15 @@ void ProfileBuffer::StreamProfilerOverheadToJSON(
   });
 }
 
-struct CounterKeyedSample {
+struct CounterSample {
   double mTime;
   uint64_t mNumber;
   int64_t mCount;
 };
 
-using CounterKeyedSamples = Vector<CounterKeyedSample>;
+using CounterSamples = Vector<CounterSample>;
 
 static LazyLogModule sFuzzyfoxLog("Fuzzyfox");
-
-using CounterMap = HashMap<uint64_t, CounterKeyedSamples>;
 
 // HashMap lookup, if not found, a default value is inserted.
 // Returns reference to (existing or new) value inside the HashMap.
@@ -1822,41 +1986,38 @@ void ProfileBuffer::StreamCountersToJSON(
     // Valid sequence in the buffer:
     // CounterID
     // Time
-    // ( CounterKey Count Number? )*
+    // ( Count Number? )*
     //
     // And the JSON (example):
     // "counters": {
     //  "name": "malloc",
     //  "category": "Memory",
     //  "description": "Amount of allocated memory",
-    //  "sample_groups": {
-    //   "id": 0,
-    //   "samples": {
-    //    "schema": {"time": 0, "number": 1, "count": 2},
-    //    "data": [
-    //     [
-    //      16117.033968000002,
-    //      2446216,
-    //      6801320
-    //     ],
-    //     [
-    //      16118.037638,
-    //      2446216,
-    //      6801320
-    //     ],
+    //  "samples": {
+    //   "schema": {"time": 0, "count": 1, "number": 2},
+    //   "data": [
+    //    [
+    //     16117.033968000002,
+    //     2446216,
+    //     6801320
     //    ],
-    //   }
-    //  }
-    // },
+    //    [
+    //     16118.037638,
+    //     2446216,
+    //     6801320
+    //    ],
+    //   ],
+    //  },
+    // }
 
     // Build the map of counters and populate it
-    HashMap<void*, CounterMap> counters;
+    HashMap<void*, CounterSamples> counters;
 
     while (e.Has()) {
       // skip all non-Counters, including if we start in the middle of a counter
       if (e.Get().IsCounterId()) {
         void* id = e.Get().GetPtr();
-        CounterMap& counter = LookupOrAdd(counters, id);
+        CounterSamples& data = LookupOrAdd(counters, id);
         e.Next();
         if (!e.Has() || !e.Get().IsTime()) {
           ERROR_AND_CONTINUE("expected a Time entry");
@@ -1864,25 +2025,20 @@ void ProfileBuffer::StreamCountersToJSON(
         double time = e.Get().GetDouble();
         e.Next();
         if (time >= aSinceTime) {
-          while (e.Has() && e.Get().IsCounterKey()) {
-            uint64_t key = e.Get().GetUint64();
-            CounterKeyedSamples& data = LookupOrAdd(counter, key);
-            e.Next();
-            if (!e.Has() || !e.Get().IsCount()) {
-              ERROR_AND_CONTINUE("expected a Count entry");
-            }
-            int64_t count = e.Get().GetUint64();
-            e.Next();
-            uint64_t number;
-            if (!e.Has() || !e.Get().IsNumber()) {
-              number = 0;
-            } else {
-              number = e.Get().GetInt64();
-              e.Next();
-            }
-            CounterKeyedSample sample = {time, number, count};
-            MOZ_RELEASE_ASSERT(data.append(sample));
+          if (!e.Has() || !e.Get().IsCount()) {
+            ERROR_AND_CONTINUE("expected a Count entry");
           }
+          int64_t count = e.Get().GetUint64();
+          e.Next();
+          uint64_t number;
+          if (!e.Has() || !e.Get().IsNumber()) {
+            number = 0;
+          } else {
+            number = e.Get().GetInt64();
+            e.Next();
+          }
+          CounterSample sample = {time, number, count};
+          MOZ_RELEASE_ASSERT(data.append(sample));
         } else {
           // skip counter sample - only need to skip the initial counter
           // id, then let the loop at the top skip the rest
@@ -1891,14 +2047,18 @@ void ProfileBuffer::StreamCountersToJSON(
         e.Next();
       }
     }
-    // we have a map of a map of counter entries; dump them to JSON
+    // we have a map of counter entries; dump them to JSON
     if (counters.count() == 0) {
       return;
     }
 
     aWriter.StartArrayProperty("counters");
     for (auto iter = counters.iter(); !iter.done(); iter.next()) {
-      CounterMap& counter = iter.get().value();
+      CounterSamples& samples = iter.get().value();
+      size_t size = samples.length();
+      if (size == 0) {
+        continue;
+      }
       const BaseProfilerCount* base_counter =
           static_cast<const BaseProfilerCount*>(iter.get().key());
 
@@ -1909,103 +2069,83 @@ void ProfileBuffer::StreamCountersToJSON(
       aWriter.StringProperty("description",
                              MakeStringSpan(base_counter->mDescription));
 
-      aWriter.StartArrayProperty("sample_groups");
-      for (auto counter_iter = counter.iter(); !counter_iter.done();
-           counter_iter.next()) {
-        CounterKeyedSamples& samples = counter_iter.get().value();
-        uint64_t key = counter_iter.get().key();
-
-        size_t size = samples.length();
-        if (size == 0) {
-          continue;
+      bool hasNumber = false;
+      for (size_t i = 0; i < size; i++) {
+        if (samples[i].mNumber != 0) {
+          hasNumber = true;
+          break;
         }
-
-        bool hasNumber = false;
-        for (size_t i = 0; i < size; i++) {
-          if (samples[i].mNumber != 0) {
-            hasNumber = true;
-            break;
-          }
-        }
-
-        aWriter.StartObjectElement();
-        {
-          aWriter.IntProperty("id", static_cast<int64_t>(key));
-          aWriter.StartObjectProperty("samples");
-          {
-            JSONSchemaWriter schema(aWriter);
-            schema.WriteField("time");
-            schema.WriteField("count");
-            if (hasNumber) {
-              schema.WriteField("number");
-            }
-          }
-
-          aWriter.StartArrayProperty("data");
-          double previousSkippedTime = 0.0;
-          uint64_t previousNumber = 0;
-          int64_t previousCount = 0;
-          for (size_t i = 0; i < size; i++) {
-            // Encode as deltas, and only encode if different than the previous
-            // or next sample; Always write the first and last samples.
-            if (i == 0 || i == size - 1 ||
-                samples[i].mNumber != previousNumber ||
-                samples[i].mCount != previousCount ||
-                // Ensure we ouput the first 0 before skipping samples.
-                (i >= 2 && (samples[i - 2].mNumber != previousNumber ||
-                            samples[i - 2].mCount != previousCount))) {
-              if (i != 0 && samples[i].mTime >= samples[i - 1].mTime) {
-                MOZ_LOG(sFuzzyfoxLog, mozilla::LogLevel::Error,
-                        ("Fuzzyfox Profiler Assertion: %f >= %f",
-                         samples[i].mTime, samples[i - 1].mTime));
-              }
-              MOZ_ASSERT(i == 0 || samples[i].mTime >= samples[i - 1].mTime);
-              MOZ_ASSERT(samples[i].mNumber >= previousNumber);
-              MOZ_ASSERT(samples[i].mNumber - previousNumber <=
-                         uint64_t(std::numeric_limits<int64_t>::max()));
-
-              int64_t numberDelta =
-                  static_cast<int64_t>(samples[i].mNumber - previousNumber);
-              int64_t countDelta = samples[i].mCount - previousCount;
-
-              if (previousSkippedTime != 0.0 &&
-                  (numberDelta != 0 || countDelta != 0)) {
-                // Write the last skipped sample, unless the new one is all
-                // zeroes (that'd be redundant) This is useful to know when a
-                // certain value was last sampled, so that the front-end graph
-                // will be more correct.
-                AutoArraySchemaWriter writer(aWriter);
-                writer.TimeMsElement(TIME, previousSkippedTime);
-                // The deltas are effectively zeroes, since no change happened
-                // between the last actually-written sample and the last skipped
-                // one.
-                writer.IntElement(COUNT, 0);
-                if (hasNumber) {
-                  writer.IntElement(NUMBER, 0);
-                }
-              }
-
-              AutoArraySchemaWriter writer(aWriter);
-              writer.TimeMsElement(TIME, samples[i].mTime);
-              writer.IntElement(COUNT, countDelta);
-              if (hasNumber) {
-                writer.IntElement(NUMBER, numberDelta);
-              }
-
-              previousSkippedTime = 0.0;
-              previousNumber = samples[i].mNumber;
-              previousCount = samples[i].mCount;
-            } else {
-              previousSkippedTime = samples[i].mTime;
-            }
-          }
-          aWriter.EndArray();   // data
-          aWriter.EndObject();  // samples
-        }
-        aWriter.EndObject();  // sample_groups item
       }
-      aWriter.EndArray();  // sample groups
-      aWriter.End();       // for each counter
+      aWriter.StartObjectProperty("samples");
+      {
+        JSONSchemaWriter schema(aWriter);
+        schema.WriteField("time");
+        schema.WriteField("count");
+        if (hasNumber) {
+          schema.WriteField("number");
+        }
+      }
+
+      aWriter.StartArrayProperty("data");
+      double previousSkippedTime = 0.0;
+      uint64_t previousNumber = 0;
+      int64_t previousCount = 0;
+      for (size_t i = 0; i < size; i++) {
+        // Encode as deltas, and only encode if different than the previous
+        // or next sample; Always write the first and last samples.
+        if (i == 0 || i == size - 1 || samples[i].mNumber != previousNumber ||
+            samples[i].mCount != previousCount ||
+            // Ensure we ouput the first 0 before skipping samples.
+            (i >= 2 && (samples[i - 2].mNumber != previousNumber ||
+                        samples[i - 2].mCount != previousCount))) {
+          if (i != 0 && samples[i].mTime >= samples[i - 1].mTime) {
+            MOZ_LOG(sFuzzyfoxLog, mozilla::LogLevel::Error,
+                    ("Fuzzyfox Profiler Assertion: %f >= %f", samples[i].mTime,
+                     samples[i - 1].mTime));
+          }
+          MOZ_ASSERT(i == 0 || samples[i].mTime >= samples[i - 1].mTime);
+          MOZ_ASSERT(samples[i].mNumber >= previousNumber);
+          MOZ_ASSERT(samples[i].mNumber - previousNumber <=
+                     uint64_t(std::numeric_limits<int64_t>::max()));
+
+          int64_t numberDelta =
+              static_cast<int64_t>(samples[i].mNumber - previousNumber);
+          int64_t countDelta = samples[i].mCount - previousCount;
+
+          if (previousSkippedTime != 0.0 &&
+              (numberDelta != 0 || countDelta != 0)) {
+            // Write the last skipped sample, unless the new one is all
+            // zeroes (that'd be redundant) This is useful to know when a
+            // certain value was last sampled, so that the front-end graph
+            // will be more correct.
+            AutoArraySchemaWriter writer(aWriter);
+            writer.TimeMsElement(TIME, previousSkippedTime);
+            // The deltas are effectively zeroes, since no change happened
+            // between the last actually-written sample and the last skipped
+            // one.
+            writer.IntElement(COUNT, 0);
+            if (hasNumber) {
+              writer.IntElement(NUMBER, 0);
+            }
+          }
+
+          AutoArraySchemaWriter writer(aWriter);
+          writer.TimeMsElement(TIME, samples[i].mTime);
+          writer.IntElement(COUNT, countDelta);
+          if (hasNumber) {
+            writer.IntElement(NUMBER, numberDelta);
+          }
+
+          previousSkippedTime = 0.0;
+          previousNumber = samples[i].mNumber;
+          previousCount = samples[i].mCount;
+        } else {
+          previousSkippedTime = samples[i].mTime;
+        }
+      }
+      aWriter.EndArray();   // data
+      aWriter.EndObject();  // samples
+      aWriter.End();        // for each counter
     }
     aWriter.EndArray();  // counters
   });
@@ -2228,7 +2368,6 @@ bool ProfileBuffer::DuplicateLastSample(ProfilerThreadId aThreadId,
           // We're done.
           return true;
         }
-        case ProfileBufferEntry::Kind::CounterKey:
         case ProfileBufferEntry::Kind::Number:
         case ProfileBufferEntry::Kind::Count:
           // Don't copy anything not part of a thread's stack sample

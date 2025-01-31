@@ -15,6 +15,7 @@
 #include "nsRFPService.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/dom/OffscreenCanvas.h"
+#include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StateWatching.h"
@@ -42,6 +43,8 @@ class PresShell;
 class WebGLFramebufferJS;
 namespace layers {
 class CanvasRenderer;
+class CompositableForwarder;
+class FwdTransactionTracker;
 class Layer;
 class Image;
 class LayerManager;
@@ -101,7 +104,7 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   NS_IMETHOD SetDimensions(int32_t width, int32_t height) = 0;
 
   // Initializes the canvas after the object is constructed.
-  virtual void Initialize() {}
+  virtual nsresult Initialize() { return NS_OK; }
 
   // Initializes with an nsIDocShell and DrawTarget. The size is taken from the
   // DrawTarget.
@@ -207,9 +210,13 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   }
 
   virtual mozilla::Maybe<mozilla::layers::SurfaceDescriptor> PresentFrontBuffer(
-      mozilla::WebGLFramebufferJS* fb, mozilla::layers::TextureType,
-      const bool webvr = false) {
+      mozilla::WebGLFramebufferJS* fb, const bool webvr = false) {
     return GetFrontBuffer(fb, webvr);
+  }
+
+  virtual already_AddRefed<mozilla::layers::FwdTransactionTracker>
+  UseCompositableForwarder(mozilla::layers::CompositableForwarder* aForwarder) {
+    return nullptr;
   }
 
   void DoSecurityCheck(nsIPrincipal* aPrincipal, bool forceWriteOnly,
@@ -217,6 +224,9 @@ class nsICanvasRenderingContextInternal : public nsISupports,
 
   // Checking if fingerprinting protection is enable for the given target.
   bool ShouldResistFingerprinting(mozilla::RFPTarget aTarget) const;
+
+  bool DispatchEvent(const nsAString& eventName, mozilla::CanBubble aCanBubble,
+                     mozilla::Cancelable aIsCancelable) const;
 
  protected:
   RefPtr<mozilla::dom::HTMLCanvasElement> mCanvasElement;

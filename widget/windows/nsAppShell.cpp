@@ -3,6 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Attributes.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/WindowsMessageLoop.h"
 #include "nsAppShell.h"
@@ -29,7 +31,11 @@
 #include "HeadlessScreenHelper.h"
 #include "mozilla/widget/ScreenManager.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/NativeNt.h"
+#include "mozilla/WindowsDiagnostics.h"
 #include "mozilla/WindowsProcessMitigations.h"
+
+#include <winternl.h>
 
 #ifdef MOZ_BACKGROUNDTASKS
 #  include "mozilla/BackgroundTasks.h"
@@ -275,10 +281,10 @@ SingleNativeEventPump::AfterProcessNextEvent(nsIThreadInternal* aThread,
 // RegisterWindowMessage values
 // Native event callback message
 const wchar_t* kAppShellGeckoEventId = L"nsAppShell:EventID";
-UINT sAppShellGeckoMsgId;
+UINT sAppShellGeckoMsgId = 0x10001;  // initialize to invalid message ID
 // Taskbar button creation message
 const wchar_t* kTaskbarButtonEventId = L"TaskbarButtonCreated";
-UINT sTaskbarButtonCreatedMsg;
+UINT sTaskbarButtonCreatedMsg = 0x10002;  // initialize to invalid message ID
 
 /* static */
 UINT nsAppShell::GetTaskbarButtonCreatedMessage() {
@@ -361,6 +367,239 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
   return nsBaseAppShell::Observe(aSubject, aTopic, aData);
 }
 
+namespace {
+
+// Struct containing information about the user atom table. (See
+// DiagnoseUserAtomTable(), below.)
+struct AtomTableInformation {
+  // Number of atoms in use. (Exactly 0x4000 == 16384, if all are.)
+  UINT in_use = 0;
+  // Number of atoms confirmed not in use.
+  UINT free = 0;
+  // Number of atoms which gave errors when checked.
+  UINT errors = 0;
+
+  // Last atom which gave an unexpected error...
+  UINT lastErrorAtom = ~0u;
+  // ... and the error it gave.
+  WinErrorState lastErrorState;
+};
+
+// Return a summary of the state of the atom table.
+MOZ_NEVER_INLINE static AtomTableInformation DiagnoseUserAtomTable() {
+  // Restore error state on exit, for the sake of automated minidump analyses.
+  auto const _restoreErrState =
+      mozilla::MakeScopeExit([oldErrState = WinErrorState::Get()]() {
+        WinErrorState::Apply(oldErrState);
+      });
+
+  AtomTableInformation retval;
+
+  // Expected error-state on failure-return when the atom is assigned, but not
+  // enough space was provided for the full string.
+  constexpr WinErrorState kBufferTooSmall = {
+      .error = ERROR_INSUFFICIENT_BUFFER,
+      .ntStatus = ((NTSTATUS)0xC0000023),  // == STATUS_BUFFER_TOO_SMALL
+  };
+  // Expected error-state on failure-return when the atom is not assigned.
+  constexpr WinErrorState kInvalidAtom = {
+      .error = ERROR_INVALID_HANDLE,
+      .ntStatus = ((NTSTATUS)STATUS_INVALID_HANDLE),
+  };
+
+  // Iterate over only the dynamic portion of the atom table.
+  for (UINT atom = 0xC000; atom <= 0xFFFF; ++atom) {
+    // The actual atom values are PII. Don't acquire them in their entirety, and
+    // don't keep more information about them than is needed.
+    WCHAR buf[2] = {};
+    // USE OF UNDOCUMENTED BEHAVIOR: The user atom table is shared by message
+    // names, window-class names, and clipboard-format names. Only the last has
+    // a documented getter-mechanism.
+    BOOL const ok = ::GetClipboardFormatNameW(atom, buf, 1);
+    WinErrorState const errState = WinErrorState::Get();
+    if (ok || errState == kBufferTooSmall) {
+      ++retval.in_use;
+    } else if (errState == kInvalidAtom) {
+      ++retval.free;
+    } else {
+      // Unexpected error-state.
+      ++retval.errors;
+      retval.lastErrorAtom = atom;
+      retval.lastErrorState = errState;
+    }
+  }
+
+  return retval;
+}
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+static constexpr int kMaxStepsUser32 = 0x1800;
+static constexpr int kMaxErrorStatesUser32 = 0x200;
+using User32SingleStepData =
+    ModuleSingleStepData<kMaxStepsUser32, kMaxErrorStatesUser32>;
+
+template <typename CallbackToRun, typename PostCollectionCallback>
+WindowsDiagnosticsError CollectUser32SingleStepData(
+    CallbackToRun aCallbackToRun,
+    PostCollectionCallback aPostCollectionCallback) {
+  return CollectModuleSingleStepData<kMaxStepsUser32, kMaxErrorStatesUser32>(
+      L"user32.dll", std::move(aCallbackToRun),
+      std::move(aPostCollectionCallback));
+}
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+}  // namespace
+
+// Collect data for bug 1571516. We don't automatically send up `GetLastError`
+// or `GetLastNtStatus` data for beta/release builds, so extract the relevant
+// error values and store them on the stack, where they can be viewed in
+// minidumps -- in fact, do so after each individual API call. This takes the
+// form of various local variables whose initial character is an underscore,
+// most of which are also marked [[maybe_unused]].
+//
+// We tag this function `[[clang::optnone]]` to prevent the compiler from
+// eliding those values as _actually_ unused, as well as to generally simplify
+// the haruspex's task once the minidumps are in. (As this function should be
+// called at most once per process, the minor performance hit is not a concern.)
+//
+/* static */ [[clang::optnone]] MOZ_NEVER_INLINE HWND
+nsAppShell::StaticCreateEventWindow() {
+  // note the incoming error-state; this may be relevant to errors we get later
+  auto _initialErr [[maybe_unused]] = WinErrorState::Get();
+  // reset the error-state, to avoid ambiguity below
+  WinErrorState::Clear();
+
+  // Diagnostic variable. Only collected in the event of a failure in one of the
+  // functions that attempts to register an atom.
+  AtomTableInformation _atomTableInfo [[maybe_unused]];
+
+  // Attempt to register the window message. On failure, retain the initial
+  // value of `sAppShellGeckoMsgId`.
+  auto const _msgId = ::RegisterWindowMessageW(kAppShellGeckoEventId);
+  if (_msgId) {
+    sAppShellGeckoMsgId = _msgId;
+  }
+  auto const _sAppShellGeckoMsgId [[maybe_unused]] = sAppShellGeckoMsgId;
+  auto const _rwmErr [[maybe_unused]] = WinErrorState::Get();
+  if (!_msgId) _atomTableInfo = DiagnoseUserAtomTable();
+  NS_ASSERTION(sAppShellGeckoMsgId,
+               "Could not register hidden window event message!");
+
+  WNDCLASSW wc;
+  HINSTANCE const module = GetModuleHandle(nullptr);
+
+  constexpr const wchar_t* kWindowClass = L"nsAppShell:EventWindowClass";
+  // (Undocumented behavior note: on success, this will specifically be the
+  // window-class atom. We don't rely on this.)
+  BOOL const _gciwRet = ::GetClassInfoW(module, kWindowClass, &wc);
+  auto const _gciwErr [[maybe_unused]] = WinErrorState::Get();
+  WinErrorState::Clear();
+
+  WinErrorState _rcErr [[maybe_unused]];
+  if (!_gciwRet) {
+    wc.style = 0;
+    wc.lpfnWndProc = EventWindowProc;
+    wc.cbClsExtra = 0;
+    wc.cbWndExtra = 0;
+    wc.hInstance = module;
+    wc.hIcon = nullptr;
+    wc.hCursor = nullptr;
+    wc.hbrBackground = (HBRUSH) nullptr;
+    wc.lpszMenuName = (LPCWSTR) nullptr;
+    wc.lpszClassName = kWindowClass;
+
+    ATOM _windowClassAtom = ::RegisterClassW(&wc);
+    _rcErr = WinErrorState::Get();
+
+    if (!_windowClassAtom) _atomTableInfo = DiagnoseUserAtomTable();
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+    if (!_windowClassAtom) {
+      // Retry with single-step data collection
+      WindowsDiagnosticsError rv = CollectUser32SingleStepData(
+          [&wc, &_windowClassAtom]() {
+            _windowClassAtom = ::RegisterClassW(&wc);
+          },
+          [&_windowClassAtom](const User32SingleStepData& aData) {
+            // Crashing here gives access to the single step data on stack
+            MOZ_DIAGNOSTIC_ASSERT(
+                _windowClassAtom,
+                "RegisterClassW for EventWindowClass failed twice");
+          });
+      auto const _cssdErr [[maybe_unused]] = WinErrorState::Get();
+      MOZ_DIAGNOSTIC_ASSERT(
+          rv == WindowsDiagnosticsError::None,
+          "Failed to collect single step data for RegisterClassW");
+      // If we reach this point then somehow the single-stepped call succeeded
+      // and we can proceed
+    }
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+    MOZ_RELEASE_ASSERT(_windowClassAtom,
+                       "RegisterClassW for EventWindowClass failed");
+    WinErrorState::Clear();
+  }
+
+  HWND eventWnd =
+      CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0, 10, 10,
+                    HWND_MESSAGE, nullptr, module, nullptr);
+  auto const _cwErr [[maybe_unused]] = WinErrorState::Get();
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+  if (!eventWnd) {
+    // Retry with single-step data collection
+    WindowsDiagnosticsError rv = CollectUser32SingleStepData(
+        [module, &eventWnd]() {
+          eventWnd =
+              CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0,
+                            10, 10, HWND_MESSAGE, nullptr, module, nullptr);
+        },
+        [&eventWnd](const User32SingleStepData& aData) {
+          // Crashing here gives access to the single step data on stack
+          MOZ_DIAGNOSTIC_ASSERT(eventWnd,
+                                "CreateWindowW for EventWindow failed twice");
+        });
+    auto const _cssdErr [[maybe_unused]] = WinErrorState::Get();
+    MOZ_DIAGNOSTIC_ASSERT(
+        rv == WindowsDiagnosticsError::None,
+        "Failed to collect single step data for CreateWindowW");
+    // If we reach this point then somehow the single-stepped call succeeded and
+    // we can proceed
+  }
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+  MOZ_RELEASE_ASSERT(eventWnd, "CreateWindowW for EventWindow failed");
+
+  return eventWnd;
+}
+
+HWND nsAppShell::sPrecachedEventWnd{};
+
+/* static */ bool nsAppShell::PrecacheEventWindow() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(!sPrecachedEventWnd);
+
+  sPrecachedEventWnd = StaticCreateEventWindow();
+  return static_cast<bool>(sPrecachedEventWnd);
+}
+
+nsresult nsAppShell::InitEventWindow() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (sPrecachedEventWnd) {
+    mEventWnd = sPrecachedEventWnd;
+    sPrecachedEventWnd = nullptr;
+  } else {
+    mEventWnd = StaticCreateEventWindow();
+  }
+
+  mLastNativeEventScheduled = TimeStamp::NowLoRes();
+
+  NS_ENSURE_STATE(mEventWnd);
+
+  return NS_OK;
+}
+
 nsresult nsAppShell::Init() {
   LSPAnnotate();
 
@@ -377,35 +616,9 @@ nsresult nsAppShell::Init() {
   // we are processing native events. Disabling this is required for win32k
   // syscall lockdown.
   if (XRE_UseNativeEventProcessing()) {
-    sAppShellGeckoMsgId = ::RegisterWindowMessageW(kAppShellGeckoEventId);
-    NS_ASSERTION(sAppShellGeckoMsgId,
-                 "Could not register hidden window event message!");
-
-    mLastNativeEventScheduled = TimeStamp::NowLoRes();
-
-    WNDCLASSW wc;
-    HINSTANCE module = GetModuleHandle(nullptr);
-
-    const wchar_t* const kWindowClass = L"nsAppShell:EventWindowClass";
-    if (!GetClassInfoW(module, kWindowClass, &wc)) {
-      wc.style = 0;
-      wc.lpfnWndProc = EventWindowProc;
-      wc.cbClsExtra = 0;
-      wc.cbWndExtra = 0;
-      wc.hInstance = module;
-      wc.hIcon = nullptr;
-      wc.hCursor = nullptr;
-      wc.hbrBackground = (HBRUSH) nullptr;
-      wc.lpszMenuName = (LPCWSTR) nullptr;
-      wc.lpszClassName = kWindowClass;
-      [[maybe_unused]] ATOM wcA = RegisterClassW(&wc);
-      MOZ_DIAGNOSTIC_ASSERT(wcA, "RegisterClassW for EventWindowClass failed");
+    if (nsresult rv = this->InitEventWindow(); NS_FAILED(rv)) {
+      return rv;
     }
-
-    mEventWnd = CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0,
-                              10, 10, HWND_MESSAGE, nullptr, module, nullptr);
-    MOZ_DIAGNOSTIC_ASSERT(mEventWnd, "CreateWindowW for EventWindow failed");
-    NS_ENSURE_STATE(mEventWnd);
   } else if (XRE_IsContentProcess() && !IsWin32kLockedDown()) {
     // We're not generally processing native events, but still using GDI and we
     // still have some internal windows, e.g. from calling CoInitializeEx.

@@ -64,9 +64,8 @@ async function runTest(stopLoadFunc) {
   stopLoadFunc(slowTab);
 
   // Retrieve the requestId from onBeforeRequest
-  let requestIdOnBeforeRequest = await extension.awaitMessage(
-    "onBeforeRequest"
-  );
+  let requestIdOnBeforeRequest =
+    await extension.awaitMessage("onBeforeRequest");
 
   // Now verify that we got the correct event and request id
   let doneMessage = await extension.awaitMessage("done");
@@ -88,7 +87,7 @@ async function runTest(stopLoadFunc) {
  * our request.
  */
 add_task(async function test_click_stop_button() {
-  await runTest(async slowTab => {
+  await runTest(async () => {
     // Stop the load
     let stopButton = document.getElementById("stop-button");
     await TestUtils.waitForCondition(() => {

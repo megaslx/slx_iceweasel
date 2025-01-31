@@ -144,6 +144,18 @@ nsMozIconURI::GetHasRef(bool* result) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsMozIconURI::GetHasUserPass(bool* result) {
+  *result = false;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsMozIconURI::GetHasQuery(bool* result) {
+  *result = false;
+  return NS_OK;
+}
+
 NS_IMPL_NSIURIMUTATOR_ISUPPORTS(nsMozIconURI::Mutator, nsIURISetters,
                                 nsIURIMutator, nsISerializable)
 
@@ -185,8 +197,8 @@ static void extractAttributeValue(const char* aSearchString,
           aResult.Assign(startOfAttribute);
         }
       }  // if we have a attribute value
-    }    // if we have a attribute name
-  }      // if we got non-null search string and attribute name values
+    }  // if we have a attribute name
+  }  // if we got non-null search string and attribute name values
 }
 
 nsresult nsMozIconURI::SetSpecInternal(const nsACString& aSpec) {
@@ -218,7 +230,7 @@ nsresult nsMozIconURI::SetSpecInternal(const nsACString& aSpec) {
     extractAttributeValue(iconSpec.get(), "size=", sizeString);
     if (!sizeString.IsEmpty()) {
       const char* sizeStr = sizeString.get();
-      for (uint32_t i = 0; i < ArrayLength(kSizeStrings); i++) {
+      for (uint32_t i = 0; i < std::size(kSizeStrings); i++) {
         if (nsCRT::strcasecmp(sizeStr, kSizeStrings[i]) == 0) {
           mIconSize = i;
           break;
@@ -235,7 +247,7 @@ nsresult nsMozIconURI::SetSpecInternal(const nsACString& aSpec) {
     extractAttributeValue(iconSpec.get(), "state=", stateString);
     if (!stateString.IsEmpty()) {
       const char* stateStr = stateString.get();
-      for (uint32_t i = 0; i < ArrayLength(kStateStrings); i++) {
+      for (uint32_t i = 0; i < std::size(kStateStrings); i++) {
         if (nsCRT::strcasecmp(stateStr, kStateStrings[i]) == 0) {
           mIconState = i;
           break;
@@ -601,13 +613,13 @@ bool nsMozIconURI::Deserialize(const URIParams& aParams) {
   mStockIcon = params.stockIcon();
 
   if (params.iconSize() < -1 ||
-      params.iconSize() >= (int32_t)ArrayLength(kSizeStrings)) {
+      params.iconSize() >= (int32_t)std::size(kSizeStrings)) {
     return false;
   }
   mIconSize = params.iconSize();
 
   if (params.iconState() < -1 ||
-      params.iconState() >= (int32_t)ArrayLength(kStateStrings)) {
+      params.iconState() >= (int32_t)std::size(kStateStrings)) {
     return false;
   }
   mIconState = params.iconState();

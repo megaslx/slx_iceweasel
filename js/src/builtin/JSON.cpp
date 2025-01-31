@@ -19,15 +19,20 @@
 
 #include "builtin/Array.h"
 #include "builtin/BigInt.h"
+#include "builtin/ParseRecordObject.h"
+#include "builtin/RawJSONObject.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #include "js/Object.h"                // JS::GetBuiltinClass
+#include "js/Prefs.h"                 // JS::Prefs
+#include "js/ProfilingCategory.h"
 #include "js/PropertySpec.h"
 #include "js/StableStringChars.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
-#include "util/StringBuffer.h"
-#include "vm/BooleanObject.h"  // js::BooleanObject
+#include "util/StringBuilder.h"
+#include "vm/BooleanObject.h"       // js::BooleanObject
+#include "vm/EqualityOperations.h"  // js::SameValue
 #include "vm/Interpreter.h"
 #include "vm/Iteration.h"
 #include "vm/JSAtomUtils.h"  // ToAtom
@@ -35,10 +40,9 @@
 #include "vm/JSObject.h"
 #include "vm/JSONParser.h"
 #include "vm/NativeObject.h"
-#include "vm/NumberObject.h"   // js::NumberObject
-#include "vm/PlainObject.h"    // js::PlainObject
-#include "vm/StringObject.h"   // js::StringObject
-#include "vm/WellKnownAtom.h"  // js_*_str
+#include "vm/NumberObject.h"  // js::NumberObject
+#include "vm/PlainObject.h"   // js::PlainObject
+#include "vm/StringObject.h"  // js::StringObject
 #ifdef ENABLE_RECORD_TUPLE
 #  include "builtin/RecordObject.h"
 #  include "builtin/TupleObject.h"
@@ -60,12 +64,12 @@ using mozilla::Variant;
 
 using JS::AutoStableStringChars;
 
-/* ES5 15.12.3 Quote.
+/* https://262.ecma-international.org/14.0/#sec-quotejsonstring
  * Requires that the destination has enough space allocated for src after
  * escaping (that is, `2 + 6 * (srcEnd - srcBegin)` characters).
  */
 template <typename SrcCharT, typename DstCharT>
-static MOZ_ALWAYS_INLINE RangedPtr<DstCharT> InfallibleQuote(
+static MOZ_ALWAYS_INLINE RangedPtr<DstCharT> InfallibleQuoteJSONString(
     RangedPtr<const SrcCharT> srcBegin, RangedPtr<const SrcCharT> srcEnd,
     RangedPtr<DstCharT> dstPtr) {
   // Maps characters < 256 to the value that must follow the '\\' in the quoted
@@ -155,8 +159,8 @@ static MOZ_ALWAYS_INLINE RangedPtr<DstCharT> InfallibleQuote(
 }
 
 template <typename SrcCharT, typename DstCharT>
-static size_t QuoteHelper(const JSLinearString& linear, StringBuffer& sb,
-                          size_t sbOffset) {
+static size_t QuoteJSONStringHelper(const JSLinearString& linear,
+                                    StringBuilder& sb, size_t sbOffset) {
   size_t len = linear.length();
 
   JS::AutoCheckCannotGC nogc;
@@ -164,12 +168,12 @@ static size_t QuoteHelper(const JSLinearString& linear, StringBuffer& sb,
   RangedPtr<DstCharT> dstBegin{sb.begin<DstCharT>(), sb.begin<DstCharT>(),
                                sb.end<DstCharT>()};
   RangedPtr<DstCharT> dstEnd =
-      InfallibleQuote(srcBegin, srcBegin + len, dstBegin + sbOffset);
+      InfallibleQuoteJSONString(srcBegin, srcBegin + len, dstBegin + sbOffset);
 
   return dstEnd - dstBegin;
 }
 
-static bool Quote(JSContext* cx, StringBuffer& sb, JSString* str) {
+static bool QuoteJSONString(JSContext* cx, StringBuilder& sb, JSString* str) {
   JSLinearString* linear = str->ensureLinear(cx);
   if (!linear) {
     return false;
@@ -199,11 +203,14 @@ static bool Quote(JSContext* cx, StringBuffer& sb, JSString* str) {
   size_t newSize;
 
   if (linear->hasTwoByteChars()) {
-    newSize = QuoteHelper<char16_t, char16_t>(*linear, sb, sbInitialLen);
+    newSize =
+        QuoteJSONStringHelper<char16_t, char16_t>(*linear, sb, sbInitialLen);
   } else if (sb.isUnderlyingBufferLatin1()) {
-    newSize = QuoteHelper<Latin1Char, Latin1Char>(*linear, sb, sbInitialLen);
+    newSize = QuoteJSONStringHelper<Latin1Char, Latin1Char>(*linear, sb,
+                                                            sbInitialLen);
   } else {
-    newSize = QuoteHelper<Latin1Char, char16_t>(*linear, sb, sbInitialLen);
+    newSize =
+        QuoteJSONStringHelper<Latin1Char, char16_t>(*linear, sb, sbInitialLen);
   }
 
   sb.shrinkTo(newSize);
@@ -217,7 +224,7 @@ using ObjectVector = GCVector<JSObject*, 8>;
 
 class StringifyContext {
  public:
-  StringifyContext(JSContext* cx, StringBuffer& sb, const StringBuffer& gap,
+  StringifyContext(JSContext* cx, StringBuilder& sb, const StringBuilder& gap,
                    HandleObject replacer, const RootedIdVector& propertyList,
                    bool maybeSafely)
       : sb(sb),
@@ -231,8 +238,8 @@ class StringifyContext {
     MOZ_ASSERT_IF(maybeSafely, gap.empty());
   }
 
-  StringBuffer& sb;
-  const StringBuffer& gap;
+  StringBuilder& sb;
+  const StringBuilder& gap;
   RootedObject replacer;
   Rooted<ObjectVector> stack;
   const RootedIdVector& propertyList;
@@ -242,7 +249,8 @@ class StringifyContext {
 
 } /* anonymous namespace */
 
-static bool Str(JSContext* cx, const Value& v, StringifyContext* scx);
+static bool SerializeJSONProperty(JSContext* cx, const Value& v,
+                                  StringifyContext* scx);
 
 static bool WriteIndent(StringifyContext* scx, uint32_t limit) {
   if (!scx->gap.empty()) {
@@ -294,8 +302,9 @@ class KeyStringifier<HandleId> {
 } /* anonymous namespace */
 
 /*
- * ES5 15.12.3 Str, steps 2-4, extracted to enable preprocessing of property
- * values when stringifying objects in JO.
+ * https://262.ecma-international.org/14.0/#sec-serializejsonproperty, steps
+ * 2-4, extracted to enable preprocessing of property values when stringifying
+ * objects in SerializeJSONObject.
  */
 template <typename KeyType>
 static bool PreprocessValue(JSContext* cx, HandleObject holder, KeyType key,
@@ -388,11 +397,12 @@ static bool PreprocessValue(JSContext* cx, HandleObject holder, KeyType key,
 }
 
 /*
- * Determines whether a value which has passed by ES5 150.2.3 Str steps 1-4's
- * gauntlet will result in Str returning |undefined|.  This function is used to
- * properly omit properties resulting in such values when stringifying objects,
- * while properly stringifying such properties as null when they're encountered
- * in arrays.
+ * Determines whether a value which has passed by
+ * https://262.ecma-international.org/14.0/#sec-serializejsonproperty steps
+ * 1-4's gauntlet will result in SerializeJSONProperty returning |undefined|.
+ * This function is used to properly omit properties resulting in such values
+ * when stringifying objects, while properly stringifying such properties as
+ * null when they're encountered in arrays.
  */
 static inline bool IsFilteredValue(const Value& v) {
   MOZ_ASSERT_IF(v.isMagic(), v.isMagic(JS_ELEMENTS_HOLE));
@@ -430,20 +440,33 @@ class CycleDetector {
   bool appended_;
 };
 
+static inline JSString* MaybeGetRawJSON(JSContext* cx, JSObject* obj) {
+  auto* unwrappedObj = obj->maybeUnwrapIf<js::RawJSONObject>();
+  if (!unwrappedObj) {
+    return nullptr;
+  }
+  JSAutoRealm ar(cx, unwrappedObj);
+
+  JSString* rawJSON = unwrappedObj->rawJSON(cx);
+  MOZ_ASSERT(rawJSON);
+  return rawJSON;
+}
+
 #ifdef ENABLE_RECORD_TUPLE
 enum class JOType { Record, Object };
 template <JOType type = JOType::Object>
 #endif
-/* ES5 15.12.3 JO. */
-static bool JO(JSContext* cx, HandleObject obj, StringifyContext* scx) {
+/* https://262.ecma-international.org/14.0/#sec-serializejsonobject */
+static bool SerializeJSONObject(JSContext* cx, HandleObject obj,
+                                StringifyContext* scx) {
   /*
-   * This method implements the JO algorithm in ES5 15.12.3, but:
+   * This method implements the SerializeJSONObject algorithm, but:
    *
    *   * The algorithm is somewhat reformulated to allow the final string to
    *     be streamed into a single buffer, rather than be created and copied
-   *     into place incrementally as the ES5 algorithm specifies it.  This
-   *     requires moving portions of the Str call in 8a into this algorithm
-   *     (and in JA as well).
+   *     into place incrementally as the algorithm specifies it.  This
+   *     requires moving portions of the SerializeJSONProperty call in 8a into
+   *     this algorithm (and in SerializeJSONArray as well).
    */
 
 #ifdef ENABLE_RECORD_TUPLE
@@ -499,10 +522,10 @@ static bool JO(JSContext* cx, HandleObject obj, StringifyContext* scx) {
     }
 
     /*
-     * Steps 8a-8b.  Note that the call to Str is broken up into 1) getting
-     * the property; 2) processing for toJSON, calling the replacer, and
-     * handling boxed Number/String/Boolean objects; 3) filtering out
-     * values which process to |undefined|, and 4) stringifying all values
+     * Steps 8a-8b.  Note that the call to SerializeJSONProperty is broken up
+     * into 1) getting the property; 2) processing for toJSON, calling the
+     * replacer, and handling boxed Number/String/Boolean objects; 3) filtering
+     * out values which process to |undefined|, and 4) stringifying all values
      * which pass the filter.
      */
     id = propertyList[i];
@@ -552,9 +575,9 @@ static bool JO(JSContext* cx, HandleObject obj, StringifyContext* scx) {
       return false;
     }
 
-    if (!Quote(cx, scx->sb, s) || !scx->sb.append(':') ||
+    if (!QuoteJSONString(cx, scx->sb, s) || !scx->sb.append(':') ||
         !(scx->gap.empty() || scx->sb.append(' ')) ||
-        !Str(cx, outputValue, scx)) {
+        !SerializeJSONProperty(cx, outputValue, scx)) {
       return false;
     }
   }
@@ -604,16 +627,17 @@ static MOZ_ALWAYS_INLINE bool GetLengthPropertyForArrayLike(JSContext* cx,
   return true;
 }
 
-/* ES5 15.12.3 JA. */
-static bool JA(JSContext* cx, HandleObject obj, StringifyContext* scx) {
+/* https://262.ecma-international.org/14.0/#sec-serializejsonarray */
+static bool SerializeJSONArray(JSContext* cx, HandleObject obj,
+                               StringifyContext* scx) {
   /*
-   * This method implements the JA algorithm in ES5 15.12.3, but:
+   * This method implements the SerializeJSONArray algorithm, but:
    *
    *   * The algorithm is somewhat reformulated to allow the final string to
    *     be streamed into a single buffer, rather than be created and copied
-   *     into place incrementally as the ES5 algorithm specifies it.  This
-   *     requires moving portions of the Str call in 8a into this algorithm
-   *     (and in JO as well).
+   *     into place incrementally as the algorithm specifies it.  This
+   *     requires moving portions of the SerializeJSONProperty call in 8a into
+   *     this algorithm (and in SerializeJSONObject as well).
    */
 
   /* Steps 1-2, 11. */
@@ -647,10 +671,10 @@ static bool JA(JSContext* cx, HandleObject obj, StringifyContext* scx) {
       }
 
       /*
-       * Steps 8a-8c.  Again note how the call to the spec's Str method
-       * is broken up into getting the property, running it past toJSON
-       * and the replacer and maybe unboxing, and interpreting some
-       * values as |null| in separate steps.
+       * Steps 8a-8c.  Again note how the call to the spec's
+       * SerializeJSONProperty method is broken up into getting the property,
+       * running it past toJSON and the replacer and maybe unboxing, and
+       * interpreting some values as |null| in separate steps.
        */
 #ifdef DEBUG
       if (scx->maybeSafely) {
@@ -685,7 +709,7 @@ static bool JA(JSContext* cx, HandleObject obj, StringifyContext* scx) {
           return false;
         }
       } else {
-        if (!Str(cx, outputValue, scx)) {
+        if (!SerializeJSONProperty(cx, outputValue, scx)) {
           return false;
         }
       }
@@ -710,26 +734,29 @@ static bool JA(JSContext* cx, HandleObject obj, StringifyContext* scx) {
   return scx->sb.append(']');
 }
 
-static bool Str(JSContext* cx, const Value& v, StringifyContext* scx) {
-  /* Step 11 must be handled by the caller. */
+/* https://262.ecma-international.org/14.0/#sec-serializejsonproperty */
+static bool SerializeJSONProperty(JSContext* cx, const Value& v,
+                                  StringifyContext* scx) {
+  /* Step 12 must be handled by the caller. */
   MOZ_ASSERT(!IsFilteredValue(v));
 
   /*
-   * This method implements the Str algorithm in ES5 15.12.3, but:
+   * This method implements the SerializeJSONProperty algorithm, but:
    *
    *   * We move property retrieval (step 1) into callers to stream the
    *     stringification process and avoid constantly copying strings.
    *   * We move the preprocessing in steps 2-4 into a helper function to
-   *     allow both JO and JA to use this method.  While JA could use it
-   *     without this move, JO must omit any |undefined|-valued property per
-   *     so it can't stream out a value using the Str method exactly as
-   *     defined by ES5.
-   *   * We move step 11 into callers, again to ease streaming.
+   *     allow both SerializeJSONObject and SerializeJSONArray to use this
+   * method.  While SerializeJSONArray could use it without this move,
+   * SerializeJSONObject must omit any |undefined|-valued property per so it
+   * can't stream out a value using the SerializeJSONProperty method exactly as
+   * defined by the spec.
+   *   * We move step 12 into callers, again to ease streaming.
    */
 
   /* Step 8. */
   if (v.isString()) {
-    return Quote(cx, scx->sb, v.toString());
+    return QuoteJSONString(cx, scx->sb, v.toString());
   }
 
   /* Step 5. */
@@ -753,10 +780,10 @@ static bool Str(JSContext* cx, const Value& v, StringifyContext* scx) {
       }
     }
 
-    return NumberValueToStringBuffer(v, scx->sb);
+    return NumberValueToStringBuilder(v, scx->sb);
   }
 
-  /* Step 10 in the BigInt proposal. */
+  /* Step 10. */
   if (v.isBigInt()) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_BIGINT_NOT_SERIALIZABLE);
@@ -768,9 +795,15 @@ static bool Str(JSContext* cx, const Value& v, StringifyContext* scx) {
     return false;
   }
 
-  /* Step 10. */
+  /* Step 11. */
   MOZ_ASSERT(v.hasObjectPayload());
   RootedObject obj(cx, &v.getObjectPayload());
+
+  /* https://tc39.es/proposal-json-parse-with-source/#sec-serializejsonproperty
+   * Step 4a.*/
+  if (JSString* rawJSON = MaybeGetRawJSON(cx, obj)) {
+    return scx->sb.append(rawJSON);
+  }
 
   MOZ_ASSERT(
       !scx->maybeSafely || obj->is<PlainObject>() || obj->is<ArrayObject>(),
@@ -783,10 +816,10 @@ static bool Str(JSContext* cx, const Value& v, StringifyContext* scx) {
 #ifdef ENABLE_RECORD_TUPLE
   if (v.isExtendedPrimitive()) {
     if (obj->is<RecordType>()) {
-      return JO<JOType::Record>(cx, obj, scx);
+      return SerializeJSONObject<JOType::Record>(cx, obj, scx);
     }
     if (obj->is<TupleType>()) {
-      return JA(cx, obj, scx);
+      return SerializeJSONArray(cx, obj, scx);
     }
     MOZ_CRASH("Unexpected extended primitive - boxes cannot be stringified.");
   }
@@ -797,7 +830,8 @@ static bool Str(JSContext* cx, const Value& v, StringifyContext* scx) {
     return false;
   }
 
-  return isArray ? JA(cx, obj, scx) : JO(cx, obj, scx);
+  return isArray ? SerializeJSONArray(cx, obj, scx)
+                 : SerializeJSONObject(cx, obj, scx);
 }
 
 static bool CanFastStringifyObject(NativeObject* obj) {
@@ -890,11 +924,11 @@ class DenseElementsIteratorForJSON {
 
   Value next() {
     // For Arrays, steps 6-8 of
-    // https://262.ecma-international.org/13.0/#sec-serializejsonarray. For
+    // https://262.ecma-international.org/14.0/#sec-serializejsonarray. For
     // non-Arrays, step 6a of
-    // https://262.ecma-international.org/13.0/#sec-serializejsonobject
+    // https://262.ecma-international.org/14.0/#sec-serializejsonobject
     // following the order from
-    // https://262.ecma-international.org/13.0/#sec-ordinaryownpropertykeys
+    // https://262.ecma-international.org/14.0/#sec-ordinaryownpropertykeys
 
     MOZ_ASSERT(!done());
     auto i = element++;
@@ -996,10 +1030,11 @@ class ShapePropertyForwardIterNoGC {
   FakePtr operator->() const { return {get()}; }
 };
 
-// Iterator over EnumerableOwnPropertyNames
-// https://262.ecma-international.org/13.0/#sec-enumerableownpropertynames
+// Iterator over EnumerableOwnProperties
+// https://262.ecma-international.org/14.0/#sec-enumerableownproperties
 // that fails if it encounters any accessor properties, as they are not handled
-// by JSON FastStr, or if it sees too many properties on one object.
+// by JSON FastSerializeJSONProperty, or if it sees too many properties on one
+// object.
 class OwnNonIndexKeysIterForJSON {
   ShapePropertyForwardIterNoGC shapeIter;
   bool done_ = false;
@@ -1054,11 +1089,11 @@ class OwnNonIndexKeysIterForJSON {
   }
 };
 
-// Steps from https://262.ecma-international.org/13.0/#sec-serializejsonproperty
-static bool EmitSimpleValue(JSContext* cx, StringBuffer& sb, const Value& v) {
+// Steps from https://262.ecma-international.org/14.0/#sec-serializejsonproperty
+static bool EmitSimpleValue(JSContext* cx, StringBuilder& sb, const Value& v) {
   /* Step 8. */
   if (v.isString()) {
-    return Quote(cx, sb, v.toString());
+    return QuoteJSONString(cx, sb, v.toString());
   }
 
   /* Step 5. */
@@ -1079,7 +1114,7 @@ static bool EmitSimpleValue(JSContext* cx, StringBuffer& sb, const Value& v) {
       }
     }
 
-    return NumberValueToStringBuffer(v, sb);
+    return NumberValueToStringBuilder(v, sb);
   }
 
   // Unrepresentable values.
@@ -1092,9 +1127,9 @@ static bool EmitSimpleValue(JSContext* cx, StringBuffer& sb, const Value& v) {
   MOZ_CRASH("should have validated printable simple value already");
 }
 
-// https://262.ecma-international.org/13.0/#sec-serializejsonproperty step 8b
+// https://262.ecma-international.org/14.0/#sec-serializejsonproperty step 8b
 // where K is an integer index.
-static bool EmitQuotedIndexColon(StringBuffer& sb, uint32_t index) {
+static bool EmitQuotedIndexColon(StringBuilder& sb, uint32_t index) {
   Int32ToCStringBuf cbuf;
   size_t cstrlen;
   const char* cstr = ::Int32ToCString(&cbuf, index, &cstrlen);
@@ -1116,7 +1151,7 @@ static bool PreprocessFastValue(JSContext* cx, Value* vp, StringifyContext* scx,
   MOZ_ASSERT(!scx->maybeSafely);
 
   // Steps are from
-  // https://262.ecma-international.org/13.0/#sec-serializejsonproperty
+  // https://262.ecma-international.org/14.0/#sec-serializejsonproperty
 
   // Disallow BigInts to avoid caring about BigInt.prototype.toJSON.
   if (vp->isBigInt()) {
@@ -1175,13 +1210,14 @@ static bool PreprocessFastValue(JSContext* cx, Value* vp, StringifyContext* scx,
   return true;
 }
 
-// FastStr maintains an explicit stack to handle nested objects. For each
-// object, first the dense elements are iterated, then the named properties
-// (included sparse indexes, which will cause FastStr to bail out.)
+// FastSerializeJSONProperty maintains an explicit stack to handle nested
+// objects. For each object, first the dense elements are iterated, then the
+// named properties (included sparse indexes, which will cause
+// FastSerializeJSONProperty to bail out.)
 //
 // The iterators for each of those parts are not merged into a single common
 // iterator because the interface is different for the two parts, and they are
-// handled separately in the FastStr code.
+// handled separately in the FastSerializeJSONProperty code.
 struct FastStackEntry {
   NativeObject* nobj;
   Variant<DenseElementsIteratorForJSON, OwnNonIndexKeysIterForJSON> iter;
@@ -1212,14 +1248,21 @@ struct FastStackEntry {
   }
 };
 
-static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
-                    BailReason* whySlow) {
+/* https://262.ecma-international.org/14.0/#sec-serializejsonproperty */
+static bool FastSerializeJSONProperty(JSContext* cx, Handle<Value> v,
+                                      StringifyContext* scx,
+                                      BailReason* whySlow) {
   MOZ_ASSERT(*whySlow == BailReason::NO_REASON);
   MOZ_ASSERT(v.isObject());
 
+  if (JSString* rawJSON = MaybeGetRawJSON(cx, &v.toObject())) {
+    return scx->sb.append(rawJSON);
+  }
+
   /*
-   * FastStr is an optimistic fast path for the Str algorithm in ES5 15.12.3
-   * that applies in limited situations. It falls back to Str() if:
+   * FastSerializeJSONProperty is an optimistic fast path for the
+   * SerializeJSONProperty algorithm that applies in limited situations. It
+   * falls back to SerializeJSONProperty() if:
    *
    *   * Any externally visible code attempts to run: getter, enumerate
    *     hook, toJSON property.
@@ -1265,10 +1308,10 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
    *     scanned to bail if any numeric keys are found that could be indexes.
    */
 
-  // FastStr will bail if an interrupt is requested in the middle of an
-  // operation, so handle any interrupts now before starting. Note: this can GC,
-  // but after this point nothing should be able to GC unless something fails,
-  // so rooting is unnecessary.
+  // FastSerializeJSONProperty will bail if an interrupt is requested in the
+  // middle of an operation, so handle any interrupts now before starting. Note:
+  // this can GC, but after this point nothing should be able to GC unless
+  // something fails, so rooting is unnecessary.
   if (!CheckForInterrupt(cx)) {
     return false;
   }
@@ -1279,9 +1322,9 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
     return false;
   }
   // Construct an iterator for the object,
-  // https://262.ecma-international.org/13.0/#sec-serializejsonobject step 6:
+  // https://262.ecma-international.org/14.0/#sec-serializejsonobject step 6:
   // EnumerableOwnPropertyNames or
-  // https://262.ecma-international.org/13.0/#sec-serializejsonarray step 7-8.
+  // https://262.ecma-international.org/14.0/#sec-serializejsonarray step 7-8.
   FastStackEntry top(&v.toObject().as<NativeObject>());
   bool wroteMember = false;
 
@@ -1339,19 +1382,24 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
         }
 
         if (val.isObject()) {
-          if (stack.length() >= MAX_STACK_DEPTH - 1) {
-            *whySlow = BailReason::DEEP_RECURSION;
-            return true;
+          if (JSString* rawJSON = MaybeGetRawJSON(cx, &val.toObject())) {
+            if (!scx->sb.append(rawJSON)) {
+              return false;
+            }
+          } else {
+            if (stack.length() >= MAX_STACK_DEPTH - 1) {
+              *whySlow = BailReason::DEEP_RECURSION;
+              return true;
+            }
+            // Save the current iterator position on the stack and
+            // switch to processing the nested value.
+            stack.infallibleAppend(std::move(top));
+            top = FastStackEntry(&val.toObject().as<NativeObject>());
+            wroteMember = false;
+            nestedObject = true;  // Break out to the outer loop.
+            break;
           }
-          // Save the current iterator position on the stack and
-          // switch to processing the nested value.
-          stack.infallibleAppend(std::move(top));
-          top = FastStackEntry(&val.toObject().as<NativeObject>());
-          wroteMember = false;
-          nestedObject = true;  // Break out to the outer loop.
-          break;
-        }
-        if (!EmitSimpleValue(cx, scx->sb, val)) {
+        } else if (!EmitSimpleValue(cx, scx->sb, val)) {
           return false;
         }
       }
@@ -1362,7 +1410,7 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
 
       MOZ_ASSERT(iter.done());
       if (top.isArray) {
-        MOZ_ASSERT(!top.nobj->isIndexed());
+        MOZ_ASSERT(!top.nobj->isIndexed() || IsPackedArray(top.nobj));
       } else {
         top.advanceToProperties();
       }
@@ -1397,7 +1445,7 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
         }
         if (IsFilteredValue(val)) {
           // Undefined check in
-          // https://262.ecma-international.org/13.0/#sec-serializejsonobject
+          // https://262.ecma-international.org/14.0/#sec-serializejsonobject
           // step 8b, covering undefined, symbol
           continue;
         }
@@ -1408,7 +1456,7 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
         wroteMember = true;
 
         MOZ_ASSERT(prop.key().isString());
-        if (!Quote(cx, scx->sb, prop.key().toString())) {
+        if (!QuoteJSONString(cx, scx->sb, prop.key().toString())) {
           return false;
         }
 
@@ -1416,19 +1464,24 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
           return false;
         }
         if (val.isObject()) {
-          if (stack.length() >= MAX_STACK_DEPTH - 1) {
-            *whySlow = BailReason::DEEP_RECURSION;
-            return true;
+          if (JSString* rawJSON = MaybeGetRawJSON(cx, &val.toObject())) {
+            if (!scx->sb.append(rawJSON)) {
+              return false;
+            }
+          } else {
+            if (stack.length() >= MAX_STACK_DEPTH - 1) {
+              *whySlow = BailReason::DEEP_RECURSION;
+              return true;
+            }
+            // Save the current iterator position on the stack and
+            // switch to processing the nested value.
+            stack.infallibleAppend(std::move(top));
+            top = FastStackEntry(&val.toObject().as<NativeObject>());
+            wroteMember = false;
+            nesting = true;  // Break out to the outer loop.
+            break;
           }
-          // Save the current iterator position on the stack and
-          // switch to processing the nested value.
-          stack.infallibleAppend(std::move(top));
-          top = FastStackEntry(&val.toObject().as<NativeObject>());
-          wroteMember = false;
-          nesting = true;  // Break out to the outer loop.
-          break;
-        }
-        if (!EmitSimpleValue(cx, scx->sb, val)) {
+        } else if (!EmitSimpleValue(cx, scx->sb, val)) {
           return false;
         }
       }
@@ -1455,9 +1508,9 @@ static bool FastStr(JSContext* cx, Handle<Value> v, StringifyContext* scx,
   }
 }
 
-/* ES6 24.3.2. */
+/* https://262.ecma-international.org/14.0/#sec-json.stringify */
 bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
-                   const Value& space_, StringBuffer& sb,
+                   const Value& space_, StringBuilder& sb,
                    StringifyBehavior stringifyBehavior) {
   RootedObject replacer(cx, replacer_);
   RootedValue space(cx, space_);
@@ -1475,7 +1528,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
                  vp.toObject().is<ArrayObject>(),
              "input to JS::ToJSONMaybeSafely must be a plain object or array");
 
-  /* Step 4. */
+  /* Step 5. */
   RootedIdVector propertyList(cx);
   BailReason whySlow = BailReason::NO_REASON;
   if (stringifyBehavior == StringifyBehavior::SlowOnly ||
@@ -1486,13 +1539,13 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     whySlow = BailReason::HAVE_REPLACER;
     bool isArray;
     if (replacer->isCallable()) {
-      /* Step 4a(i): use replacer to transform values.  */
+      /* Step 5a(i): use replacer to transform values.  */
     } else if (!IsArray(cx, replacer, &isArray)) {
       return false;
     } else if (isArray) {
-      /* Step 4b(iii). */
+      /* Step 5b(ii). */
 
-      /* Step 4b(iii)(2-3). */
+      /* Step 5b(ii)(2). */
       uint32_t len;
       if (!GetLengthPropertyForArrayLike(cx, replacer, &len)) {
         return false;
@@ -1506,22 +1559,22 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
       Rooted<GCHashSet<jsid>> idSet(
           cx, GCHashSet<jsid>(cx, std::min(len, MaxInitialSize)));
 
-      /* Step 4b(iii)(4). */
+      /* Step 5b(ii)(3). */
       uint32_t k = 0;
 
-      /* Step 4b(iii)(5). */
+      /* Step 5b(ii)(4). */
       RootedValue item(cx);
       for (; k < len; k++) {
         if (!CheckForInterrupt(cx)) {
           return false;
         }
 
-        /* Step 4b(iii)(5)(a-b). */
+        /* Step 5b(ii)(4)(a-b). */
         if (!GetElement(cx, replacer, k, &item)) {
           return false;
         }
 
-        /* Step 4b(iii)(5)(c-g). */
+        /* Step 5b(ii)(4)(c-g). */
         RootedId id(cx);
         if (item.isNumber() || item.isString()) {
           if (!PrimitiveValueToId<CanGC>(cx, item, &id)) {
@@ -1545,10 +1598,10 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
           id.set(AtomToId(atom));
         }
 
-        /* Step 4b(iii)(5)(g). */
+        /* Step 5b(ii)(4)(g). */
         auto p = idSet.lookupForAdd(id);
         if (!p) {
-          /* Step 4b(iii)(5)(g)(i). */
+          /* Step 5b(ii)(4)(g)(i). */
           if (!idSet.add(p, id) || !propertyList.append(id)) {
             return false;
           }
@@ -1559,7 +1612,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     }
   }
 
-  /* Step 5. */
+  /* Step 6. */
   if (space.isObject()) {
     RootedObject spaceObj(cx, &space.toObject());
 
@@ -1583,10 +1636,10 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     }
   }
 
-  StringBuffer gap(cx);
+  StringBuilder gap(cx);
 
   if (space.isNumber()) {
-    /* Step 6. */
+    /* Step 7. */
     double d;
     MOZ_ALWAYS_TRUE(ToInteger(cx, space, &d));
     d = std::min(10.0, d);
@@ -1594,7 +1647,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
       return false;
     }
   } else if (space.isString()) {
-    /* Step 7. */
+    /* Step 8. */
     JSLinearString* str = space.toString()->ensureLinear(cx);
     if (!str) {
       return false;
@@ -1604,7 +1657,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
       return false;
     }
   } else {
-    /* Step 8. */
+    /* Step 9. */
     MOZ_ASSERT(gap.empty());
   }
   if (!gap.empty()) {
@@ -1612,24 +1665,24 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
   }
 
   Rooted<PlainObject*> wrapper(cx);
-  RootedId emptyId(cx, NameToId(cx->names().empty));
+  RootedId emptyId(cx, NameToId(cx->names().empty_));
   if (replacer && replacer->isCallable()) {
     // We can skip creating the initial wrapper object if no replacer
     // function is present.
 
-    /* Step 9. */
+    /* Step 10. */
     wrapper = NewPlainObject(cx);
     if (!wrapper) {
       return false;
     }
 
-    /* Steps 10-11. */
+    /* Step 11. */
     if (!NativeDefineDataProperty(cx, wrapper, emptyId, vp, JSPROP_ENUMERATE)) {
       return false;
     }
   }
 
-  /* Step 12. */
+  /* Step 13. */
   Rooted<JSAtom*> fastJSON(cx);
   if (whySlow == BailReason::NO_REASON) {
     MOZ_ASSERT(propertyList.empty());
@@ -1644,7 +1697,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
       whySlow = BailReason::PRIMITIVE;
     }
     if (whySlow == BailReason::NO_REASON) {
-      if (!FastStr(cx, vp, &scx, &whySlow)) {
+      if (!FastSerializeJSONProperty(cx, vp, &scx, &whySlow)) {
         return false;
       }
       if (whySlow == BailReason::NO_REASON) {
@@ -1679,7 +1732,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     return true;
   }
 
-  if (!Str(cx, vp, &scx)) {
+  if (!SerializeJSONProperty(cx, vp, &scx)) {
     return false;
   }
 
@@ -1692,7 +1745,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     if (fastJSON != slowJSON) {
       MOZ_CRASH("JSON.stringify mismatch between fast and slow paths");
     }
-    // Put the JSON back into the StringBuffer for returning.
+    // Put the JSON back into the StringBuilder for returning.
     if (!sb.append(slowJSON)) {
       return false;
     }
@@ -1701,9 +1754,11 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
   return true;
 }
 
-/* ES5 15.12.2 Walk. */
-static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
-                 HandleValue reviver, MutableHandleValue vp) {
+/* https://262.ecma-international.org/14.0/#sec-internalizejsonproperty */
+static bool InternalizeJSONProperty(JSContext* cx, HandleObject holder,
+                                    HandleId name, HandleValue reviver,
+                                    Handle<ParseRecordObject*> parseRecord,
+                                    MutableHandleValue vp) {
   AutoCheckRecursionLimit recursion(cx);
   if (!recursion.check(cx)) {
     return false;
@@ -1713,6 +1768,43 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
   RootedValue val(cx);
   if (!GetProperty(cx, holder, holder, name, &val)) {
     return false;
+  }
+
+  RootedObject context(cx);
+  Rooted<ParseRecordObject::EntryMap*> entries(cx);
+  if (JS::Prefs::experimental_json_parse_with_source()) {
+    // https://tc39.es/proposal-json-parse-with-source/#sec-internalizejsonproperty
+    if (parseRecord) {
+      bool sameVal = false;
+      Rooted<Value> parsedValue(cx, parseRecord->getValue());
+      if (!SameValue(cx, parsedValue, val, &sameVal)) {
+        return false;
+      }
+      if (parseRecord->hasValue() && sameVal) {
+        if (parseRecord->getParseNode()) {
+          MOZ_ASSERT(!val.isObject());
+          Rooted<IdValueVector> props(cx, cx);
+          if (!props.emplaceBack(
+                  IdValuePair(NameToId(cx->names().source),
+                              StringValue(parseRecord->getParseNode())))) {
+            return false;
+          }
+          context = NewPlainObjectWithUniqueNames(cx, props);
+          if (!context) {
+            return false;
+          }
+        }
+        if (!parseRecord->getEntries(cx, &entries)) {
+          return false;
+        }
+      }
+    }
+    if (!context) {
+      context = NewPlainObject(cx);
+      if (!context) {
+        return false;
+      }
+    }
   }
 
   /* Step 2. */
@@ -1725,13 +1817,13 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
     }
 
     if (isArray) {
-      /* Step 2a(ii). */
+      /* Step 2b(i). */
       uint32_t length;
       if (!GetLengthPropertyForArrayLike(cx, obj, &length)) {
         return false;
       }
 
-      /* Step 2a(i), 2a(iii-iv). */
+      /* Steps 2b(ii-iii). */
       RootedId id(cx);
       RootedValue newElement(cx);
       for (uint32_t i = 0; i < length; i++) {
@@ -1744,18 +1836,29 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
         }
 
         /* Step 2a(iii)(1). */
-        if (!Walk(cx, obj, id, reviver, &newElement)) {
+        Rooted<ParseRecordObject*> elementRecord(cx);
+        if (entries) {
+          Rooted<Value> value(cx);
+          if (!JS_GetPropertyById(cx, entries, id, &value)) {
+            return false;
+          }
+          if (!value.isNullOrUndefined()) {
+            elementRecord = &value.toObject().as<ParseRecordObject>();
+          }
+        }
+        if (!InternalizeJSONProperty(cx, obj, id, reviver, elementRecord,
+                                     &newElement)) {
           return false;
         }
 
         ObjectOpResult ignored;
         if (newElement.isUndefined()) {
-          /* Step 2a(iii)(2). The spec deliberately ignores strict failure. */
+          /* Step 2b(iii)(3). The spec deliberately ignores strict failure. */
           if (!DeleteProperty(cx, obj, id, ignored)) {
             return false;
           }
         } else {
-          /* Step 2a(iii)(3). The spec deliberately ignores strict failure. */
+          /* Step 2b(iii)(4). The spec deliberately ignores strict failure. */
           Rooted<PropertyDescriptor> desc(
               cx, PropertyDescriptor::Data(newElement,
                                            {JS::PropertyAttribute::Configurable,
@@ -1767,13 +1870,13 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
         }
       }
     } else {
-      /* Step 2b(i). */
+      /* Step 2c(i). */
       RootedIdVector keys(cx);
       if (!GetPropertyKeys(cx, obj, JSITER_OWNONLY, &keys)) {
         return false;
       }
 
-      /* Step 2b(ii). */
+      /* Step 2c(ii). */
       RootedId id(cx);
       RootedValue newElement(cx);
       for (size_t i = 0, len = keys.length(); i < len; i++) {
@@ -1781,20 +1884,31 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
           return false;
         }
 
-        /* Step 2b(ii)(1). */
+        /* Step 2c(ii)(1). */
         id = keys[i];
-        if (!Walk(cx, obj, id, reviver, &newElement)) {
+        Rooted<ParseRecordObject*> entryRecord(cx);
+        if (entries) {
+          Rooted<Value> value(cx);
+          if (!JS_GetPropertyById(cx, entries, id, &value)) {
+            return false;
+          }
+          if (!value.isNullOrUndefined()) {
+            entryRecord = &value.toObject().as<ParseRecordObject>();
+          }
+        }
+        if (!InternalizeJSONProperty(cx, obj, id, reviver, entryRecord,
+                                     &newElement)) {
           return false;
         }
 
         ObjectOpResult ignored;
         if (newElement.isUndefined()) {
-          /* Step 2b(ii)(2). The spec deliberately ignores strict failure. */
+          /* Step 2c(ii)(2). The spec deliberately ignores strict failure. */
           if (!DeleteProperty(cx, obj, id, ignored)) {
             return false;
           }
         } else {
-          /* Step 2b(ii)(3). The spec deliberately ignores strict failure. */
+          /* Step 2c(ii)(3). The spec deliberately ignores strict failure. */
           Rooted<PropertyDescriptor> desc(
               cx, PropertyDescriptor::Data(newElement,
                                            {JS::PropertyAttribute::Configurable,
@@ -1815,29 +1929,35 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
   }
 
   RootedValue keyVal(cx, StringValue(key));
+  if (JS::Prefs::experimental_json_parse_with_source()) {
+    RootedValue contextVal(cx, ObjectValue(*context));
+    return js::Call(cx, reviver, holder, keyVal, val, contextVal, vp);
+  }
   return js::Call(cx, reviver, holder, keyVal, val, vp);
 }
 
-static bool Revive(JSContext* cx, HandleValue reviver, MutableHandleValue vp) {
+static bool Revive(JSContext* cx, HandleValue reviver,
+                   Handle<ParseRecordObject*> pro, MutableHandleValue vp) {
   Rooted<PlainObject*> obj(cx, NewPlainObject(cx));
   if (!obj) {
     return false;
   }
 
-  if (!DefineDataProperty(cx, obj, cx->names().empty, vp)) {
+  if (!DefineDataProperty(cx, obj, cx->names().empty_, vp)) {
     return false;
   }
 
-  Rooted<jsid> id(cx, NameToId(cx->names().empty));
-  return Walk(cx, obj, id, reviver, vp);
+  MOZ_ASSERT_IF(JS::Prefs::experimental_json_parse_with_source(),
+                pro->getValue() == vp.get());
+  Rooted<jsid> id(cx, NameToId(cx->names().empty_));
+  return InternalizeJSONProperty(cx, obj, id, reviver, pro, vp);
 }
 
 template <typename CharT>
 bool ParseJSON(JSContext* cx, const mozilla::Range<const CharT> chars,
                MutableHandleValue vp) {
-  Rooted<JSONParser<CharT>> parser(
-      cx,
-      JSONParser<CharT>(cx, chars, JSONParser<CharT>::ParseType::JSONParse));
+  Rooted<JSONParser<CharT>> parser(cx, cx, chars,
+                                   JSONParser<CharT>::ParseType::JSONParse);
   return parser.parse(vp);
 }
 
@@ -1845,14 +1965,22 @@ template <typename CharT>
 bool js::ParseJSONWithReviver(JSContext* cx,
                               const mozilla::Range<const CharT> chars,
                               HandleValue reviver, MutableHandleValue vp) {
-  /* 15.12.2 steps 2-3. */
-  if (!ParseJSON(cx, chars, vp)) {
+  js::AutoGeckoProfilerEntry pseudoFrame(cx, "parse JSON",
+                                         JS::ProfilingCategoryPair::JS_Parsing);
+  /* https://262.ecma-international.org/14.0/#sec-json.parse steps 2-10. */
+  Rooted<ParseRecordObject*> pro(cx);
+  if (JS::Prefs::experimental_json_parse_with_source() && IsCallable(reviver)) {
+    Rooted<JSONReviveParser<CharT>> parser(cx, cx, chars);
+    if (!parser.get().parse(vp, &pro)) {
+      return false;
+    }
+  } else if (!ParseJSON(cx, chars, vp)) {
     return false;
   }
 
-  /* 15.12.2 steps 4-5. */
+  /* Steps 11-12. */
   if (IsCallable(reviver)) {
-    return Revive(cx, reviver, vp);
+    return Revive(cx, reviver, pro, vp);
   }
   return true;
 }
@@ -1871,7 +1999,7 @@ static bool json_toSource(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-/* ES5 15.12.2. */
+/* https://262.ecma-international.org/14.0/#sec-json.parse */
 static bool json_parse(JSContext* cx, unsigned argc, Value* vp) {
   AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "parse");
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -1895,7 +2023,7 @@ static bool json_parse(JSContext* cx, unsigned argc, Value* vp) {
 
   HandleValue reviver = args.get(1);
 
-  /* Steps 2-5. */
+  /* Steps 2-12. */
   return linearChars.isLatin1()
              ? ParseJSONWithReviver(cx, linearChars.latin1Range(), reviver,
                                     args.rval())
@@ -2055,12 +2183,109 @@ static bool json_parseImmutable(JSContext* cx, unsigned argc, Value* vp) {
     }
   }
 
-  RootedId id(cx, NameToId(cx->names().empty));
+  RootedId id(cx, NameToId(cx->names().empty_));
   return BuildImmutableProperty(cx, unfiltered, id, reviver, args.rval());
 }
 #endif
 
-/* ES6 24.3.2. */
+/* https://tc39.es/proposal-json-parse-with-source/#sec-json.israwjson */
+static bool json_isRawJSON(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "isRawJSON");
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  /* Step 1. */
+  if (args.get(0).isObject()) {
+    Rooted<JSObject*> obj(cx, &args[0].toObject());
+#ifdef DEBUG
+    if (obj->is<RawJSONObject>()) {
+      bool objIsFrozen = false;
+      MOZ_ASSERT(js::TestIntegrityLevel(cx, obj, IntegrityLevel::Frozen,
+                                        &objIsFrozen));
+      MOZ_ASSERT(objIsFrozen);
+    }
+#endif  // DEBUG
+    args.rval().setBoolean(obj->is<RawJSONObject>() ||
+                           obj->canUnwrapAs<RawJSONObject>());
+    return true;
+  }
+
+  /* Step 2. */
+  args.rval().setBoolean(false);
+  return true;
+}
+
+static inline bool IsJSONWhitespace(char16_t ch) {
+  return ch == '\t' || ch == '\n' || ch == '\r' || ch == ' ';
+}
+
+/* https://tc39.es/proposal-json-parse-with-source/#sec-json.rawjson */
+static bool json_rawJSON(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "rawJSON");
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  /* Step 1. */
+  JSString* jsonString = ToString<CanGC>(cx, args.get(0));
+  if (!jsonString) {
+    return false;
+  }
+
+  Rooted<JSLinearString*> linear(cx, jsonString->ensureLinear(cx));
+  if (!linear) {
+    return false;
+  }
+
+  AutoStableStringChars linearChars(cx);
+  if (!linearChars.init(cx, linear)) {
+    return false;
+  }
+
+  /* Step 2. */
+  if (linear->empty()) {
+    JS_ReportErrorNumberASCII(cx, js::GetErrorMessage, nullptr,
+                              JSMSG_JSON_RAW_EMPTY);
+    return false;
+  }
+  if (IsJSONWhitespace(linear->latin1OrTwoByteChar(0)) ||
+      IsJSONWhitespace(linear->latin1OrTwoByteChar(linear->length() - 1))) {
+    JS_ReportErrorNumberASCII(cx, js::GetErrorMessage, nullptr,
+                              JSMSG_JSON_RAW_WHITESPACE);
+    return false;
+  }
+
+  /* Step 3. */
+  RootedValue parsedValue(cx);
+  if (linearChars.isLatin1()) {
+    if (!ParseJSON(cx, linearChars.latin1Range(), &parsedValue)) {
+      return false;
+    }
+  } else {
+    if (!ParseJSON(cx, linearChars.twoByteRange(), &parsedValue)) {
+      return false;
+    }
+  }
+
+  if (parsedValue.isObject()) {
+    JS_ReportErrorNumberASCII(cx, js::GetErrorMessage, nullptr,
+                              JSMSG_JSON_RAW_ARRAY_OR_OBJECT);
+    return false;
+  }
+
+  /* Steps 4-6. */
+  Rooted<RawJSONObject*> obj(cx, RawJSONObject::create(cx, linear));
+  if (!obj) {
+    return false;
+  }
+
+  /* Step 7. */
+  if (!js::FreezeObject(cx, obj)) {
+    return false;
+  }
+
+  args.rval().setObject(*obj);
+  return true;
+}
+
+/* https://262.ecma-international.org/14.0/#sec-json.stringify */
 bool json_stringify(JSContext* cx, unsigned argc, Value* vp) {
   AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "stringify");
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -2098,15 +2323,21 @@ bool json_stringify(JSContext* cx, unsigned argc, Value* vp) {
 }
 
 static const JSFunctionSpec json_static_methods[] = {
-    JS_FN(js_toSource_str, json_toSource, 0, 0),
-    JS_FN("parse", json_parse, 2, 0), JS_FN("stringify", json_stringify, 3, 0),
+    JS_FN("toSource", json_toSource, 0, 0),
+    JS_FN("parse", json_parse, 2, 0),
+    JS_FN("stringify", json_stringify, 3, 0),
 #ifdef ENABLE_RECORD_TUPLE
     JS_FN("parseImmutable", json_parseImmutable, 2, 0),
 #endif
-    JS_FS_END};
+    JS_FN("isRawJSON", json_isRawJSON, 1, 0),
+    JS_FN("rawJSON", json_rawJSON, 1, 0),
+    JS_FS_END,
+};
 
 static const JSPropertySpec json_static_properties[] = {
-    JS_STRING_SYM_PS(toStringTag, "JSON", JSPROP_READONLY), JS_PS_END};
+    JS_STRING_SYM_PS(toStringTag, "JSON", JSPROP_READONLY),
+    JS_PS_END,
+};
 
 static JSObject* CreateJSONObject(JSContext* cx, JSProtoKey key) {
   RootedObject proto(cx, &cx->global()->getObjectPrototype());
@@ -2114,8 +2345,15 @@ static JSObject* CreateJSONObject(JSContext* cx, JSProtoKey key) {
 }
 
 static const ClassSpec JSONClassSpec = {
-    CreateJSONObject, nullptr, json_static_methods, json_static_properties};
+    CreateJSONObject,
+    nullptr,
+    json_static_methods,
+    json_static_properties,
+};
 
-const JSClass js::JSONClass = {js_JSON_str,
-                               JSCLASS_HAS_CACHED_PROTO(JSProto_JSON),
-                               JS_NULL_CLASS_OPS, &JSONClassSpec};
+const JSClass js::JSONClass = {
+    "JSON",
+    JSCLASS_HAS_CACHED_PROTO(JSProto_JSON),
+    JS_NULL_CLASS_OPS,
+    &JSONClassSpec,
+};

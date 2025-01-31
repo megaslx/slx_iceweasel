@@ -20,11 +20,11 @@ var numberFormatInternalProperties = {
 };
 
 /**
- * 15.1.2 InitializeNumberFormat ( numberFormat, locales, options )
+ * 15.1.1 Intl.NumberFormat ( [ locales [ , options ] ] )
  *
  * Compute an internal properties object from |lazyNumberFormatData|.
  *
- * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ * ES2025 Intl draft rev 5ea95f8a98d660e94c177d6f5e88c6d2962123b1
  */
 function resolveNumberFormatInternals(lazyNumberFormatData) {
   assert(IsObject(lazyNumberFormatData), "lazy data not an object?");
@@ -35,59 +35,56 @@ function resolveNumberFormatInternals(lazyNumberFormatData) {
 
   // Compute effective locale.
 
-  // Step 9.
-  var localeData = NumberFormat.localeData;
-
-  // Step 10.
+  // Step 11.
   var r = ResolveLocale(
     "NumberFormat",
     lazyNumberFormatData.requestedLocales,
     lazyNumberFormatData.opt,
     NumberFormat.relevantExtensionKeys,
-    localeData
+    NumberFormat.localeData
   );
 
-  // Steps 11-13. (Step 12 is not relevant to our implementation.)
+  // Steps 12-14. (Step 13 is not relevant to our implementation.)
   internalProps.locale = r.locale;
   internalProps.numberingSystem = r.nu;
 
   // Compute formatting options.
 
-  // Step 14. SetNumberFormatUnitOptions, step 4.
+  // Step 15. SetNumberFormatUnitOptions, step 2.
   var style = lazyNumberFormatData.style;
   internalProps.style = style;
 
-  // Step 14. SetNumberFormatUnitOptions, step 14.
+  // Step 15. SetNumberFormatUnitOptions, step 12.
   if (style === "currency") {
     internalProps.currency = lazyNumberFormatData.currency;
     internalProps.currencyDisplay = lazyNumberFormatData.currencyDisplay;
     internalProps.currencySign = lazyNumberFormatData.currencySign;
   }
 
-  // Step 14. SetNumberFormatUnitOptions, step 15.
+  // Step 15. SetNumberFormatUnitOptions, step 13.
   if (style === "unit") {
     internalProps.unit = lazyNumberFormatData.unit;
     internalProps.unitDisplay = lazyNumberFormatData.unitDisplay;
   }
 
-  // Step 19.
+  // Step 18.
   var notation = lazyNumberFormatData.notation;
   internalProps.notation = notation;
 
-  // Step 20. SetNumberFormatDigitOptions, step 6.
+  // Step 21. SetNumberFormatDigitOptions, step 6.
   internalProps.minimumIntegerDigits =
     lazyNumberFormatData.minimumIntegerDigits;
 
-  // Step 20. SetNumberFormatDigitOptions, step 14.
+  // Step 21. SetNumberFormatDigitOptions, step 14.
   internalProps.roundingIncrement = lazyNumberFormatData.roundingIncrement;
 
-  // Step 20. SetNumberFormatDigitOptions, step 15.
+  // Step 21. SetNumberFormatDigitOptions, step 15.
   internalProps.roundingMode = lazyNumberFormatData.roundingMode;
 
-  // Step 20. SetNumberFormatDigitOptions, step 16.
+  // Step 21. SetNumberFormatDigitOptions, step 16.
   internalProps.trailingZeroDisplay = lazyNumberFormatData.trailingZeroDisplay;
 
-  // Step 20. SetNumberFormatDigitOptions, steps 25-26.
+  // Step 21. SetNumberFormatDigitOptions, steps 25-26.
   if ("minimumFractionDigits" in lazyNumberFormatData) {
     // Note: Intl.NumberFormat.prototype.resolvedOptions() exposes the
     // actual presence (versus undefined-ness) of these properties.
@@ -101,7 +98,7 @@ function resolveNumberFormatInternals(lazyNumberFormatData) {
       lazyNumberFormatData.maximumFractionDigits;
   }
 
-  // Step 20. SetNumberFormatDigitOptions, steps 24 and 26.
+  // Step 21. SetNumberFormatDigitOptions, steps 24 and 26.
   if ("minimumSignificantDigits" in lazyNumberFormatData) {
     // Note: Intl.NumberFormat.prototype.resolvedOptions() exposes the
     // actual presence (versus undefined-ness) of these properties.
@@ -115,18 +112,18 @@ function resolveNumberFormatInternals(lazyNumberFormatData) {
       lazyNumberFormatData.maximumSignificantDigits;
   }
 
-  // Step 20. SetNumberFormatDigitOptions, steps 26-30.
+  // Step 21. SetNumberFormatDigitOptions, steps 26-30.
   internalProps.roundingPriority = lazyNumberFormatData.roundingPriority;
 
-  // Step 23.
+  // Step 24.
   if (notation === "compact") {
     internalProps.compactDisplay = lazyNumberFormatData.compactDisplay;
   }
 
-  // Step 28.
+  // Step 29.
   internalProps.useGrouping = lazyNumberFormatData.useGrouping;
 
-  // Step 30.
+  // Step 31.
   internalProps.signDisplay = lazyNumberFormatData.signDisplay;
 
   // The caller is responsible for associating |internalProps| with the right
@@ -190,7 +187,7 @@ function UnwrapNumberFormat(nf) {
  *
  * Applies digit options used for number formatting onto the intl object.
  *
- * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ * ES2024 Intl draft rev a1db4567870dbe505121a4255f1210338757190a
  */
 function SetNumberFormatDigitOptions(
   lazyData,
@@ -206,25 +203,16 @@ function SetNumberFormatDigitOptions(
   assert(typeof notation === "string", "SetNumberFormatDigitOptions");
 
   // Steps 1-5.
-  const mnid = GetNumberOption(options, "minimumIntegerDigits", 1, 21, 1);
-  let mnfd = options.minimumFractionDigits;
-  let mxfd = options.maximumFractionDigits;
-  let mnsd = options.minimumSignificantDigits;
-  let mxsd = options.maximumSignificantDigits;
+  var mnid = GetNumberOption(options, "minimumIntegerDigits", 1, 21, 1);
+  var mnfd = options.minimumFractionDigits;
+  var mxfd = options.maximumFractionDigits;
+  var mnsd = options.minimumSignificantDigits;
+  var mxsd = options.maximumSignificantDigits;
 
   // Step 6.
   lazyData.minimumIntegerDigits = mnid;
 
   // Step 7.
-  var roundingPriority = GetOption(
-    options,
-    "roundingPriority",
-    "string",
-    ["auto", "morePrecision", "lessPrecision"],
-    "auto"
-  );
-
-  // Step 8.
   var roundingIncrement = GetNumberOption(
     options,
     "roundingIncrement",
@@ -233,7 +221,7 @@ function SetNumberFormatDigitOptions(
     1
   );
 
-  // Step 9.
+  // Step 8.
   switch (roundingIncrement) {
     case 1:
     case 2:
@@ -259,7 +247,7 @@ function SetNumberFormatDigitOptions(
       );
   }
 
-  // Step 10.
+  // Step 9.
   var roundingMode = GetOption(
     options,
     "roundingMode",
@@ -276,6 +264,15 @@ function SetNumberFormatDigitOptions(
       "halfEven",
     ],
     "halfExpand"
+  );
+
+  // Step 10.
+  var roundingPriority = GetOption(
+    options,
+    "roundingPriority",
+    "string",
+    ["auto", "morePrecision", "lessPrecision"],
+    "auto"
   );
 
   // Step 11.
@@ -303,52 +300,52 @@ function SetNumberFormatDigitOptions(
   // Step 16.
   lazyData.trailingZeroDisplay = trailingZeroDisplay;
 
-  // Steps 17-18.
-  const hasSignificantDigits = mnsd !== undefined || mxsd !== undefined;
+  // Step 17.
+  var hasSignificantDigits = mnsd !== undefined || mxsd !== undefined;
 
-  // Step 19-20.
-  const hasFractionDigits = mnfd !== undefined || mxfd !== undefined;
+  // Step 28.
+  var hasFractionDigits = mnfd !== undefined || mxfd !== undefined;
 
-  // Steps 21 and 23.a.
-  const needSignificantDigits =
+  // Steps 19 and 21.a.
+  var needSignificantDigits =
     roundingPriority !== "auto" || hasSignificantDigits;
 
-  // Steps 22 and 23.b.i.
-  const needFractionalDigits =
+  // Steps 20 and 21.b.i.
+  var needFractionalDigits =
     roundingPriority !== "auto" ||
     !(hasSignificantDigits || (!hasFractionDigits && notation === "compact"));
 
-  // Step 24.
+  // Step 22.
   if (needSignificantDigits) {
-    // Step 24.a.
+    // Step 22.a.
     if (hasSignificantDigits) {
-      // Step 24.a.i.
+      // Step 22.a.i.
       mnsd = DefaultNumberOption(mnsd, 1, 21, 1);
       lazyData.minimumSignificantDigits = mnsd;
 
-      // Step 24.a.ii.
+      // Step 22.a.ii.
       mxsd = DefaultNumberOption(mxsd, mnsd, 21, 21);
       lazyData.maximumSignificantDigits = mxsd;
     } else {
-      // Step 24.b.i.
+      // Step 22.b.i.
       lazyData.minimumSignificantDigits = 1;
 
-      // Step 24.b.ii.
+      // Step 22.b.ii.
       lazyData.maximumSignificantDigits = 21;
     }
   }
 
-  // Step 25.
+  // Step 23.
   if (needFractionalDigits) {
-    // Step 25.a.
+    // Step 23.a.
     if (hasFractionDigits) {
-      // Step 25.a.i.
-      mnfd = DefaultNumberOption(mnfd, 0, 20, undefined);
+      // Step 23.a.i.
+      mnfd = DefaultNumberOption(mnfd, 0, 100, undefined);
 
-      // Step 25.a.ii.
-      mxfd = DefaultNumberOption(mxfd, 0, 20, undefined);
+      // Step 23.a.ii.
+      mxfd = DefaultNumberOption(mxfd, 0, 100, undefined);
 
-      // Step 25.a.iii.
+      // Step 23.a.iii.
       if (mnfd === undefined) {
         assert(
           mxfd !== undefined,
@@ -357,31 +354,31 @@ function SetNumberFormatDigitOptions(
         mnfd = std_Math_min(mnfdDefault, mxfd);
       }
 
-      // Step 25.a.iv.
+      // Step 23.a.iv.
       else if (mxfd === undefined) {
         mxfd = std_Math_max(mxfdDefault, mnfd);
       }
 
-      // Step 25.a.v.
+      // Step 23.a.v.
       else if (mnfd > mxfd) {
         ThrowRangeError(JSMSG_INVALID_DIGITS_VALUE, mxfd);
       }
 
-      // Step 25.a.vi.
+      // Step 23.a.vi.
       lazyData.minimumFractionDigits = mnfd;
 
-      // Step 25.a.vii.
+      // Step 23.a.vii.
       lazyData.maximumFractionDigits = mxfd;
     } else {
-      // Step 25.b.i.
+      // Step 23.b.i.
       lazyData.minimumFractionDigits = mnfdDefault;
 
-      // Step 25.b.ii.
+      // Step 23.b.ii.
       lazyData.maximumFractionDigits = mxfdDefault;
     }
   }
 
-  // Steps 26-30.
+  // Steps 24-28.
   if (!needSignificantDigits && !needFractionalDigits) {
     assert(!hasSignificantDigits, "bad significant digits in fallback case");
     assert(
@@ -393,23 +390,23 @@ function SetNumberFormatDigitOptions(
       `bad notation in fallback case: ${notation}`
     );
 
-    // Steps 26.a-e.
+    // Steps 24.a-f.
     lazyData.minimumFractionDigits = 0;
     lazyData.maximumFractionDigits = 0;
     lazyData.minimumSignificantDigits = 1;
     lazyData.maximumSignificantDigits = 2;
     lazyData.roundingPriority = "morePrecision";
   } else {
-    // Steps 27-30.
+    // Steps 25-28.
     //
     // Our implementation stores |roundingPriority| instead of using
     // [[RoundingType]].
     lazyData.roundingPriority = roundingPriority;
   }
 
-  // Step 31.
+  // Step 29.
   if (roundingIncrement !== 1) {
-    // Step 31.a.
+    // Step 29.a.
     //
     // [[RoundingType]] is `fractionDigits` if |roundingPriority| is equal to
     // "auto" and |hasSignificantDigits| is false.
@@ -428,7 +425,7 @@ function SetNumberFormatDigitOptions(
       );
     }
 
-    // Step 31.b.
+    // Step 29.b.
     //
     // Minimum and maximum fraction digits must be equal.
     if (
@@ -579,7 +576,7 @@ function IsSanctionedSimpleUnitIdentifier(unitIdentifier) {
 
 /* eslint-disable complexity */
 /**
- * 15.1.2 InitializeNumberFormat ( numberFormat, locales, options )
+ * 15.1.1 Intl.NumberFormat ( [ locales [ , options ] ] )
  *
  * Initializes an object as a NumberFormat.
  *
@@ -589,7 +586,7 @@ function IsSanctionedSimpleUnitIdentifier(unitIdentifier) {
  * This later work occurs in |resolveNumberFormatInternals|; steps not noted
  * here occur there.
  *
- * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ * ES2025 Intl draft rev 5ea95f8a98d660e94c177d6f5e88c6d2962123b1
  */
 function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   assert(
@@ -626,8 +623,8 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   //     minimumIntegerDigits: integer ∈ [1, 21],
   //
   //     // optional, mutually exclusive with the significant-digits option
-  //     minimumFractionDigits: integer ∈ [0, 20],
-  //     maximumFractionDigits: integer ∈ [0, 20],
+  //     minimumFractionDigits: integer ∈ [0, 100],
+  //     maximumFractionDigits: integer ∈ [0, 100],
   //
   //     // optional, mutually exclusive with the fraction-digits option
   //     minimumSignificantDigits: integer ∈ [1, 21],
@@ -660,11 +657,11 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   // subset of them.
   var lazyNumberFormatData = std_Object_create(null);
 
-  // Step 1.
+  // Step 3.
   var requestedLocales = CanonicalizeLocaleList(locales);
   lazyNumberFormatData.requestedLocales = requestedLocales;
 
-  // Step 2. (Inlined call to CoerceOptionsToObject.)
+  // Step 4. (Inlined call to CoerceOptionsToObject.)
   //
   // If we ever need more speed here at startup, we should try to detect the
   // case where |options === undefined| and then directly use the default
@@ -677,11 +674,11 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
 
   // Compute options that impact interpretation of locale.
 
-  // Step 3.
+  // Step 5.
   var opt = new_Record();
   lazyNumberFormatData.opt = opt;
 
-  // Steps 4-5.
+  // Steps 6-7.
   var matcher = GetOption(
     options,
     "localeMatcher",
@@ -691,7 +688,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   );
   opt.localeMatcher = matcher;
 
-  // Step 6.
+  // Step 8.
   var numberingSystem = GetOption(
     options,
     "numberingSystem",
@@ -700,7 +697,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     undefined
   );
 
-  // Step 7.
+  // Step 9.
   if (numberingSystem !== undefined) {
     numberingSystem = intl_ValidateAndCanonicalizeUnicodeExtensionType(
       numberingSystem,
@@ -709,12 +706,12 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     );
   }
 
-  // Step 8.
+  // Step 10.
   opt.nu = numberingSystem;
 
   // Compute formatting options.
 
-  // Step 14. SetNumberFormatUnitOptions, steps 3-4.
+  // Step 15. SetNumberFormatUnitOptions, steps 1-2.
   var style = GetOption(
     options,
     "style",
@@ -724,10 +721,10 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   );
   lazyNumberFormatData.style = style;
 
-  // Step 14. SetNumberFormatUnitOptions, step 5.
+  // Step 15. SetNumberFormatUnitOptions, step 3.
   var currency = GetOption(options, "currency", "string", undefined, undefined);
 
-  // Step 14. SetNumberFormatUnitOptions, steps 6-7.
+  // Step 15. SetNumberFormatUnitOptions, steps 4-5.
   if (currency === undefined) {
     if (style === "currency") {
       ThrowTypeError(JSMSG_UNDEFINED_CURRENCY);
@@ -738,7 +735,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     }
   }
 
-  // Step 14. SetNumberFormatUnitOptions, step 8.
+  // Step 15. SetNumberFormatUnitOptions, step 6.
   var currencyDisplay = GetOption(
     options,
     "currencyDisplay",
@@ -747,7 +744,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     "symbol"
   );
 
-  // Step 14. SetNumberFormatUnitOptions, step 9.
+  // Step 15. SetNumberFormatUnitOptions, step 7.
   var currencySign = GetOption(
     options,
     "currencySign",
@@ -756,23 +753,23 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     "standard"
   );
 
-  // Step 14. SetNumberFormatUnitOptions, step 14. (Reordered)
+  // Step 15. SetNumberFormatUnitOptions, step 12. (Reordered)
   if (style === "currency") {
-    // Step 14. SetNumberFormatUnitOptions, step 14.a.
+    // Step 15. SetNumberFormatUnitOptions, step 12.a.
     currency = toASCIIUpperCase(currency);
     lazyNumberFormatData.currency = currency;
 
-    // Step 14. SetNumberFormatUnitOptions, step 14.b.
+    // Step 15. SetNumberFormatUnitOptions, step 12.b.
     lazyNumberFormatData.currencyDisplay = currencyDisplay;
 
-    // Step 14. SetNumberFormatUnitOptions, step 14.c.
+    // Step 15. SetNumberFormatUnitOptions, step 12.c.
     lazyNumberFormatData.currencySign = currencySign;
   }
 
-  // Step 14. SetNumberFormatUnitOptions, step 10.
+  // Step 15. SetNumberFormatUnitOptions, step 8.
   var unit = GetOption(options, "unit", "string", undefined, undefined);
 
-  // Step 14. SetNumberFormatUnitOptions, steps 11-12.
+  // Step 15. SetNumberFormatUnitOptions, steps 9-10.
   if (unit === undefined) {
     if (style === "unit") {
       ThrowTypeError(JSMSG_UNDEFINED_UNIT);
@@ -783,7 +780,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     }
   }
 
-  // Step 14. SetNumberFormatUnitOptions, step 13.
+  // Step 15. SetNumberFormatUnitOptions, step 11.
   var unitDisplay = GetOption(
     options,
     "unitDisplay",
@@ -792,24 +789,15 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     "short"
   );
 
-  // Step 14. SetNumberFormatUnitOptions, step 15.
+  // Step 15. SetNumberFormatUnitOptions, step 13.
   if (style === "unit") {
     lazyNumberFormatData.unit = unit;
     lazyNumberFormatData.unitDisplay = unitDisplay;
   }
 
-  // Steps 16-17.
-  var mnfdDefault, mxfdDefault;
-  if (style === "currency") {
-    var cDigits = CurrencyDigits(currency);
-    mnfdDefault = cDigits;
-    mxfdDefault = cDigits;
-  } else {
-    mnfdDefault = 0;
-    mxfdDefault = style === "percent" ? 0 : 3;
-  }
+  // Step 16. (Not applicable in our implementation.)
 
-  // Steps 18-19.
+  // Steps 17-18.
   var notation = GetOption(
     options,
     "notation",
@@ -819,7 +807,18 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   );
   lazyNumberFormatData.notation = notation;
 
-  // Step 20.
+  // Steps 19-20.
+  var mnfdDefault, mxfdDefault;
+  if (style === "currency" && notation === "standard") {
+    var cDigits = CurrencyDigits(currency);
+    mnfdDefault = cDigits;
+    mxfdDefault = cDigits;
+  } else {
+    mnfdDefault = 0;
+    mxfdDefault = style === "percent" ? 0 : 3;
+  }
+
+  // Step 21.
   SetNumberFormatDigitOptions(
     lazyNumberFormatData,
     options,
@@ -828,7 +827,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     notation
   );
 
-  // Steps 21 and 23.a.
+  // Steps 22 and 24.a.
   var compactDisplay = GetOption(
     options,
     "compactDisplay",
@@ -840,10 +839,10 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     lazyNumberFormatData.compactDisplay = compactDisplay;
   }
 
-  // Steps 22 and 23.b.
+  // Steps 23 and 24.b.
   var defaultUseGrouping = notation !== "compact" ? "auto" : "min2";
 
-  // Steps 24-25.
+  // Steps 25-26.
   var useGrouping = GetStringOrBooleanOption(
     options,
     "useGrouping",
@@ -851,14 +850,14 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     defaultUseGrouping
   );
 
-  // Steps 26-27.
+  // Steps 27-28.
   if (useGrouping === "true" || useGrouping === "false") {
     useGrouping = defaultUseGrouping;
   } else if (useGrouping === true) {
     useGrouping = "always";
   }
 
-  // Step 28.
+  // Step 29.
   assert(
     useGrouping === "min2" ||
     useGrouping === "auto" ||
@@ -868,7 +867,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   );
   lazyNumberFormatData.useGrouping = useGrouping;
 
-  // Steps 29-30.
+  // Steps 30-31.
   var signDisplay = GetOption(
     options,
     "signDisplay",
@@ -878,13 +877,11 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
   );
   lazyNumberFormatData.signDisplay = signDisplay;
 
-  // Step 31.
-  //
   // We've done everything that must be done now: mark the lazy data as fully
   // computed and install it.
   initializeIntlObject(numberFormat, "NumberFormat", lazyNumberFormatData);
 
-  // 15.1.1 Intl.NumberFormat, step 4. (Inlined call to ChainNumberFormat.)
+  // Step 32. (Inlined call to ChainNumberFormat.)
   if (
     numberFormat !== thisValue &&
     callFunction(
@@ -903,7 +900,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     return thisValue;
   }
 
-  // 15.1.1 Intl.NumberFormat, step 5.
+  // Step 33.
   return numberFormat;
 }
 /* eslint-enable complexity */
@@ -1128,7 +1125,7 @@ function Intl_NumberFormat_formatRangeToParts(start, end) {
  *
  * Returns the resolved options for a NumberFormat object.
  *
- * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ * ES2024 Intl draft rev a1db4567870dbe505121a4255f1210338757190a
  */
 function Intl_NumberFormat_resolvedOptions() {
   // Steps 1-3.
@@ -1244,20 +1241,15 @@ function Intl_NumberFormat_resolvedOptions() {
   }
 
   DefineDataProperty(result, "signDisplay", internals.signDisplay);
-  DefineDataProperty(result, "roundingMode", internals.roundingMode);
   DefineDataProperty(result, "roundingIncrement", internals.roundingIncrement);
+  DefineDataProperty(result, "roundingMode", internals.roundingMode);
+  DefineDataProperty(result, "roundingPriority", internals.roundingPriority);
   DefineDataProperty(
     result,
     "trailingZeroDisplay",
     internals.trailingZeroDisplay
   );
 
-  // Steps 6-8.
-  //
-  // Our implementation doesn't use [[RoundingType]], but instead directly
-  // stores the computed `roundingPriority` value.
-  DefineDataProperty(result, "roundingPriority", internals.roundingPriority);
-
-  // Step 9.
+  // Step 6.
   return result;
 }

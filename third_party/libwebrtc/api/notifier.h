@@ -17,6 +17,7 @@
 #include "api/sequence_checker.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/system/no_unique_address.h"
+#include "rtc_base/thread_annotations.h"
 
 namespace webrtc {
 
@@ -25,7 +26,7 @@ namespace webrtc {
 template <class T>
 class Notifier : public T {
  public:
-  Notifier() { sequence_checker_.Detach(); }
+  Notifier() = default;
 
   virtual void RegisterObserver(ObserverInterface* observer) {
     RTC_DCHECK_RUN_ON(&sequence_checker_);
@@ -60,7 +61,8 @@ class Notifier : public T {
   std::list<ObserverInterface*> observers_ RTC_GUARDED_BY(sequence_checker_);
 
  private:
-  RTC_NO_UNIQUE_ADDRESS SequenceChecker sequence_checker_;
+  RTC_NO_UNIQUE_ADDRESS SequenceChecker sequence_checker_{
+      SequenceChecker::kDetached};
 };
 
 }  // namespace webrtc

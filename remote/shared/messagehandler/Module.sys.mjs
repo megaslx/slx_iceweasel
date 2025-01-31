@@ -17,6 +17,7 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
 
 export class Module {
   #messageHandler;
+  #moduleName;
 
   /**
    * Create a new module instance.
@@ -61,12 +62,12 @@ export class Module {
    *
    * @param {string} name
    *     Name of the event.
-   * @param {object} payload
+   * @param {object} _payload
    *    The event's payload.
    * @returns {object}
    *     The modified event payload.
    */
-  interceptEvent(name, payload) {
+  interceptEvent(name, _payload) {
     throw new Error(
       `Could not intercept event ${name}, interceptEvent is not implemented in windowglobal-in-root module`
     );
@@ -131,5 +132,13 @@ export class Module {
 
   static supportsMethod(methodName) {
     return typeof this.prototype[methodName] === "function";
+  }
+
+  get moduleName() {
+    return this.#moduleName;
+  }
+
+  set moduleName(name) {
+    this.#moduleName = name;
   }
 }

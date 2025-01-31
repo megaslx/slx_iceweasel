@@ -1,4 +1,5 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
   <head>
     <meta charset="UTF-8">
     <title>WebGPU CTS</title>
@@ -12,8 +13,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
     <meta name="viewport" content="width=device-width" />
-    <!-- Chrome Origin Trial token for https://gpuweb.github.io (see dev_server.ts for localhost tokens) -->
-    <meta http-equiv="origin-trial" content="AmV1vLgjOQ01SlGnVhpoKXy7gLW+K/plXHwHKnYn4S4US98WaSesKBI+XSUMo95unQARyMGDvW70KsfyeYblZQ0AAABQeyJvcmlnaW4iOiJodHRwczovL2dwdXdlYi5naXRodWIuaW86NDQzIiwiZmVhdHVyZSI6IldlYkdQVSIsImV4cGlyeSI6MTY2MzcxODM5OX0=">
+    <!-- Chrome "WebGPU Subgroups Features" origin trial token for https://gpuweb.github.io -->
+    <meta http-equiv="origin-trial" content="AiZbfNa6FSBMZg2Ak2xeb7upejmg3jb1Ll47edOTVs7fkZLvrV4jjPh7p4J7quB9Lx6Z7l0IDc97gpPKb4F6OQcAAABheyJvcmlnaW4iOiJodHRwczovL2dwdXdlYi5naXRodWIuaW86NDQzIiwiZmVhdHVyZSI6IldlYkdQVVN1Ymdyb3Vwc0ZlYXR1cmVzIiwiZXhwaXJ5IjoxNzM5OTIzMTk5fQ==">
+    <!-- Chrome "WebGPU Subgroups Features" origin trial token for http://localhost:8080 -->
+    <meta http-equiv="origin-trial" content="AkMLfHisU+Fsbpi9g6tfKSZF4ngpsmjW4Oai360fUvZE2rgSPZDWSWb8ryrliJX5HR/Rw0yig0ir9el2hrnODwcAAABaeyJvcmlnaW4iOiJodHRwOi8vbG9jYWxob3N0OjgwODAiLCJmZWF0dXJlIjoiV2ViR1BVU3ViZ3JvdXBzRmVhdHVyZXMiLCJleHBpcnkiOjE3Mzk5MjMxOTl9">
     <link rel="stylesheet" href="third_party/normalize.min.css" />
     <script src="third_party/jquery/jquery-3.3.1.min.js"></script>
     <style>
@@ -29,7 +32,10 @@
         --node-description-fg-color: #gray;
         --node-hover-bg-color: rgba(0, 0, 0, 0.1);
 
-        --testcaselogbtn-bg-color: #eee;
+        --button-bg-color: #eee;
+        --button-hover-bg-color: #ccc;
+        --button-image-filter: none;
+
         --subtree-border-color: #ddd;
         --subtree-hover-left-border-color: #000;
         --multicase-border-color: #55f;
@@ -39,14 +45,13 @@
         --testcase-data-status-fail-bg-color: #fdd;
         --testcase-data-status-warn-bg-color: #ffb;
         --testcase-data-status-pass-bg-color: #cfc;
-        --testcase-data-status-skip-bg-color: #eee;
+        --testcase-data-status-skip-bg-color: #aaf;
 
         --testcase-logs-bg-color: #white;
         --testcase-log-odd-bg-color: #fff;
         --testcase-log-even-bg-color: #f8f8f8;
         --testcase-log-text-fg-color: #666;
         --testcase-log-text-first-line-fg-color: #000;
-        --button-image-filter: none;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -59,7 +64,10 @@
           --node-description-fg-color: #aaa;
           --node-hover-bg-color: rgba(255, 255, 255, 0.1);
 
-          --testcaselogbtn-bg-color: #666;
+          --button-image-filter: invert(100%);
+          --button-bg-color: #666;
+          --button-hover-bg-color: #888;
+
           --subtree-border-color: #444;
           --subtree-hover-left-border-color: #FFF;
           --multicase-border-color: #338;
@@ -69,14 +77,13 @@
           --testcase-data-status-fail-bg-color: #400;
           --testcase-data-status-warn-bg-color: #660;
           --testcase-data-status-pass-bg-color: #040;
-          --testcase-data-status-skip-bg-color: #444;
+          --testcase-data-status-skip-bg-color: #446;
 
           --testcase-logs-bg-color: #black;
           --testcase-log-odd-bg-color: #000;
           --testcase-log-even-bg-color: #080808;
           --testcase-log-text-fg-color: #aaa;
           --testcase-log-text-first-line-fg-color: #fff;
-          --button-image-filter: invert(100%);
         }
       }
       body {
@@ -96,6 +103,12 @@
       input[type=button],
       button {
         cursor: pointer;
+        background-color: var(--button-bg-color);
+      }
+      input[type=button]:hover,
+      button:hover,
+      a.nodelink:hover {
+        background-color: var(--button-hover-bg-color);
       }
       .logo {
         height: 1.2em;
@@ -138,7 +151,7 @@
         width: 100%;
         left: 0;
         top: 0;
-        background-color: #000;
+        background-color: #068;
         color: #fff;
         align-items: center;
       }
@@ -160,10 +173,16 @@
         border-right: 1px solid var(--results-fg-color);
       }
 
+      /* PS: this does not disable using the keyboard to click */
+      #resultsVis.disable-run button.leafrun,
+      #resultsVis.disable-run button.subtreerun {
+         pointer-events: none;
+         opacity: 25%;
+      }
+
       /* tree nodes */
 
       .nodeheader {
-        display: flex;
         width: 100%;
         padding: 0px 2px 0px 1px;
       }
@@ -174,7 +193,8 @@
       .leafrun,
       .nodelink,
       .collapsebtn,
-      .testcaselogbtn {
+      .testcaselogbtn,
+      .copybtn {
         display: inline-flex;
         flex-shrink: 0;
         flex-grow: 0;
@@ -183,7 +203,7 @@
         text-decoration: none;
         vertical-align: top;
         color: var(--fg-color);
-        background-color: var(--testcaselogbtn-bg-color);
+        background-color: var(--button-bg-color);
         background-repeat: no-repeat;
         background-position: center;
         border: 1px solid var(--border-color);
@@ -192,7 +212,8 @@
       .leafrun::before,
       .nodelink::before,
       .collapsebtn::before,
-      .testcaselogbtn::before {
+      .testcaselogbtn::before,
+      .copybtn::before {
         content: "";
         width: 100%;
         height: 100%;
@@ -205,7 +226,8 @@
         .leafrun,
         .nodelink,
         .collapsebtn,
-        .testcaselogbtn {
+        .testcaselogbtn,
+        .copybtn {
           flex-basis: 24px;
           border-radius: 4px;
           width: 24px;
@@ -217,7 +239,8 @@
         .leafrun,
         .nodelink,
         .collapsebtn,
-        .testcaselogbtn {
+        .testcaselogbtn,
+        .copybtn {
           flex-basis: 36px;
           border-radius: 6px;
           width: 36px;
@@ -232,6 +255,9 @@
       }
       .nodelink::before {
         background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMAQMAAABsu86kAAAABlBMVEUAAAAAAAClZ7nPAAAAAXRSTlMAQObYZgAAACRJREFUCNdjYGBg+P+BoUGAYesFhj4BhvsFDPYNDHwMCMTAAACqJwbp3VgbrAAAAABJRU5ErkJggg==);
+      }
+      .copybtn::before {
+        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMAQMAAABsu86kAAAABlBMVEUAAAAAAAClZ7nPAAAAAXRSTlMAQObYZgAAACVJREFUCNdjYGBgqGdgcGRgcGBg8H/A4KEAQhkKDBxgxP8AKA8AVNUEx41Lj8MAAAAASUVORK5CYII=);
       }
       .nodetitle {
         display: inline;
@@ -278,8 +304,14 @@
       .subtree[data-status='pass'] {
         background: linear-gradient(90deg, var(--testcase-data-status-pass-bg-color), var(--testcase-data-status-pass-bg-color) 16px, var(--bg-color) 16px);
       }
+      .subtree[data-status='skip'] {
+        background: linear-gradient(90deg, var(--testcase-data-status-skip-bg-color), var(--testcase-data-status-skip-bg-color) 16px, var(--bg-color) 16px);
+      }
       .subtree[data-status='pass']::before {
         content: "✔"
+      }
+      .subtree[data-status='skip']::before {
+        content: "○"
       }
       .subtree[data-status='passfail']::before {
         content: "✔/⛔"
@@ -403,7 +435,7 @@
         <tbody></tbody>
       </table>
       <p class="important">Note: The options above only set the url parameters.
-         You must reload the page for the options to take affect.</p>
+         You must reload the page for the options to take effect.</p>
     </details>
     <p>
       <input type=button id=expandall value="Expand All (slow!)">

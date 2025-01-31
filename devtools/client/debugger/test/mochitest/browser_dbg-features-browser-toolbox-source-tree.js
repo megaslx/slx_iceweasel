@@ -19,8 +19,11 @@ Services.scriptloader.loadSubScript(
 // the extensions internal UUID. This checks both the web toolbox and the
 // browser toolbox.
 add_task(async function testSourceTreeNamesForWebExtensions() {
-  await pushPref("devtools.chrome.enabled", true);
   await pushPref("devtools.browsertoolbox.scope", "everything");
+
+  // Ensure showing the content scripts
+  await pushPref("devtools.debugger.show-content-scripts", true);
+
   const extension = await installAndStartContentScriptExtension();
 
   const dbg = await initDebugger("doc-content-script-sources.html");
@@ -29,7 +32,7 @@ add_task(async function testSourceTreeNamesForWebExtensions() {
   });
 
   is(
-    getSourceTreeLabel(dbg, 2),
+    getSourceTreeLabel(dbg, 4),
     "Test content script extension",
     "Test content script extension is labeled properly"
   );
@@ -56,6 +59,8 @@ add_task(async function testSourceTreeNamesForWebExtensions() {
   });
 
   await ToolboxTask.spawn(null, async () => {
+    // Disable autofixing to `Assert` methods which are not available here.
+    /* eslint-disable mozilla/no-comparison-or-assignment-inside-ok */
     try {
       /* global gToolbox */
       // Wait for the debugger to finish loading.
@@ -69,9 +74,9 @@ add_task(async function testSourceTreeNamesForWebExtensions() {
       // Find the root node for extensions and expand it if needed
       if (
         !!rootNodeForExtensions &&
-        !rootNodeForExtensions.querySelector(".arrow.expanded")
+        !rootNodeForExtensions.querySelector(".theme-twisty.open")
       ) {
-        rootNodeForExtensions.querySelector(".arrow").click();
+        rootNodeForExtensions.querySelector(".theme-twisty").click();
       }
 
       // Assert that extensions are displayed in the source tree

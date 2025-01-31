@@ -19,6 +19,7 @@
 #include "SimpleMap.h"
 #include "VPXDecoder.h"
 #include "VideoUtils.h"
+#include "mozilla/fallible.h"
 #include "mozilla/gfx/Matrix.h"
 #include "mozilla/gfx/Types.h"
 #include "mozilla/java/CodecProxyWrappers.h"
@@ -65,6 +66,17 @@ class RenderOrReleaseOutput {
   java::CodecProxy::GlobalRef mCodec;
   java::Sample::GlobalRef mSample;
 };
+
+static bool areSmpte432ColorPrimariesBuggy() {
+  if (jni::GetAPIVersion() >= 34) {
+    const auto socManufacturer =
+        java::sdk::Build::SOC_MANUFACTURER()->ToString();
+    if (socManufacturer.EqualsASCII("Google")) {
+      return true;
+    }
+  }
+  return false;
+}
 
 class RemoteVideoDecoder final : public RemoteDataDecoder {
  public:
@@ -210,16 +222,6 @@ class RemoteVideoDecoder final : public RemoteDataDecoder {
         mJavaDecoder->IsAdaptivePlaybackSupported();
     mIsHardwareAccelerated = mJavaDecoder->IsHardwareAccelerated();
 
-    // On some devices we have observed that the transform obtained from
-    // SurfaceTexture.getTransformMatrix() is incorrect for surfaces produced by
-    // a MediaCodec. We therefore override the transform to be a simple y-flip
-    // to ensure it is rendered correctly.
-    const auto hardware = java::sdk::Build::HARDWARE()->ToString();
-    if (hardware.EqualsASCII("mt6735") || hardware.EqualsASCII("kirin980")) {
-      mTransformOverride = Some(
-          gfx::Matrix4x4::Scaling(1.0, -1.0, 1.0).PostTranslate(0.0, 1.0, 0.0));
-    }
-
     mMediaInfoFlag = MediaInfoFlag::None;
     mMediaInfoFlag |= mIsHardwareAccelerated ? MediaInfoFlag::HardwareDecoding
                                              : MediaInfoFlag::SoftwareDecoding;
@@ -248,15 +250,17 @@ class RemoteVideoDecoder final : public RemoteDataDecoder {
   nsCString GetCodecName() const override {
     if (mMediaInfoFlag & MediaInfoFlag::VIDEO_H264) {
       return "h264"_ns;
-    } else if (mMediaInfoFlag & MediaInfoFlag::VIDEO_VP8) {
-      return "vp8"_ns;
-    } else if (mMediaInfoFlag & MediaInfoFlag::VIDEO_VP9) {
-      return "vp9"_ns;
-    } else if (mMediaInfoFlag & MediaInfoFlag::VIDEO_AV1) {
-      return "av1"_ns;
-    } else {
-      return "unknown"_ns;
     }
+    if (mMediaInfoFlag & MediaInfoFlag::VIDEO_VP8) {
+      return "vp8"_ns;
+    }
+    if (mMediaInfoFlag & MediaInfoFlag::VIDEO_VP9) {
+      return "vp9"_ns;
+    }
+    if (mMediaInfoFlag & MediaInfoFlag::VIDEO_AV1) {
+      return "av1"_ns;
+    }
+    return "unknown"_ns;
   }
 
   RefPtr<MediaDataDecoder::DecodePromise> Decode(
@@ -399,9 +403,20 @@ class RemoteVideoDecoder final : public RemoteDataDecoder {
     }
 
     if (ok && (size > 0 || presentationTimeUs >= 0)) {
+      // On certain devices SMPTE 432 color primaries are rendered incorrectly,
+      // so we force BT709 to be used instead.
+      // Color space 10 comes from the video in bug 1866020 and corresponds to
+      // libstagefright's kColorStandardDCI_P3.
+      // 65800 comes from the video in bug 1879720 and is vendor-specific.
+      static bool isSmpte432Buggy = areSmpte432ColorPrimariesBuggy();
+      bool forceBT709ColorSpace =
+          isSmpte432Buggy &&
+          (mColorSpace == Some(10) || mColorSpace == Some(65800));
+
       RefPtr<layers::Image> img = new layers::SurfaceTextureImage(
           mSurfaceHandle, inputInfo.mImageSize, false /* NOT continuous */,
-          gl::OriginPos::BottomLeft, mConfig.HasAlpha(), mTransformOverride);
+          gl::OriginPos::BottomLeft, mConfig.HasAlpha(), forceBT709ColorSpace,
+          /* aTransformOverride */ Nothing());
       img->AsSurfaceTextureImage()->RegisterSetCurrentCallback(
           std::move(releaseSample));
 
@@ -502,6 +517,8 @@ class RemoteVideoDecoder final : public RemoteDataDecoder {
         });
         aStage.SetResolution(v->mImage->GetSize().Width(),
                              v->mImage->GetSize().Height());
+        aStage.SetStartTimeAndEndTime(v->mTime.ToMicroseconds(),
+                                      v->GetEndTime().ToMicroseconds());
       });
 
       RemoteDataDecoder::UpdateOutputStatus(std::move(v));
@@ -540,16 +557,13 @@ class RemoteVideoDecoder final : public RemoteDataDecoder {
   const VideoInfo mConfig;
   java::GeckoSurface::GlobalRef mSurface;
   AndroidSurfaceTextureHandle mSurfaceHandle{};
-  // Used to override the SurfaceTexture transform on some devices where the
-  // decoder provides a buggy value.
-  Maybe<gfx::Matrix4x4> mTransformOverride;
   // Only accessed on reader's task queue.
   bool mIsCodecSupportAdaptivePlayback = false;
   // Can be accessed on any thread, but only written on during init.
   bool mIsHardwareAccelerated = false;
   // Accessed on mThread and reader's thread. SimpleMap however is
   // thread-safe, so it's okay to do so.
-  SimpleMap<InputInfo> mInputInfos;
+  SimpleMap<int64_t, InputInfo, ThreadSafePolicy> mInputInfos;
   // Only accessed on mThread.
   Maybe<TimeUnit> mSeekTarget;
   Maybe<TimeUnit> mLatestOutputTime;
@@ -726,8 +740,11 @@ class RemoteAudioDecoder final : public RemoteDataDecoder {
 
     AssertOnThread();
 
+    LOG("ProcessOutput");
+
     if (ShouldDiscardSample(aSample->Session()) || !aBuffer->IsValid()) {
       aSample->Dispose();
+      LOG("Discarding sample");
       return;
     }
 
@@ -752,34 +769,44 @@ class RemoteAudioDecoder final : public RemoteDataDecoder {
     if (!ok ||
         (IsSampleTimeSmallerThanFirstDemuxedSampleTime(presentationTimeUs) &&
          !isEOS)) {
+      LOG("ProcessOutput: decoding error ok[%s], pts[%" PRId64 "], eos[%s]",
+          ok ? "true" : "false", presentationTimeUs, isEOS ? "true" : "false");
       Error(MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR, __func__));
       return;
     }
 
     if (size > 0) {
-#ifdef MOZ_SAMPLE_TYPE_S16
-      const int32_t numSamples = size / 2;
-#else
-#  error We only support 16-bit integer PCM
-#endif
+      const int32_t sampleSize = sizeof(int16_t);
+      const int32_t numSamples = size / sampleSize;
 
-      AlignedAudioBuffer audio(numSamples);
+      InflatableShortBuffer audio(numSamples);
       if (!audio) {
         Error(MediaResult(NS_ERROR_OUT_OF_MEMORY, __func__));
+        LOG("OOM while allocating temporary output buffer");
         return;
       }
-
       jni::ByteBuffer::LocalRef dest = jni::ByteBuffer::New(audio.get(), size);
       aBuffer->WriteToByteBuffer(dest, offset, size);
+      AlignedFloatBuffer converted = audio.Inflate();
 
-      RefPtr<AudioData> data =
-          new AudioData(0, TimeUnit::FromMicroseconds(presentationTimeUs),
-                        std::move(audio), mOutputChannels, mOutputSampleRate);
+      TimeUnit pts = TimeUnit::FromMicroseconds(presentationTimeUs);
+
+      LOG("Decoded: %u frames of %s audio, pts: %s, %d channels, %" PRId32
+          " Hz",
+          numSamples / mOutputChannels,
+          sampleSize == sizeof(int16_t) ? "int16" : "f32", pts.ToString().get(),
+          mOutputChannels, mOutputSampleRate);
+
+      RefPtr<AudioData> data = new AudioData(
+          0, pts, std::move(converted), mOutputChannels, mOutputSampleRate);
 
       UpdateOutputStatus(std::move(data));
+    } else {
+      LOG("ProcessOutput but size 0");
     }
 
     if (isEOS) {
+      LOG("EOS: drain complete");
       DrainComplete();
     }
   }
@@ -815,6 +842,8 @@ already_AddRefed<MediaDataDecoder> RemoteDataDecoder::CreateAudioDecoder(
       java::sdk::MediaFormat::CreateAudioFormat(config.mMimeType, config.mRate,
                                                 config.mChannels, &format),
       nullptr);
+  // format->SetInteger(java::sdk::MediaFormat::KEY_PCM_ENCODING,
+  //                    java::sdk::AudioFormat::ENCODING_PCM_FLOAT);
 
   RefPtr<MediaDataDecoder> decoder =
       new RemoteAudioDecoder(config, format, aDrmStubId);
@@ -893,7 +922,7 @@ RefPtr<MediaDataDecoder::DecodePromise> RemoteDataDecoder::Drain() {
 }
 
 RefPtr<ShutdownPromise> RemoteDataDecoder::Shutdown() {
-  LOG("");
+  LOG("Shutdown");
   AssertOnThread();
   SetState(State::SHUTDOWN);
   if (mJavaDecoder) {
@@ -924,7 +953,9 @@ static CryptoInfoResult GetCryptoInfoFromSample(const MediaRawData* aSample) {
   }
 
   static bool supportsCBCS = java::CodecProxy::SupportsCBCS();
-  if (cryptoObj.mCryptoScheme == CryptoScheme::Cbcs && !supportsCBCS) {
+  if ((cryptoObj.mCryptoScheme == CryptoScheme::Cbcs ||
+       cryptoObj.mCryptoScheme == CryptoScheme::Cbcs_1_9) &&
+      !supportsCBCS) {
     return CryptoInfoResult(NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR);
   }
 
@@ -971,6 +1002,7 @@ static CryptoInfoResult GetCryptoInfoFromSample(const MediaRawData* aSample) {
       tempIV.AppendElements(cryptoObj.mIV);
       break;
     case CryptoScheme::Cbcs:
+    case CryptoScheme::Cbcs_1_9:
       mode = java::sdk::MediaCodec::CRYPTO_MODE_AES_CBC;
       MOZ_ASSERT(cryptoObj.mConstantIV.Length() <= kExpectedIVLength);
       tempIV.AppendElements(cryptoObj.mConstantIV);
@@ -1002,7 +1034,11 @@ RefPtr<MediaDataDecoder::DecodePromise> RemoteDataDecoder::Decode(
   MOZ_ASSERT(GetState() != State::SHUTDOWN);
   MOZ_ASSERT(aSample != nullptr);
   jni::ByteBuffer::LocalRef bytes = jni::ByteBuffer::New(
-      const_cast<uint8_t*>(aSample->Data()), aSample->Size());
+      const_cast<uint8_t*>(aSample->Data()), aSample->Size(), fallible);
+  if (!bytes) {
+    return DecodePromise::CreateAndReject(
+        MediaResult(NS_ERROR_OUT_OF_MEMORY, __func__), __func__);
+  }
 
   SetState(State::DRAINABLE);
   MOZ_ASSERT(aSample->Size() <= INT32_MAX);
@@ -1067,10 +1103,14 @@ void RemoteDataDecoder::UpdateInputStatus(int64_t aTimestamp, bool aProcessed) {
 void RemoteDataDecoder::UpdateOutputStatus(RefPtr<MediaData>&& aSample) {
   AssertOnThread();
   if (GetState() == State::SHUTDOWN) {
+    LOG("Update output status, but decoder has been shut down, dropping the "
+        "decoded results");
     return;
   }
   if (IsUsefulData(aSample)) {
     mDecodedData.AppendElement(std::move(aSample));
+  } else {
+    LOG("Decoded data, but not considered useful");
   }
   ReturnDecodedData();
 }

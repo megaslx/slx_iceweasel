@@ -5,6 +5,7 @@
 
 #include "nsMultiMixedConv.h"
 #include "nsIHttpChannel.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #include "nsNetCID.h"
 #include "nsMimeTypes.h"
 #include "nsIStringStream.h"
@@ -19,8 +20,10 @@
 #include "nsIURI.h"
 #include "nsHttpHeaderArray.h"
 #include "mozilla/AutoRestore.h"
+#include "mozilla/Components.h"
 #include "mozilla/Tokenizer.h"
 #include "nsComponentManagerUtils.h"
+#include "mozilla/StaticPrefs_network.h"
 
 using namespace mozilla;
 
@@ -402,7 +405,7 @@ nsPartChannel::GetBaseChannel(nsIChannel** aReturn) {
 
 // nsISupports implementation
 NS_IMPL_ISUPPORTS(nsMultiMixedConv, nsIStreamConverter, nsIStreamListener,
-                  nsIRequestObserver)
+                  nsIThreadRetargetableStreamListener, nsIRequestObserver)
 
 // nsIStreamConverter implementation
 
@@ -440,6 +443,11 @@ nsMultiMixedConv::GetConvertedType(const nsACString& aFromType,
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+NS_IMETHODIMP
+nsMultiMixedConv::MaybeRetarget(nsIRequest* request) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 // nsIRequestObserver implementation
 NS_IMETHODIMP
 nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
@@ -465,6 +473,12 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
     rv = httpChannel->GetResponseHeader("content-security-policy"_ns, csp);
     if (NS_SUCCEEDED(rv)) {
       mRootContentSecurityPolicy = csp;
+    }
+    nsCString contentDisposition;
+    rv = httpChannel->GetResponseHeader("content-disposition"_ns,
+                                        contentDisposition);
+    if (NS_SUCCEEDED(rv)) {
+      mRootContentDisposition = contentDisposition;
     }
   } else {
     // try asking the channel directly
@@ -552,6 +566,12 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest* request, nsIInputStream* inStr,
 
   return NS_FAILED(rv_send) ? rv_send : rv_feed;
 }
+
+NS_IMETHODIMP
+nsMultiMixedConv::OnDataFinished(nsresult aStatus) { return NS_OK; }
+
+NS_IMETHODIMP
+nsMultiMixedConv::CheckListenerChain() { return NS_ERROR_NOT_IMPLEMENTED; }
 
 NS_IMETHODIMP
 nsMultiMixedConv::OnStopRequest(nsIRequest* request, nsresult aStatus) {
@@ -799,8 +819,8 @@ nsresult nsMultiMixedConv::SendStart() {
   nsCOMPtr<nsIStreamListener> partListener(mFinalListener);
   if (mContentType.IsEmpty()) {
     mContentType.AssignLiteral(UNKNOWN_CONTENT_TYPE);
-    nsCOMPtr<nsIStreamConverterService> serv =
-        do_GetService(NS_STREAMCONVERTERSERVICE_CONTRACTID, &rv);
+    nsCOMPtr<nsIStreamConverterService> serv;
+    serv = mozilla::components::StreamConverter::Service(&rv);
     if (NS_SUCCEEDED(rv)) {
       nsCOMPtr<nsIStreamListener> converter;
       rv = serv->AsyncConvertData(UNKNOWN_CONTENT_TYPE, "*/*", mFinalListener,
@@ -836,7 +856,11 @@ nsresult nsMultiMixedConv::SendStart() {
   rv = mPartChannel->SetContentLength(mContentLength);
   if (NS_FAILED(rv)) return rv;
 
-  mPartChannel->SetContentDisposition(mContentDisposition);
+  if (!mRootContentDisposition.IsEmpty()) {
+    mPartChannel->SetContentDisposition(mRootContentDisposition);
+  } else {
+    mPartChannel->SetContentDisposition(mContentDisposition);
+  }
 
   // Each part of a multipart/replace response can be used
   // for the top level document.  We must inform upper layers
@@ -977,8 +1001,12 @@ nsresult nsMultiMixedConv::ProcessHeader() {
       nsCOMPtr<nsIHttpChannelInternal> httpInternal =
           do_QueryInterface(mChannel);
       mResponseHeaderValue.CompressWhitespace();
-      if (httpInternal) {
-        DebugOnly<nsresult> rv = httpInternal->SetCookie(mResponseHeaderValue);
+      if (!StaticPrefs::network_cookie_prevent_set_cookie_from_multipart() &&
+          httpInternal) {
+        AutoTArray<nsCString, 1> cookieHeaderArray;
+        cookieHeaderArray.AppendElement(mResponseHeaderValue);
+        DebugOnly<nsresult> rv =
+            httpInternal->SetCookieHeaders(cookieHeaderArray);
         MOZ_ASSERT(NS_SUCCEEDED(rv));
       }
       break;

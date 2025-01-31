@@ -21,6 +21,9 @@ using CompartmentSet =
 namespace js {
 
 class TaggedProto;
+namespace wasm {
+class AnyRef;
+}  // namespace wasm
 
 // Internal Tracing API
 //
@@ -109,6 +112,7 @@ JS_FOR_EACH_TRACEKIND(DEFINE_TRACE_FUNCTION)
 bool TraceEdgeInternal(JSTracer* trc, Value* thingp, const char* name);
 bool TraceEdgeInternal(JSTracer* trc, jsid* thingp, const char* name);
 bool TraceEdgeInternal(JSTracer* trc, TaggedProto* thingp, const char* name);
+bool TraceEdgeInternal(JSTracer* trc, wasm::AnyRef* thingp, const char* name);
 
 template <typename T>
 void TraceRangeInternal(JSTracer* trc, size_t len, T* vec, const char* name);
@@ -118,10 +122,12 @@ bool TraceWeakMapKeyInternal(JSTracer* trc, Zone* zone, T* thingp,
 
 #ifdef DEBUG
 void AssertRootMarkingPhase(JSTracer* trc);
-void AssertShouldMarkInZone(GCMarker* marker, gc::Cell* thing);
+template <typename T>
+void AssertShouldMarkInZone(GCMarker* marker, T* thing);
 #else
 inline void AssertRootMarkingPhase(JSTracer* trc) {}
-inline void AssertShouldMarkInZone(GCMarker* marker, gc::Cell* thing) {}
+template <typename T>
+void AssertShouldMarkInZone(GCMarker* marker, T* thing) {}
 #endif
 
 }  // namespace gc
@@ -248,6 +254,14 @@ inline void TraceManuallyBarrieredEdge(JSTracer* trc, T* thingp,
   gc::TraceEdgeInternal(trc, gc::ConvertToBase(thingp), name);
 }
 
+template <typename T>
+inline void TraceManuallyBarrieredNullableEdge(JSTracer* trc, T* thingp,
+                                               const char* name) {
+  if (InternalBarrierMethods<T>::isMarkable(*thingp)) {
+    gc::TraceEdgeInternal(trc, gc::ConvertToBase(thingp), name);
+  }
+}
+
 // Trace through a weak edge. If *thingp is not marked at the end of marking,
 // it is replaced by nullptr, and this method will return false to indicate that
 // the edge no longer exists.
@@ -272,6 +286,7 @@ struct TraceWeakResult {
 
   bool isLive() const { return live_; }
   bool isDead() const { return !live_; }
+  bool wasMoved() const { return isLive() && final_ != initial_; }
 
   MOZ_IMPLICIT operator bool() const { return isLive(); }
 
@@ -336,13 +351,17 @@ void TraceCrossCompartmentEdge(JSTracer* trc, JSObject* src,
 // GC peer first.
 template <typename T>
 void TraceSameZoneCrossCompartmentEdge(JSTracer* trc,
-                                       const WriteBarriered<T>* dst,
+                                       const BarrieredBase<T>* dst,
                                        const char* name);
 
 // Trace a weak map key. For debugger weak maps these may be cross compartment,
 // but the compartment must always be within the current sweep group.
 template <typename T>
 void TraceWeakMapKeyEdgeInternal(JSTracer* trc, Zone* weakMapZone, T** thingp,
+                                 const char* name);
+
+template <typename T>
+void TraceWeakMapKeyEdgeInternal(JSTracer* trc, Zone* weakMapZone, T* thingp,
                                  const char* name);
 
 template <typename T>

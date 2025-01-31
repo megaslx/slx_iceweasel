@@ -8,10 +8,10 @@
 #include "RetainedDisplayListBuilder.h"
 
 #include "mozilla/Attributes.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "nsIFrame.h"
 #include "nsIFrameInlines.h"
-#include "nsIScrollableFrame.h"
 #include "nsPlaceholderFrame.h"
 #include "nsSubDocumentFrame.h"
 #include "nsViewManager.h"
@@ -305,8 +305,8 @@ bool RetainedDisplayListBuilder::PreProcessDisplayList(
         !item->GetActiveScrolledRoot()) {
       agrFrame = aAsyncAncestor;
     } else {
-      agrFrame =
-          item->GetActiveScrolledRoot()->mScrollableFrame->GetScrolledFrame();
+      agrFrame = item->GetActiveScrolledRoot()
+                     ->mScrollContainerFrame->GetScrolledFrame();
     }
 
     if (aAGR && agrFrame != aAGR) {
@@ -363,7 +363,7 @@ static Maybe<const ActiveScrolledRoot*> SelectContainerASR(
       aClipChain ? aClipChain->mASR : nullptr;
 
   MOZ_DIAGNOSTIC_ASSERT(!aClipChain || aClipChain->mOnStack || !itemClipASR ||
-                        itemClipASR->mScrollableFrame);
+                        itemClipASR->mScrollContainerFrame);
 
   const ActiveScrolledRoot* finiteBoundsASR =
       ActiveScrolledRoot::PickDescendant(itemClipASR, aItemASR);
@@ -523,6 +523,17 @@ class MergeState {
     // current ASR, which gets reset during RestoreState(), so we always need
     // to run it again.
     aOutItem->UpdateBounds(mBuilder->Builder());
+
+    if (aOutItem->GetType() == DisplayItemType::TYPE_TRANSFORM) {
+      MOZ_ASSERT(!aNewItem ||
+                 aNewItem->GetType() == DisplayItemType::TYPE_TRANSFORM);
+      MOZ_ASSERT(aOldItem->GetType() == DisplayItemType::TYPE_TRANSFORM);
+      static_cast<nsDisplayTransform*>(aOutItem)->SetContainsASRs(
+          static_cast<nsDisplayTransform*>(aOldItem)->GetContainsASRs() ||
+          (aNewItem
+               ? static_cast<nsDisplayTransform*>(aNewItem)->GetContainsASRs()
+               : false));
+    }
   }
 
   bool ShouldUseNewItem(nsDisplayItem* aNewItem) {
@@ -598,6 +609,12 @@ class MergeState {
       if (mOldItems[i].IsUsed()) {
         continue;
       }
+
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+      if (i + 1 < mOldDAG.Length() && !mOldItems[i + 1].IsUsed()) {
+        _mm_prefetch((char *)mOldItems[OldListIndex(i + 1).val].mItem, _MM_HINT_NTA);
+      }
+#endif
 
       AutoTArray<MergedListIndex, 2> directPredecessors =
           ResolveNodeIndexesOldToMerged(
@@ -962,7 +979,7 @@ static bool ProcessFrameInternal(nsIFrame* aFrame,
 
     // Check whether the current frame is a scrollable frame with display port.
     nsRect displayPort;
-    nsIScrollableFrame* sf = do_QueryFrame(currentFrame);
+    ScrollContainerFrame* sf = do_QueryFrame(currentFrame);
     nsIContent* content = sf ? currentFrame->GetContent() : nullptr;
 
     if (content && DisplayPortUtils::GetDisplayPort(content, &displayPort)) {
@@ -1134,7 +1151,16 @@ bool RetainedDisplayListBuilder::ProcessFrame(
 static void AddFramesForContainingBlock(nsIFrame* aBlock,
                                         const nsFrameList& aFrames,
                                         nsTArray<nsIFrame*>& aExtraFrames) {
-  for (nsIFrame* f : aFrames) {
+  const auto& frames = aFrames;
+  for (auto it = frames.begin(); it != frames.end();) {
+    const auto& f = *it;
+    ++it;
+#if (_M_IX86_FP >= 1) || defined(__SSE__) || defined(_M_AMD64) || defined(__amd64__)
+    if (it != frames.end()) {
+      _mm_prefetch((char *)*it, _MM_HINT_NTA);
+      _mm_prefetch((char *)*it + 64, _MM_HINT_NTA);
+    }
+#endif
     if (!f->IsFrameModified() && AnyContentAncestorModified(f, aBlock)) {
       CRR_LOG("Adding invalid OOF %p\n", f);
       aExtraFrames.AppendElement(f);
@@ -1292,7 +1318,7 @@ bool RetainedDisplayListBuilder::ShouldBuildPartial(
     // reasons as above, but also because top layer items should to be marked
     // modified if the root scroll frame is modified. Putting this check here
     // means we don't need to check everytime a frame is marked modified though.
-    if (type == LayoutFrameType::Scroll && f->GetParent() &&
+    if (type == LayoutFrameType::ScrollContainer && f->GetParent() &&
         !f->GetParent()->GetParent()) {
       Metrics()->mPartialUpdateFailReason = PartialUpdateFailReason::FrameType;
       return false;
@@ -1302,43 +1328,26 @@ bool RetainedDisplayListBuilder::ShouldBuildPartial(
   return true;
 }
 
-void RetainedDisplayListBuilder::InvalidateCaretFramesIfNeeded() {
-  if (mPreviousCaret == mBuilder.GetCaretFrame()) {
-    // The current caret frame is the same as the previous one.
-    return;
-  }
-
-  if (mPreviousCaret) {
-    mPreviousCaret->MarkNeedsDisplayItemRebuild();
-  }
-
-  if (mBuilder.GetCaretFrame()) {
-    mBuilder.GetCaretFrame()->MarkNeedsDisplayItemRebuild();
-  }
-
-  mPreviousCaret = mBuilder.GetCaretFrame();
-}
-
-static void ClearFrameProps(nsTArray<nsIFrame*>& aFrames) {
-  for (nsIFrame* f : aFrames) {
-    DL_LOGV("RDL - Clearing modified flags for frame %p", f);
-    if (f->HasOverrideDirtyRegion()) {
-      f->SetHasOverrideDirtyRegion(false);
-      f->RemoveProperty(nsDisplayListBuilder::DisplayListBuildingRect());
-      f->RemoveProperty(
-          nsDisplayListBuilder::DisplayListBuildingDisplayPortRect());
-    }
-
-    f->SetFrameIsModified(false);
-    f->SetHasModifiedDescendants(false);
-  }
-}
-
 class AutoClearFramePropsArray {
  public:
   explicit AutoClearFramePropsArray(size_t aCapacity) : mFrames(aCapacity) {}
   AutoClearFramePropsArray() = default;
-  ~AutoClearFramePropsArray() { ClearFrameProps(mFrames); }
+  ~AutoClearFramePropsArray() {
+    size_t len = mFrames.Length();
+    nsIFrame** elements = mFrames.Elements();
+    for (size_t i = 0; i < len; ++i) {
+      nsIFrame* f = elements[i];
+      DL_LOGV("RDL - Clearing modified flags for frame %p", f);
+      if (f->HasOverrideDirtyRegion()) {
+        f->SetHasOverrideDirtyRegion(false);
+        f->RemoveProperty(nsDisplayListBuilder::DisplayListBuildingRect());
+        f->RemoveProperty(
+            nsDisplayListBuilder::DisplayListBuildingDisplayPortRect());
+      }
+      f->SetFrameIsModified(false);
+      f->SetHasModifiedDescendants(false);
+    }
+  }
 
   nsTArray<nsIFrame*>& Frames() { return mFrames; }
   bool IsEmpty() const { return mFrames.IsEmpty(); }
@@ -1348,7 +1357,7 @@ class AutoClearFramePropsArray {
 };
 
 void RetainedDisplayListBuilder::ClearFramesWithProps() {
-  AutoClearFramePropsArray modifiedFrames;
+  AutoClearFramePropsArray modifiedFrames(Data()->GetModifiedFrameCount());
   AutoClearFramePropsArray framesWithProps;
   GetModifiedAndFramesWithProps(&modifiedFrames.Frames(),
                                 &framesWithProps.Frames());
@@ -1574,12 +1583,12 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
     MarkFramesWithItemsAndImagesModified(&mList);
   }
 
-  InvalidateCaretFramesIfNeeded();
+  mBuilder.InvalidateCaretFramesIfNeeded();
 
   // We set the override dirty regions during ComputeRebuildRegion or in
   // DisplayPortUtils::InvalidateForDisplayPortChange. The display port change
   // also marks the frame modified, so those regions are cleared here as well.
-  AutoClearFramePropsArray modifiedFrames(64);
+  AutoClearFramePropsArray modifiedFrames(Data()->GetModifiedFrameCount());
   AutoClearFramePropsArray framesWithProps(64);
   GetModifiedAndFramesWithProps(&modifiedFrames.Frames(),
                                 &framesWithProps.Frames());
@@ -1617,8 +1626,8 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
 
   // This is normally handled by EnterPresShell, but we skipped it so that we
   // didn't call MarkFrameForDisplayIfVisible before ComputeRebuildRegion.
-  nsIScrollableFrame* sf =
-      RootReferenceFrame()->PresShell()->GetRootScrollFrameAsScrollable();
+  ScrollContainerFrame* sf =
+      RootReferenceFrame()->PresShell()->GetRootScrollContainerFrame();
   if (sf) {
     nsCanvasFrame* canvasFrame = do_QueryFrame(sf->GetScrolledFrame());
     if (canvasFrame) {

@@ -30,7 +30,7 @@ namespace gl {
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
 
-WGLLibrary sWGLLib;
+MOZ_RUNINIT WGLLibrary sWGLLib;
 
 /*
 ScopedWindow::~ScopedWindow()
@@ -94,7 +94,12 @@ bool WGLLibrary::EnsureInitialized() {
     }
   }
 
-#define SYMBOL(X) {(PRFuncPtr*)&mSymbols.f##X, {{"wgl" #X}}}
+#define SYMBOL(X)                 \
+  {                               \
+    (PRFuncPtr*)&mSymbols.f##X, { \
+      { "wgl" #X }                \
+    }                             \
+  }
 #define END_OF_SYMBOLS \
   {                    \
     nullptr, {}        \
@@ -158,12 +163,16 @@ bool WGLLibrary::EnsureInitialized() {
   const auto curCtx = mSymbols.fGetCurrentContext();
   const auto curDC = mSymbols.fGetCurrentDC();
 
+  GLContext::ResetTLSCurrentContext();
+
   if (!mSymbols.fMakeCurrent(mRootDc, mDummyGlrc)) {
     NS_WARNING("wglMakeCurrent failed");
     return false;
   }
-  const auto resetContext =
-      MakeScopeExit([&]() { mSymbols.fMakeCurrent(curDC, curCtx); });
+  const auto resetContext = MakeScopeExit([&]() {
+    GLContext::ResetTLSCurrentContext();
+    mSymbols.fMakeCurrent(curDC, curCtx);
+  });
 
   const auto loader = GetSymbolLoader();
 
@@ -297,6 +306,8 @@ GLContextWGL::~GLContextWGL() {
 }
 
 bool GLContextWGL::MakeCurrentImpl() const {
+  GLContext::ResetTLSCurrentContext();
+
   const bool succeeded = sWGLLib.mSymbols.fMakeCurrent(mDC, mContext);
   NS_ASSERTION(succeeded, "Failed to make GL context current!");
   return succeeded;
@@ -461,7 +472,24 @@ already_AddRefed<GLContext> GLContextProviderWGL::CreateHeadless(
   int chosenFormat;
   UINT foundFormats = 0;
 
-  if (!foundFormats) {
+  bool forbidHardware =
+      static_cast<bool>(desc.flags & CreateContextFlags::FORBID_HARDWARE);
+  if (!foundFormats && forbidHardware) {
+    const int kAttribs[] = {LOCAL_WGL_DRAW_TO_PBUFFER_ARB,
+                            true,
+                            LOCAL_WGL_SUPPORT_OPENGL_ARB,
+                            true,
+                            LOCAL_WGL_ACCELERATION_ARB,
+                            LOCAL_WGL_NO_ACCELERATION_ARB,
+                            0};
+    if (!wgl.mSymbols.fChoosePixelFormat(wgl.RootDc(), kAttribs, nullptr, 1,
+                                         &chosenFormat, &foundFormats)) {
+      foundFormats = 0;
+      return nullptr;
+    }
+  }
+
+  if (!foundFormats && !forbidHardware) {
     const int kAttribs[] = {LOCAL_WGL_DRAW_TO_PBUFFER_ARB,
                             true,
                             LOCAL_WGL_SUPPORT_OPENGL_ARB,

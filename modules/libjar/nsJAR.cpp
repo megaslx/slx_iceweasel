@@ -150,6 +150,21 @@ nsJAR::OpenInner(nsIZipReader* aZipReader, const nsACString& aZipEntry) {
 }
 
 NS_IMETHODIMP
+nsJAR::OpenMemory(void* aData, uint32_t aLength) {
+  NS_ENSURE_ARG_POINTER(aData);
+  RecursiveMutexAutoLock lock(mLock);
+  if (mZip) return NS_ERROR_FAILURE;  // Already open!
+
+  RefPtr<nsZipHandle> handle;
+  nsresult rv = nsZipHandle::Init(static_cast<uint8_t*>(aData), aLength,
+                                  getter_AddRefs(handle));
+  if (NS_FAILED(rv)) return rv;
+
+  mZip = nsZipArchive::OpenArchive(handle);
+  return mZip ? NS_OK : NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
 nsJAR::GetFile(nsIFile** result) {
   RecursiveMutexAutoLock lock(mLock);
   LOG(("GetFile[%p]", this));
@@ -233,9 +248,9 @@ nsJAR::GetEntry(const nsACString& aEntryName, nsIZipEntry** result) {
   nsZipItem* zipItem = mZip->GetItem(PromiseFlatCString(aEntryName).get());
   NS_ENSURE_TRUE(zipItem, NS_ERROR_FILE_NOT_FOUND);
 
-  nsJARItem* jarItem = new nsJARItem(zipItem);
+  RefPtr<nsJARItem> jarItem = new nsJARItem(zipItem);
 
-  NS_ADDREF(*result = jarItem);
+  *result = jarItem.forget().take();
   return NS_OK;
 }
 
@@ -265,30 +280,22 @@ nsJAR::FindEntries(const nsACString& aPattern,
       aPattern.IsEmpty() ? nullptr : PromiseFlatCString(aPattern).get(), &find);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsIUTF8StringEnumerator* zipEnum = new nsJAREnumerator(find);
+  RefPtr<nsIUTF8StringEnumerator> zipEnum = new nsJAREnumerator(find);
 
-  NS_ADDREF(*result = zipEnum);
+  // Callers use getter_addrefs
+  *result = zipEnum.forget().take();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsJAR::GetInputStream(const nsACString& aFilename, nsIInputStream** result) {
-  return GetInputStreamWithSpec(""_ns, aFilename, result);
-}
-
-NS_IMETHODIMP
-nsJAR::GetInputStreamWithSpec(const nsACString& aJarDirSpec,
-                              const nsACString& aEntryName,
-                              nsIInputStream** result) {
+nsJAR::GetInputStream(const nsACString& aEntryName, nsIInputStream** result) {
   NS_ENSURE_ARG_POINTER(result);
   RecursiveMutexAutoLock lock(mLock);
   if (!mZip) {
     return NS_ERROR_FAILURE;
   }
 
-  LOG(("GetInputStreamWithSpec[%p] %s %s", this,
-       PromiseFlatCString(aJarDirSpec).get(),
-       PromiseFlatCString(aEntryName).get()));
+  LOG(("GetInputStream[%p] %s", this, PromiseFlatCString(aEntryName).get()));
   // Watch out for the jar:foo.zip!/ (aDir is empty) top-level special case!
   nsZipItem* item = nullptr;
   const nsCString& entry = PromiseFlatCString(aEntryName);
@@ -297,19 +304,18 @@ nsJAR::GetInputStreamWithSpec(const nsACString& aJarDirSpec,
     item = mZip->GetItem(entry.get());
     if (!item) return NS_ERROR_FILE_NOT_FOUND;
   }
-  nsJARInputStream* jis = new nsJARInputStream();
-  // addref now so we can call InitFile/InitDirectory()
-  NS_ADDREF(*result = jis);
+  RefPtr<nsJARInputStream> jis = new nsJARInputStream();
 
   nsresult rv = NS_OK;
   if (!item || item->IsDirectory()) {
-    rv = jis->InitDirectory(this, aJarDirSpec, entry.get());
+    rv = jis->InitDirectory(this, entry.get());
   } else {
     RefPtr<nsZipHandle> fd = mZip->GetFD();
     rv = jis->InitFile(fd, mZip->GetData(item), item);
   }
-  if (NS_FAILED(rv)) {
-    NS_RELEASE(*result);
+  if (NS_SUCCEEDED(rv)) {
+    // Callers use getter_addrefs
+    *result = jis.forget().take();
   }
   return rv;
 }
@@ -855,7 +861,7 @@ nsZipReaderCache::Observe(nsISupports* aSubject, const char* aTopic,
       file = do_QueryInterface(aSubject);
     } else if (aSomeData) {
       nsDependentString fileName(aSomeData);
-      Unused << NS_NewLocalFile(fileName, false, getter_AddRefs(file));
+      Unused << NS_NewLocalFile(fileName, getter_AddRefs(file));
     }
 
     if (!file) return NS_OK;

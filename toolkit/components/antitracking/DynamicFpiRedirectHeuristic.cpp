@@ -155,7 +155,7 @@ void AddConsoleReport(nsIChannel* aNewChannel, nsIURI* aNewURI,
   httpChannel->AddConsoleReport(nsIScriptError::warningFlag,
                                 ANTITRACKING_CONSOLE_CATEGORY,
                                 nsContentUtils::eNECKO_PROPERTIES, uri, 0, 0,
-                                "CookieAllowedForFpiByHeuristic"_ns, params);
+                                "CookieAllowedForDFPIByHeuristic"_ns, params);
 }
 
 bool ShouldRedirectHeuristicApplyTrackingResource(nsIChannel* aOldChannel,
@@ -315,6 +315,19 @@ void DynamicFpiRedirectHeuristic(nsIChannel* aOldChannel, nsIURI* aOldURI,
 
   if (!HasEligibleVisit(aOldURI) || !HasEligibleVisit(aNewURI)) {
     LOG(("No previous visit record, bailing out early."));
+    return;
+  }
+
+  // Check if the new principal is a third party principal
+  bool aResult;
+  rv = newPrincipal->IsThirdPartyPrincipal(oldPrincipal, &aResult);
+
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    LOG(("Error while checking if new principal is third party"));
+    return;
+  }
+  if (!aResult) {
+    LOG(("New principal is a first party principal"));
     return;
   }
 

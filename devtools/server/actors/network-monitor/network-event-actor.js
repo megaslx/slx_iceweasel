@@ -18,12 +18,24 @@ const {
 
 const lazy = {};
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  NetworkUtils:
-    "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
-});
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    NetworkUtils:
+      "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 const CONTENT_TYPE_REGEXP = /^content-type/i;
+
+function isDataChannel(channel) {
+  return channel instanceof Ci.nsIDataChannel;
+}
+
+function isFileChannel(channel) {
+  return channel instanceof Ci.nsIFileChannel;
+}
 
 /**
  * Creates an actor for a network event.
@@ -51,7 +63,6 @@ const CONTENT_TYPE_REGEXP = /^content-type/i;
  *        - discardResponseBody: boolean
  *        - fromCache: boolean
  *        - fromServiceWorker: boolean
- *        - rawHeaders: string
  *        - timestamp: number
  * @param {nsIChannel} channel
  *        The channel related to this network event
@@ -73,6 +84,32 @@ class NetworkEventActor extends Actor {
     // Store the channelId which will act as resource id.
     this._channelId = channel.channelId;
 
+    this._timings = {};
+    this._serverTimings = [];
+
+    this._discardRequestBody = !!networkEventOptions.discardRequestBody;
+    this._discardResponseBody = !!networkEventOptions.discardResponseBody;
+
+    this._response = {
+      headers: [],
+      cookies: [],
+      content: {},
+    };
+
+    if (isDataChannel(channel) || isFileChannel(channel)) {
+      this._innerWindowId = null;
+      this._isNavigationRequest = false;
+
+      this._request = {
+        cookies: [],
+        headers: [],
+        postData: {},
+        rawHeaders: "",
+      };
+      this._resource = this._createResource(networkEventOptions, channel);
+      return;
+    }
+
     // innerWindowId and isNavigationRequest are used to check if the actor
     // should be destroyed when a window is destroyed. See network-events.js.
     this._innerWindowId = lazy.NetworkUtils.getChannelInnerWindowId(channel);
@@ -86,20 +123,7 @@ class NetworkEventActor extends Actor {
       cookies,
       headers,
       postData: {},
-      rawHeaders: networkEventOptions.rawHeaders,
     };
-
-    this._response = {
-      headers: [],
-      cookies: [],
-      content: {},
-    };
-
-    this._timings = {};
-    this._serverTimings = [];
-
-    this._discardRequestBody = !!networkEventOptions.discardRequestBody;
-    this._discardResponseBody = !!networkEventOptions.discardResponseBody;
 
     this._resource = this._createResource(networkEventOptions, channel);
   }
@@ -119,8 +143,17 @@ class NetworkEventActor extends Actor {
    * Create the resource corresponding to this actor.
    */
   _createResource(networkEventOptions, channel) {
-    channel = channel.QueryInterface(Ci.nsIHttpChannel);
-    const wsChannel = lazy.NetworkUtils.getWebSocketChannel(channel);
+    let wsChannel;
+    let method;
+    if (isDataChannel(channel) || isFileChannel(channel)) {
+      channel.QueryInterface(Ci.nsIChannel);
+      wsChannel = null;
+      method = "GET";
+    } else {
+      channel = channel.QueryInterface(Ci.nsIHttpChannel);
+      wsChannel = lazy.NetworkUtils.getWebSocketChannel(channel);
+      method = channel.requestMethod;
+    }
 
     // Use the WebSocket channel URL for websockets.
     const url = wsChannel ? wsChannel.URI.spec : channel.URI.spec;
@@ -175,23 +208,21 @@ class NetworkEventActor extends Actor {
     }
 
     const resource = {
-      resourceId: channel.channelId,
+      resourceId: this._channelId,
       resourceType: NETWORK_EVENT,
       blockedReason,
       blockingExtension: networkEventOptions.blockingExtension,
       browsingContextID,
       cause,
       // This is used specifically in the browser toolbox console to distinguish privileged
-      // resources from the parent process from those from the contet
+      // resources from the parent process from those from the content.
       chromeContext: lazy.NetworkUtils.isChannelFromSystemPrincipal(channel),
-      fromCache: networkEventOptions.fromCache,
-      fromServiceWorker: networkEventOptions.fromServiceWorker,
       innerWindowId: this._innerWindowId,
       isNavigationRequest: this._isNavigationRequest,
       isThirdPartyTrackingResource:
         lazy.NetworkUtils.isThirdPartyTrackingResource(channel),
       isXHR,
-      method: channel.requestMethod,
+      method,
       priority: lazy.NetworkUtils.getChannelPriority(channel),
       private: lazy.NetworkUtils.isChannelPrivate(channel),
       referrerPolicy: lazy.NetworkUtils.getReferrerPolicy(channel),
@@ -402,12 +433,29 @@ class NetworkEventActor extends Actor {
       totalTime: this._totalTime,
       offsets: this._offsets,
       serverTimings: this._serverTimings,
+      serviceWorkerTimings: this._serviceWorkerTimings,
     };
   }
 
   /** ****************************************************************
    * Listeners for new network event data coming from NetworkMonitor.
    ******************************************************************/
+
+  addCacheDetails({ fromCache, fromServiceWorker }) {
+    this._resource.fromCache = fromCache;
+    this._resource.fromServiceWorker = fromServiceWorker;
+    this._onEventUpdate("cacheDetails", { fromCache, fromServiceWorker });
+  }
+
+  addRawHeaders({ channel, rawHeaders }) {
+    this._request.rawHeaders = rawHeaders;
+
+    // For regular requests, some additional headers might only be available
+    // when rawHeaders are provided, so we update the request headers here.
+    const { headers } =
+      lazy.NetworkUtils.fetchRequestHeadersAndCookies(channel);
+    this._request.headers = headers;
+  }
 
   /**
    * Add network request POST data.
@@ -433,12 +481,14 @@ class NetworkEventActor extends Actor {
    * @param {boolean} options.fromCache
    * @param {string} options.rawHeaders
    * @param {string} options.proxyResponseRawHeaders
+   * @param {string} options.earlyHintsResponseRawHeaders
    */
   addResponseStart({
     channel,
     fromCache,
     rawHeaders = "",
     proxyResponseRawHeaders,
+    earlyHintsResponseRawHeaders,
   }) {
     // Ignore calls when this actor is already destroyed
     if (this.isDestroyed()) {
@@ -446,11 +496,12 @@ class NetworkEventActor extends Actor {
     }
 
     fromCache = fromCache || lazy.NetworkUtils.isFromCache(channel);
+    const isDataOrFile = isDataChannel(channel) || isFileChannel(channel);
 
     // Read response headers and cookies.
     let responseHeaders = [];
     let responseCookies = [];
-    if (!this._blockedReason) {
+    if (!this._blockedReason && !isDataOrFile) {
       const { cookies, headers } =
         lazy.NetworkUtils.fetchResponseHeadersAndCookies(channel);
       responseCookies = cookies;
@@ -480,10 +531,13 @@ class NetworkEventActor extends Actor {
       mimeType = contentTypeHeader.value;
     }
 
-    const timedChannel = channel.QueryInterface(Ci.nsITimedChannel);
-    const waitingTime = Math.round(
-      (timedChannel.responseStartTime - timedChannel.requestStartTime) / 1000
-    );
+    let waitingTime = null;
+    if (!isDataOrFile) {
+      const timedChannel = channel.QueryInterface(Ci.nsITimedChannel);
+      waitingTime = Math.round(
+        (timedChannel.responseStartTime - timedChannel.requestStartTime) / 1000
+      );
+    }
 
     let proxyInfo = [];
     if (proxyResponseRawHeaders) {
@@ -493,12 +547,15 @@ class NetworkEventActor extends Actor {
     }
 
     this._onEventUpdate("responseStart", {
-      httpVersion: lazy.NetworkUtils.getHttpVersion(channel),
+      httpVersion: isDataOrFile
+        ? null
+        : lazy.NetworkUtils.getHttpVersion(channel),
       mimeType,
       remoteAddress: fromCache ? "" : channel.remoteAddress,
       remotePort: fromCache ? "" : channel.remotePort,
-      status: channel.responseStatus + "",
-      statusText: channel.responseStatusText,
+      status: isDataOrFile ? "200" : channel.responseStatus + "",
+      statusText: isDataOrFile ? "0K" : channel.responseStatusText,
+      earlyHintsStatus: earlyHintsResponseRawHeaders ? "103" : "",
       waitingTime,
       isResolvedByTRR: channel.isResolvedByTRR,
       proxyHttpVersion: proxyInfo[0],
@@ -533,13 +590,8 @@ class NetworkEventActor extends Actor {
    * @param object content
    *        The response content.
    * @param object
-   *        - boolean discardedResponseBody
-   *          Tells if the response content was recorded or not.
    */
-  addResponseContent(
-    content,
-    { discardResponseBody, blockedReason, blockingExtension }
-  ) {
+  addResponseContent(content, { blockedReason, blockingExtension }) {
     // Ignore calls when this actor is already destroyed
     if (this.isDestroyed()) {
       return;
@@ -578,10 +630,8 @@ class NetworkEventActor extends Actor {
    * @param object timings
    *        Timing details about the network event.
    * @param object offsets
-   * @param object serverTimings
-   *        Timing details extracted from the Server-Timing header.
    */
-  addEventTimings(total, timings, offsets, serverTimings) {
+  addEventTimings(total, timings, offsets) {
     // Ignore calls when this actor is already destroyed
     if (this.isDestroyed()) {
       return;
@@ -591,26 +641,39 @@ class NetworkEventActor extends Actor {
     this._timings = timings;
     this._offsets = offsets;
 
-    if (serverTimings) {
-      this._serverTimings = serverTimings;
-    }
-
     this._onEventUpdate("eventTimings", { totalTime: total });
   }
 
   /**
-   * Store server timing information. They will be merged together
+   * Store server timing information. They are merged together
    * with network event timing data when they are available and
    * notification sent to the client.
-   * See `addEventTimnings`` above for more information.
+   * See `addEventTimings` above for more information.
    *
    * @param object serverTimings
    *        Timing details extracted from the Server-Timing header.
    */
   addServerTimings(serverTimings) {
-    if (serverTimings) {
-      this._serverTimings = serverTimings;
+    if (!serverTimings || this.isDestroyed()) {
+      return;
     }
+    this._serverTimings = serverTimings;
+  }
+
+  /**
+   * Store service worker timing information. They are merged together
+   * with network event timing data when they are available and
+   * notification sent to the client.
+   * See `addEventTimnings`` above for more information.
+   *
+   * @param object serviceWorkerTimings
+   *        Timing details extracted from the Timed Channel.
+   */
+  addServiceWorkerTimings(serviceWorkerTimings) {
+    if (!serviceWorkerTimings || this.isDestroyed()) {
+      return;
+    }
+    this._serviceWorkerTimings = serviceWorkerTimings;
   }
 
   _createLongStringActor(string) {

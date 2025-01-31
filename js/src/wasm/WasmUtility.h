@@ -7,6 +7,8 @@
 #ifndef wasm_utility_h
 #define wasm_utility_h
 
+#include "mozilla/Maybe.h"
+
 #include <algorithm>
 namespace js {
 namespace wasm {
@@ -26,26 +28,24 @@ static inline bool EqualContainers(const Container1& lhs,
                 "Must be trivially destructible");                     \
   namespace js {                                                       \
   namespace wasm {                                                     \
-  typedef Vector<Type, 0, SystemAllocPolicy> VectorName;
-
-using mozilla::MallocSizeOf;
+  using VectorName = Vector<Type, 0, SystemAllocPolicy>;
 
 template <class T>
 static inline size_t SizeOfVectorElementExcludingThis(
-    const T& elem, MallocSizeOf mallocSizeOf) {
+    const T& elem, mozilla::MallocSizeOf mallocSizeOf) {
   return elem.sizeOfExcludingThis(mallocSizeOf);
 }
 
 template <class T>
 static inline size_t SizeOfVectorElementExcludingThis(
-    const RefPtr<T>& elem, MallocSizeOf mallocSizeOf) {
+    const RefPtr<T>& elem, mozilla::MallocSizeOf mallocSizeOf) {
   return elem->sizeOfExcludingThis(mallocSizeOf);
 }
 
 template <class T, size_t N>
 static inline size_t SizeOfVectorExcludingThis(
     const mozilla::Vector<T, N, SystemAllocPolicy>& vec,
-    MallocSizeOf mallocSizeOf) {
+    mozilla::MallocSizeOf mallocSizeOf) {
   size_t size = vec.sizeOfExcludingThis(mallocSizeOf);
   for (const T& t : vec) {
     size += SizeOfVectorElementExcludingThis(t, mallocSizeOf);
@@ -54,8 +54,8 @@ static inline size_t SizeOfVectorExcludingThis(
 }
 
 template <class T>
-static inline size_t SizeOfMaybeExcludingThis(const mozilla::Maybe<T>& maybe,
-                                              MallocSizeOf mallocSizeOf) {
+static inline size_t SizeOfMaybeExcludingThis(
+    const mozilla::Maybe<T>& maybe, mozilla::MallocSizeOf mallocSizeOf) {
   return maybe ? maybe->sizeOfExcludingThis(mallocSizeOf) : 0;
 }
 

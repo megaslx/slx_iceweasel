@@ -1,5 +1,5 @@
 ;
-; Copyright (c) 2016, Alliance for Open Media. All rights reserved
+; Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ;
 ; This source code is subject to the terms of the BSD 2 Clause License and
 ; the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -25,7 +25,7 @@ SECTION .text
 ;    unsigned int    *  SSE,
 ;    int             *  Sum
 ;)
-global sym(aom_highbd_calc16x16var_sse2) PRIVATE
+globalsym(aom_highbd_calc16x16var_sse2)
 sym(aom_highbd_calc16x16var_sse2):
     push        rbp
     mov         rbp, rsp
@@ -178,7 +178,7 @@ sym(aom_highbd_calc16x16var_sse2):
 ;    unsigned int    *  SSE,
 ;    int             *  Sum
 ;)
-global sym(aom_highbd_calc8x8var_sse2) PRIVATE
+globalsym(aom_highbd_calc8x8var_sse2)
 sym(aom_highbd_calc8x8var_sse2):
     push        rbp
     mov         rbp, rsp

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2016, Alliance for Open Media. All rights reserved
+# Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and
 # the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -29,7 +29,7 @@ if [[ -e $f.fpf ]]; then
     -p 2 \
     --pass=2 \
     --fpf=$f.fpf \
-    --best \
+    --good \
     --cpu-used=0 \
     --target-bitrate=$b \
     --auto-alt-ref=1 \
@@ -48,8 +48,7 @@ if [[ -e $f.fpf ]]; then
     --maxsection-pct=800 \
     --psnr \
     --arnr-maxframes=7 \
-    --arnr-strength=3 \
-    --arnr-type=3
+    --arnr-strength=3
 else
   # No first-pass file found, do 2-pass encode
   aomenc \
@@ -58,7 +57,7 @@ else
     -p 2 \
     --pass=1 \
     --fpf=$f.fpf \
-    --best \
+    --good \
     --cpu-used=0 \
     --target-bitrate=$b \
     --auto-alt-ref=1 \
@@ -79,7 +78,7 @@ else
     -p 2 \
     --pass=2 \
     --fpf=$f.fpf \
-    --best \
+    --good \
     --cpu-used=0 \
     --target-bitrate=$b \
     --auto-alt-ref=1 \
@@ -98,6 +97,5 @@ else
     --maxsection-pct=800 \
     --psnr \
     --arnr-maxframes=7 \
-    --arnr-strength=3 \
-    --arnr-type=3
+    --arnr-strength=3
 fi

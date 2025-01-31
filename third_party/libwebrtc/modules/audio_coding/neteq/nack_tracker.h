@@ -15,9 +15,10 @@
 #include <stdint.h>
 
 #include <map>
+#include <optional>
 #include <vector>
 
-#include "absl/types/optional.h"
+#include "api/field_trials_view.h"
 #include "modules/include/module_common_types_public.h"
 #include "rtc_base/gtest_prod_util.h"
 
@@ -54,7 +55,7 @@ class NackTracker {
   // A limit for the size of the NACK list.
   static const size_t kNackListSizeLimit = 500;  // 10 seconds for 20 ms frame
                                                  // packets.
-  NackTracker();
+  explicit NackTracker(const FieldTrialsView& field_trials);
   ~NackTracker();
 
   // Set a maximum for the size of the NACK list. If the last received packet
@@ -72,8 +73,7 @@ class NackTracker {
   // After Reset() is called sampling rate has to be set.
   void UpdateSampleRate(int sample_rate_hz);
 
-  // Update the sequence number and the timestamp of the last decoded RTP. This
-  // API should be called every time 10 ms audio is pulled from NetEq.
+  // Update the sequence number and the timestamp of the last decoded RTP.
   void UpdateLastDecodedPacket(uint16_t sequence_number, uint32_t timestamp);
 
   // Update the sequence number and the timestamp of the last received RTP. This
@@ -100,7 +100,7 @@ class NackTracker {
 
   // Options that can be configured via field trial.
   struct Config {
-    Config();
+    explicit Config(const FieldTrialsView& field_trials);
 
     // The exponential decay factor used to estimate the packet loss rate.
     double packet_loss_forget_factor = 0.996;
@@ -149,13 +149,9 @@ class NackTracker {
   // computed correctly.
   NackList GetNackList() const;
 
-  // This function subtracts 10 ms of time-to-play for all packets in NACK list.
-  // This is called when 10 ms elapsed with no new RTP packet decoded.
-  void UpdateEstimatedPlayoutTimeBy10ms();
-
   // Returns a valid number of samples per packet given the current received
   // sequence number and timestamp or nullopt of none could be computed.
-  absl::optional<int> GetSamplesPerPacket(
+  std::optional<int> GetSamplesPerPacket(
       uint16_t sequence_number_current_received_rtp,
       uint32_t timestamp_current_received_rtp) const;
 

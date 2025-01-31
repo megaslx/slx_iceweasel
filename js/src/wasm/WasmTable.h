@@ -32,13 +32,9 @@ namespace wasm {
 // A table of FuncRef holds FunctionTableElems, which are (code*,instance*)
 // pairs, where the instance must be traced.
 //
-// A table of AnyRef holds JSObject pointers, which must be traced.
+// A table of AnyRef holds pointers, which must be traced.
 
-// TODO/AnyRef-boxing: With boxed immediates and strings, JSObject* is no longer
-// the most appropriate representation for Cell::anyref.
-STATIC_ASSERT_ANYREF_IS_JSOBJECT;
-
-using TableAnyRefVector = GCVector<HeapPtr<JSObject*>, 0, SystemAllocPolicy>;
+using TableAnyRefVector = GCVector<HeapPtr<AnyRef>, 0, SystemAllocPolicy>;
 
 class Table : public ShareableBase<Table> {
   using InstanceSet = JS::WeakCache<GCHashSet<
@@ -50,10 +46,11 @@ class Table : public ShareableBase<Table> {
   InstanceSet observers_;
   FuncRefVector functions_;    // either functions_ has data
   TableAnyRefVector objects_;  // or objects_, but not both
+  const AddressType addressType_;
   const RefType elemType_;
   const bool isAsmJS_;
   uint32_t length_;
-  const Maybe<uint32_t> maximum_;
+  const mozilla::Maybe<uint64_t> maximum_;
 
   template <class>
   friend struct js::MallocProvider;
@@ -68,8 +65,10 @@ class Table : public ShareableBase<Table> {
  public:
   static RefPtr<Table> create(JSContext* cx, const TableDesc& desc,
                               Handle<WasmTableObject*> maybeObject);
+  ~Table();
   void trace(JSTracer* trc);
 
+  AddressType addressType() const { return addressType_; }
   RefType elemType() const { return elemType_; }
   TableRepr repr() const { return elemType_.tableRepr(); }
 
@@ -80,7 +79,7 @@ class Table : public ShareableBase<Table> {
 
   bool isFunction() const { return elemType().isFuncHierarchy(); }
   uint32_t length() const { return length_; }
-  Maybe<uint32_t> maximum() const { return maximum_; }
+  mozilla::Maybe<uint64_t> maximum() const { return maximum_; }
 
   // Raw pointer to the table for use in TableInstanceData.
   uint8_t* instanceElements() const;
@@ -89,21 +88,27 @@ class Table : public ShareableBase<Table> {
   // get/fillAnyRef is allowed only on table-of-anyref.
   // setNull is allowed on either.
 
-  const FunctionTableElem& getFuncRef(uint32_t index) const;
-  [[nodiscard]] bool getFuncRef(JSContext* cx, uint32_t index,
+  const FunctionTableElem& getFuncRef(uint32_t address) const;
+  [[nodiscard]] bool getFuncRef(JSContext* cx, uint32_t address,
                                 MutableHandleFunction fun) const;
-  void setFuncRef(uint32_t index, void* code, Instance* instance);
-  void fillFuncRef(uint32_t index, uint32_t fillCount, FuncRef ref,
+  void setFuncRef(uint32_t address, JSFunction* func);
+  void setFuncRef(uint32_t address, void* code, Instance* instance);
+  void fillFuncRef(uint32_t address, uint32_t fillCount, FuncRef ref,
                    JSContext* cx);
 
-  AnyRef getAnyRef(uint32_t index) const;
-  void fillAnyRef(uint32_t index, uint32_t fillCount, AnyRef ref);
+  AnyRef getAnyRef(uint32_t address) const;
+  void setAnyRef(uint32_t address, AnyRef ref);
+  void fillAnyRef(uint32_t address, uint32_t fillCount, AnyRef ref);
 
-  // Get the element at index and convert it to a JS value.
-  [[nodiscard]] bool getValue(JSContext* cx, uint32_t index,
+  // Sets ref automatically using the correct setter depending on the ref and
+  // table type (setNull, setFuncRef, or setAnyRef)
+  void setRef(uint32_t address, AnyRef ref);
+
+  // Get the element at address and convert it to a JS value.
+  [[nodiscard]] bool getValue(JSContext* cx, uint32_t address,
                               MutableHandleValue result) const;
 
-  void setNull(uint32_t index);
+  void setNull(uint32_t address);
 
   // Copy entry from |srcTable| at |srcIndex| to this table at |dstIndex|.  Used
   // by table.copy.  May OOM if it needs to box up a function during an upcast.
@@ -116,16 +121,16 @@ class Table : public ShareableBase<Table> {
   [[nodiscard]] bool addMovingGrowObserver(JSContext* cx,
                                            WasmInstanceObject* instance);
 
-  void fillUninitialized(uint32_t index, uint32_t fillCount, HandleAnyRef ref,
+  void fillUninitialized(uint32_t address, uint32_t fillCount, HandleAnyRef ref,
                          JSContext* cx);
 #ifdef DEBUG
-  void assertRangeNull(uint32_t index, uint32_t length) const;
-  void assertRangeNotNull(uint32_t index, uint32_t length) const;
+  void assertRangeNull(uint32_t address, uint32_t length) const;
+  void assertRangeNotNull(uint32_t address, uint32_t length) const;
 #endif  // DEBUG
 
   // about:memory reporting:
 
-  size_t sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const;
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
   size_t gcMallocBytes() const;
 };

@@ -32,25 +32,11 @@ const SPOOFED_APPVERSION = {
   other: "5.0 (X11)",
 };
 
-let cpuArch = Services.sysinfo.get("arch");
-if (cpuArch == "x86-64") {
-  // Convert CPU arch "x86-64" to "x86_64" used in Linux and Android UAs.
-  cpuArch = "x86_64";
-}
-
 const DEFAULT_PLATFORM = {
-  linux: `Linux ${cpuArch}`,
-  win: "Win32",
-  macosx: "MacIntel",
-  android: `Linux ${cpuArch}`,
-  other: `Linux ${cpuArch}`,
-};
-
-const SPOOFED_PLATFORM = {
   linux: "Linux x86_64",
   win: "Win32",
   macosx: "MacIntel",
-  android: "Linux aarch64",
+  android: "Linux armv81",
   other: "Linux x86_64",
 };
 
@@ -60,36 +46,39 @@ const SPOOFED_PLATFORM = {
 const WindowsOscpuPromise = (async () => {
   let WindowsOscpu = null;
   if (AppConstants.platform == "win") {
+    let cpuArch = Services.sysinfo.get("arch");
     let isWin11 = WindowsVersionInfo.get().buildNumber >= 22000;
     let isWow64 = (await Services.sysinfo.processInfo).isWow64;
     WindowsOscpu =
-      cpuArch == "x86_64" || isWow64 || (cpuArch == "aarch64" && isWin11)
-        ? `Windows NT ${osVersion}; Win64; x64`
-        : `Windows NT ${osVersion}`;
+      cpuArch == "x86-64" || isWow64 || (cpuArch == "aarch64" && isWin11)
+        ? "Windows NT 10.0; Win64; x64"
+        : "Windows NT 10.0";
   }
   return WindowsOscpu;
 })();
 
 const DEFAULT_OSCPU = {
-  linux: `Linux ${cpuArch}`,
+  linux: "Linux x86_64",
+  // `win` will be set in add_setup() by WindowsOscpuPromise.
   macosx: "Intel Mac OS X 10.15",
-  android: `Linux ${cpuArch}`,
-  other: `Linux ${cpuArch}`,
+  android: "Linux armv81",
+  other: "Linux x86_64",
 };
 
 const SPOOFED_OSCPU = {
   linux: "Linux x86_64",
   win: "Windows NT 10.0; Win64; x64",
   macosx: "Intel Mac OS X 10.15",
-  android: "Linux aarch64",
+  android: "Linux armv81",
   other: "Linux x86_64",
 };
 
 const DEFAULT_UA_OS = {
-  linux: `X11; Linux ${cpuArch}`,
+  linux: "X11; Linux x86_64",
+  // `win` will be set in add_setup() by WindowsOscpuPromise.
   macosx: "Macintosh; Intel Mac OS X 10.15",
   android: `Android ${osVersion}; Mobile`,
-  other: `X11; Linux ${cpuArch}`,
+  other: "X11; Linux x86_64",
 };
 
 const SPOOFED_UA_NAVIGATOR_OS = {
@@ -100,11 +89,11 @@ const SPOOFED_UA_NAVIGATOR_OS = {
   other: "X11; Linux x86_64",
 };
 const SPOOFED_UA_HTTPHEADER_OS = {
-  linux: "Windows NT 10.0",
-  win: "Windows NT 10.0",
-  macosx: "Windows NT 10.0",
+  linux: "Windows NT 10.0; Win64; x64",
+  win: "Windows NT 10.0; Win64; x64",
+  macosx: "Windows NT 10.0; Win64; x64",
   android: "Android 10; Mobile",
-  other: "Windows NT 10.0",
+  other: "Windows NT 10.0; Win64; x64",
 };
 const SPOOFED_HW_CONCURRENCY = 2;
 
@@ -117,11 +106,6 @@ const CONST_VENDORSUB = "";
 const CONST_LEGACY_BUILD_ID = "20181001000000";
 
 const appVersion = parseInt(Services.appinfo.version);
-const rvVersion =
-  parseInt(
-    Services.prefs.getIntPref("network.http.useragent.forceRVOnly", 0),
-    0
-  ) || appVersion;
 const spoofedVersion = AppConstants.platform == "android" ? "115" : appVersion;
 
 const LEGACY_UA_GECKO_TRAIL = "20100101";
@@ -147,9 +131,7 @@ add_setup(async () => {
 });
 
 async function testUserAgentHeader() {
-  const BASE =
-    "http://mochi.test:8888/browser/browser/components/resistfingerprinting/test/browser/";
-  const TEST_TARGET_URL = `${BASE}file_navigator_header.sjs?`;
+  const TEST_TARGET_URL = `${TEST_PATH}file_navigator_header.sjs?`;
   let tab = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
     TEST_TARGET_URL
@@ -270,7 +252,7 @@ async function testWorkerNavigator() {
     [],
     async function () {
       let worker = new content.SharedWorker(
-        "file_navigatorWorker.js",
+        "file_navigator.worker.js",
         "WorkerNavigatorTest"
       );
 
@@ -331,7 +313,7 @@ async function testWorkerNavigator() {
   // test in Fission.
   if (SpecialPowers.useRemoteSubframes) {
     await new Promise(resolve => {
-      let observer = (subject, topic, data) => {
+      let observer = (subject, topic) => {
         if (topic === "ipc:content-shutdown") {
           Services.obs.removeObserver(observer, "ipc:content-shutdown");
           resolve();
@@ -345,7 +327,7 @@ async function testWorkerNavigator() {
 add_task(async function setupDefaultUserAgent() {
   let defaultUserAgent = `Mozilla/5.0 (${
     DEFAULT_UA_OS[AppConstants.platform]
-  }; rv:${rvVersion}.0) Gecko/${
+  }; rv:${appVersion}.0) Gecko/${
     DEFAULT_UA_GECKO_TRAIL[AppConstants.platform]
   } Firefox/${appVersion}.0`;
   expectedResults = {
@@ -371,16 +353,13 @@ add_task(async function setupRFPExemptions() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["privacy.resistFingerprinting", true],
-      [
-        "privacy.resistFingerprinting.exemptedDomains",
-        "example.net, mochi.test",
-      ],
+      ["privacy.resistFingerprinting.exemptedDomains", "example.net"],
     ],
   });
 
   let defaultUserAgent = `Mozilla/5.0 (${
     DEFAULT_UA_OS[AppConstants.platform]
-  }; rv:${rvVersion}.0) Gecko/${
+  }; rv:${appVersion}.0) Gecko/${
     DEFAULT_UA_GECKO_TRAIL[AppConstants.platform]
   } Firefox/${appVersion}.0`;
 
@@ -406,6 +385,70 @@ add_task(async function setupRFPExemptions() {
   await SpecialPowers.popPrefEnv();
 });
 
+add_task(async function setupETPToggleExemptions() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["privacy.fingerprintingProtection", true],
+      ["privacy.fingerprintingProtection.overrides", "+AllTargets"],
+    ],
+  });
+
+  // Open a tab to toggle the ETP state.
+  let tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    TEST_PATH + "file_navigator.html"
+  );
+  let loaded = BrowserTestUtils.browserLoaded(
+    tab.linkedBrowser,
+    false,
+    TEST_PATH + "file_navigator.html"
+  );
+  gProtectionsHandler.disableForCurrentPage();
+  await loaded;
+  BrowserTestUtils.removeTab(tab);
+
+  let defaultUserAgent = `Mozilla/5.0 (${
+    DEFAULT_UA_OS[AppConstants.platform]
+  }; rv:${appVersion}.0) Gecko/${
+    DEFAULT_UA_GECKO_TRAIL[AppConstants.platform]
+  } Firefox/${appVersion}.0`;
+
+  expectedResults = {
+    testDesc: "ETP toggle Exempted Domain",
+    appVersion: DEFAULT_APPVERSION[AppConstants.platform],
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    mimeTypesLength: 2,
+    oscpu: DEFAULT_OSCPU[AppConstants.platform],
+    platform: DEFAULT_PLATFORM[AppConstants.platform],
+    pluginsLength: 5,
+    userAgentNavigator: defaultUserAgent,
+    userAgentHeader: defaultUserAgent,
+  };
+
+  await testNavigator();
+
+  await testUserAgentHeader();
+
+  await testWorkerNavigator();
+
+  // Toggle the ETP state back.
+  tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    TEST_PATH + "file_navigator.html"
+  );
+  loaded = BrowserTestUtils.browserLoaded(
+    tab.linkedBrowser,
+    false,
+    TEST_PATH + "file_navigator.html"
+  );
+  gProtectionsHandler.enableForCurrentPage();
+  await loaded;
+  BrowserTestUtils.removeTab(tab);
+
+  // Pop exempted domains
+  await SpecialPowers.popPrefEnv();
+});
+
 add_task(async function setupResistFingerprinting() {
   await SpecialPowers.pushPrefEnv({
     set: [["privacy.resistFingerprinting", true]],
@@ -415,11 +458,11 @@ add_task(async function setupResistFingerprinting() {
 
   let spoofedUserAgentNavigator = `Mozilla/5.0 (${
     SPOOFED_UA_NAVIGATOR_OS[AppConstants.platform]
-  }; rv:${rvVersion}.0) Gecko/${spoofedGeckoTrail} Firefox/${appVersion}.0`;
+  }; rv:${appVersion}.0) Gecko/${spoofedGeckoTrail} Firefox/${appVersion}.0`;
 
   let spoofedUserAgentHeader = `Mozilla/5.0 (${
     SPOOFED_UA_HTTPHEADER_OS[AppConstants.platform]
-  }; rv:${rvVersion}.0) Gecko/${spoofedGeckoTrail} Firefox/${appVersion}.0`;
+  }; rv:${appVersion}.0) Gecko/${spoofedGeckoTrail} Firefox/${appVersion}.0`;
 
   expectedResults = {
     testDesc: "spoofed",
@@ -427,7 +470,7 @@ add_task(async function setupResistFingerprinting() {
     hardwareConcurrency: SPOOFED_HW_CONCURRENCY,
     mimeTypesLength: 2,
     oscpu: SPOOFED_OSCPU[AppConstants.platform],
-    platform: SPOOFED_PLATFORM[AppConstants.platform],
+    platform: DEFAULT_PLATFORM[AppConstants.platform],
     pluginsLength: 5,
     userAgentNavigator: spoofedUserAgentNavigator,
     userAgentHeader: spoofedUserAgentHeader,

@@ -1,10 +1,11 @@
-// |reftest| skip -- Intl.DurationFormat is not supported
+// |reftest| skip-if(!Intl.hasOwnProperty('DurationFormat')) -- Intl.DurationFormat is not enabled unconditionally
 // Copyright (C) 2023 Igalia S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
 esid: sec-Intl.DurationFormat.prototype.formatToParts
 description:  Checks basic handling of formatToParts, using long, short,narrow and digital styles.
+includes: [testIntl.js]
 features: [Intl.DurationFormat]
 ---*/
 
@@ -39,27 +40,11 @@ const duration = {
 };
 
 const style = "narrow";
-const expected = [
-    { type: "integer", value: "7", unit: "hour" },
-    { type: "unit", value: "h", unit: "hour" },
-    { type: "literal", value: " " },
-    { type: "integer", value: "8", unit: "minute" },
-    { type: "unit", value: "m", unit: "minute" },
-    { type: "literal", value: " " },
-    { type: "integer", value: "9", unit: "second" },
-    { type: "unit", value: "s", unit: "second" },
-    { type: "literal", value: " " },
-    { type: "integer", value: "123", unit: "millisecond" },
-    { type: "unit", value: "ms", unit: "millisecond" },
-    { type: "literal", value: " " },
-    { type: "integer", value: "456", unit: "microsecond" },
-    { type: "unit", value: "μs", unit: "microsecond" },
-    { type: "literal", value: " " },
-    { type: "integer", value: "789", unit: "nanosecond" },
-    { type: "unit", value: "ns", unit: "nanosecond" },
-  ];
 
-let df = new Intl.DurationFormat('en', { style });
+const df = new Intl.DurationFormat('en', { style });
+
+const expected = partitionDurationFormatPattern(df, duration);
+
 compare(df.formatToParts(duration), expected, `Using style : ${style}`);
 
 reportCompare(0, 0);

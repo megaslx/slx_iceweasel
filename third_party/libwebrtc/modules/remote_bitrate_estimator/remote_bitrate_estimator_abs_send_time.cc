@@ -16,13 +16,16 @@
 #include <memory>
 #include <utility>
 
-#include "api/transport/field_trial_based_config.h"
+#include "absl/base/nullability.h"
+#include "api/environment/environment.h"
 #include "api/units/data_rate.h"
 #include "api/units/data_size.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "modules/remote_bitrate_estimator/include/bwe_defines.h"
 #include "modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
+#include "modules/rtp_rtcp/source/rtp_header_extensions.h"
+#include "modules/rtp_rtcp/source/rtp_packet_received.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "system_wrappers/include/metrics.h"
@@ -41,15 +44,6 @@ constexpr int kMaxProbePackets = 15;
 constexpr int kExpectedNumberOfProbes = 3;
 constexpr double kTimestampToMs =
     1000.0 / static_cast<double>(1 << kInterArrivalShift);
-
-absl::optional<DataRate> OptionalRateFromOptionalBps(
-    absl::optional<int> bitrate_bps) {
-  if (bitrate_bps) {
-    return DataRate::BitsPerSec(*bitrate_bps);
-  } else {
-    return absl::nullopt;
-  }
-}
 
 template <typename K, typename V>
 std::vector<K> Keys(const std::map<K, V>& map) {
@@ -95,14 +89,9 @@ void RemoteBitrateEstimatorAbsSendTime::MaybeAddCluster(
 }
 
 RemoteBitrateEstimatorAbsSendTime::RemoteBitrateEstimatorAbsSendTime(
-    RemoteBitrateObserver* observer,
-    Clock* clock)
-    : clock_(clock),
-      observer_(observer),
-      detector_(&field_trials_),
-      remote_rate_(&field_trials_) {
-  RTC_DCHECK(clock_);
-  RTC_DCHECK(observer_);
+    const Environment& env,
+    absl::Nonnull<RemoteBitrateObserver*> observer)
+    : env_(env), observer_(observer), remote_rate_(env_.field_trials()) {
   RTC_LOG(LS_INFO) << "RemoteBitrateEstimatorAbsSendTime: Instantiating.";
 }
 
@@ -211,26 +200,19 @@ bool RemoteBitrateEstimatorAbsSendTime::IsBitrateImproving(
 }
 
 void RemoteBitrateEstimatorAbsSendTime::IncomingPacket(
-    int64_t arrival_time_ms,
-    size_t payload_size,
-    const RTPHeader& header) {
-  if (!header.extension.hasAbsoluteSendTime) {
+    const RtpPacketReceived& rtp_packet) {
+  uint32_t send_time_24bits;
+  if (!rtp_packet.GetExtension<AbsoluteSendTime>(&send_time_24bits)) {
     RTC_LOG(LS_WARNING)
         << "RemoteBitrateEstimatorAbsSendTimeImpl: Incoming packet "
            "is missing absolute send time extension!";
     return;
   }
-  IncomingPacketInfo(Timestamp::Millis(arrival_time_ms),
-                     header.extension.absoluteSendTime,
-                     DataSize::Bytes(payload_size), header.ssrc);
-}
 
-void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
-    Timestamp arrival_time,
-    uint32_t send_time_24bits,
-    DataSize payload_size,
-    uint32_t ssrc) {
-  RTC_CHECK(send_time_24bits < (1ul << 24));
+  Timestamp arrival_time = rtp_packet.arrival_time();
+  DataSize payload_size =
+      DataSize::Bytes(rtp_packet.payload_size() + rtp_packet.padding_size());
+
   if (!uma_recorded_) {
     RTC_HISTOGRAM_ENUMERATION(kBweTypeHistogram, BweNames::kReceiverAbsSendTime,
                               BweNames::kBweNamesMax);
@@ -242,13 +224,13 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
   Timestamp send_time =
       Timestamp::Millis(static_cast<int64_t>(timestamp) * kTimestampToMs);
 
-  Timestamp now = clock_->CurrentTime();
+  Timestamp now = env_.clock().CurrentTime();
   // TODO(holmer): SSRCs are only needed for REMB, should be broken out from
   // here.
 
   // Check if incoming bitrate estimate is valid, and if it needs to be reset.
-  absl::optional<uint32_t> incoming_bitrate =
-      incoming_bitrate_.Rate(arrival_time.ms());
+  std::optional<DataRate> incoming_bitrate =
+      incoming_bitrate_.Rate(arrival_time);
   if (incoming_bitrate) {
     incoming_bitrate_initialized_ = true;
   } else if (incoming_bitrate_initialized_) {
@@ -258,7 +240,7 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
     incoming_bitrate_.Reset();
     incoming_bitrate_initialized_ = false;
   }
-  incoming_bitrate_.Update(payload_size.bytes(), arrival_time.ms());
+  incoming_bitrate_.Update(payload_size, arrival_time);
 
   if (first_packet_time_.IsInfinite()) {
     first_packet_time_ = now;
@@ -273,7 +255,7 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
   TimeoutStreams(now);
   RTC_DCHECK(inter_arrival_);
   RTC_DCHECK(estimator_);
-  ssrcs_.insert_or_assign(ssrc, now);
+  ssrcs_.insert_or_assign(rtp_packet.Ssrc(), now);
 
   // For now only try to detect probes while we don't have a valid estimate.
   // We currently assume that only packets larger than 200 bytes are paced by
@@ -320,10 +302,10 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
             remote_rate_.GetFeedbackInterval().ms()) {
       update_estimate = true;
     } else if (detector_.State() == BandwidthUsage::kBwOverusing) {
-      absl::optional<uint32_t> incoming_rate =
-          incoming_bitrate_.Rate(arrival_time.ms());
-      if (incoming_rate && remote_rate_.TimeToReduceFurther(
-                               now, DataRate::BitsPerSec(*incoming_rate))) {
+      std::optional<DataRate> incoming_rate =
+          incoming_bitrate_.Rate(arrival_time);
+      if (incoming_rate.has_value() &&
+          remote_rate_.TimeToReduceFurther(now, *incoming_rate)) {
         update_estimate = true;
       }
     }
@@ -333,10 +315,9 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
     // The first overuse should immediately trigger a new estimate.
     // We also have to update the estimate immediately if we are overusing
     // and the target bitrate is too high compared to what we are receiving.
-    const RateControlInput input(
-        detector_.State(),
-        OptionalRateFromOptionalBps(incoming_bitrate_.Rate(arrival_time.ms())));
-    target_bitrate = remote_rate_.Update(&input, now);
+    const RateControlInput input(detector_.State(),
+                                 incoming_bitrate_.Rate(arrival_time));
+    target_bitrate = remote_rate_.Update(input, now);
     update_estimate = remote_rate_.ValidEstimate();
   }
 
@@ -353,7 +334,7 @@ TimeDelta RemoteBitrateEstimatorAbsSendTime::Process() {
 
 void RemoteBitrateEstimatorAbsSendTime::TimeoutStreams(Timestamp now) {
   for (auto it = ssrcs_.begin(); it != ssrcs_.end();) {
-    if (now - it->second > TimeDelta::Millis(kStreamTimeOutMs)) {
+    if (now - it->second > kStreamTimeOut) {
       ssrcs_.erase(it++);
     } else {
       ++it;

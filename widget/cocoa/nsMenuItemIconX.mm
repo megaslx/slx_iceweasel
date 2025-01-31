@@ -24,6 +24,7 @@
 #include "MOZIconHelper.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/SVGImageContext.h"
 #include "nsCocoaUtils.h"
 #include "nsComputedDOMStyle.h"
 #include "nsContentUtils.h"
@@ -62,8 +63,8 @@ void nsMenuItemIconX::SetupIcon(nsIContent* aContent) {
 
   bool shouldHaveIcon = StartIconLoad(aContent);
   if (!shouldHaveIcon) {
-    // There is no icon for this menu item, as an error occurred while loading it.
-    // An icon might have been set earlier or the place holder icon may have
+    // There is no icon for this menu item, as an error occurred while loading
+    // it. An icon might have been set earlier or the place holder icon may have
     // been set.  Clear it.
     if (mIconImage) {
       [mIconImage release];
@@ -73,8 +74,9 @@ void nsMenuItemIconX::SetupIcon(nsIContent* aContent) {
   }
 
   if (!mIconImage) {
-    // Set a placeholder icon, so that the menuitem reserves space for the icon during the load and
-    // there is no sudden shift once the icon finishes loading.
+    // Set a placeholder icon, so that the menuitem reserves space for the icon
+    // during the load and there is no sudden shift once the icon finishes
+    // loading.
     NSSize iconSize = NSMakeSize(kIconSize, kIconSize);
     mIconImage = [[MOZIconHelper placeholderIconWithSize:iconSize] retain];
   }
@@ -100,7 +102,8 @@ already_AddRefed<nsIURI> nsMenuItemIconX::GetIconURI(nsIContent* aContent) {
   // First, look at the content node's "image" attribute.
   nsAutoString imageURIString;
   bool hasImageAttr =
-      aContent->IsElement() && aContent->AsElement()->GetAttr(nsGkAtoms::image, imageURIString);
+      aContent->IsElement() &&
+      aContent->AsElement()->GetAttr(nsGkAtoms::image, imageURIString);
 
   if (hasImageAttr) {
     // Use the URL from the image attribute.
@@ -121,7 +124,8 @@ already_AddRefed<nsIURI> nsMenuItemIconX::GetIconURI(nsIContent* aContent) {
     return nullptr;
   }
 
-  RefPtr<const ComputedStyle> sc = nsComputedDOMStyle::GetComputedStyle(aContent->AsElement());
+  RefPtr<const ComputedStyle> sc =
+      nsComputedDOMStyle::GetComputedStyle(aContent->AsElement());
   if (!sc) {
     return nullptr;
   }
@@ -149,11 +153,18 @@ nsresult nsMenuItemIconX::OnComplete(imgIContainer* aImage) {
     mIconImage = nil;
   }
   RefPtr<nsPresContext> pc = mPresContext.get();
-  mIconImage = [[MOZIconHelper iconImageFromImageContainer:aImage
-                                                  withSize:NSMakeSize(kIconSize, kIconSize)
-                                               presContext:pc
-                                             computedStyle:mComputedStyle
-                                               scaleFactor:0.0f] retain];
+  UniquePtr<SVGImageContext> svgContext;
+  if (pc && mComputedStyle) {
+    svgContext = MakeUnique<SVGImageContext>();
+    SVGImageContext::MaybeStoreContextPaint(*svgContext, *pc, *mComputedStyle,
+                                            aImage);
+  }
+
+  mIconImage = [[MOZIconHelper
+      iconImageFromImageContainer:aImage
+                         withSize:NSMakeSize(kIconSize, kIconSize)
+                       svgContext:svgContext.get()
+                      scaleFactor:0.0f] retain];
   mComputedStyle = nullptr;
   mPresContext = nullptr;
 

@@ -195,6 +195,14 @@ class ProfileBuffer final {
     return *mMaybeWorkerChunkManager;
   }
 
+#ifdef MOZ_EXECUTION_TRACING
+  template <typename GetStreamingParametersForThreadCallback>
+  void MaybeStreamExecutionTraceToJSON(
+      GetStreamingParametersForThreadCallback&&
+          aGetStreamingParametersForThreadCallback,
+      double aSinceTime) const;
+#endif
+
   // GetStreamingParametersForThreadCallback:
   //   (ProfilerThreadId) -> Maybe<StreamingParametersForThread>
   template <typename GetStreamingParametersForThreadCallback>
@@ -247,7 +255,8 @@ class ProfileBufferCollector final : public ProfilerStackCollector {
 
   virtual void CollectNativeLeafAddr(void* aAddr) override;
   virtual void CollectJitReturnAddr(void* aAddr) override;
-  virtual void CollectWasmFrame(const char* aLabel) override;
+  virtual void CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
+                                const char* aLabel) override;
   virtual void CollectProfilingStackFrame(
       const js::ProfilingStackFrame& aFrame) override;
 

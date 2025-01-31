@@ -10,30 +10,33 @@
 
 #include <stdio.h>
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+
 #ifdef WIN32
 #include <winsock2.h>
 #endif
-#if defined(WEBRTC_LINUX) || defined(WEBRTC_FUCHSIA)
-#include <netinet/in.h>
-#endif
 
-#include <iostream>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
-#include "absl/memory/memory.h"
 #include "api/audio/audio_frame.h"
 #include "api/audio_codecs/L16/audio_encoder_L16.h"
 #include "api/audio_codecs/g711/audio_encoder_g711.h"
 #include "api/audio_codecs/g722/audio_encoder_g722.h"
 #include "api/audio_codecs/ilbc/audio_encoder_ilbc.h"
 #include "api/audio_codecs/opus/audio_encoder_opus.h"
+#include "api/environment/environment_factory.h"
 #include "modules/audio_coding/codecs/cng/audio_encoder_cng.h"
 #include "modules/audio_coding/include/audio_coding_module.h"
+#include "modules/audio_coding/include/audio_coding_module_typedefs.h"
 #include "modules/audio_coding/neteq/tools/input_audio_file.h"
+#include "rtc_base/checks.h"
+#include "rtc_base/ip_address.h"
 #include "rtc_base/numerics/safe_conversions.h"
 
 ABSL_FLAG(bool, list_codecs, false, "Enumerate all codecs");
@@ -42,7 +45,7 @@ ABSL_FLAG(int,
           frame_len,
           0,
           "Frame length in ms; 0 indicates codec default value");
-ABSL_FLAG(int, bitrate, 0, "Bitrate in kbps; 0 indicates codec default value");
+ABSL_FLAG(int, bitrate, 0, "Bitrate in bps; 0 indicates codec default value");
 ABSL_FLAG(int,
           payload_type,
           -1,
@@ -54,6 +57,8 @@ ABSL_FLAG(int,
 ABSL_FLAG(int, ssrc, 0, "SSRC to write to the RTP header");
 ABSL_FLAG(bool, dtx, false, "Use DTX/CNG");
 ABSL_FLAG(int, sample_rate, 48000, "Sample rate of the input file");
+ABSL_FLAG(bool, fec, false, "Use Opus FEC");
+ABSL_FLAG(int, expected_loss, 0, "Expected packet loss percentage");
 
 namespace webrtc {
 namespace test {
@@ -202,8 +207,10 @@ std::unique_ptr<AudioEncoder> CreateEncoder(CodecType codec_type,
         config.bitrate_bps = absl::GetFlag(FLAGS_bitrate);
       }
       config.dtx_enabled = absl::GetFlag(FLAGS_dtx);
+      config.fec_enabled = absl::GetFlag(FLAGS_fec);
       RTC_CHECK(config.IsOk());
-      return AudioEncoderOpus::MakeAudioEncoder(config, payload_type);
+      return AudioEncoderOpus::MakeAudioEncoder(CreateEnvironment(), config,
+                                                {.payload_type = payload_type});
     }
 
     case CodecType::kPcmU:
@@ -309,6 +316,7 @@ int RunRtpEncode(int argc, char* argv[]) {
   const int timestamp_rate_hz = codec->RtpTimestampRateHz();
   auto acm(AudioCodingModule::Create());
   acm->SetEncoder(std::move(codec));
+  acm->SetPacketLossRate(absl::GetFlag(FLAGS_expected_loss));
 
   // Open files.
   printf("Input file: %s\n", args[1]);

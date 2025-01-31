@@ -10,23 +10,13 @@
 #![allow(non_upper_case_globals)]
 
 #[macro_use]
-pub extern crate bitflags;
-#[macro_use]
-pub extern crate log;
-#[macro_use]
 pub extern crate objc;
 #[macro_use]
 pub extern crate foreign_types;
 #[macro_use]
 pub extern crate paste;
 
-use std::{
-    borrow::{Borrow, ToOwned},
-    marker::PhantomData,
-    mem,
-    ops::Deref,
-    os::raw::c_void,
-};
+use std::{borrow::Borrow, marker::PhantomData, mem, ops::Deref, os::raw::c_void};
 
 use core_graphics_types::{base::CGFloat, geometry::CGSize};
 use foreign_types::ForeignType;
@@ -212,6 +202,46 @@ macro_rules! try_objc {
             value
         }
     };
+}
+
+macro_rules! msg_send_bool {
+    ($obj:expr, $name:ident) => {{
+        match msg_send![$obj, $name] {
+            YES => true,
+            NO => false,
+            #[cfg(not(target_arch = "aarch64"))]
+            _ => unreachable!(),
+        }
+    }};
+    ($obj:expr, $name:ident : $arg:expr) => {{
+        match msg_send![$obj, $name: $arg] {
+            YES => true,
+            NO => false,
+            #[cfg(not(target_arch = "aarch64"))]
+            _ => unreachable!(),
+        }
+    }};
+}
+
+macro_rules! msg_send_bool_error_check {
+    ($obj:expr, $name:ident: $arg:expr) => {{
+        let mut err: *mut Object = ptr::null_mut();
+        let result: BOOL = msg_send![$obj, $name:$arg
+                                                    error:&mut err];
+        if !err.is_null() {
+            let desc: *mut Object = msg_send![err, localizedDescription];
+            let c_msg: *const c_char = msg_send![desc, UTF8String];
+            let message = CStr::from_ptr(c_msg).to_string_lossy().into_owned();
+            Err(message)
+        } else {
+            match result {
+                YES => Ok(true),
+                NO => Ok(false),
+                #[cfg(not(target_arch = "aarch64"))]
+                _ => unreachable!(),
+            }
+        }
+    }};
 }
 
 /// See <https://developer.apple.com/documentation/foundation/nsarray>
@@ -425,13 +455,7 @@ impl MetalLayerRef {
     }
 
     pub fn presents_with_transaction(&self) -> bool {
-        unsafe {
-            match msg_send![self, presentsWithTransaction] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, presentsWithTransaction] }
     }
 
     pub fn set_presents_with_transaction(&self, transaction: bool) {
@@ -439,13 +463,7 @@ impl MetalLayerRef {
     }
 
     pub fn display_sync_enabled(&self) -> bool {
-        unsafe {
-            match msg_send![self, displaySyncEnabled] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, displaySyncEnabled] }
     }
 
     pub fn set_display_sync_enabled(&self, enabled: bool) {
@@ -486,13 +504,7 @@ impl MetalLayerRef {
 
     /// [framebufferOnly Apple Docs](https://developer.apple.com/documentation/metal/mtltexture/1515749-framebufferonly?language=objc)
     pub fn framebuffer_only(&self) -> bool {
-        unsafe {
-            match msg_send![self, framebufferOnly] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool!(self, framebufferOnly) }
     }
 
     pub fn set_framebuffer_only(&self, framebuffer_only: bool) {
@@ -500,13 +512,7 @@ impl MetalLayerRef {
     }
 
     pub fn is_opaque(&self) -> bool {
-        unsafe {
-            match msg_send![self, isOpaque] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool!(self, isOpaque) }
     }
 
     pub fn set_opaque(&self, opaque: bool) {
@@ -514,13 +520,7 @@ impl MetalLayerRef {
     }
 
     pub fn wants_extended_dynamic_range_content(&self) -> bool {
-        unsafe {
-            match msg_send![self, wantsExtendedDynamicRangeContent] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, wantsExtendedDynamicRangeContent] }
     }
 
     pub fn set_wants_extended_dynamic_range_content(
@@ -538,6 +538,7 @@ impl MetalLayerRef {
 
 mod accelerator_structure;
 mod argument;
+mod blitpass;
 mod buffer;
 mod capturedescriptor;
 mod capturemanager;
@@ -568,6 +569,7 @@ mod vertexdescriptor;
 pub use {
     accelerator_structure::*,
     argument::*,
+    blitpass::*,
     buffer::*,
     counters::*,
     computepass::*,

@@ -19,7 +19,7 @@
 #include "nsString.h"
 #include "nsICategoryManager.h"
 #include "nsIDocumentLoaderFactory.h"
-#include "nsIContentViewer.h"
+#include "nsIDocumentViewer.h"
 #include "nsIStreamListener.h"
 #include "nsServiceManagerUtils.h"
 #include "nsNetUtil.h"
@@ -39,9 +39,6 @@
 using namespace mozilla;
 using mozilla::dom::Document;
 using mozilla::dom::Element;
-
-/* static */
-const mozilla::gfx::DeviceColor SimpleTextContextPaint::sZero;
 
 gfxSVGGlyphs::gfxSVGGlyphs(hb_blob_t* aSVGTable, gfxFontEntry* aFontEntry)
     : mSVGData(aSVGTable), mFontEntry(aFontEntry) {
@@ -131,24 +128,17 @@ gfxSVGGlyphsDocument* gfxSVGGlyphs::FindOrCreateGlyphsDocument(
 }
 
 nsresult gfxSVGGlyphsDocument::SetupPresentation() {
-  nsCOMPtr<nsICategoryManager> catMan =
-      do_GetService(NS_CATEGORYMANAGER_CONTRACTID);
-  nsCString contractId;
-  nsresult rv = catMan->GetCategoryEntry("Gecko-Content-Viewers",
-                                         "image/svg+xml", contractId);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   nsCOMPtr<nsIDocumentLoaderFactory> docLoaderFactory =
-      do_GetService(contractId.get());
+      nsContentUtils::FindInternalDocumentViewer(SVG_CONTENT_TYPE);
   NS_ASSERTION(docLoaderFactory, "Couldn't get DocumentLoaderFactory");
 
-  nsCOMPtr<nsIContentViewer> viewer;
-  rv = docLoaderFactory->CreateInstanceForDocument(nullptr, mDocument, nullptr,
-                                                   getter_AddRefs(viewer));
+  nsCOMPtr<nsIDocumentViewer> viewer;
+  nsresult rv = docLoaderFactory->CreateInstanceForDocument(
+      nullptr, mDocument, nullptr, getter_AddRefs(viewer));
   NS_ENSURE_SUCCESS(rv, rv);
 
   auto upem = mOwner->FontEntry()->UnitsPerEm();
-  rv = viewer->Init(nullptr, gfx::IntRect(0, 0, upem, upem), nullptr);
+  rv = viewer->Init(nullptr, LayoutDeviceIntRect(0, 0, upem, upem), nullptr);
   if (NS_SUCCEEDED(rv)) {
     rv = viewer->Open(nullptr, nullptr);
     NS_ENSURE_SUCCESS(rv, rv);

@@ -82,7 +82,8 @@ static mozilla::LazyLogModule sTaskbarConcealerLog("TaskbarConcealer");
 // Map of all relevant Gecko windows, along with the monitor on which each
 // window was last known to be located.
 /* static */
-nsTHashMap<HWND, HMONITOR> nsWindow::TaskbarConcealer::sKnownWindows;
+MOZ_RUNINIT nsTHashMap<HWND, HMONITOR>
+    nsWindow::TaskbarConcealer::sKnownWindows;
 
 // Returns Nothing if the window in question is irrelevant (for any reason),
 // or Some(the window's current state) otherwise.
@@ -361,7 +362,8 @@ void nsWindow::TaskbarConcealer::OnAsyncStateUpdateRequest(HWND hwnd) {
   // shell to notify it to recalculate the current rudeness state of all
   // monitors.
   //
-  // [0] https://github.com/dechamps/RudeWindowFixer#a-race-condition-activating-a-minimized-window
+  // [0]
+  // https://github.com/dechamps/RudeWindowFixer#a-race-condition-activating-a-minimized-window
   //
   static UINT const shellHookMsg = ::RegisterWindowMessageW(L"SHELLHOOK");
   if (shellHookMsg != 0) {

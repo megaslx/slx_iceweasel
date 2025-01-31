@@ -19,7 +19,7 @@ const { HttpServer } = ChromeUtils.importESModule(
   "resource://testing-common/httpd.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -122,7 +122,7 @@ function serverHandler(metadata, response) {
   }
 }
 
-function checkResponse(request, data, context) {
+function checkResponse(request) {
   if (dbg) {
     print("============== checkResponse: in");
   }
@@ -184,7 +184,7 @@ function checkResponse(request, data, context) {
   var linkHeaderFound2 = false;
   var locationHeaderFound2 = 0;
   request.visitResponseHeaders({
-    visitHeader: function visit(aName, aValue) {
+    visitHeader: function visit(aName) {
       if (aName == "Link") {
         linkHeaderFound2 = true;
       }

@@ -11,12 +11,11 @@
 #include <gdk/gdk.h>
 #include <gio/gio.h>
 #include <gtk/gtk.h>
+#include <gio/gdesktopappinfo.h>
 #include "mozilla/RefPtr.h"
 
-#ifdef MOZ_ENABLE_DBUS
-// TODO: Remove this (we should use GDBus instead, which is not deprecated).
-#  include <dbus/dbus-glib.h>
-#endif
+typedef struct _DbusmenuMenuitem DbusmenuMenuitem;
+typedef struct _DbusmenuServer DbusmenuServer;
 
 namespace mozilla {
 
@@ -30,14 +29,18 @@ struct GObjectRefPtrTraits {
   template <>                 \
   struct RefPtrTraits<type_> : public GObjectRefPtrTraits<type_> {};
 
+GOBJECT_TRAITS(DbusmenuMenuitem)
+GOBJECT_TRAITS(DbusmenuServer)
 GOBJECT_TRAITS(GtkWidget)
 GOBJECT_TRAITS(GFile)
+GOBJECT_TRAITS(GFileMonitor)
 GOBJECT_TRAITS(GMenu)
 GOBJECT_TRAITS(GMenuItem)
 GOBJECT_TRAITS(GSimpleAction)
 GOBJECT_TRAITS(GSimpleActionGroup)
 GOBJECT_TRAITS(GDBusProxy)
 GOBJECT_TRAITS(GAppInfo)
+GOBJECT_TRAITS(GDesktopAppInfo)
 GOBJECT_TRAITS(GAppLaunchContext)
 GOBJECT_TRAITS(GdkDragContext)
 GOBJECT_TRAITS(GDBusMessage)
@@ -45,10 +48,9 @@ GOBJECT_TRAITS(GdkPixbuf)
 GOBJECT_TRAITS(GCancellable)
 GOBJECT_TRAITS(GtkIMContext)
 GOBJECT_TRAITS(GUnixFDList)
-
-#ifdef MOZ_ENABLE_DBUS
-GOBJECT_TRAITS(DBusGProxy)
-#endif
+GOBJECT_TRAITS(GtkCssProvider)
+GOBJECT_TRAITS(GDBusMethodInvocation)
+GOBJECT_TRAITS(GdkWindow)
 
 #undef GOBJECT_TRAITS
 
@@ -71,18 +73,6 @@ struct RefPtrTraits<GDBusNodeInfo> {
     g_dbus_node_info_unref(aObject);
   }
 };
-
-#ifdef MOZ_ENABLE_DBUS
-template <>
-struct RefPtrTraits<DBusGConnection> {
-  static void AddRef(DBusGConnection* aObject) {
-    dbus_g_connection_ref(aObject);
-  }
-  static void Release(DBusGConnection* aObject) {
-    dbus_g_connection_unref(aObject);
-  }
-};
-#endif
 
 }  // namespace mozilla
 

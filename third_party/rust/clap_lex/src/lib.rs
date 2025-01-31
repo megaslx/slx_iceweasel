@@ -40,7 +40,7 @@
 //!                 Ok(Color::Never)
 //!             }
 //!             Some(invalid) => {
-//!                 Err(format!("Invalid value for `--color`, {:?}", invalid).into())
+//!                 Err(format!("Invalid value for `--color`, {invalid:?}").into())
 //!             }
 //!         }
 //!     }
@@ -67,7 +67,7 @@
 //!             match long {
 //!                 Ok("verbose") => {
 //!                     if let Some(value) = value {
-//!                         return Err(format!("`--verbose` does not take a value, got `{:?}`", value).into());
+//!                         return Err(format!("`--verbose` does not take a value, got `{value:?}`").into());
 //!                     }
 //!                     args.verbosity += 1;
 //!                 }
@@ -91,7 +91,7 @@
 //!                         args.color = Color::parse(value)?;
 //!                     }
 //!                     Ok(c) => {
-//!                         return Err(format!("Unexpected flag: -{}", c).into());
+//!                         return Err(format!("Unexpected flag: -{c}").into());
 //!                     }
 //!                     Err(e) => {
 //!                         return Err(format!("Unexpected flag: -{}", e.to_string_lossy()).into());
@@ -107,8 +107,13 @@
 //! }
 //!
 //! let args = parse_args(["bin", "--hello", "world"]);
-//! println!("{:?}", args);
+//! println!("{args:?}");
 //! ```
+
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![warn(missing_docs)]
+#![warn(clippy::print_stderr)]
+#![warn(clippy::print_stdout)]
 
 mod ext;
 
@@ -139,7 +144,7 @@ impl RawArgs {
     /// let _bin = raw.next_os(&mut cursor);
     ///
     /// let mut paths = raw.remaining(&mut cursor).map(PathBuf::from).collect::<Vec<_>>();
-    /// println!("{:?}", paths);
+    /// println!("{paths:?}");
     /// ```
     pub fn from_args() -> Self {
         Self::new(std::env::args_os())
@@ -156,9 +161,9 @@ impl RawArgs {
     /// let _bin = raw.next_os(&mut cursor);
     ///
     /// let mut paths = raw.remaining(&mut cursor).map(PathBuf::from).collect::<Vec<_>>();
-    /// println!("{:?}", paths);
+    /// println!("{paths:?}");
     /// ```
-    pub fn new(iter: impl IntoIterator<Item = impl Into<std::ffi::OsString>>) -> Self {
+    pub fn new(iter: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
         let iter = iter.into_iter();
         Self::from(iter)
     }
@@ -174,7 +179,7 @@ impl RawArgs {
     /// let _bin = raw.next_os(&mut cursor);
     ///
     /// let mut paths = raw.remaining(&mut cursor).map(PathBuf::from).collect::<Vec<_>>();
-    /// println!("{:?}", paths);
+    /// println!("{paths:?}");
     /// ```
     pub fn cursor(&self) -> ArgCursor {
         ArgCursor::new()
@@ -213,7 +218,7 @@ impl RawArgs {
     /// let _bin = raw.next_os(&mut cursor);
     ///
     /// let mut paths = raw.remaining(&mut cursor).map(PathBuf::from).collect::<Vec<_>>();
-    /// println!("{:?}", paths);
+    /// println!("{paths:?}");
     /// ```
     pub fn remaining(&self, cursor: &mut ArgCursor) -> impl Iterator<Item = &OsStr> {
         let remaining = self.items[cursor.cursor..].iter().map(|s| s.as_os_str());
@@ -300,10 +305,14 @@ impl<'s> ParsedArg<'s> {
         self.inner == "--"
     }
 
-    /// Does the argument look like a number
-    pub fn is_number(&self) -> bool {
+    /// Does the argument look like a negative number?
+    ///
+    /// This won't parse the number in full but attempts to see if this looks
+    /// like something along the lines of `-3`, `-0.3`, or `-33.03`
+    pub fn is_negative_number(&self) -> bool {
         self.to_value()
-            .map(|s| s.parse::<f64>().is_ok())
+            .ok()
+            .and_then(|s| Some(is_number(s.strip_prefix('-')?)))
             .unwrap_or_default()
     }
 
@@ -408,8 +417,8 @@ impl<'s> ShortFlags<'s> {
     /// Does the short flag look like a number
     ///
     /// Ideally call this before doing any iterator
-    pub fn is_number(&self) -> bool {
-        self.invalid_suffix.is_none() && self.utf8_prefix.as_str().parse::<f64>().is_ok()
+    pub fn is_negative_number(&self) -> bool {
+        self.invalid_suffix.is_none() && is_number(self.utf8_prefix.as_str())
     }
 
     /// Advance the iterator, returning the next short flag on success
@@ -459,10 +468,43 @@ fn split_nonutf8_once(b: &OsStr) -> (&str, Option<&OsStr>) {
     match b.try_str() {
         Ok(s) => (s, None),
         Err(err) => {
-            // SAFETY: `char_indices` ensures `index` is at a valid UTF-8 boundary
+            // SAFETY: `err.valid_up_to()`, which came from str::from_utf8(), is guaranteed
+            // to be a valid UTF8 boundary
             let (valid, after_valid) = unsafe { ext::split_at(b, err.valid_up_to()) };
             let valid = valid.try_str().unwrap();
             (valid, Some(after_valid))
         }
+    }
+}
+
+fn is_number(arg: &str) -> bool {
+    // Return true if this looks like an integer or a float where it's all
+    // digits plus an optional single dot after some digits.
+    //
+    // For floats allow forms such as `1.`, `1.2`, `1.2e10`, etc.
+    let mut seen_dot = false;
+    let mut position_of_e = None;
+    for (i, c) in arg.as_bytes().iter().enumerate() {
+        match c {
+            // Digits are always valid
+            b'0'..=b'9' => {}
+
+            // Allow a `.`, but only one, only if it comes before an
+            // optional exponent, and only if it's not the first character.
+            b'.' if !seen_dot && position_of_e.is_none() && i > 0 => seen_dot = true,
+
+            // Allow an exponent `e` but only at most one after the first
+            // character.
+            b'e' if position_of_e.is_none() && i > 0 => position_of_e = Some(i),
+
+            _ => return false,
+        }
+    }
+
+    // Disallow `-1e` which isn't a valid float since it doesn't actually have
+    // an exponent.
+    match position_of_e {
+        Some(i) => i != arg.len() - 1,
+        None => true,
     }
 }

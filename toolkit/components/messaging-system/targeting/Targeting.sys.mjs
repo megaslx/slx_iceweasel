@@ -2,12 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  ASRouterTargeting:
+    // eslint-disable-next-line mozilla/no-browser-refs-in-toolkit
+    "resource:///modules/asrouter/ASRouterTargeting.sys.mjs",
   ClientEnvironment: "resource://normandy/lib/ClientEnvironment.sys.mjs",
   ClientEnvironmentBase:
     "resource://gre/modules/components-utils/ClientEnvironment.sys.mjs",
@@ -18,16 +20,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  ASRouterTargeting: "resource://activity-stream/lib/ASRouterTargeting.jsm",
-});
-
-const TARGETING_EVENT_CATEGORY = "messaging_experiments";
-const TARGETING_EVENT_METHOD = "targeting";
 const DEFAULT_TIMEOUT = 5000;
 const ERROR_TYPES = {
-  ATTRIBUTE_ERROR: "attribute_error",
-  TIMEOUT: "attribute_timeout",
+  ATTRIBUTE_ERROR: "AttributeError",
+  TIMEOUT: "AttributeTimeout",
 };
 
 const TargetingEnvironment = {
@@ -84,9 +80,6 @@ export class TargetingContext {
 
     // Used in telemetry to report where the targeting expression is coming from
     this.#telemetrySource = options.source;
-
-    // Enable event recording
-    Services.telemetry.setEventRecordingEnabled(TARGETING_EVENT_CATEGORY, true);
   }
 
   setTelemetrySource(source) {
@@ -95,23 +88,13 @@ export class TargetingContext {
     }
   }
 
-  _sendUndesiredEvent(eventData) {
+  _sendUndesiredEvent({ event, value }) {
+    let extra = { value };
     if (this.#telemetrySource) {
-      Services.telemetry.recordEvent(
-        TARGETING_EVENT_CATEGORY,
-        TARGETING_EVENT_METHOD,
-        eventData.event,
-        eventData.value,
-        { source: this.#telemetrySource }
-      );
-    } else {
-      Services.telemetry.recordEvent(
-        TARGETING_EVENT_CATEGORY,
-        TARGETING_EVENT_METHOD,
-        eventData.event,
-        eventData.value
-      );
+      extra.source = this.#telemetrySource;
     }
+
+    Glean.messagingExperiments["targeting" + event].record(extra);
   }
 
   /**

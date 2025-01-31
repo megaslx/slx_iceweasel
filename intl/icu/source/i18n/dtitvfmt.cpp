@@ -641,7 +641,7 @@ DateIntervalFormat::setContext(UDisplayContext value, UErrorCode& status)
 {
     if (U_FAILURE(status))
         return;
-    if ( (UDisplayContextType)((uint32_t)value >> 8) == UDISPCTX_TYPE_CAPITALIZATION ) {
+    if (static_cast<UDisplayContextType>(static_cast<uint32_t>(value) >> 8) == UDISPCTX_TYPE_CAPITALIZATION) {
         fCapitalizationContext = value;
     } else {
         status = U_ILLEGAL_ARGUMENT_ERROR;
@@ -652,10 +652,10 @@ UDisplayContext
 DateIntervalFormat::getContext(UDisplayContextType type, UErrorCode& status) const
 {
     if (U_FAILURE(status))
-        return (UDisplayContext)0;
+        return static_cast<UDisplayContext>(0);
     if (type != UDISPCTX_TYPE_CAPITALIZATION) {
         status = U_ILLEGAL_ARGUMENT_ERROR;
-        return (UDisplayContext)0;
+        return static_cast<UDisplayContext>(0);
     }
     return fCapitalizationContext;
 }
@@ -706,7 +706,7 @@ DateIntervalFormat::create(const Locale& locale,
     } else if ( U_FAILURE(status) ) {
         // safe to delete f, although nothing actually is saved
         delete f;
-        f = 0;
+        f = nullptr;
     }
     return f;
 }
@@ -829,7 +829,7 @@ DateIntervalFormat::initializePattern(UErrorCode& status) {
         int32_t dateTimeFormatLength;
         const char16_t* dateTimeFormat = ures_getStringByIndex(
                                             dateTimePatternsRes.getAlias(),
-                                            (int32_t)DateFormat::kDateTime,
+                                            static_cast<int32_t>(DateFormat::kDateTime),
                                             &dateTimeFormatLength, &status);
         if ( U_SUCCESS(status) && dateTimeFormatLength >= 3 ) {
             fDateTimeFormat = new UnicodeString(dateTimeFormat, dateTimeFormatLength);
@@ -1066,6 +1066,7 @@ DateIntervalFormat::getDateTimeSkeleton(const UnicodeString& skeleton,
     int32_t mCount = 0;
     int32_t vCount = 0;
     int32_t zCount = 0;
+    int32_t OCount = 0;
     char16_t hourChar = u'\0';
     int32_t i;
 
@@ -1128,6 +1129,10 @@ DateIntervalFormat::getDateTimeSkeleton(const UnicodeString& skeleton,
             ++vCount;
             timeSkeleton.append(ch);
             break;
+          case CAP_O:
+            ++OCount;
+            timeSkeleton.append(ch);
+            break;
           case LOW_A:
           case CAP_V:
           case CAP_Z:
@@ -1179,10 +1184,31 @@ DateIntervalFormat::getDateTimeSkeleton(const UnicodeString& skeleton,
         normalizedTimeSkeleton.append(LOW_M);
     }
     if ( zCount != 0 ) {
-        normalizedTimeSkeleton.append(LOW_Z);
+        if ( zCount <= 3 ) {
+            normalizedTimeSkeleton.append(LOW_Z);
+        } else {
+            for ( int32_t j = 0; j < zCount && j < MAX_z_COUNT; ++j ) {
+                 normalizedTimeSkeleton.append(LOW_Z);
+            }
+        }
     }
     if ( vCount != 0 ) {
-        normalizedTimeSkeleton.append(LOW_V);
+        if ( vCount <= 3 ) {
+            normalizedTimeSkeleton.append(LOW_V);
+        } else {
+            for ( int32_t j = 0; j < vCount && j < MAX_v_COUNT; ++j ) {
+                 normalizedTimeSkeleton.append(LOW_V);
+            }
+        }
+    }
+    if ( OCount != 0 ) {
+        if ( OCount <= 3 ) {
+            normalizedTimeSkeleton.append(CAP_O);
+        } else {
+            for ( int32_t j = 0; j < OCount && j < MAX_O_COUNT; ++j ) {
+                 normalizedTimeSkeleton.append(CAP_O);
+            }
+        }
     }
 }
 
@@ -1477,7 +1503,7 @@ DateIntervalFormat::setIntervalPattern(UCalendarDateFields field,
                 // look for the best match skeleton, for example: "yMMM"
                 const UnicodeString* tmpBest = fInfo->getBestSkeleton(
                                         *extendedBestSkeleton, differenceInfo);
-                if ( tmpBest != 0 && differenceInfo != -1 ) {
+                if (tmpBest != nullptr && differenceInfo != -1) {
                     fInfo->getIntervalPattern(*tmpBest, field, pattern, status);
                     bestSkeleton = tmpBest;
                 }
@@ -1538,7 +1564,7 @@ DateIntervalFormat::splitPatternInto2Part(const UnicodeString& intervalPattern) 
 
         if (ch != prevCh && count > 0) {
             // check the repeativeness of pattern letter
-            UBool repeated = patternRepeated[(int)(prevCh - PATTERN_CHAR_BASE)];
+            UBool repeated = patternRepeated[prevCh - PATTERN_CHAR_BASE];
             if ( repeated == false ) {
                 patternRepeated[prevCh - PATTERN_CHAR_BASE] = true;
             } else {
@@ -1569,7 +1595,7 @@ DateIntervalFormat::splitPatternInto2Part(const UnicodeString& intervalPattern) 
     // "d-d"(last char repeated ), and
     // "d-d MM" ( repetition found )
     if ( count > 0 && foundRepetition == false ) {
-        if ( patternRepeated[(int)(prevCh - PATTERN_CHAR_BASE)] == false ) {
+        if (patternRepeated[prevCh - PATTERN_CHAR_BASE] == false) {
             count = 0;
         }
     }
@@ -1737,7 +1763,12 @@ DateIntervalFormat::adjustFieldWidth(const UnicodeString& inputSkeleton,
     }
     if ( differenceInfo == 2 ) {
         if (inputSkeleton.indexOf(LOW_Z) != -1) {
+             bestMatchSkeletonFieldWidth[(int)(LOW_Z - PATTERN_CHAR_BASE)] = bestMatchSkeletonFieldWidth[(int)(LOW_V - PATTERN_CHAR_BASE)];
              findReplaceInPattern(adjustedPtn, UnicodeString(LOW_V), UnicodeString(LOW_Z));
+         }
+         if (inputSkeleton.indexOf(CAP_O) != -1) {
+             bestMatchSkeletonFieldWidth[(int)(CAP_O - PATTERN_CHAR_BASE)] = bestMatchSkeletonFieldWidth[(int)(LOW_V - PATTERN_CHAR_BASE)];
+             findReplaceInPattern(adjustedPtn, UnicodeString(LOW_V), UnicodeString(CAP_O));
          }
          if (inputSkeleton.indexOf(CAP_K) != -1) {
              findReplaceInPattern(adjustedPtn, UnicodeString(LOW_H), UnicodeString(CAP_K));
@@ -1774,8 +1805,8 @@ DateIntervalFormat::adjustFieldWidth(const UnicodeString& inputSkeleton,
                 // for skeleton "M+", the pattern might be "...L..."
                 skeletonChar = CAP_M;
             }
-            int32_t fieldCount = bestMatchSkeletonFieldWidth[(int)(skeletonChar - PATTERN_CHAR_BASE)];
-            int32_t inputFieldCount = inputSkeletonFieldWidth[(int)(skeletonChar - PATTERN_CHAR_BASE)];
+            int32_t fieldCount = bestMatchSkeletonFieldWidth[skeletonChar - PATTERN_CHAR_BASE];
+            int32_t inputFieldCount = inputSkeletonFieldWidth[skeletonChar - PATTERN_CHAR_BASE];
             if ( fieldCount == count && inputFieldCount > fieldCount ) {
                 count = inputFieldCount - fieldCount;
                 int32_t j;
@@ -1813,8 +1844,8 @@ DateIntervalFormat::adjustFieldWidth(const UnicodeString& inputSkeleton,
             // for skeleton "M+", the pattern might be "...L..."
             skeletonChar = CAP_M;
         }
-        int32_t fieldCount = bestMatchSkeletonFieldWidth[(int)(skeletonChar - PATTERN_CHAR_BASE)];
-        int32_t inputFieldCount = inputSkeletonFieldWidth[(int)(skeletonChar - PATTERN_CHAR_BASE)];
+        int32_t fieldCount = bestMatchSkeletonFieldWidth[skeletonChar - PATTERN_CHAR_BASE];
+        int32_t inputFieldCount = inputSkeletonFieldWidth[skeletonChar - PATTERN_CHAR_BASE];
         if ( fieldCount == count && inputFieldCount > fieldCount ) {
             count = inputFieldCount - fieldCount;
             int32_t j;

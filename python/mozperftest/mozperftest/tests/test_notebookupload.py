@@ -26,8 +26,8 @@ def setup_env(options):
 
 @pytest.mark.parametrize("no_filter", [True, False])
 @mock.patch("mozperftest.metrics.notebookupload.PerftestNotebook")
+@mock.patch("mozperftest.test.BrowsertimeRunner", new=mock.MagicMock())
 def test_notebookupload_with_filter(notebook, no_filter):
-
     options = {
         "notebook-metrics": [],
         "notebook-prefix": "",
@@ -45,7 +45,7 @@ def test_notebookupload_with_filter(notebook, no_filter):
 
     if no_filter:
         args, kwargs = notebook.call_args_list[0]
-        assert type(kwargs["data"][0]["data"][0]["value"]) == str
+        assert type(kwargs["data"][0]["data"][0]["value"]) is str
     else:
         for call in notebook.call_args_list:
             args, kwargs = call
@@ -61,6 +61,7 @@ def test_notebookupload_with_filter(notebook, no_filter):
 
 @pytest.mark.parametrize("stats", [False, True])
 @mock.patch("mozperftest.metrics.notebookupload.PerftestNotebook")
+@mock.patch("mozperftest.test.BrowsertimeRunner", new=mock.MagicMock())
 def test_compare_to_success(notebook, stats):
     options = {
         "notebook-metrics": [metric_fields("firstPaint")],
@@ -94,6 +95,7 @@ def test_compare_to_success(notebook, stats):
 
 @pytest.mark.parametrize("filepath", ["invalidPath", str(BT_DATA)])
 @mock.patch("mozperftest.metrics.notebookupload.PerftestNotebook")
+@mock.patch("mozperftest.test.BrowsertimeRunner", new=mock.MagicMock())
 def test_compare_to_invalid_parameter(notebook, filepath):
     options = {
         "notebook-metrics": [metric_fields("firstPaint")],

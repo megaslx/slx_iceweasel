@@ -13,7 +13,7 @@ import lzma
 import os
 import struct
 import zlib
-from collections import namedtuple
+from collections import deque, namedtuple
 from xml.etree.ElementTree import XML
 
 
@@ -69,7 +69,10 @@ def unxar(fileobj):
     if len(toc) != uncompressed_toc_len:
         raise Exception("Corrupted XAR?")
     toc = XML(toc).find("toc")
-    for f in toc.findall("file"):
+    queue = deque(toc.findall("file"))
+    while queue:
+        f = queue.pop()
+        queue.extend(f.iterfind("file"))
         if f.find("type").text != "file":
             continue
         filename = f.find("name").text
@@ -105,6 +108,8 @@ class Pbzx(object):
         # check.
         chunk_size = fileobj.read(8)
         chunk_size = struct.unpack(">Q", chunk_size)[0]
+        # Not using mozbuild.util.cpu_count() because this file is used standalone
+        # to generate system symbols.
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count())
         self.chunk_getter = executor.map(self._uncompress_chunk, self._chunker(fileobj))
         self._init_one_chunk()

@@ -2,10 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import React, { Component } from "react";
-import PropTypes from "prop-types";
+import React, { Component } from "devtools/client/shared/vendor/react";
+import { div, button } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
-import { connect } from "../../utils/connect";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 import { features, prefs } from "../../utils/prefs";
 import {
   getIsWaitingOnBreak,
@@ -13,20 +14,16 @@ import {
   getCurrentThread,
   isTopFrameSelected,
   getIsCurrentThreadPaused,
-  getIsThreadCurrentlyTracing,
-  getJavascriptTracingLogMethod,
-} from "../../selectors";
+} from "../../selectors/index";
 import { formatKeyShortcut } from "../../utils/text";
-import actions from "../../actions";
+import actions from "../../actions/index";
 import { debugBtn } from "../shared/Button/CommandBarButton";
 import AccessibleImage from "../shared/AccessibleImage";
-import "./CommandBar.css";
-import { showMenu } from "../../context-menu/menu";
 
-const classnames = require("devtools/client/shared/classnames.js");
-const MenuButton = require("devtools/client/shared/components/menu/MenuButton");
-const MenuItem = require("devtools/client/shared/components/menu/MenuItem");
-const MenuList = require("devtools/client/shared/components/menu/MenuList");
+const classnames = require("resource://devtools/client/shared/classnames.js");
+const MenuButton = require("resource://devtools/client/shared/components/menu/MenuButton.js");
+const MenuItem = require("resource://devtools/client/shared/components/menu/MenuItem.js");
+const MenuList = require("resource://devtools/client/shared/components/menu/MenuList.js");
 
 const isMacOS = Services.appinfo.OS === "Darwin";
 
@@ -57,11 +54,6 @@ const KEYS = {
     stepOut: "Shift+F11",
     trace: "Ctrl+Shift+5",
   },
-};
-
-const LOG_METHODS = {
-  CONSOLE: "console",
-  STDOUT: "stdout",
 };
 
 function getKey(action) {
@@ -99,10 +91,8 @@ class CommandBar extends Component {
       breakOnNext: PropTypes.func.isRequired,
       horizontal: PropTypes.bool.isRequired,
       isPaused: PropTypes.bool.isRequired,
-      isTracingEnabled: PropTypes.bool.isRequired,
       isWaitingOnBreak: PropTypes.bool.isRequired,
       javascriptEnabled: PropTypes.bool.isRequired,
-      trace: PropTypes.func.isRequired,
       resume: PropTypes.func.isRequired,
       skipPausing: PropTypes.bool.isRequired,
       stepIn: PropTypes.func.isRequired,
@@ -114,9 +104,6 @@ class CommandBar extends Component {
       toggleSkipPausing: PropTypes.any.isRequired,
       toggleSourceMapsEnabled: PropTypes.func.isRequired,
       topFrameSelected: PropTypes.bool.isRequired,
-      toggleTracing: PropTypes.func.isRequired,
-      logMethod: PropTypes.string.isRequired,
-      setJavascriptTracingLogMethod: PropTypes.func.isRequired,
       setHideOrShowIgnoredSources: PropTypes.func.isRequired,
       toggleSourceMapIgnoreList: PropTypes.func.isRequired,
     };
@@ -195,63 +182,6 @@ class CommandBar extends Component {
     this.props.resume();
   }
 
-  renderTraceButton() {
-    if (!features.javascriptTracing) {
-      return null;
-    }
-    // Display a button which:
-    // - on left click, would toggle on/off javascript tracing
-    // - on right click, would display a context menu allowing to choose the logging output (console or stdout)
-    return (
-      <button
-        className={`devtools-button command-bar-button debugger-trace-menu-button ${
-          this.props.isTracingEnabled ? "active" : ""
-        }`}
-        title={
-          this.props.isTracingEnabled
-            ? L10N.getFormatStr("stopTraceButtonTooltip2", formatKey("trace"))
-            : L10N.getFormatStr(
-                "startTraceButtonTooltip2",
-                formatKey("trace"),
-                this.props.logMethod
-              )
-        }
-        onClick={event => {
-          this.props.toggleTracing(this.props.logMethod);
-        }}
-        onContextMenu={event => {
-          event.preventDefault();
-          event.stopPropagation();
-
-          // Avoid showing the menu to avoid having to support changing tracing config "live"
-          if (this.props.isTracingEnabled) {
-            return;
-          }
-
-          const items = [
-            {
-              id: "debugger-trace-menu-item-console",
-              label: L10N.getStr("traceInWebConsole"),
-              checked: this.props.logMethod == LOG_METHODS.CONSOLE,
-              click: () => {
-                this.props.setJavascriptTracingLogMethod(LOG_METHODS.CONSOLE);
-              },
-            },
-            {
-              id: "debugger-trace-menu-item-stdout",
-              label: L10N.getStr("traceInStdout"),
-              checked: this.props.logMethod == LOG_METHODS.STDOUT,
-              click: () => {
-                this.props.setJavascriptTracingLogMethod(LOG_METHODS.STDOUT);
-              },
-            },
-          ];
-          showMenu(event, items);
-        }}
-      />
-    );
-  }
-
   renderPauseButton() {
     const { breakOnNext, isWaitingOnBreak } = this.props;
 
@@ -284,123 +214,119 @@ class CommandBar extends Component {
 
   renderSkipPausingButton() {
     const { skipPausing, toggleSkipPausing } = this.props;
-
-    return (
-      <button
-        className={classnames(
+    return button(
+      {
+        className: classnames(
           "command-bar-button",
           "command-bar-skip-pausing",
           {
             active: skipPausing,
           }
-        )}
-        title={
-          skipPausing
-            ? L10N.getStr("undoSkipPausingTooltip.label")
-            : L10N.getStr("skipPausingTooltip.label")
-        }
-        onClick={toggleSkipPausing}
-      >
-        <AccessibleImage
-          className={skipPausing ? "enable-pausing" : "disable-pausing"}
-        />
-      </button>
+        ),
+        title: skipPausing
+          ? L10N.getStr("undoSkipPausingTooltip.label")
+          : L10N.getStr("skipPausingTooltip.label"),
+        onClick: toggleSkipPausing,
+      },
+      React.createElement(AccessibleImage, {
+        className: skipPausing ? "enable-pausing" : "disable-pausing",
+      })
     );
   }
 
   renderSettingsButton() {
     const { toolboxDoc } = this.context;
-
-    return (
-      <MenuButton
-        menuId="debugger-settings-menu-button"
-        toolboxDoc={toolboxDoc}
-        className="devtools-button command-bar-button debugger-settings-menu-button"
-        title={L10N.getStr("settings.button.label")}
-      >
-        {() => this.renderSettingsMenuItems()}
-      </MenuButton>
+    return React.createElement(
+      MenuButton,
+      {
+        menuId: "debugger-settings-menu-button",
+        toolboxDoc,
+        className:
+          "devtools-button command-bar-button debugger-settings-menu-button",
+        title: L10N.getStr("settings.button.label"),
+      },
+      () => this.renderSettingsMenuItems()
     );
   }
 
   renderSettingsMenuItems() {
-    return (
-      <MenuList id="debugger-settings-menu-list">
-        <MenuItem
-          key="debugger-settings-menu-item-disable-javascript"
-          className="menu-item debugger-settings-menu-item-disable-javascript"
-          checked={!this.props.javascriptEnabled}
-          label={L10N.getStr("settings.disableJavaScript.label")}
-          tooltip={L10N.getStr("settings.disableJavaScript.tooltip")}
-          onClick={() => {
-            this.props.toggleJavaScriptEnabled(!this.props.javascriptEnabled);
-          }}
-        />
-        <MenuItem
-          key="debugger-settings-menu-item-disable-inline-previews"
-          checked={features.inlinePreview}
-          label={L10N.getStr("inlinePreview.toggle.label")}
-          tooltip={L10N.getStr("inlinePreview.toggle.tooltip")}
-          onClick={() =>
-            this.props.toggleInlinePreview(!features.inlinePreview)
-          }
-        />
-        <MenuItem
-          key="debugger-settings-menu-item-disable-wrap-lines"
-          checked={prefs.editorWrapping}
-          label={L10N.getStr("editorWrapping.toggle.label")}
-          tooltip={L10N.getStr("editorWrapping.toggle.tooltip")}
-          onClick={() => this.props.toggleEditorWrapping(!prefs.editorWrapping)}
-        />
-        <MenuItem
-          key="debugger-settings-menu-item-disable-sourcemaps"
-          checked={prefs.clientSourceMapsEnabled}
-          label={L10N.getStr("settings.toggleSourceMaps.label")}
-          tooltip={L10N.getStr("settings.toggleSourceMaps.tooltip")}
-          onClick={() =>
-            this.props.toggleSourceMapsEnabled(!prefs.clientSourceMapsEnabled)
-          }
-        />
-        <MenuItem
-          key="debugger-settings-menu-item-hide-ignored-sources"
-          className="menu-item debugger-settings-menu-item-hide-ignored-sources"
-          checked={prefs.hideIgnoredSources}
-          label={L10N.getStr("settings.hideIgnoredSources.label")}
-          tooltip={L10N.getStr("settings.hideIgnoredSources.tooltip")}
-          onClick={() =>
-            this.props.setHideOrShowIgnoredSources(!prefs.hideIgnoredSources)
-          }
-        />
-        <MenuItem
-          key="debugger-settings-menu-item-enable-sourcemap-ignore-list"
-          className="menu-item debugger-settings-menu-item-enable-sourcemap-ignore-list"
-          checked={prefs.sourceMapIgnoreListEnabled}
-          label={L10N.getStr("settings.enableSourceMapIgnoreList.label")}
-          tooltip={L10N.getStr("settings.enableSourceMapIgnoreList.tooltip")}
-          onClick={() =>
-            this.props.toggleSourceMapIgnoreList(
-              !prefs.sourceMapIgnoreListEnabled
-            )
-          }
-        />
-      </MenuList>
+    return React.createElement(
+      MenuList,
+      {
+        id: "debugger-settings-menu-list",
+      },
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-disable-javascript",
+        className: "menu-item debugger-settings-menu-item-disable-javascript",
+        checked: !this.props.javascriptEnabled,
+        label: L10N.getStr("settings.disableJavaScript.label"),
+        tooltip: L10N.getStr("settings.disableJavaScript.tooltip"),
+        onClick: () => {
+          this.props.toggleJavaScriptEnabled(!this.props.javascriptEnabled);
+        },
+      }),
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-disable-inline-previews",
+        checked: features.inlinePreview,
+        label: L10N.getStr("inlinePreview.toggle.label"),
+        tooltip: L10N.getStr("inlinePreview.toggle.tooltip"),
+        onClick: () => this.props.toggleInlinePreview(!features.inlinePreview),
+      }),
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-disable-wrap-lines",
+        checked: prefs.editorWrapping,
+        label: L10N.getStr("editorWrapping.toggle.label"),
+        tooltip: L10N.getStr("editorWrapping.toggle.tooltip"),
+        onClick: () => this.props.toggleEditorWrapping(!prefs.editorWrapping),
+      }),
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-disable-sourcemaps",
+        checked: prefs.clientSourceMapsEnabled,
+        label: L10N.getStr("settings.toggleSourceMaps.label"),
+        tooltip: L10N.getStr("settings.toggleSourceMaps.tooltip"),
+        onClick: () =>
+          this.props.toggleSourceMapsEnabled(!prefs.clientSourceMapsEnabled),
+      }),
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-hide-ignored-sources",
+        className: "menu-item debugger-settings-menu-item-hide-ignored-sources",
+        checked: prefs.hideIgnoredSources,
+        label: L10N.getStr("settings.hideIgnoredSources.label"),
+        tooltip: L10N.getStr("settings.hideIgnoredSources.tooltip"),
+        onClick: () =>
+          this.props.setHideOrShowIgnoredSources(!prefs.hideIgnoredSources),
+      }),
+      React.createElement(MenuItem, {
+        key: "debugger-settings-menu-item-enable-sourcemap-ignore-list",
+        className:
+          "menu-item debugger-settings-menu-item-enable-sourcemap-ignore-list",
+        checked: prefs.sourceMapIgnoreListEnabled,
+        label: L10N.getStr("settings.enableSourceMapIgnoreList.label"),
+        tooltip: L10N.getStr("settings.enableSourceMapIgnoreList.tooltip"),
+        onClick: () =>
+          this.props.toggleSourceMapIgnoreList(
+            !prefs.sourceMapIgnoreListEnabled
+          ),
+      })
     );
   }
 
   render() {
-    return (
-      <div
-        className={classnames("command-bar", {
+    return div(
+      {
+        className: classnames("command-bar", {
           vertical: !this.props.horizontal,
-        })}
-      >
-        {this.renderStepButtons()}
-        <div className="filler" />
-        {this.renderTraceButton()}
-        {this.renderSkipPausingButton()}
-        <div className="devtools-separator" />
-        {this.renderSettingsButton()}
-      </div>
+        }),
+      },
+      this.renderStepButtons(),
+      div({
+        className: "filler",
+      }),
+      this.renderSkipPausingButton(),
+      div({
+        className: "devtools-separator",
+      }),
+      this.renderSettingsButton()
     );
   }
 }
@@ -416,13 +342,9 @@ const mapStateToProps = state => ({
   topFrameSelected: isTopFrameSelected(state, getCurrentThread(state)),
   javascriptEnabled: state.ui.javascriptEnabled,
   isPaused: getIsCurrentThreadPaused(state),
-  isTracingEnabled: getIsThreadCurrentlyTracing(state, getCurrentThread(state)),
-  logMethod: getJavascriptTracingLogMethod(state),
 });
 
 export default connect(mapStateToProps, {
-  toggleTracing: actions.toggleTracing,
-  setJavascriptTracingLogMethod: actions.setJavascriptTracingLogMethod,
   resume: actions.resume,
   stepIn: actions.stepIn,
   stepOut: actions.stepOut,

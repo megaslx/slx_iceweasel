@@ -209,32 +209,11 @@ this.AntiTracking = {
         this._createCleanupTask(cleanupFunction);
 
         this._createTask({
-          name: name + " reject foreign without exception",
-          cookieBehavior: BEHAVIOR_REJECT_FOREIGN,
-          allowList: true,
-          callback: callbackNonTracking,
-          extraPrefs: [
-            ["network.cookie.rejectForeignWithExceptions.enabled", false],
-            ...(extraPrefs || []),
-          ],
-          expectedBlockingNotifications: 0,
-          runInPrivateWindow,
-          iframeSandbox,
-          accessRemoval: null, // only passed with non-blocking callback
-          callbackAfterRemoval: null,
-          iframeAllow,
-        });
-        this._createCleanupTask(cleanupFunction);
-
-        this._createTask({
           name: name + " reject foreign with exception",
           cookieBehavior: BEHAVIOR_REJECT_FOREIGN,
           allowList: true,
           callback: callbackNonTracking,
-          extraPrefs: [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
+          extraPrefs: [...(extraPrefs || [])],
           expectedBlockingNotifications: 0,
           runInPrivateWindow,
           iframeSandbox,
@@ -249,10 +228,7 @@ this.AntiTracking = {
           cookieBehavior: BEHAVIOR_REJECT_FOREIGN,
           allowList: false,
           callback: callbackTracking,
-          extraPrefs: [
-            ["network.cookie.rejectForeignWithExceptions.enabled", false],
-            ...(extraPrefs || []),
-          ],
+          extraPrefs: [...(extraPrefs || [])],
           expectedBlockingNotifications: expectedBlockingNotifications
             ? Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_FOREIGN
             : 0,
@@ -260,25 +236,6 @@ this.AntiTracking = {
           iframeSandbox,
           accessRemoval,
           callbackAfterRemoval,
-          iframeAllow,
-        });
-        this._createCleanupTask(cleanupFunction);
-
-        this._createTask({
-          name,
-          cookieBehavior: BEHAVIOR_REJECT_FOREIGN,
-          allowList: false,
-          callback: callbackNonTracking,
-          extraPrefs: [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
-          expectedBlockingNotifications: false,
-          runInPrivateWindow,
-          iframeSandbox,
-          accessRemoval: null, // only passed with non-blocking callback
-          callbackAfterRemoval: null,
-          thirdPartyPage: TEST_ANOTHER_3RD_PARTY_PAGE,
           iframeAllow,
         });
         this._createCleanupTask(cleanupFunction);
@@ -347,22 +304,6 @@ this.AntiTracking = {
         );
         this._createCleanupTask(cleanupFunction);
 
-        this._createWindowOpenTask(
-          name,
-          BEHAVIOR_REJECT_FOREIGN,
-          callbackTracking,
-          callbackNonTracking,
-          runInPrivateWindow,
-          iframeSandbox,
-          false,
-          [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
-          iframeAllow
-        );
-        this._createCleanupTask(cleanupFunction);
-
         // Now, check if it works for nested iframes.
         this._createWindowOpenTask(
           name,
@@ -373,22 +314,6 @@ this.AntiTracking = {
           iframeSandbox,
           true,
           extraPrefs,
-          iframeAllow
-        );
-        this._createCleanupTask(cleanupFunction);
-
-        this._createWindowOpenTask(
-          name,
-          BEHAVIOR_REJECT_FOREIGN,
-          callbackTracking,
-          callbackNonTracking,
-          runInPrivateWindow,
-          iframeSandbox,
-          true,
-          [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
           iframeAllow
         );
         this._createCleanupTask(cleanupFunction);
@@ -410,22 +335,6 @@ this.AntiTracking = {
         );
         this._createCleanupTask(cleanupFunction);
 
-        this._createUserInteractionTask(
-          name,
-          BEHAVIOR_REJECT_FOREIGN,
-          callbackTracking,
-          callbackNonTracking,
-          runInPrivateWindow,
-          iframeSandbox,
-          false,
-          [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
-          iframeAllow
-        );
-        this._createCleanupTask(cleanupFunction);
-
         // Now, check if it works for nested iframes.
         this._createUserInteractionTask(
           name,
@@ -439,22 +348,6 @@ this.AntiTracking = {
           iframeAllow
         );
         this._createCleanupTask(cleanupFunction);
-
-        this._createUserInteractionTask(
-          name,
-          BEHAVIOR_REJECT_FOREIGN,
-          callbackTracking,
-          callbackNonTracking,
-          runInPrivateWindow,
-          iframeSandbox,
-          true,
-          [
-            ["network.cookie.rejectForeignWithExceptions.enabled", true],
-            ...(extraPrefs || []),
-          ],
-          iframeAllow
-        );
-        this._createCleanupTask(cleanupFunction);
       }
     }
   },
@@ -463,7 +356,7 @@ this.AntiTracking = {
     let cnt = 0;
 
     return new Promise(resolve => {
-      Services.obs.addObserver(function observer(subject, topic, data) {
+      Services.obs.addObserver(function observer(subject, topic) {
         if (topic != targetTopic) {
           return;
         }
@@ -708,6 +601,33 @@ this.AntiTracking = {
         consoleWarningPromise = Promise.resolve();
       }
 
+      let { expectedPartitioningNotifications } = options;
+      if (!Array.isArray(expectedPartitioningNotifications)) {
+        expectedPartitioningNotifications = [expectedPartitioningNotifications];
+      }
+
+      let consolePartitioningWarningPromise;
+      if (options.expectedPartitioningNotifications) {
+        consolePartitioningWarningPromise = new Promise(resolve => {
+          let consoleListener = {
+            observe(msg) {
+              if (
+                msg
+                  .QueryInterface(Ci.nsIScriptError)
+                  .category.startsWith("cookiePartitioned")
+              ) {
+                Services.console.unregisterListener(consoleListener);
+                resolve();
+              }
+            },
+          };
+
+          Services.console.registerListener(consoleListener);
+        });
+      } else {
+        consolePartitioningWarningPromise = Promise.resolve();
+      }
+
       info("Creating a new tab");
       let tab = BrowserTestUtils.addTab(win.gBrowser, topPage);
       win.gBrowser.selectedTab = tab;
@@ -858,7 +778,7 @@ this.AntiTracking = {
         doAccessRemovalChecks &&
         options.accessRemoval == "navigate-topframe"
       ) {
-        BrowserTestUtils.loadURIString(browser, TEST_4TH_PARTY_PAGE);
+        BrowserTestUtils.startLoadingURIString(browser, TEST_4TH_PARTY_PAGE);
         await BrowserTestUtils.browserLoaded(browser);
 
         let pageshow = BrowserTestUtils.waitForContentEvent(
@@ -922,13 +842,21 @@ this.AntiTracking = {
 
       // Wait until the message appears on the console.
       await consoleWarningPromise;
+      await consolePartitioningWarningPromise;
 
       let allMessages = Services.console.getMessageArray().filter(msg => {
         try {
           // Select all messages that the anti-tracking backend could generate.
-          return msg
-            .QueryInterface(Ci.nsIScriptError)
-            .category.startsWith("cookieBlocked");
+          let category = msg.QueryInterface(Ci.nsIScriptError).category;
+
+          let isBlocking = category.startsWith("cookieBlocked");
+
+          // Only look for partitioning notifications if we expect them.
+          let isPartitioning =
+            options.expectedPartitioningNotifications &&
+            category.startsWith("cookiePartitioned");
+
+          return isBlocking || isPartitioning;
         } catch (e) {
           return false;
         }
@@ -936,7 +864,9 @@ this.AntiTracking = {
       // When changing this list, please make sure to update the corresponding
       // code in ReportBlockingToConsole().
       let expectedCategories = [];
-      let rawExpectedCategories = options.expectedBlockingNotifications;
+      let rawExpectedCategories =
+        options.expectedBlockingNotifications ??
+        options.expectedPartitioningNotifications;
       if (!Array.isArray(rawExpectedCategories)) {
         // if given a single value to match, expect each message to match it
         rawExpectedCategories = Array(allMessages.length).fill(
@@ -956,6 +886,9 @@ this.AntiTracking = {
             break;
           case Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_FOREIGN:
             expectedCategories.push("cookieBlockedForeign");
+            break;
+          case Ci.nsIWebProgressListener.STATE_COOKIES_PARTITIONED_TRACKER:
+            expectedCategories.push("cookiePartitionedForeign");
             break;
         }
       }
@@ -1279,16 +1212,14 @@ this.AntiTracking = {
           });
 
           let windowClosed = new content.Promise(resolve => {
-            Services.ww.registerNotification(function notification(
-              aSubject,
-              aTopic,
-              aData
-            ) {
-              if (aTopic == "domwindowclosed") {
-                Services.ww.unregisterNotification(notification);
-                resolve();
+            Services.ww.registerNotification(
+              function notification(aSubject, aTopic) {
+                if (aTopic == "domwindowclosed") {
+                  Services.ww.unregisterNotification(notification);
+                  resolve();
+                }
               }
-            });
+            );
           });
 
           info("Opening a window from the iframe.");
@@ -1384,16 +1315,14 @@ this.AntiTracking = {
           await loading;
 
           let windowClosed = new content.Promise(resolve => {
-            Services.ww.registerNotification(function notification(
-              aSubject,
-              aTopic,
-              aData
-            ) {
-              if (aTopic == "domwindowclosed") {
-                Services.ww.unregisterNotification(notification);
-                resolve();
+            Services.ww.registerNotification(
+              function notification(aSubject, aTopic) {
+                if (aTopic == "domwindowclosed") {
+                  Services.ww.unregisterNotification(notification);
+                  resolve();
+                }
               }
-            });
+            );
           });
 
           info("Opening a window from the iframe.");
@@ -1473,12 +1402,12 @@ this.AntiTracking = {
 
       function Listener() {}
       Listener.prototype = {
-        onStartRequest(request) {},
+        onStartRequest() {},
         onDataAvailable(request, stream, off, cnt) {
           // Consume the data to prevent hitting the assertion.
           NetUtil.readInputStreamToString(stream, cnt);
         },
-        onStopRequest(request, st) {
+        onStopRequest(request) {
           let status = request.QueryInterface(Ci.nsIHttpChannel).responseStatus;
           if (status == 200) {
             resolve();

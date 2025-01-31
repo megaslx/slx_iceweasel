@@ -5,24 +5,21 @@
 import bisect
 import json
 import os
-import signal
 import subprocess
 import sys
 
-import six
 from mozlint import result
 from mozlint.pathutils import expand_exclusions
-from mozprocess import ProcessHandler
 
 
 def in_sorted_list(l, x):
     i = bisect.bisect_left(l, x)
-    return l[i] == x
+    return i < len(l) and l[i] == x
 
 
 def handle_clippy_msg(config, line, log, base_path, files):
     try:
-        detail = json.loads(six.ensure_text(line))
+        detail = json.loads(line)
         if "message" in detail:
             p = detail["target"]["src_path"]
             detail = detail["message"]
@@ -53,33 +50,24 @@ def handle_clippy_msg(config, line, log, base_path, files):
                 if not in_sorted_list(files, p):
                     return
                 p = os.path.join(base_path, l["file_name"])
+                line = l["line_start"]
                 res = {
                     "path": p,
                     "level": detail["level"],
-                    "lineno": l["line_start"],
+                    "lineno": line,
                     "column": l["column_start"],
                     "message": detail["message"],
                     "hint": detail["rendered"],
                     "rule": detail["code"]["code"],
                     "lineoffset": l["line_end"] - l["line_start"],
                 }
+                log.debug("Identified an issue in {}:{}".format(p, line))
                 return result.from_config(config, **res)
 
     except json.decoder.JSONDecodeError:
-        log.debug("Could not parse the output:")
-        log.debug("clippy output: {}".format(line))
+        # Could not parse the message.
+        # It is usually cargo info like "Finished `release` profile", etc
         return
-
-
-class clippyProcess(ProcessHandler):
-    def __init__(self, *args, **kwargs):
-        kwargs["stream"] = False
-        ProcessHandler.__init__(self, *args, **kwargs)
-
-    def run(self, *args, **kwargs):
-        orig = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        ProcessHandler.run(self, *args, **kwargs)
-        signal.signal(signal.SIGINT, orig)
 
 
 def lint(paths, config, fix=None, **lintargs):
@@ -88,16 +76,19 @@ def lint(paths, config, fix=None, **lintargs):
     log = lintargs["log"]
     results = []
     mach_path = lintargs["root"] + "/mach"
+    # can be extended in build/cargo/cargo-clippy.yaml
+    clippy_args = [
+        sys.executable,
+        mach_path,
+        "--log-no-times",
+        "cargo",
+        "clippy",
+        "--",
+        "--message-format=json",
+    ]
+    log.debug("Run clippy with = {}".format(" ".join(clippy_args)))
     march_cargo_process = subprocess.Popen(
-        [
-            sys.executable,
-            mach_path,
-            "--log-no-times",
-            "cargo",
-            "clippy",
-            "--",
-            "--message-format=json",
-        ],
+        clippy_args,
         stdout=subprocess.PIPE,
         text=True,
     )

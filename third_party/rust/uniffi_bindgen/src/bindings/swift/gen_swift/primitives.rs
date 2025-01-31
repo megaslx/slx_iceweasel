@@ -2,13 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::backend::{CodeType, Literal};
-use crate::interface::{types::Type, Radix};
+use super::CodeType;
+use crate::backend::Literal;
+use crate::interface::{Radix, Type};
 use paste::paste;
 
 fn render_literal(literal: &Literal) -> String {
     fn typed_number(type_: &Type, num_str: String) -> String {
-        match type_ {
+        let unwrapped_type = match type_ {
+            Type::Optional { inner_type } => inner_type,
+            t => t,
+        };
+        match unwrapped_type {
             // special case Int32.
             Type::Int32 => num_str,
             // otherwise use constructor e.g. UInt8(x)
@@ -28,7 +33,7 @@ fn render_literal(literal: &Literal) -> String {
                     super::SwiftCodeOracle.find(type_).type_label()
                 )
             }
-            _ => panic!("Unexpected literal: {num_str} is not a number"),
+            _ => panic!("Unexpected literal: {num_str} for type: {type_:?}"),
         }
     }
 

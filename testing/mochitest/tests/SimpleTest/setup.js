@@ -199,7 +199,10 @@ if (params.dumpDMDAfterTest) {
   TestRunner.dumpDMDAfterTest = true;
 }
 
-if (params.interactiveDebugger) {
+// We need to check several things here because mochitest-chrome passes
+// `jsdebugger` and `debugger` directly, but in other tests we're reliant
+// on the `interactiveDebugger` flag being passed along.
+if (params.interactiveDebugger || params.jsdebugger || params.debugger) {
   TestRunner.interactiveDebugger = true;
 }
 
@@ -225,7 +228,24 @@ if (params.timeoutAsPass) {
 }
 
 if (params.conditionedProfile) {
-  TestRunner.conditionedProfile = true;
+  TestRunner.conditionedProfile = {
+    knownServiceWorkers: null,
+  };
+  // Asynchronously populate knownServiceWorkers above.  Because we only check
+  // this list after awaiting a different call to registeredServiceWorkers() in
+  // SimpleTest.js's afterCleanup, we are guaranteed that the list will be
+  // populated before we check it.
+  //
+  // That said, the question is whether the list was sampled before the test
+  // could start and add a ServiceWorker.  And the answer is mainly yes because
+  // the request will make it to the parent process main thread before any call
+  // to register() can get there with very high probability.  (We are dealing
+  // with different top-level protocols so there are some theoretical
+  // opportunities for pathological scheduling but practically speaking it is
+  // very unlikely to happen.)
+  SpecialPowers.registeredServiceWorkers(/* aForce */ true).then(workers => {
+    TestRunner.conditionedProfile.knownServiceWorkers = workers;
+  });
 }
 
 if (params.comparePrefs) {
@@ -244,7 +264,7 @@ TestRunner.logger.addListener(
 var gTestList = [];
 var RunSet = {};
 
-RunSet.runall = function (e) {
+RunSet.runall = function () {
   // Filter tests to include|exclude tests based on data in params.filter.
   // This allows for including or excluding tests from the gTestList
   // TODO Only used by ipc tests, remove once those are implemented sanely
@@ -262,7 +282,7 @@ RunSet.runall = function (e) {
   }
 };
 
-RunSet.runtests = function (e) {
+RunSet.runtests = function () {
   // Which tests we're going to run
   var my_tests = gTestList;
 

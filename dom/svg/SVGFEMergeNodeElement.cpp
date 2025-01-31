@@ -25,7 +25,7 @@ SVGElement::StringInfo SVGFEMergeNodeElement::sStringInfo[1] = {
 NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGFEMergeNodeElement)
 
 //----------------------------------------------------------------------
-// nsFEUnstyledElement methods
+// SVGFilterPrimitiveChildElement methods
 
 bool SVGFEMergeNodeElement::AttributeAffectsRendering(
     int32_t aNameSpaceID, nsAtom* aAttribute) const {
@@ -41,7 +41,7 @@ already_AddRefed<DOMSVGAnimatedString> SVGFEMergeNodeElement::In1() {
 
 SVGElement::StringAttributesInfo SVGFEMergeNodeElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

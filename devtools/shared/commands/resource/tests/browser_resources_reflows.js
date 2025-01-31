@@ -14,9 +14,8 @@ add_task(async function () {
     "https://example.com/document-builder.sjs?html=<h1>Test reflow resources</h1>"
   );
 
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   const resources = [];
   const onAvailable = _resources => {
@@ -106,6 +105,10 @@ function checkReflowResource(resource) {
       "reflow start property is a number"
     );
     is(Number.isFinite(reflow.end), true, "reflow end property is a number");
-    ok(reflow.end >= reflow.start, "end is greater than start");
+    Assert.greaterOrEqual(
+      reflow.end,
+      reflow.start,
+      "end is greater than start"
+    );
   }
 }

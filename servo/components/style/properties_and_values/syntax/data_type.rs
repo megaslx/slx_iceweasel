@@ -5,6 +5,20 @@
 //! Used for parsing and serializing component names from the syntax string.
 
 use super::{Component, ComponentName, Multiplier};
+use std::fmt::{self, Debug, Write};
+use style_traits::{CssWriter, ToCss};
+
+/// Some types (lengths and colors) depend on other properties to resolve correctly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, MallocSizeOf, ToShmem)]
+pub struct DependentDataTypes(u8);
+bitflags! {
+    impl DependentDataTypes: u8 {
+        /// <length> values depend on font-size/line-height/zoom...
+        const LENGTH = 1 << 0;
+        /// <color> values depend on color-scheme, etc..
+        const COLOR= 1 << 1;
+    }
+}
 
 /// <https://drafts.css-houdini.org/css-properties-values-api-1/#supported-names>
 #[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq)]
@@ -34,11 +48,15 @@ pub enum DataType {
     Resolution,
     /// Any valid `<transform-function>` value
     TransformFunction,
+    /// Any valid `<custom-ident>` value
+    CustomIdent,
     /// A list of valid `<transform-function>` values. Note that "<transform-list>" is a pre-multiplied
     /// data type name equivalent to "<transform-function>+"
     TransformList,
-    /// Any valid `<custom-ident>` value
-    CustomIdent,
+    /// Any valid `<string>` value
+    ///
+    /// <https://github.com/w3c/css-houdini-drafts/issues/1103>
+    String,
 }
 
 impl DataType {
@@ -72,7 +90,56 @@ impl DataType {
             b"transform-function" => DataType::TransformFunction,
             b"custom-ident" => DataType::CustomIdent,
             b"transform-list" => DataType::TransformList,
+            b"string" => DataType::String,
             _ => return None,
         })
+    }
+
+    /// Returns which kinds of dependent data types this property might contain.
+    pub fn dependent_types(&self) -> DependentDataTypes {
+        match self {
+            DataType::Length |
+            DataType::LengthPercentage |
+            DataType::TransformFunction |
+            DataType::TransformList => DependentDataTypes::LENGTH,
+            DataType::Color => DependentDataTypes::COLOR,
+            DataType::Number |
+            DataType::Percentage |
+            DataType::Image |
+            DataType::Url |
+            DataType::Integer |
+            DataType::Angle |
+            DataType::Time |
+            DataType::Resolution |
+            DataType::CustomIdent |
+            DataType::String => DependentDataTypes::empty(),
+        }
+    }
+}
+
+impl ToCss for DataType {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        dest.write_char('<')?;
+        dest.write_str(match *self {
+            DataType::Length => "length",
+            DataType::Number => "number",
+            DataType::Percentage => "percentage",
+            DataType::LengthPercentage => "length-percentage",
+            DataType::Color => "color",
+            DataType::Image => "image",
+            DataType::Url => "url",
+            DataType::Integer => "integer",
+            DataType::Angle => "angle",
+            DataType::Time => "time",
+            DataType::Resolution => "resolution",
+            DataType::TransformFunction => "transform-function",
+            DataType::CustomIdent => "custom-ident",
+            DataType::TransformList => "transform-list",
+            DataType::String => "string",
+        })?;
+        dest.write_char('>')
     }
 }

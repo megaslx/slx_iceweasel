@@ -8,9 +8,7 @@ import {
 } from "test/unit/utils";
 import Adapter from "enzyme-adapter-react-16";
 import { chaiAssertions } from "test/schemas/pings";
-import chaiJsonSchema from "chai-json-schema";
 import enzyme from "enzyme";
-import FxMSCommonSchema from "../../content-src/asrouter/schemas/FxMSCommon.schema.json";
 
 enzyme.configure({ adapter: new Adapter() });
 
@@ -35,8 +33,6 @@ const files = req.keys();
 sinon.assert.expose(assert, { prefix: "" });
 
 chai.use(chaiAssertions);
-chai.use(chaiJsonSchema);
-chai.tv4.addSchema("file:///FxMSCommon.schema.json", FxMSCommonSchema);
 
 const overrider = new GlobalOverrider();
 
@@ -101,8 +97,8 @@ const TEST_GLOBAL = {
   JSWindowActorParent,
   JSWindowActorChild,
   AboutReaderParent: {
-    addMessageListener: (messageName, listener) => {},
-    removeMessageListener: (messageName, listener) => {},
+    addMessageListener: (_messageName, _listener) => {},
+    removeMessageListener: (_messageName, _listener) => {},
   },
   AboutWelcomeTelemetry: class {
     submitGleanPingForPing() {}
@@ -123,23 +119,6 @@ const TEST_GLOBAL = {
     },
     platform: "win",
   },
-  ASRouterPreferences: {
-    console: new FakeConsoleAPI({
-      maxLogLevel: "off", // set this to "debug" or "all" to get more ASRouter logging in tests
-      prefix: "ASRouter",
-    }),
-  },
-  AWScreenUtils: {
-    evaluateTargetingAndRemoveScreens() {
-      return true;
-    },
-    async removeScreens() {
-      return true;
-    },
-    evaluateScreenTargeting() {
-      return true;
-    },
-  },
   BrowserUtils: {
     sendToDeviceEmailsSupported() {
       return true;
@@ -155,6 +134,9 @@ const TEST_GLOBAL = {
   browserSearchRegion: "US",
   BrowserWindowTracker: { getTopWindow() {} },
   ChromeUtils: {
+    defineLazyGetter(object, name, f) {
+      updateGlobalOrObject(object)[name] = f();
+    },
     defineModuleGetter: updateGlobalOrObject,
     defineESModuleGetters: updateGlobalOrObject,
     generateQI() {
@@ -282,8 +264,8 @@ const TEST_GLOBAL = {
   },
   dump() {},
   EveryWindow: {
-    registerCallback: (id, init, uninit) => {},
-    unregisterCallback: id => {},
+    registerCallback: (_id, _init, _uninit) => {},
+    unregisterCallback: _id => {},
   },
   setTimeout: window.setTimeout.bind(window),
   clearTimeout: window.clearTimeout.bind(window),
@@ -370,7 +352,6 @@ const TEST_GLOBAL = {
       removeListener() {},
     },
   },
-  PluralForm: { get() {} },
   Preferences: FakePrefs,
   PrivateBrowsingUtils: {
     isBrowserPrivate: () => false,
@@ -404,19 +385,13 @@ const TEST_GLOBAL = {
     },
     urlFormatter: { formatURL: str => str, formatURLPref: str => str },
     mm: {
-      addMessageListener: (msg, cb) => this.receiveMessage(),
+      addMessageListener: (_msg, _cb) => this.receiveMessage(),
       removeMessageListener() {},
     },
     obs: {
       addObserver() {},
       removeObserver() {},
       notifyObservers() {},
-    },
-    telemetry: {
-      setEventRecordingEnabled: () => {},
-      recordEvent: eventDetails => {},
-      scalarSet: () => {},
-      keyedScalarAdd: () => {},
     },
     uuid: {
       generateUUID() {
@@ -445,6 +420,7 @@ const TEST_GLOBAL = {
             finalize: () => ({
               ref,
               spec,
+              schemeIs: scheme => spec.startsWith(scheme),
             }),
           }),
         }),
@@ -459,13 +435,10 @@ const TEST_GLOBAL = {
         Promise.resolve([{ identifier: "google" }, { identifier: "bing" }]),
       defaultEngine: {
         identifier: "google",
-        searchForm:
-          "https://www.google.com/search?q=&ie=utf-8&oe=utf-8&client=firefox-b",
         aliases: ["@google"],
       },
       defaultPrivateEngine: {
         identifier: "bing",
-        searchForm: "https://www.bing.com",
         aliases: ["@bing"],
       },
       getEngineByAlias: async () => null,
@@ -495,11 +468,7 @@ const TEST_GLOBAL = {
     },
   },
   XPCOMUtils: {
-    defineLazyGetter(object, name, f) {
-      updateGlobalOrObject(object)[name] = f();
-    },
     defineLazyGlobalGetters: updateGlobalOrObject,
-    defineLazyModuleGetter: updateGlobalOrObject,
     defineLazyModuleGetters: updateGlobalOrObject,
     defineLazyServiceGetter: updateGlobalOrObject,
     defineLazyServiceGetters: updateGlobalOrObject,
@@ -576,7 +545,7 @@ const TEST_GLOBAL = {
     finish: () => {},
   },
   Sampling: {
-    ratioSample(seed, ratios) {
+    ratioSample(_seed, _ratios) {
       return Promise.resolve(0);
     },
   },
@@ -601,6 +570,14 @@ const TEST_GLOBAL = {
   getFxAccountsSingleton() {},
   AboutNewTab: {},
   Glean: {
+    activityStream: {
+      eventClick: {
+        record() {},
+      },
+      endSession: {
+        record() {},
+      },
+    },
     newtab: {
       opened: {
         record() {},
@@ -629,6 +606,11 @@ const TEST_GLOBAL = {
         set() {},
       },
     },
+    newtabHandoffPreference: {
+      enabled: {
+        set() {},
+      },
+    },
     pocket: {
       enabled: {
         set() {},
@@ -651,6 +633,9 @@ const TEST_GLOBAL = {
       topicClick: {
         record() {},
       },
+      shim: {
+        set() {},
+      },
     },
     topsites: {
       enabled: {
@@ -666,6 +651,21 @@ const TEST_GLOBAL = {
         record() {},
       },
       rows: {
+        set() {},
+      },
+      showPrivacyClick: {
+        record() {},
+      },
+      dismiss: {
+        record() {},
+      },
+      prefChanged: {
+        record() {},
+      },
+      sponsoredTilesConfigured: {
+        set() {},
+      },
+      sponsoredTilesReceived: {
         set() {},
       },
     },
@@ -698,6 +698,9 @@ const TEST_GLOBAL = {
       submit() {},
     },
     topSites: {
+      submit() {},
+    },
+    spoc: {
       submit() {},
     },
   },

@@ -105,7 +105,7 @@ export let WebsiteFilter = {
     Services.obs.addObserver(this, "http-on-examine-response", true);
   },
 
-  shouldLoad(contentLocation, loadInfo, mimeTypeGuess) {
+  shouldLoad(contentLocation, loadInfo) {
     let contentType = loadInfo.externalContentPolicyType;
     let url = contentLocation.spec;
     if (contentLocation.scheme == "view-source") {
@@ -130,10 +130,10 @@ export let WebsiteFilter = {
     }
     return Ci.nsIContentPolicy.ACCEPT;
   },
-  shouldProcess(contentLocation, loadInfo, mimeTypeGuess) {
+  shouldProcess() {
     return Ci.nsIContentPolicy.ACCEPT;
   },
-  observe(subject, topic, data) {
+  observe(subject) {
     try {
       let channel = subject.QueryInterface(Ci.nsIHttpChannel);
       if (

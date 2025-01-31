@@ -55,6 +55,8 @@ class FileSystemDatabaseManagerVersion001 : public FileSystemDatabaseManager {
   static Result<Usage, QMResult> GetFileUsage(
       const FileSystemConnection& aConnection);
 
+  Result<quota::UsageInfo, QMResult> GetUsage() const override;
+
   nsresult UpdateUsage(const FileId& aFileId) override;
 
   Result<EntryId, QMResult> GetOrCreateDirectory(
@@ -130,7 +132,7 @@ class FileSystemDatabaseManagerVersion001 : public FileSystemDatabaseManager {
   void DecreaseCachedQuotaUsage(int64_t aDelta);
 
   nsresult UpdateCachedQuotaUsage(const FileId& aFileId, Usage aOldUsage,
-                                  Usage aNewUsage);
+                                  Usage aNewUsage) const;
 
   nsresult ClearDestinationIfNotLocked(
       const FileSystemConnection& aConnection,
@@ -199,6 +201,8 @@ nsresult GetFileAttributes(const FileSystemConnection& aConnection,
                            const EntryId& aEntryId, ContentType& aType);
 
 void TryRemoveDuringIdleMaintenance(const nsTArray<FileId>& aItemToRemove);
+
+ContentType DetermineContentType(const Name& aName);
 
 }  // namespace data
 }  // namespace mozilla::dom::fs

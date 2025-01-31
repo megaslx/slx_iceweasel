@@ -1,38 +1,88 @@
-From: Nico Grunbaum <na-g@nostrum.com>
-Date: Mon, 26 Jul 2021 22:51:00 -0700
-Subject: Bug 1654112 - fix timestamp issues with RTP sources; r=mjf
+From: Landry Breuil <landry@openbsd.org>
+Date: Wed, 22 Dec 2021 00:09:00 +0000
+Subject: Bug 1654448 - P2 - readd partial support for BSD to webrtc
+ build;r=mjf
 
-Differential Revision: https://phabricator.services.mozilla.com/D120930
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/de8c14e4972f717bf937b6f2fffcd08c35e21ced
+only OpenBSD/amd64 is supported for now
+
+Depends on D134432
+
+Differential Revision: https://phabricator.services.mozilla.com/D134433
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/0300b32b7de70fb8976dc82d7d3bb3adb9685857
 ---
- modules/rtp_rtcp/source/source_tracker.cc | 7 ++++++-
- 1 file changed, 6 insertions(+), 1 deletion(-)
+ BUILD.gn                                       | 3 +++
+ modules/video_capture/BUILD.gn                 | 2 +-
+ modules/video_capture/linux/device_info_v4l2.h | 2 ++
+ rtc_base/platform_thread_types.cc              | 4 +++-
+ webrtc.gni                                     | 2 +-
+ 5 files changed, 10 insertions(+), 3 deletions(-)
 
-diff --git a/modules/rtp_rtcp/source/source_tracker.cc b/modules/rtp_rtcp/source/source_tracker.cc
-index 7a5cbac77d..65f21700d0 100644
---- a/modules/rtp_rtcp/source/source_tracker.cc
-+++ b/modules/rtp_rtcp/source/source_tracker.cc
-@@ -36,7 +36,8 @@ void SourceTracker::OnFrameDelivered(const RtpPacketInfos& packet_infos) {
-       SourceKey key(RtpSourceType::CSRC, csrc);
-       SourceEntry& entry = UpdateEntry(key);
- 
--      entry.timestamp_ms = now_ms;
-+      const auto packet_time = packet_info.receive_time().ms();
-+      entry.timestamp_ms = packet_time ? packet_time : now_ms;
-       entry.audio_level = packet_info.audio_level();
-       entry.absolute_capture_time = packet_info.absolute_capture_time();
-       entry.local_capture_clock_offset =
-@@ -77,6 +78,10 @@ std::vector<RtpSource> SourceTracker::GetSources() const {
-             .local_capture_clock_offset = entry.local_capture_clock_offset});
+diff --git a/BUILD.gn b/BUILD.gn
+index 87881380da..7d3005cbe3 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -222,6 +222,9 @@ config("common_inherited_config") {
+   if (is_linux || is_chromeos) {
+     defines += [ "WEBRTC_LINUX" ]
    }
++  if (is_bsd) {
++    defines += [ "WEBRTC_BSD" ]
++  }
+   if (is_mac) {
+     defines += [ "WEBRTC_MAC" ]
+   }
+diff --git a/modules/video_capture/BUILD.gn b/modules/video_capture/BUILD.gn
+index a8994aaa68..a2bf27f645 100644
+--- a/modules/video_capture/BUILD.gn
++++ b/modules/video_capture/BUILD.gn
+@@ -72,7 +72,7 @@ if (!build_with_chromium || is_linux || is_chromeos) {
+       "video_capture_options.h",
+     ]
  
-+  std::sort(sources.begin(), sources.end(), [](const auto &a, const auto &b){
-+    return a.timestamp_ms() > b.timestamp_ms();
-+  });
-+
-   return sources;
+-    if (is_linux || is_chromeos) {
++    if (is_linux || is_bsd || is_chromeos) {
+       sources += [
+         "linux/device_info_linux.cc",
+         "linux/device_info_v4l2.cc",
+diff --git a/modules/video_capture/linux/device_info_v4l2.h b/modules/video_capture/linux/device_info_v4l2.h
+index e3c2395f49..119cb07ab8 100644
+--- a/modules/video_capture/linux/device_info_v4l2.h
++++ b/modules/video_capture/linux/device_info_v4l2.h
+@@ -16,7 +16,9 @@
+ #include "modules/video_capture/device_info_impl.h"
+ 
+ #include "rtc_base/platform_thread.h"
++#ifdef WEBRTC_LINUX
+ #include <sys/inotify.h>
++#endif
+ 
+ struct v4l2_capability;
+ 
+diff --git a/rtc_base/platform_thread_types.cc b/rtc_base/platform_thread_types.cc
+index d64ea689bb..c3c6955a7b 100644
+--- a/rtc_base/platform_thread_types.cc
++++ b/rtc_base/platform_thread_types.cc
+@@ -50,7 +50,9 @@ PlatformThreadId CurrentThreadId() {
+   return static_cast<PlatformThreadId>(pthread_self());
+ #else
+   // Default implementation for nacl and solaris.
+-  return reinterpret_cast<PlatformThreadId>(pthread_self());
++  // WEBRTC_BSD: pthread_t is a pointer, so cannot be casted to pid_t
++  //             (aka int32_t) on 64-bit archs. Required on OpenBSD.
++  return reinterpret_cast<long>(pthread_self());
+ #endif
+ #endif  // defined(WEBRTC_POSIX)
  }
+diff --git a/webrtc.gni b/webrtc.gni
+index 152bca57ba..2c32a67da6 100644
+--- a/webrtc.gni
++++ b/webrtc.gni
+@@ -363,7 +363,7 @@ rtc_opus_dir = "//third_party/opus"
  
--- 
-2.34.1
-
+ # Desktop capturer is supported only on Windows, OSX and Linux.
+ rtc_desktop_capture_supported =
+-    (is_win && current_os != "winuwp") || is_mac ||
++    (is_win && current_os != "winuwp") || is_mac || is_bsd ||
+     ((is_linux || is_chromeos) && (rtc_use_x11_extensions || rtc_use_pipewire))
+ 
+ ###############################################################################

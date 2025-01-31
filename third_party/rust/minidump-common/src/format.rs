@@ -209,6 +209,9 @@ pub enum MINIDUMP_STREAM_TYPE {
     Memory64ListStream = 9,
     CommentStreamA = 10,
     CommentStreamW = 11,
+    /// The list of handles used by the process
+    ///
+    /// See [`MINIDUMP_HANDLE_DATA_STREAM`]
     HandleDataStream = 12,
     FunctionTable = 13,
     /// The list of executable modules from the process that were unloaded by the time of the crash
@@ -317,6 +320,9 @@ pub enum MINIDUMP_STREAM_TYPE {
     ///
     /// See ['MINIDUMP_MAC_BOOTARGS']
     MozMacosBootargsStream = 0x4d7a0002,
+
+    /// The contents of /proc/self/limits from a Linux system
+    MozLinuxLimits = 0x4d7a0003,
 }
 
 impl From<MINIDUMP_STREAM_TYPE> for u32 {
@@ -775,6 +781,7 @@ bitflags! {
     /// This applies to the [`CONTEXT_ARM`], [`CONTEXT_PPC`], [`CONTEXT_MIPS`],
     /// [`CONTEXT_AMD64`], [`CONTEXT_ARM64`], [`CONTEXT_PPC64`], [`CONTEXT_SPARC`] and
     /// [`CONTEXT_ARM64_OLD`] structs.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsCpu: u32 {
         const CONTEXT_IA64 = 0x80000;
         /// Super-H, includes SH3, from winnt.h in the Windows CE 5.0 SDK
@@ -808,92 +815,97 @@ impl ContextFlagsCpu {
 
 bitflags! {
     /// Flags available for use in [`CONTEXT_AMD64.context_flags`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsAmd64: u32 {
         /// SegSs, Rsp, SegCs, Rip, and EFlags
-        const CONTEXT_AMD64_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_AMD64.bits;
+        const CONTEXT_AMD64_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_AMD64.bits();
         /// Rax, Rcx, Rdx, Rbx, Rbp, Rsi, Rdi, and R8-R15
-        const CONTEXT_AMD64_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_AMD64.bits;
+        const CONTEXT_AMD64_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_AMD64.bits();
         /// SegDs, SegEs, SegFs, and SegGs
-        const CONTEXT_AMD64_SEGMENTS = 0x00000004 | ContextFlagsCpu::CONTEXT_AMD64.bits;
+        const CONTEXT_AMD64_SEGMENTS = 0x00000004 | ContextFlagsCpu::CONTEXT_AMD64.bits();
         /// Xmm0-Xmm15
-        const CONTEXT_AMD64_FLOATING_POINT = 0x00000008 | ContextFlagsCpu::CONTEXT_AMD64.bits;
+        const CONTEXT_AMD64_FLOATING_POINT = 0x00000008 | ContextFlagsCpu::CONTEXT_AMD64.bits();
         /// Dr0-Dr3 and Dr6-Dr7
-        const CONTEXT_AMD64_DEBUG_REGISTERS = 0x00000010 | ContextFlagsCpu::CONTEXT_AMD64.bits;
-        const CONTEXT_AMD64_XSTATE = 0x00000020 | ContextFlagsCpu::CONTEXT_AMD64.bits;
-        const CONTEXT_AMD64_FULL = Self::CONTEXT_AMD64_CONTROL.bits | Self::CONTEXT_AMD64_INTEGER.bits | Self::CONTEXT_AMD64_FLOATING_POINT.bits;
-        const CONTEXT_AMD64_ALL = Self::CONTEXT_AMD64_FULL.bits | Self::CONTEXT_AMD64_SEGMENTS.bits | Self::CONTEXT_AMD64_DEBUG_REGISTERS.bits;
+        const CONTEXT_AMD64_DEBUG_REGISTERS = 0x00000010 | ContextFlagsCpu::CONTEXT_AMD64.bits();
+        const CONTEXT_AMD64_XSTATE = 0x00000020 | ContextFlagsCpu::CONTEXT_AMD64.bits();
+        const CONTEXT_AMD64_FULL = Self::CONTEXT_AMD64_CONTROL.bits() | Self::CONTEXT_AMD64_INTEGER.bits() | Self::CONTEXT_AMD64_FLOATING_POINT.bits();
+        const CONTEXT_AMD64_ALL = Self::CONTEXT_AMD64_FULL.bits() | Self::CONTEXT_AMD64_SEGMENTS.bits() | Self::CONTEXT_AMD64_DEBUG_REGISTERS.bits();
     }
 }
 
 bitflags! {
     /// Flags available for use in [`CONTEXT_X86.context_flags`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsX86: u32 {
         /// Ebp, Eip, SegCs, EFlags, Esp, SegSs
-        const CONTEXT_X86_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_X86.bits;
+        const CONTEXT_X86_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_X86.bits();
         /// Edi, Esi, Ebx, Edx, Ecx, Eax
-        const CONTEXT_X86_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_X86.bits;
+        const CONTEXT_X86_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_X86.bits();
         /// SegDs, SegEs, SegFs, and SegGs
-        const CONTEXT_X86_SEGMENTS = 0x00000004 | ContextFlagsCpu::CONTEXT_X86.bits;
+        const CONTEXT_X86_SEGMENTS = 0x00000004 | ContextFlagsCpu::CONTEXT_X86.bits();
         /// Fpcr, Fpsr, Fptag, Fpioff, Fpisel, Fpdoff, Fpdsel, Mxcsr, Mxcsr_mask, Xmm0-Xmm7
-        const CONTEXT_X86_FLOATING_POINT = 0x00000008 | ContextFlagsCpu::CONTEXT_X86.bits;
+        const CONTEXT_X86_FLOATING_POINT = 0x00000008 | ContextFlagsCpu::CONTEXT_X86.bits();
         /// Dr0-Dr3 and Dr6-Dr7
-        const CONTEXT_X86_DEBUG_REGISTERS = 0x00000010 | ContextFlagsCpu::CONTEXT_X86.bits;
-        const CONTEXT_X86_EXTENDED_REGISTERS = 0x00000020 | ContextFlagsCpu::CONTEXT_X86.bits;
-        const CONTEXT_X86_XSTATE = 0x00000040 | ContextFlagsCpu::CONTEXT_X86.bits;
-        const CONTEXT_X86_FULL = Self::CONTEXT_X86_CONTROL.bits | Self::CONTEXT_X86_INTEGER.bits | Self::CONTEXT_X86_SEGMENTS.bits;
-        const CONTEXT_X86_ALL = Self::CONTEXT_X86_FULL.bits | Self::CONTEXT_X86_FLOATING_POINT.bits | Self::CONTEXT_X86_DEBUG_REGISTERS.bits | Self::CONTEXT_X86_EXTENDED_REGISTERS.bits;
+        const CONTEXT_X86_DEBUG_REGISTERS = 0x00000010 | ContextFlagsCpu::CONTEXT_X86.bits();
+        const CONTEXT_X86_EXTENDED_REGISTERS = 0x00000020 | ContextFlagsCpu::CONTEXT_X86.bits();
+        const CONTEXT_X86_XSTATE = 0x00000040 | ContextFlagsCpu::CONTEXT_X86.bits();
+        const CONTEXT_X86_FULL = Self::CONTEXT_X86_CONTROL.bits() | Self::CONTEXT_X86_INTEGER.bits() | Self::CONTEXT_X86_SEGMENTS.bits();
+        const CONTEXT_X86_ALL = Self::CONTEXT_X86_FULL.bits() | Self::CONTEXT_X86_FLOATING_POINT.bits() | Self::CONTEXT_X86_DEBUG_REGISTERS.bits() | Self::CONTEXT_X86_EXTENDED_REGISTERS.bits();
     }
 }
 
 bitflags! {
     /// Flags available for use in [`CONTEXT_ARM64.context_flags`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsArm64: u32 {
         /// FP, LR, SP, PC, and CPSR
-        const CONTEXT_ARM64_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_ARM64.bits;
+        const CONTEXT_ARM64_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_ARM64.bits();
         /// X0-X28 (but maybe not X18)
-        const CONTEXT_ARM64_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM64.bits;
+        const CONTEXT_ARM64_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM64.bits();
         /// Fpcr, Fpsr, D0-D31 (AKA Q0-Q31, AKA S0-S31)
-        const CONTEXT_ARM64_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM64.bits;
+        const CONTEXT_ARM64_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM64.bits();
         /// DBGBVR, DBGBCR, DBGWVR, DBGWCR
-        const CONTEXT_ARM64_DEBUG_REGISTERS = 0x0000008 | ContextFlagsCpu::CONTEXT_ARM64.bits;
+        const CONTEXT_ARM64_DEBUG_REGISTERS = 0x0000008 | ContextFlagsCpu::CONTEXT_ARM64.bits();
         /// Whether x18 has a valid value, because on Windows it contains the TEB.
         ///
         /// NOTE: at this precise moment breakpad doesn't define this, but Microsoft does!
-        const CONTEXT_ARM64_X18 = 0x0000010 | ContextFlagsCpu::CONTEXT_ARM64.bits;
-        const CONTEXT_ARM64_FULL = Self::CONTEXT_ARM64_CONTROL.bits | Self::CONTEXT_ARM64_INTEGER.bits | Self::CONTEXT_ARM64_FLOATING_POINT.bits;
-        const CONTEXT_ARM64_ALL = Self::CONTEXT_ARM64_FULL.bits | Self::CONTEXT_ARM64_DEBUG_REGISTERS.bits | Self::CONTEXT_ARM64_X18.bits;
+        const CONTEXT_ARM64_X18 = 0x0000010 | ContextFlagsCpu::CONTEXT_ARM64.bits();
+        const CONTEXT_ARM64_FULL = Self::CONTEXT_ARM64_CONTROL.bits() | Self::CONTEXT_ARM64_INTEGER.bits() | Self::CONTEXT_ARM64_FLOATING_POINT.bits();
+        const CONTEXT_ARM64_ALL = Self::CONTEXT_ARM64_FULL.bits() | Self::CONTEXT_ARM64_DEBUG_REGISTERS.bits() | Self::CONTEXT_ARM64_X18.bits();
     }
 }
 
 bitflags! {
     /// Flags available for use in [`CONTEXT_ARM64_OLD.context_flags`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsArm64Old: u32 {
         // Yes, breakpad never defined CONTROL for this context
 
         /// FP, LR, SP, PC, CPSR, and X0-X28
-        const CONTEXT_ARM64_OLD_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM64_OLD.bits;
+        const CONTEXT_ARM64_OLD_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM64_OLD.bits();
         /// Fpcr, Fpsr, D0-D31 (AKA Q0-Q31, AKA S0-S31)
-        const CONTEXT_ARM64_OLD_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM64_OLD.bits;
-        const CONTEXT_ARM64_OLD_FULL = Self::CONTEXT_ARM64_OLD_INTEGER.bits | Self::CONTEXT_ARM64_OLD_FLOATING_POINT.bits;
-        const CONTEXT_ARM64_OLD_ALL = Self::CONTEXT_ARM64_OLD_FULL.bits;
+        const CONTEXT_ARM64_OLD_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM64_OLD.bits();
+        const CONTEXT_ARM64_OLD_FULL = Self::CONTEXT_ARM64_OLD_INTEGER.bits() | Self::CONTEXT_ARM64_OLD_FLOATING_POINT.bits();
+        const CONTEXT_ARM64_OLD_ALL = Self::CONTEXT_ARM64_OLD_FULL.bits();
     }
 }
 
 bitflags! {
     /// Flags available for use in [`CONTEXT_ARM.context_flags`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ContextFlagsArm: u32 {
         // Yes, breakpad never defined CONTROL for this context
 
         /// SP, LR, PC, and CPSR
-        const CONTEXT_ARM_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_ARM.bits;
+        const CONTEXT_ARM_CONTROL = 0x00000001 | ContextFlagsCpu::CONTEXT_ARM.bits();
         /// R0-R12
-        const CONTEXT_ARM_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM.bits;
+        const CONTEXT_ARM_INTEGER = 0x00000002 | ContextFlagsCpu::CONTEXT_ARM.bits();
         /// Q0-Q15 / D0-D31 / S0-S31
-        const CONTEXT_ARM_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM.bits;
+        const CONTEXT_ARM_FLOATING_POINT = 0x00000004 | ContextFlagsCpu::CONTEXT_ARM.bits();
         /// DBGBVR, DBGBCR, DBGWVR, DBGWCR
-        const CONTEXT_ARM_DEBUG_REGISTERS = 0x00000008 | ContextFlagsCpu::CONTEXT_ARM.bits;
-        const CONTEXT_ARM_FULL = Self::CONTEXT_ARM_CONTROL.bits | Self::CONTEXT_ARM_INTEGER.bits | Self::CONTEXT_ARM_FLOATING_POINT.bits;
-        const CONTEXT_ARM_ALL = Self::CONTEXT_ARM_FULL.bits | Self::CONTEXT_ARM_DEBUG_REGISTERS.bits;
+        const CONTEXT_ARM_DEBUG_REGISTERS = 0x00000008 | ContextFlagsCpu::CONTEXT_ARM.bits();
+        const CONTEXT_ARM_FULL = Self::CONTEXT_ARM_CONTROL.bits() | Self::CONTEXT_ARM_INTEGER.bits() | Self::CONTEXT_ARM_FLOATING_POINT.bits();
+        const CONTEXT_ARM_ALL = Self::CONTEXT_ARM_FULL.bits() | Self::CONTEXT_ARM_DEBUG_REGISTERS.bits();
     }
 }
 
@@ -1661,24 +1673,24 @@ multi_structs! {
 /// grafted onto Microsoft's own formats. Here's what's important to know:
 ///
 /// * The "Cpu Context" and the "XSAVE context" are in fact the same regions
-/// of memory.
+///   of memory.
 ///
 /// * Whether XSTATE is present or not, the classic layouts of CONTEXT_X86
-/// and [`CONTEXT_AMD64`] both apply -- xstate will only add stuff after *or*
-/// refine your understanding of memory in the existing layout. So you can
-/// safely ignore the existence of XSTATE, but you might be missing new info.
+///   and [`CONTEXT_AMD64`] both apply -- xstate will only add stuff after *or*
+///   refine your understanding of memory in the existing layout. So you can
+///   safely ignore the existence of XSTATE, but you might be missing new info.
 ///
 /// * AMD64 doesn't have a standard way to save general purpose registers,
-/// so the first 256 bytes of [`CONTEXT_AMD64`] are just however microsoft
-/// decided to save the registers, and will not be referred to by the XSTATE.
+///   so the first 256 bytes of [`CONTEXT_AMD64`] are just however microsoft
+///   decided to save the registers, and will not be referred to by the XSTATE.
 ///
 /// **!!! THIS PART IS IMPORTANT !!!**
 ///
 /// * As a consequence, all [`XSTATE_FEATURE::offset`] values must have 256
-/// added to them to get the correct offset for that feature! For example, the
-/// LEGACY_FLOATING_POINT feature should always have an offset of 0, but it
-/// is actually at offset 256 in [`CONTEXT_AMD64`] (it corresponds to
-/// [`CONTEXT_AMD64::float_save`]).
+///   added to them to get the correct offset for that feature! For example, the
+///   LEGACY_FLOATING_POINT feature should always have an offset of 0, but it
+///   is actually at offset 256 in [`CONTEXT_AMD64`] (it corresponds to
+///   [`CONTEXT_AMD64::float_save`]).
 ///
 /// * The following features are already contained inside of [`CONTEXT_AMD64`]:
 ///    * LEGACY_FLOATING_POINT
@@ -1686,12 +1698,12 @@ multi_structs! {
 ///    * GSSE_AND_AVX
 ///
 /// * If there are XSTATE entries that *actually* map outside of the context's
-/// normal memory range, then the context's [`context_flags`](`CONTEXT_AMD64::context_flags`)
-/// will have bit 0x40 set ([`CONTEXT_HAS_XSTATE`]).
+///   normal memory range, then the context's [`context_flags`](`CONTEXT_AMD64::context_flags`)
+///   will have bit 0x40 set ([`CONTEXT_HAS_XSTATE`]).
 ///
 /// * [`ContextFlagsCpu::from_flags`] will mask out the [`CONTEXT_HAS_XSTATE`] bit.
-/// If you want to check for that bit, check the raw value of
-/// [`context_flags`](`CONTEXT_AMD64::context_flags`).
+///   If you want to check for that bit, check the raw value of
+///   [`context_flags`](`CONTEXT_AMD64::context_flags`).
 
 #[derive(Debug, Clone, Pread, Pwrite, SizeWith)]
 pub struct XSTATE_CONFIG_FEATURE_MSC_INFO {
@@ -1801,6 +1813,7 @@ impl From<u8> for XSTATE_FEATURE {
 
 bitflags! {
     /// Known flags for `MINIDUMP_MISC_INFO*.flags1`
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MiscInfoFlags: u32 {
         const MINIDUMP_MISC1_PROCESS_ID            = 0x00000001;
         const MINIDUMP_MISC1_PROCESS_TIMES         = 0x00000002;
@@ -1867,6 +1880,7 @@ pub struct MINIDUMP_MEMORY_INFO {
 
 bitflags! {
     /// Potential values for [`MINIDUMP_MEMORY_INFO::state`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MemoryState: u32 {
         const MEM_COMMIT  = 0x01000;
         const MEM_FREE    = 0x10000;
@@ -1880,6 +1894,7 @@ bitflags! {
     /// See [Microsoft's documentation][msdn] for details.
     ///
     /// [msdn]: https://docs.microsoft.com/en-us/windows/win32/Memory/memory-protection-constants
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MemoryProtection: u32 {
         const PAGE_NOACCESS           = 0x01;
         const PAGE_READONLY           = 0x02;
@@ -1898,6 +1913,7 @@ bitflags! {
 
 bitflags! {
     /// Potential values for [`MINIDUMP_MEMORY_INFO::_type`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MemoryType: u32 {
         const MEM_PRIVATE = 0x00020000;
         const MEM_MAPPED  = 0x00040000;
@@ -2422,6 +2438,7 @@ bitflags! {
     /// This matches the Linux kernel definitions from [<asm/hwcaps.h>][hwcap].
     ///
     /// [hwcap]: https://elixir.bootlin.com/linux/latest/source/arch/arm/include/uapi/asm/hwcap.h
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ArmElfHwCaps: u32 {
         const HWCAP_SWP       = (1 << 0);
         const HWCAP_HALF      = (1 << 1);
@@ -2443,8 +2460,119 @@ bitflags! {
         const HWCAP_IDIVA     = (1 << 17);
         const HWCAP_IDIVT     = (1 << 18);
         const HWCAP_VFPD32    = (1 << 19);
-        const HWCAP_IDIV      = ArmElfHwCaps::HWCAP_IDIVA.bits | Self::HWCAP_IDIVT.bits;
+        const HWCAP_IDIV      = ArmElfHwCaps::HWCAP_IDIVA.bits() | Self::HWCAP_IDIVT.bits();
         const HWCAP_LPAE      = (1 << 20);
         const HWCAP_EVTSTRM   = (1 << 21);
     }
+}
+
+#[repr(u32)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, FromPrimitive)]
+pub enum MINIDUMP_HANDLE_OBJECT_INFORMATION_TYPE {
+    MiniHandleObjectInformationNone,
+    MiniThreadInformation1,
+    MiniMutantInformation1,
+    MiniMutantInformation2,
+    MiniProcessInformation1,
+    MiniProcessInformation2,
+    MiniEventInformation1,
+    MiniSectionInformation1,
+    MiniSemaphoreInformation1,
+    MiniHandleObjectInformationTypeMax,
+}
+
+/// OS-specific handle object information. Microsoft headers state that it can
+/// change based on the target platform. The object is larger than this structure
+/// (as specified by `size_of_info`) and the remaining data is stored after the
+/// `size_of_info` field. The format of this information is not specified.
+#[derive(Debug, Clone, Pread, Pwrite, SizeWith)]
+pub struct MINIDUMP_HANDLE_OBJECT_INFORMATION {
+    /// RVA pointing to the next handle object information. Elements of this type
+    /// are chained and the last one has this field set to 0.
+    pub next_info_rva: RVA,
+    /// Type of this handle object information element, see [`MINIDUMP_HANDLE_OBJECT_INFORMATION_TYPE`]
+    pub info_type: u32,
+    /// Size of this element, this must be larger than `size_of::<MINIDUMP_HANDLE_OBJECT_INFORMATION>()`
+    pub size_of_info: u32,
+}
+
+#[derive(Debug, Default, Clone, Pread, Pwrite, SizeWith)]
+pub struct MINIDUMP_HANDLE_DESCRIPTOR {
+    /// The operating system handle value. A HANDLE on Windows and file descriptor number on Linux.
+    pub handle: u64,
+    /// An RVA to a `MINIDUMP_STRING` structure that specifies the object type of the handle.
+    /// This member can be zero.
+    pub type_name_rva: RVA,
+    /// An RVA to a `MINIDUMP_STRING` structure that specifies the object name of the handle.
+    /// This member can be zero.
+    pub object_name_rva: RVA,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub attributes: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub granted_access: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub handle_count: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub pointer_count: u32,
+}
+
+#[derive(Debug, Clone, Pread, Pwrite, SizeWith)]
+pub struct MINIDUMP_HANDLE_DESCRIPTOR_2 {
+    /// The operating system handle value. A HANDLE on Windows and file descriptor number on Linux.
+    pub handle: u64,
+    /// An RVA to a `MINIDUMP_STRING` structure that specifies the object type of the handle.
+    /// This member can be zero.
+    pub type_name_rva: RVA,
+    /// An RVA to a `MINIDUMP_STRING` structure that specifies the object name of the handle.
+    /// This member can be zero.
+    pub object_name_rva: RVA,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub attributes: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub granted_access: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub handle_count: u32,
+    /// The meaning of this member depends on the handle type and the operating system.
+    pub pointer_count: u32,
+    /// An RVA to a [`MINIDUMP_HANDLE_OBJECT_INFORMATION`] structure that specifies object-specific information.
+    /// This member can be 0 if there is no extra information.
+    pub object_info_rva: RVA,
+    /// Reserved for future use; must be zero.
+    reserved0: u32,
+}
+
+#[derive(Debug, Clone, Pread, Pwrite, SizeWith)]
+pub struct MINIDUMP_HANDLE_DATA_STREAM {
+    /// The size of this header, in bytes.
+    pub size_of_header: u32,
+    /// The size of each descriptor in the stream, in bytes.
+    pub size_of_descriptor: u32,
+    /// The number of descriptors in the stream.
+    pub number_of_descriptors: u32,
+    /// Reserved for future use; must be zero.
+    pub reserved: u32,
+}
+
+#[derive(Debug, Clone, Pread, Pwrite, SizeWith)]
+pub struct MINIDUMP_THREAD_INFO {
+    /// Thread identifier
+    pub thread_id: u32,
+    /// Thread state flags
+    pub dump_flags: u32,
+    /// HRESULT value of dump status
+    pub dump_error: u32,
+    /// The thread's exit code
+    pub exit_status: u32,
+    /// UTC time the thread was created
+    pub create_time: u64,
+    /// UTC time the thread exited
+    pub exit_time: u64,
+    /// Time executed in kernel mode
+    pub kernel_time: u64,
+    /// Time executed in user mode
+    pub user_time: u64,
+    /// Start address of the thread
+    pub start_address: u64,
+    /// Processor affinity mask
+    pub affinity: u64,
 }

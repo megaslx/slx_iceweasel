@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2017, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -10,33 +10,34 @@
  */
 #include <arm_neon.h>
 
+#include "config/aom_config.h"
 #include "config/av1_rtcd.h"
 
 #include "av1/common/cfl.h"
 
-static INLINE void vldsubstq_s16(int16_t *dst, const uint16_t *src, int offset,
+static inline void vldsubstq_s16(int16_t *dst, const uint16_t *src, int offset,
                                  int16x8_t sub) {
   vst1q_s16(dst + offset,
             vsubq_s16(vreinterpretq_s16_u16(vld1q_u16(src + offset)), sub));
 }
 
-static INLINE uint16x8_t vldaddq_u16(const uint16_t *buf, size_t offset) {
+static inline uint16x8_t vldaddq_u16(const uint16_t *buf, size_t offset) {
   return vaddq_u16(vld1q_u16(buf), vld1q_u16(buf + offset));
 }
 
 // Load half of a vector and duplicated in other half
-static INLINE uint8x8_t vldh_dup_u8(const uint8_t *ptr) {
+static inline uint8x8_t vldh_dup_u8(const uint8_t *ptr) {
   return vreinterpret_u8_u32(vld1_dup_u32((const uint32_t *)ptr));
 }
 
 // Store half of a vector.
-static INLINE void vsth_u16(uint16_t *ptr, uint16x4_t val) {
-  *((uint32_t *)ptr) = vreinterpret_u32_u16(val)[0];
+static inline void vsth_u16(uint16_t *ptr, uint16x4_t val) {
+  vst1_lane_u32((uint32_t *)ptr, vreinterpret_u32_u16(val), 0);
 }
 
 // Store half of a vector.
-static INLINE void vsth_u8(uint8_t *ptr, uint8x8_t val) {
-  *((uint32_t *)ptr) = vreinterpret_u32_u8(val)[0];
+static inline void vsth_u8(uint8_t *ptr, uint8x8_t val) {
+  vst1_lane_u32((uint32_t *)ptr, vreinterpret_u32_u8(val), 0);
 }
 
 static void cfl_luma_subsampling_420_lbd_neon(const uint8_t *input,
@@ -131,8 +132,9 @@ static void cfl_luma_subsampling_444_lbd_neon(const uint8_t *input,
   } while ((pred_buf_q3 += CFL_BUF_LINE) < end);
 }
 
-#ifndef __aarch64__
-uint16x8_t vpaddq_u16(uint16x8_t a, uint16x8_t b) {
+#if CONFIG_AV1_HIGHBITDEPTH
+#if !AOM_ARCH_AARCH64
+static uint16x8_t vpaddq_u16(uint16x8_t a, uint16x8_t b) {
   return vcombine_u16(vpadd_u16(vget_low_u16(a), vget_high_u16(a)),
                       vpadd_u16(vget_low_u16(b), vget_high_u16(b)));
 }
@@ -247,10 +249,11 @@ static void cfl_luma_subsampling_444_hbd_neon(const uint16_t *input,
     input += input_stride;
   } while ((pred_buf_q3 += CFL_BUF_LINE) < end);
 }
+#endif  // CONFIG_AV1_HIGHBITDEPTH
 
 CFL_GET_SUBSAMPLE_FUNCTION(neon)
 
-static INLINE void subtract_average_neon(const uint16_t *src, int16_t *dst,
+static inline void subtract_average_neon(const uint16_t *src, int16_t *dst,
                                          int width, int height,
                                          int round_offset,
                                          const int num_pel_log2) {
@@ -267,7 +270,7 @@ static INLINE void subtract_average_neon(const uint16_t *src, int16_t *dst,
   // unsigned integer for the sum, we can do one addition operation inside 16
   // bits (8 lanes) before having to convert to 32 bits (4 lanes).
   const uint16_t *sum_buf = src;
-  uint32x4_t sum_32x4 = { 0, 0, 0, 0 };
+  uint32x4_t sum_32x4 = vdupq_n_u32(0);
   do {
     // For all widths, we load, add and combine the data so it fits in 4 lanes.
     if (width == 4) {
@@ -311,7 +314,7 @@ static INLINE void subtract_average_neon(const uint16_t *src, int16_t *dst,
 
   // Permute and add in such a way that each lane contains the block sum.
   // [A+C+B+D, B+D+A+C, C+A+D+B, D+B+C+A]
-#ifdef __aarch64__
+#if AOM_ARCH_AARCH64
   sum_32x4 = vpaddq_u32(sum_32x4, sum_32x4);
   sum_32x4 = vpaddq_u32(sum_32x4, sum_32x4);
 #else
@@ -404,7 +407,7 @@ static int16x8_t vsignq_s16(int16x8_t a, int16x8_t b) {
   return veorq_s16(vaddq_s16(a, mask), mask);
 }
 
-static INLINE int16x4_t predict_w4(const int16_t *pred_buf_q3,
+static inline int16x4_t predict_w4(const int16_t *pred_buf_q3,
                                    int16x4_t alpha_sign, int abs_alpha_q12,
                                    int16x4_t dc) {
   const int16x4_t ac_q3 = vld1_s16(pred_buf_q3);
@@ -413,7 +416,7 @@ static INLINE int16x4_t predict_w4(const int16_t *pred_buf_q3,
   return vadd_s16(vsign_s16(scaled_luma, ac_sign), dc);
 }
 
-static INLINE int16x8_t predict_w8(const int16_t *pred_buf_q3,
+static inline int16x8_t predict_w8(const int16_t *pred_buf_q3,
                                    int16x8_t alpha_sign, int abs_alpha_q12,
                                    int16x8_t dc) {
   const int16x8_t ac_q3 = vld1q_s16(pred_buf_q3);
@@ -422,7 +425,7 @@ static INLINE int16x8_t predict_w8(const int16_t *pred_buf_q3,
   return vaddq_s16(vsignq_s16(scaled_luma, ac_sign), dc);
 }
 
-static INLINE int16x8x2_t predict_w16(const int16_t *pred_buf_q3,
+static inline int16x8x2_t predict_w16(const int16_t *pred_buf_q3,
                                       int16x8_t alpha_sign, int abs_alpha_q12,
                                       int16x8_t dc) {
   // vld2q_s16 interleaves, which is not useful for prediction. vst1q_s16_x2
@@ -441,7 +444,7 @@ static INLINE int16x8x2_t predict_w16(const int16_t *pred_buf_q3,
   return result;
 }
 
-static INLINE int16x8x4_t predict_w32(const int16_t *pred_buf_q3,
+static inline int16x8x4_t predict_w32(const int16_t *pred_buf_q3,
                                       int16x8_t alpha_sign, int abs_alpha_q12,
                                       int16x8_t dc) {
   // vld4q_s16 interleaves, which is not useful for prediction. vst1q_s16_x4
@@ -468,7 +471,7 @@ static INLINE int16x8x4_t predict_w32(const int16_t *pred_buf_q3,
   return result;
 }
 
-static INLINE void cfl_predict_lbd_neon(const int16_t *pred_buf_q3,
+static inline void cfl_predict_lbd_neon(const int16_t *pred_buf_q3,
                                         uint8_t *dst, int dst_stride,
                                         int alpha_q3, int width, int height) {
   const int16_t abs_alpha_q12 = abs(alpha_q3) << 9;
@@ -511,15 +514,16 @@ static INLINE void cfl_predict_lbd_neon(const int16_t *pred_buf_q3,
 
 CFL_PREDICT_FN(neon, lbd)
 
-static INLINE uint16x4_t clamp_s16(int16x4_t a, int16x4_t max) {
+#if CONFIG_AV1_HIGHBITDEPTH
+static inline uint16x4_t clamp_s16(int16x4_t a, int16x4_t max) {
   return vreinterpret_u16_s16(vmax_s16(vmin_s16(a, max), vdup_n_s16(0)));
 }
 
-static INLINE uint16x8_t clampq_s16(int16x8_t a, int16x8_t max) {
+static inline uint16x8_t clampq_s16(int16x8_t a, int16x8_t max) {
   return vreinterpretq_u16_s16(vmaxq_s16(vminq_s16(a, max), vdupq_n_s16(0)));
 }
 
-static INLINE uint16x8x2_t clamp2q_s16(int16x8x2_t a, int16x8_t max) {
+static inline uint16x8x2_t clamp2q_s16(int16x8x2_t a, int16x8_t max) {
   uint16x8x2_t result;
   result.val[0] = vreinterpretq_u16_s16(
       vmaxq_s16(vminq_s16(a.val[0], max), vdupq_n_s16(0)));
@@ -528,7 +532,7 @@ static INLINE uint16x8x2_t clamp2q_s16(int16x8x2_t a, int16x8_t max) {
   return result;
 }
 
-static INLINE uint16x8x4_t clamp4q_s16(int16x8x4_t a, int16x8_t max) {
+static inline uint16x8x4_t clamp4q_s16(int16x8x4_t a, int16x8_t max) {
   uint16x8x4_t result;
   result.val[0] = vreinterpretq_u16_s16(
       vmaxq_s16(vminq_s16(a.val[0], max), vdupq_n_s16(0)));
@@ -541,7 +545,7 @@ static INLINE uint16x8x4_t clamp4q_s16(int16x8x4_t a, int16x8_t max) {
   return result;
 }
 
-static INLINE void cfl_predict_hbd_neon(const int16_t *pred_buf_q3,
+static inline void cfl_predict_hbd_neon(const int16_t *pred_buf_q3,
                                         uint16_t *dst, int dst_stride,
                                         int alpha_q3, int bd, int width,
                                         int height) {
@@ -582,3 +586,4 @@ static INLINE void cfl_predict_hbd_neon(const int16_t *pred_buf_q3,
 }
 
 CFL_PREDICT_FN(neon, hbd)
+#endif  // CONFIG_AV1_HIGHBITDEPTH

@@ -41,15 +41,39 @@ table {
   margin: 1em 0;
   border: 1px solid var(--in-content-box-border-color);
   border-radius: 10px;
-  background-color: var(--in-content-box-background);
+  background-color: var(--background-color-box);
 }
 
-.section-heading > * {
-  display: inline-block;
+.autorefresh {
+  font-size: var(--font-size-small);
+  margin-inline-end: 0.5em;
 }
 
-.section-heading > button {
-  margin-inline: 1em;
+.section-heading {
+  display: flex;
+  align-items: center;
+
+  > h3,
+  > h4 {
+    margin-inline-end: 1em;
+  }
+
+  > .fold-trigger {
+    margin-inline-end: 1em;
+  }
+
+  > button {
+    margin-inline: 1em;
+  }
+}
+
+.fold-target {
+  border-inline-start: 1px solid var(--in-content-border-color);
+  padding-inline-start: 1em;
+
+  .section-body > & {
+    display: block;
+  }
 }
 
 .peer-connection > h3 {
@@ -208,13 +232,29 @@ div.fold-trigger {
 
 .copy-button-base {
   padding-inline-end: 0.25em;
+  cursor: default;
 }
 
 .copy-button {
   visibility: hidden;
 }
 
-.pref:hover > .copy-button {
+.prefList > li {
+  list-style-type: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pathDisplay {
+  margin-inline-end: 1em;
+}
+
+.subsection-heading > h4 > span {
+  margin-inline-end: 0.5em;
+}
+
+.prefList > li:hover > .copy-button,
+.subsection-heading:hover > h4 > .copy-button {
   visibility: visible;
 }
 

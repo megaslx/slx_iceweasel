@@ -82,6 +82,9 @@ var tests = [
 ];
 
 add_task(async function test() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
   ok(gIdentityHandler, "gIdentityHandler should exist");
 
   await BrowserTestUtils.openNewForegroundTab(gBrowser);
@@ -122,7 +125,7 @@ async function runTest(i, forward) {
     false,
     currentTest.location
   );
-  BrowserTestUtils.loadURIString(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser.selectedBrowser,
     currentTest.location
   );
@@ -130,7 +133,7 @@ async function runTest(i, forward) {
   await popupHidden;
   ok(
     !gIdentityHandler._identityPopup ||
-      BrowserTestUtils.is_hidden(gIdentityHandler._identityPopup),
+      BrowserTestUtils.isHidden(gIdentityHandler._identityPopup),
     "Control Center is hidden"
   );
 
@@ -160,7 +163,7 @@ async function runTest(i, forward) {
   info("Waiting for the Control Center to be shown");
   await popupShown;
   ok(
-    !BrowserTestUtils.is_hidden(gIdentityHandler._identityPopup),
+    !BrowserTestUtils.isHidden(gIdentityHandler._identityPopup),
     "Control Center is visible"
   );
   let displayedHost = currentTest.hostForDisplay || currentTest.location;

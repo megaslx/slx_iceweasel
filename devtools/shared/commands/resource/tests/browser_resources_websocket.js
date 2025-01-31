@@ -27,9 +27,8 @@ add_task(async function () {
 
 async function testWebsocketResources(target) {
   const tab = await addTab(URL_ROOT_SSL + "websocket_frontend.html");
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   const availableResources = [];
   function onResourceAvailable(resources) {
@@ -164,8 +163,9 @@ async function testWebsocketResources(target) {
   );
 
   for (let i = 0; i < availableResources.length; i++) {
-    ok(
-      availableResources[i] === existingResources[i],
+    Assert.strictEqual(
+      availableResources[i],
+      existingResources[i],
       `The ${i}th resource is correct`
     );
   }
@@ -230,7 +230,11 @@ function assertObject(object, expected) {
     if (typeof expected[field] === "object") {
       assertObject(object[field], expected[field]);
     } else if (expected[field] === SHOULD_EXIST) {
-      ok(object[field] !== undefined, `The value of ${field} exists`);
+      Assert.notStrictEqual(
+        object[field],
+        undefined,
+        `The value of ${field} exists`
+      );
     } else if (expected[field] === IS_NUMBER) {
       ok(!isNaN(object[field]), `The value of ${field} is number`);
     } else {

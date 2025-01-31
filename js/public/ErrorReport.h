@@ -31,6 +31,7 @@
 
 #include "js/AllocPolicy.h"
 #include "js/CharacterEncoding.h"  // JS::ConstUTF8CharsZ
+#include "js/ColumnNumber.h"       // JS::ColumnNumberOneOrigin
 #include "js/RootingAPI.h"         // JS::HandleObject, JS::RootedObject
 #include "js/UniquePtr.h"          // js::UniquePtr
 #include "js/Value.h"              // JS::Value
@@ -61,24 +62,37 @@ enum ErrorArgumentsType {
  * using the generalized error reporting mechanism.  (One side effect of this
  * type is to not prepend 'Error:' to warning messages.)  This value can go away
  * if we ever decide to use an entirely separate mechanism for warnings.
+ *
+ * The errors and warnings are arranged in alphabetically within their
+ * respective categories as defined in the comments below.
  */
 enum JSExnType {
+  // Generic Errors
   JSEXN_ERR,
   JSEXN_FIRST = JSEXN_ERR,
+  // Internal Errors
   JSEXN_INTERNALERR,
+  // ECMAScript Errors
   JSEXN_AGGREGATEERR,
   JSEXN_EVALERR,
   JSEXN_RANGEERR,
   JSEXN_REFERENCEERR,
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  JSEXN_SUPPRESSEDERR,
+#endif
   JSEXN_SYNTAXERR,
   JSEXN_TYPEERR,
   JSEXN_URIERR,
+  // Debugger Errors
   JSEXN_DEBUGGEEWOULDRUN,
+  // WASM Errors
   JSEXN_WASMCOMPILEERROR,
   JSEXN_WASMLINKERROR,
   JSEXN_WASMRUNTIMEERROR,
   JSEXN_ERROR_LIMIT,
+  // Warnings
   JSEXN_WARN = JSEXN_ERROR_LIMIT,
+  // Error Notes
   JSEXN_NOTE,
   JSEXN_LIMIT
 };
@@ -117,11 +131,11 @@ class JSErrorBase {
   // Unique identifier for the script source.
   unsigned sourceId;
 
-  // Source line number.
-  unsigned lineno;
+  // Source line number (1-origin).
+  uint32_t lineno;
 
-  // Zero-based column index in line.
-  unsigned column;
+  // Column number in line in UTF-16 code units.
+  JS::ColumnNumberOneOrigin column;
 
   // the error number, e.g. see js/public/friend/ErrorNumbers.msg.
   unsigned errorNumber;
@@ -138,7 +152,6 @@ class JSErrorBase {
       : filename(nullptr),
         sourceId(0),
         lineno(0),
-        column(0),
         errorNumber(0),
         errorMessageName(nullptr),
         ownsMessage_(false) {}
@@ -188,7 +201,8 @@ class JSErrorNotes {
   js::Vector<js::UniquePtr<Note>, 1, js::SystemAllocPolicy> notes_;
 
   bool addNoteVA(js::FrontendContext* fc, const char* filename,
-                 unsigned sourceId, unsigned lineno, unsigned column,
+                 unsigned sourceId, uint32_t lineno,
+                 JS::ColumnNumberOneOrigin column,
                  JSErrorCallback errorCallback, void* userRef,
                  const unsigned errorNumber,
                  js::ErrorArgumentsType argumentsType, va_list ap);
@@ -197,29 +211,32 @@ class JSErrorNotes {
   JSErrorNotes();
   ~JSErrorNotes();
 
-  // Add an note to the given position.
+  // Add a note to the given position.
   bool addNoteASCII(JSContext* cx, const char* filename, unsigned sourceId,
-                    unsigned lineno, unsigned column,
+                    uint32_t lineno, JS::ColumnNumberOneOrigin column,
                     JSErrorCallback errorCallback, void* userRef,
                     const unsigned errorNumber, ...);
   bool addNoteASCII(js::FrontendContext* fc, const char* filename,
-                    unsigned sourceId, unsigned lineno, unsigned column,
+                    unsigned sourceId, uint32_t lineno,
+                    JS::ColumnNumberOneOrigin column,
                     JSErrorCallback errorCallback, void* userRef,
                     const unsigned errorNumber, ...);
   bool addNoteLatin1(JSContext* cx, const char* filename, unsigned sourceId,
-                     unsigned lineno, unsigned column,
+                     uint32_t lineno, JS::ColumnNumberOneOrigin column,
                      JSErrorCallback errorCallback, void* userRef,
                      const unsigned errorNumber, ...);
   bool addNoteLatin1(js::FrontendContext* fc, const char* filename,
-                     unsigned sourceId, unsigned lineno, unsigned column,
+                     unsigned sourceId, uint32_t lineno,
+                     JS::ColumnNumberOneOrigin column,
                      JSErrorCallback errorCallback, void* userRef,
                      const unsigned errorNumber, ...);
   bool addNoteUTF8(JSContext* cx, const char* filename, unsigned sourceId,
-                   unsigned lineno, unsigned column,
+                   uint32_t lineno, JS::ColumnNumberOneOrigin column,
                    JSErrorCallback errorCallback, void* userRef,
                    const unsigned errorNumber, ...);
   bool addNoteUTF8(js::FrontendContext* fc, const char* filename,
-                   unsigned sourceId, unsigned lineno, unsigned column,
+                   unsigned sourceId, uint32_t lineno,
+                   JS::ColumnNumberOneOrigin column,
                    JSErrorCallback errorCallback, void* userRef,
                    const unsigned errorNumber, ...);
 
@@ -532,9 +549,23 @@ namespace JS {
 
 extern JS_PUBLIC_API bool CreateError(
     JSContext* cx, JSExnType type, HandleObject stack, HandleString fileName,
-    uint32_t lineNumber, uint32_t columnNumber, JSErrorReport* report,
-    HandleString message, Handle<mozilla::Maybe<Value>> cause,
-    MutableHandleValue rval);
+    uint32_t lineNumber, JS::ColumnNumberOneOrigin column,
+    JSErrorReport* report, HandleString message,
+    Handle<mozilla::Maybe<Value>> cause, MutableHandleValue rval);
+
+/**
+ * An uncatchable exception is used to terminate execution by returning false
+ * or nullptr without reporting a pending exception on the context. These
+ * exceptions are called "uncatchable" because try-catch can't be used to catch
+ * them.
+ *
+ * This is mainly used to terminate JS execution from the interrupt handler.
+ *
+ * If the context has a pending exception, this function will clear it. Also, in
+ * debug builds, it sets a flag on the context to improve exception handling
+ * assertions in the engine.
+ */
+extern JS_PUBLIC_API void ReportUncatchableException(JSContext* cx);
 
 } /* namespace JS */
 

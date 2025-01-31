@@ -16,15 +16,10 @@
 #include "mozilla/dom/EventTarget.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/TaskCategory.h"
 #include "js/TypeDecls.h"
 #include "nsRefPtrHashtable.h"
 #include "nsILoadInfo.h"
-
-// Only fired for inner windows.
-#define DOM_WINDOW_DESTROYED_TOPIC "dom-window-destroyed"
-#define DOM_WINDOW_FROZEN_TOPIC "dom-window-frozen"
-#define DOM_WINDOW_THAWED_TOPIC "dom-window-thawed"
+#include "mozilla/MozPromise.h"
 
 class nsGlobalWindowInner;
 class nsGlobalWindowOuter;
@@ -56,6 +51,7 @@ class BrowsingContextGroup;
 class ClientInfo;
 class ClientState;
 class ContentFrameMessageManager;
+class CloseWatcherManager;
 class DocGroup;
 class Document;
 class Element;
@@ -126,7 +122,7 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   }
 
   NS_IMPL_FROMEVENTTARGET_HELPER_WITH_GETTER(nsPIDOMWindowInner,
-                                             GetAsWindowInner())
+                                             GetAsInnerWindow())
 
   // Returns true if this object is the currently-active inner window for its
   // BrowsingContext.
@@ -251,6 +247,18 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
 
   /**
    * Call this to check whether some node (this window, its document,
+   * or content in that document) has a SMILTime* event listeners.
+   */
+  bool HasSMILTimeEventListeners() { return mMayHaveSMILTimeEventListener; }
+
+  /**
+   * Call this to indicate that some node (this window, its document,
+   * or content in that document) has a SMILTime* event listener.
+   */
+  void SetHasSMILTimeEventListeners() { mMayHaveSMILTimeEventListener = true; }
+
+  /**
+   * Call this to check whether some node (this window, its document,
    * or content in that document) has a beforeinput event listener.
    * Returing false may be wrong if some nodes have come from another document
    * with `Document.adoptNode`.
@@ -341,10 +349,6 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   bool IsPlayingAudio();
 
   bool IsDocumentLoaded() const;
-
-  mozilla::dom::TimeoutManager& TimeoutManager();
-
-  bool IsRunningTimeout();
 
   // To cache top inner-window if available after constructed for tab-wised
   // indexedDB counters.
@@ -442,6 +446,22 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
    * Get the browsing context group this window belongs to.
    */
   mozilla::dom::BrowsingContextGroup* GetBrowsingContextGroup() const;
+
+  /**
+   * Call this to indicate that some node (this window, its document,
+   * or content in that document) has a DOMActivate event listener.
+   */
+  void SetHasDOMActivateEventListeners() {
+    mMayHaveDOMActivateEventListeners = true;
+  }
+
+  /**
+   * Call this to check whether some node (this window, its document,
+   * or content in that document) has a DOMActivate event listener.
+   */
+  bool HasDOMActivateEventListeners() const {
+    return mMayHaveDOMActivateEventListeners;
+  }
 
   /**
    * Call this to indicate that some node (this window, its document,
@@ -550,7 +570,7 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
    * Indicates that the page in the window has been hidden. This is used to
    * reset the focus state.
    */
-  virtual void PageHidden() = 0;
+  virtual void PageHidden(bool aIsEnteringBFCacheInParent) = 0;
 
   /**
    * Instructs this window to asynchronously dispatch a hashchange event.  This
@@ -619,12 +639,11 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   virtual nsresult Close() = 0;
 
   mozilla::dom::DocGroup* GetDocGroup() const;
-  virtual nsISerialEventTarget* EventTargetFor(
-      mozilla::TaskCategory aCategory) const = 0;
 
-  void SaveStorageAccessPermissionGranted();
+  RefPtr<mozilla::GenericPromise> SaveStorageAccessPermissionGranted();
+  RefPtr<mozilla::GenericPromise> SaveStorageAccessPermissionRevoked();
 
-  bool HasStorageAccessPermissionGranted();
+  bool UsingStorageAccess();
 
   uint32_t UpdateLockCount(bool aIncrement) {
     MOZ_ASSERT_IF(!aIncrement, mLockCount > 0);
@@ -639,6 +658,8 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
     return mWebTransportCount;
   };
   bool HasActiveWebTransports() { return mWebTransportCount > 0; }
+
+  mozilla::dom::CloseWatcherManager* EnsureCloseWatcherManager();
 
  protected:
   void CreatePerformanceObjectIfNeeded();
@@ -679,6 +700,7 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
 
   bool mIsDocumentLoaded;
   bool mIsHandlingResizeEvent;
+  bool mMayHaveDOMActivateEventListeners;
   bool mMayHavePaintEventListener;
   bool mMayHaveTouchEventListener;
   bool mMayHaveSelectionChangeEventListener;
@@ -686,6 +708,7 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   bool mMayHaveMouseEnterLeaveEventListener;
   bool mMayHavePointerEnterLeaveEventListener;
   bool mMayHaveTransitionEventListener;
+  bool mMayHaveSMILTimeEventListener;
   // Only used for telemetry probes.  This may be wrong if some nodes have
   // come from another document with `Document.adoptNode`.
   bool mMayHaveBeforeInputEventListenerForTelemetry;
@@ -743,12 +766,6 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   // the event object alive.
   mozilla::dom::Event* mEvent;
 
-  // A boolean flag indicating whether storage access is granted for the
-  // current window. These are also set as permissions, but it could happen
-  // that we need to access them synchronously in this context, and for
-  // this, we need a copy here.
-  bool mStorageAccessPermissionGranted;
-
   // The WindowGlobalChild actor for this window.
   //
   // This will be non-null during the full lifetime of the window, initialized
@@ -767,6 +784,9 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
    * workers.
    */
   uint32_t mWebTransportCount = 0;
+
+  // The CloseWatcherManager for this window.
+  RefPtr<mozilla::dom::CloseWatcherManager> mCloseWatcherManager;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowInner, NS_PIDOMWINDOWINNER_IID)
@@ -785,7 +805,7 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_PIDOMWINDOWOUTER_IID)
 
   NS_IMPL_FROMEVENTTARGET_HELPER_WITH_GETTER(nsPIDOMWindowOuter,
-                                             GetAsWindowOuter())
+                                             GetAsOuterWindow())
 
   static nsPIDOMWindowOuter* From(mozIDOMWindowProxy* aFrom) {
     return static_cast<nsPIDOMWindowOuter*>(aFrom);
@@ -1043,7 +1063,7 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
    * Indicates that the page in the window has been hidden. This is used to
    * reset the focus state.
    */
-  virtual void PageHidden() = 0;
+  virtual void PageHidden(bool aIsEnteringBFCacheInParent) = 0;
 
   /**
    * Return the window id of this window
@@ -1066,7 +1086,8 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
    *
    * Outer windows only.
    */
-  virtual nsresult OpenNoNavigate(const nsAString& aUrl, const nsAString& aName,
+  virtual nsresult OpenNoNavigate(const nsACString& aUrl,
+                                  const nsAString& aName,
                                   const nsAString& aOptions,
                                   mozilla::dom::BrowsingContext** _retval) = 0;
 
@@ -1098,13 +1119,12 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   // aLoadState will be passed on through to the windowwatcher.
   // aForceNoOpener will act just like a "noopener" feature in aOptions except
   //                will not affect any other window features.
-  virtual nsresult Open(const nsAString& aUrl, const nsAString& aName,
+  virtual nsresult Open(const nsACString& aUrl, const nsAString& aName,
                         const nsAString& aOptions,
                         nsDocShellLoadState* aLoadState, bool aForceNoOpener,
                         mozilla::dom::BrowsingContext** _retval) = 0;
-  virtual nsresult OpenDialog(const nsAString& aUrl, const nsAString& aName,
-                              const nsAString& aOptions,
-                              nsISupports* aExtraArgument,
+  virtual nsresult OpenDialog(const nsACString& aUrl, const nsAString& aName,
+                              const nsAString& aOptions, nsIArray* aArguments,
                               mozilla::dom::BrowsingContext** _retval) = 0;
 
   virtual nsresult GetInnerWidth(double* aWidth) = 0;
@@ -1121,13 +1141,9 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
 
   virtual nsresult MoveBy(int32_t aXDif, int32_t aYDif) = 0;
 
-  virtual void UpdateCommands(const nsAString& anAction,
-                              mozilla::dom::Selection* aSel,
-                              int16_t aReason) = 0;
+  virtual void UpdateCommands(const nsAString& anAction) = 0;
 
   mozilla::dom::DocGroup* GetDocGroup() const;
-  virtual nsISerialEventTarget* EventTargetFor(
-      mozilla::TaskCategory aCategory) const = 0;
 
   already_AddRefed<nsIDocShellTreeOwner> GetTreeOwner();
   already_AddRefed<nsIBaseWindow> GetTreeOwnerWindow();

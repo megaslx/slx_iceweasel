@@ -23,7 +23,7 @@ ChromeUtils.defineESModuleGetters(this, {
   UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
+ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
   const { UrlbarTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/UrlbarTestUtils.sys.mjs"
   );
@@ -31,7 +31,7 @@ XPCOMUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
   return module;
 });
 
-XPCOMUtils.defineLazyGetter(this, "SearchTestUtils", () => {
+ChromeUtils.defineLazyGetter(this, "SearchTestUtils", () => {
   const { SearchTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/SearchTestUtils.sys.mjs"
   );
@@ -135,19 +135,21 @@ async function initUpdate(params) {
     getVersionParams();
   if (params.backgroundUpdate) {
     setUpdateURL(updateURL);
-    gAUS.checkForBackgroundUpdates();
+    await gAUS.checkForBackgroundUpdates();
     if (params.continueFile) {
       await continueFileHandler(params.continueFile);
     }
     if (params.waitForUpdateState) {
-      let whichUpdate =
+      let whichUpdateFn =
         params.waitForUpdateState == STATE_DOWNLOADING
-          ? "downloadingUpdate"
-          : "readyUpdate";
+          ? "getDownloadingUpdate"
+          : "getReadyUpdate";
+      let update;
       await TestUtils.waitForCondition(
-        () =>
-          gUpdateManager[whichUpdate] &&
-          gUpdateManager[whichUpdate].state == params.waitForUpdateState,
+        async () => {
+          update = await gUpdateManager[whichUpdateFn]();
+          return update && update.state == params.waitForUpdateState;
+        },
         "Waiting for update state: " + params.waitForUpdateState,
         undefined,
         200
@@ -158,7 +160,7 @@ async function initUpdate(params) {
       });
       // Display the UI after the update state equals the expected value.
       Assert.equal(
-        gUpdateManager[whichUpdate].state,
+        update.state,
         params.waitForUpdateState,
         "The update state value should equal " + params.waitForUpdateState
       );
@@ -209,30 +211,28 @@ async function processUpdateStep(step) {
   }
 
   if (checkActiveUpdate) {
-    let whichUpdate =
+    let whichUpdateFn =
       checkActiveUpdate.state == STATE_DOWNLOADING
-        ? "downloadingUpdate"
-        : "readyUpdate";
-    await TestUtils.waitForCondition(
-      () => gUpdateManager[whichUpdate],
-      "Waiting for active update"
-    );
-    Assert.ok(
-      !!gUpdateManager[whichUpdate],
-      "There should be an active update"
-    );
+        ? "getDownloadingUpdate"
+        : "getReadyUpdate";
+    let update;
+    await TestUtils.waitForCondition(async () => {
+      update = await gUpdateManager[whichUpdateFn]();
+      return update;
+    }, "Waiting for active update");
+    Assert.ok(!!update, "There should be an active update");
     Assert.equal(
-      gUpdateManager[whichUpdate].state,
+      update.state,
       checkActiveUpdate.state,
       "The active update state should equal " + checkActiveUpdate.state
     );
   } else {
     Assert.ok(
-      !gUpdateManager.readyUpdate,
+      !(await gUpdateManager.getReadyUpdate()),
       "There should not be a ready update"
     );
     Assert.ok(
-      !gUpdateManager.downloadingUpdate,
+      !(await gUpdateManager.getDownloadingUpdate()),
       "There should not be a downloadingUpdate update"
     );
   }
@@ -244,7 +244,7 @@ async function processUpdateStep(step) {
       await continueFileHandler(continueFile);
       let patch = getPatchOfType(
         data.patchType,
-        gUpdateManager.downloadingUpdate
+        await gUpdateManager.getDownloadingUpdate()
       );
       // The update is removed early when the last download fails so check
       // that there is a patch before proceeding.
@@ -329,11 +329,7 @@ async function doUpdateTest({
     Assert.ok(button.test(actualButton), "Button regexp");
   }
 
-  if (UrlbarPrefs.get("resultMenu")) {
-    Assert.ok(element._buttons.has("menu"), "Tip has a menu button");
-  } else {
-    Assert.ok(element._buttons.has("help"), "Tip has a help button");
-  }
+  Assert.ok(element._buttons.has("menu"), "Tip has a menu button");
 
   // Pick the tip and wait for the action.
   let values = await Promise.all([awaitCallback(), pickTip()]);
@@ -373,9 +369,12 @@ async function awaitTip(searchString, win = window) {
     waitForFocus,
     fireInputEvent: true,
   });
-  Assert.ok(context.results.length >= 2);
+  Assert.ok(
+    context.results.length >= 2,
+    "Number of results is greater than or equal to 2"
+  );
   let result = context.results[1];
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
   let element = await UrlbarTestUtils.waitForAutocompleteResultAt(win, 1);
   return [result, element];
 }
@@ -488,21 +487,9 @@ function checkIntervention({
       Assert.ok(button.test(actualButton), "Button regexp");
     }
 
-    if (UrlbarPrefs.get("resultMenu")) {
-      let menuButton = element._buttons.get("menu");
-      Assert.ok(menuButton, "Menu button exists");
-      Assert.ok(
-        BrowserTestUtils.is_visible(menuButton),
-        "Menu button is visible"
-      );
-    } else {
-      let helpButton = element._buttons.get("help");
-      Assert.ok(helpButton, "Help button exists");
-      Assert.ok(
-        BrowserTestUtils.is_visible(helpButton),
-        "Help button is visible"
-      );
-    }
+    let menuButton = element._buttons.get("menu");
+    Assert.ok(menuButton, "Menu button exists");
+    Assert.ok(BrowserTestUtils.isVisible(menuButton), "Menu button is visible");
 
     let values = await Promise.all([awaitCallback(), pickTip()]);
     Assert.ok(true, "Refresh dialog opened");
@@ -564,16 +551,16 @@ async function checkTip(win, expectedTip, closeView = true) {
     // Wait a bit for the tip to not show up.
     // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
     await new Promise(resolve => setTimeout(resolve, 100));
-    Assert.ok(!win.gURLBar.view.isOpen);
+    Assert.ok(!win.gURLBar.view.isOpen, "View is not open");
     return;
   }
 
   // Wait for the view to open, and then check the tip result.
   await UrlbarTestUtils.promisePopupOpen(win, () => {});
   Assert.ok(true, "View opened");
-  Assert.equal(UrlbarTestUtils.getResultCount(win), 1);
+  Assert.equal(UrlbarTestUtils.getResultCount(win), 1, "Number of results");
   let result = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
   let heuristic;
   let title;
   let name = Services.search.defaultEngine.name;
@@ -590,23 +577,18 @@ async function checkTip(win, expectedTip, closeView = true) {
         `Start your search in the address bar to see suggestions from ` +
         `${name} and your browsing history.`;
       break;
-    case UrlbarProviderSearchTips.TIP_TYPE.PERSIST:
-      heuristic = false;
-      title =
-        "Searching just got simpler." +
-        " Try making your search more specific here in the address bar." +
-        " To show the URL instead, visit Search, in settings.";
-      break;
   }
-  Assert.equal(result.heuristic, heuristic);
-  Assert.equal(result.displayed.title, title);
+  Assert.equal(result.heuristic, heuristic, "Result is heuristic");
+  Assert.equal(result.displayed.title, title, "Title");
   Assert.equal(
     result.element.row._buttons.get("0").textContent,
-    expectedTip == UrlbarProviderSearchTips.TIP_TYPE.PERSIST
-      ? `Got it`
-      : `Okay, Got It`
+    "Okay, Got It",
+    "Button text"
   );
-  Assert.ok(!result.element.row._buttons.has("help"));
+  Assert.ok(
+    !result.element.row._buttons.has("help"),
+    "Buttons in row does not include help"
+  );
 
   const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);
   TelemetryTestUtils.assertKeyedScalar(
@@ -748,9 +730,6 @@ async function withDNSRedirect(domain, path, callback) {
 function resetSearchTipsProvider() {
   Services.prefs.clearUserPref(
     `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.ONBOARD}`
-  );
-  Services.prefs.clearUserPref(
-    `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.PERSIST}`
   );
   Services.prefs.clearUserPref(
     `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.REDIRECT}`

@@ -41,8 +41,7 @@ InterceptedHttpChannel::InterceptedHttpChannel(
       mProgressReported(0),
       mSynthesizedStreamLength(-1),
       mResumeStartPos(0),
-      mCallingStatusAndProgress(false),
-      mTimeStamps() {
+      mCallingStatusAndProgress(false) {
   // Pre-set the creation and AsyncOpen times based on the original channel
   // we are intercepting.  We don't want our extra internal redirect to mask
   // any time spent processing the channel.
@@ -81,7 +80,7 @@ nsresult InterceptedHttpChannel::SetupReplacementChannel(
     return rv;
   }
 
-  rv = CheckRedirectLimit(aRedirectFlags);
+  rv = CheckRedirectLimit(aURI, aRedirectFlags);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // While we can't resume an synthetic response, we can still propagate
@@ -111,7 +110,8 @@ void InterceptedHttpChannel::AsyncOpenInternal() {
         mURI, requestMethod, mPriority, mChannelId, NetworkLoadType::LOAD_START,
         mChannelCreationTimestamp, mLastStatusReported, 0, kCacheUnknown,
         mLoadInfo->GetInnerWindowID(),
-        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0);
+        mLoadInfo->GetOriginAttributes().IsPrivateBrowsing(),
+        mRequestHead.Version(), mClassOfService.Flags());
   }
 
   // If an error occurs in this file we must ensure mListener callbacks are
@@ -125,9 +125,7 @@ void InterceptedHttpChannel::AsyncOpenInternal() {
 
   // We should have pre-set the AsyncOpen time based on the original channel if
   // timings are enabled.
-  if (LoadTimingEnabled()) {
-    MOZ_DIAGNOSTIC_ASSERT(!mAsyncOpenTime.IsNull());
-  }
+  MOZ_DIAGNOSTIC_ASSERT(!mAsyncOpenTime.IsNull());
 
   StoreIsPending(true);
   StoreResponseCouldBeSynthesized(true);
@@ -418,8 +416,7 @@ void InterceptedHttpChannel::MaybeCallStatusAndProgress() {
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "InterceptedHttpChannel::MaybeCallStatusAndProgress", this,
         &InterceptedHttpChannel::MaybeCallStatusAndProgress);
-    MOZ_ALWAYS_SUCCEEDS(
-        SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()));
+    MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
 
     return;
   }
@@ -552,8 +549,9 @@ InterceptedHttpChannel::Cancel(nsresult aStatus) {
         mURI, requestMethod, priority, mChannelId, NetworkLoadType::LOAD_CANCEL,
         mLastStatusReported, TimeStamp::Now(), size, kCacheUnknown,
         mLoadInfo->GetInnerWindowID(),
-        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
-        &mTransactionTimings, std::move(mSource));
+        mLoadInfo->GetOriginAttributes().IsPrivateBrowsing(),
+        mRequestHead.Version(), mClassOfService.Flags(), &mTransactionTimings,
+        std::move(mSource));
   }
 
   MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(aStatus));
@@ -642,7 +640,7 @@ InterceptedHttpChannel::GetIsAuthChannel(bool* aIsAuthChannel) {
 
 NS_IMETHODIMP
 InterceptedHttpChannel::SetPriority(int32_t aPriority) {
-  mPriority = clamped<int32_t>(aPriority, INT16_MIN, INT16_MAX);
+  mPriority = std::clamp<int32_t>(aPriority, INT16_MIN, INT16_MAX);
   return NS_OK;
 }
 
@@ -707,7 +705,7 @@ class ResetInterceptionHeaderVisitor final : public nsIHttpHeaderVisitor {
   VisitHeader(const nsACString& aHeader, const nsACString& aValue) override {
     // We skip Cookie header here, since it will be added during
     // nsHttpChannel::AsyncOpen.
-    if (aHeader.Equals(nsHttp::Cookie)) {
+    if (aHeader.Equals(nsHttp::Cookie.val())) {
       return NS_OK;
     }
     if (aValue.IsEmpty()) {
@@ -781,10 +779,10 @@ InterceptedHttpChannel::ResetInterception(bool aBypass) {
         mURI, requestMethod, priority, mChannelId,
         NetworkLoadType::LOAD_REDIRECT, mLastStatusReported, TimeStamp::Now(),
         size, kCacheUnknown, mLoadInfo->GetInnerWindowID(),
-        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
-        &mTransactionTimings, std::move(mSource),
-        Some(nsDependentCString(contentType.get())), mURI, flags,
-        newBaseChannel->ChannelId());
+        mLoadInfo->GetOriginAttributes().IsPrivateBrowsing(),
+        mRequestHead.Version(), mClassOfService.Flags(), &mTransactionTimings,
+        std::move(mSource), Some(nsDependentCString(contentType.get())), mURI,
+        flags, newBaseChannel->ChannelId());
   }
 
   rv = SetupReplacementChannel(mURI, newChannel, true, flags);
@@ -848,7 +846,8 @@ InterceptedHttpChannel::SynthesizeStatus(uint16_t aStatus,
   statusLine.AppendLiteral(" ");
   statusLine.Append(aReason);
 
-  mSynthesizedResponseHead->ParseStatusLine(statusLine);
+  NS_ENSURE_SUCCESS(mSynthesizedResponseHead->ParseStatusLine(statusLine),
+                    NS_ERROR_FAILURE);
   return NS_OK;
 }
 
@@ -1020,6 +1019,76 @@ InterceptedHttpChannel::SetFetchHandlerFinish(TimeStamp aTimeStamp) {
 }
 
 NS_IMETHODIMP
+InterceptedHttpChannel::SetRemoteWorkerLaunchStart(TimeStamp aTimeStamp) {
+  mServiceWorkerLaunchStart = aTimeStamp > mTimeStamps.mInterceptionStart
+                                  ? aTimeStamp
+                                  : mTimeStamps.mInterceptionStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::SetRemoteWorkerLaunchEnd(TimeStamp aTimeStamp) {
+  mServiceWorkerLaunchEnd = aTimeStamp > mTimeStamps.mInterceptionStart
+                                ? aTimeStamp
+                                : mTimeStamps.mInterceptionStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::SetLaunchServiceWorkerStart(TimeStamp aTimeStamp) {
+  mServiceWorkerLaunchStart = aTimeStamp;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetLaunchServiceWorkerStart(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mServiceWorkerLaunchStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::SetLaunchServiceWorkerEnd(TimeStamp aTimeStamp) {
+  mServiceWorkerLaunchEnd = aTimeStamp;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetLaunchServiceWorkerEnd(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mServiceWorkerLaunchEnd;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetDispatchFetchEventStart(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mTimeStamps.mInterceptionStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetDispatchFetchEventEnd(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mTimeStamps.mFetchHandlerStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetHandleFetchEventStart(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mTimeStamps.mFetchHandlerStart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::GetHandleFetchEventEnd(TimeStamp* aRetVal) {
+  MOZ_ASSERT(aRetVal);
+  *aRetVal = mTimeStamps.mFetchHandlerFinish;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 InterceptedHttpChannel::GetIsReset(bool* aResult) {
   *aResult = mInterceptionReset;
   return NS_OK;
@@ -1155,9 +1224,9 @@ InterceptedHttpChannel::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
         mURI, requestMethod, priority, mChannelId, NetworkLoadType::LOAD_STOP,
         mLastStatusReported, TimeStamp::Now(), size, kCacheUnknown,
         mLoadInfo->GetInnerWindowID(),
-        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
-        &mTransactionTimings, std::move(mSource),
-        Some(nsDependentCString(contentType.get())));
+        mLoadInfo->GetOriginAttributes().IsPrivateBrowsing(),
+        mRequestHead.Version(), mClassOfService.Flags(), &mTransactionTimings,
+        std::move(mSource), Some(nsDependentCString(contentType.get())));
   }
 
   nsresult rv = NS_OK;
@@ -1193,6 +1262,20 @@ InterceptedHttpChannel::OnDataAvailable(nsIRequest* aRequest,
   }
 
   return mListener->OnDataAvailable(this, aInputStream, aOffset, aCount);
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::OnDataFinished(nsresult aStatus) {
+  if (mCanceled || !mListener) {
+    return aStatus;
+  }
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetableListener =
+      do_QueryInterface(mListener);
+  if (retargetableListener) {
+    return retargetableListener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
 }
 
 NS_IMETHODIMP

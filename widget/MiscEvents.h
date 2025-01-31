@@ -49,7 +49,7 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
     return nullptr;
   }
 
-  // eContentCommandInsertText
+  // eContentCommandInsertText and eContentCommandReplaceText
   mozilla::Maybe<nsString> mString;  // [in]
 
   // eContentCommandPasteTransferable
@@ -68,9 +68,30 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
     bool mIsHorizontal;  // [in]
   } mScroll;
 
+  // eContentCommandReplaceText
+  struct Selection {
+    // Replacement source string. If not matched, failed
+    nsString mReplaceSrcString;  // [in]
+    // Start offset of selection
+    uint32_t mOffset = 0;  // [in]
+    // false if selection is end of replaced string
+    bool mPreventSetSelection = false;  // [in]
+  } mSelection;
+
+  // If set to true, the event checks whether the command is enabled in the
+  // process or not without executing the command.  I.e., if it's in the parent
+  // process when a remote process has focus, mIsEnabled may be different from
+  // the latest state of the command in the remote process.
   bool mOnlyEnabledCheck;  // [in]
 
   bool mSucceeded;  // [out]
+
+  // If the command is enabled, set to true.  Otherwise, false. This is set
+  // synchronously in the process.  If it's in the parent process when a remote
+  // process has focus, this returns the command state in the parent process
+  // which may be different from the remote process.
+  // XXX When mOnlyEnabledCheck is set to true, this may be always set to true
+  // even when the command is disabled in the parent process.
   bool mIsEnabled;  // [out]
 
   void AssignContentCommandEventData(const WidgetContentCommandEvent& aEvent,
@@ -79,6 +100,7 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
 
     mString = aEvent.mString;
     mScroll = aEvent.mScroll;
+    mSelection = aEvent.mSelection;
     mOnlyEnabledCheck = aEvent.mOnlyEnabledCheck;
     mSucceeded = aEvent.mSucceeded;
     mIsEnabled = aEvent.mIsEnabled;
@@ -100,9 +122,9 @@ class WidgetCommandEvent : public WidgetGUIEvent {
 
  protected:
   WidgetCommandEvent(bool aIsTrusted, nsAtom* aEventType, nsAtom* aCommand,
-                     nsIWidget* aWidget)
+                     nsIWidget* aWidget, const WidgetEventTime* aTime = nullptr)
       : WidgetGUIEvent(aIsTrusted, eUnidentifiedEvent, aWidget,
-                       eCommandEventClass),
+                       eCommandEventClass, aTime),
         mCommand(aCommand) {
     mSpecifiedEventType = aEventType;
   }
@@ -112,21 +134,23 @@ class WidgetCommandEvent : public WidgetGUIEvent {
    * Constructor to initialize an app command.  This is the only case to
    * initialize this class as a command in C++ stack.
    */
-  WidgetCommandEvent(bool aIsTrusted, nsAtom* aCommand, nsIWidget* aWidget)
+  WidgetCommandEvent(bool aIsTrusted, nsAtom* aCommand, nsIWidget* aWidget,
+                     const WidgetEventTime* aTime = nullptr)
       : WidgetCommandEvent(aIsTrusted, nsGkAtoms::onAppCommand, aCommand,
-                           aWidget) {}
+                           aWidget, aTime) {}
 
   /**
    * Constructor to initialize as internal event of dom::CommandEvent.
    */
-  WidgetCommandEvent() : WidgetCommandEvent(false, nullptr, nullptr, nullptr) {}
+  WidgetCommandEvent()
+      : WidgetCommandEvent(false, nullptr, nullptr, nullptr, nullptr) {}
 
   virtual WidgetEvent* Duplicate() const override {
     MOZ_ASSERT(mClass == eCommandEventClass,
                "Duplicate() must be overridden by sub class");
     // Not copying widget, it is a weak reference.
-    WidgetCommandEvent* result =
-        new WidgetCommandEvent(false, mSpecifiedEventType, mCommand, nullptr);
+    WidgetCommandEvent* result = new WidgetCommandEvent(
+        false, mSpecifiedEventType, mCommand, nullptr, this);
     result->AssignCommandEventData(*this, true);
     result->mFlags = mFlags;
     return result;

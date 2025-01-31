@@ -59,7 +59,10 @@ export class EncryptedMediaParent extends JSWindowActorParent {
     ]);
   }
 
-  receiveMessage(aMessage) {
+  async receiveMessage(aMessage) {
+    if (!this.handledMessages) {
+      this.handledMessages = new Set();
+    }
     // The top level browsing context's embedding element should be a xul browser element.
     let browser = this.browsingContext.top.embedderElement;
 
@@ -76,6 +79,9 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       return;
     }
     let { status, keySystem } = parsedData;
+    if (this.handledMessages.has(status)) {
+      return;
+    }
 
     // First, see if we need to do updates. We don't need to do anything for
     // hidden keysystems:
@@ -103,11 +109,13 @@ export class EncryptedMediaParent extends JSWindowActorParent {
         if (keySystem != "org.w3.clearkey") {
           this.showPopupNotificationForSuccess(browser, keySystem);
         }
+        this.reportEMEDecryptionProbe();
         // ... and bail!
         return;
 
       case "api-disabled":
       case "cdm-disabled":
+        this.handledMessages.add(status);
         notificationId = "drmContentDisabled";
         buttonCallback = () => {
           this.ensureEMEEnabled(browser, keySystem);
@@ -119,6 +127,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
         break;
 
       case "cdm-not-installed":
+        this.handledMessages.add(status);
         notificationId = "drmContentCDMInstalling";
         notificationMessage = this.getMessageWithBrandName(notificationId);
         break;
@@ -143,6 +152,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
 
     let notificationBox = browser.getTabBrowser().getNotificationBox(browser);
     if (notificationBox.getNotificationWithValue(notificationId)) {
+      this.handledMessages.delete(status);
       return;
     }
 
@@ -162,7 +172,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
     }
 
     let iconURL = "chrome://browser/skin/drm-icon.svg";
-    notificationBox.appendNotification(
+    await notificationBox.appendNotification(
       notificationId,
       {
         label: notificationMessage,
@@ -171,6 +181,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       },
       buttons
     );
+    this.handledMessages.delete(status);
   }
 
   async showPopupNotificationForSuccess(aBrowser) {
@@ -262,5 +273,55 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       secondaryActions,
       options
     );
+  }
+
+  async reportEMEDecryptionProbe() {
+    const isGleanReported =
+      await Glean.mediadrm.decryption.has_hardware_decryption.testGetValue();
+    if (typeof isGleanReported === "boolean") {
+      // Probe already exists, no need to report it again.
+      return;
+    }
+
+    let hasHardwareDecryption = false;
+    let hasSoftwareClearlead = false;
+    let hasHardwareClearlead = false;
+    let hasHdcp22Plus = false;
+    let hasWMF = false;
+
+    // Get CDM capabilities from the GMP process.
+    let infos = [];
+    let cdmInfo = await ChromeUtils.getGMPContentDecryptionModuleInformation();
+    infos.push(...cdmInfo);
+
+    // Get CDM capabilities from the MFCDM process, if exists.
+    if (ChromeUtils.getWMFContentDecryptionModuleInformation !== undefined) {
+      hasWMF = true;
+      cdmInfo = await ChromeUtils.getWMFContentDecryptionModuleInformation();
+      infos.push(...cdmInfo);
+    }
+
+    for (let info of infos) {
+      if (info.isHardwareDecryption) {
+        hasHardwareDecryption = true;
+      }
+      if (info.clearlead) {
+        if (info.isHardwareDecryption) {
+          hasHardwareClearlead = true;
+        } else {
+          hasSoftwareClearlead = true;
+        }
+      }
+      if (info.isHDCP22Compatible) {
+        hasHdcp22Plus = true;
+      }
+    }
+    Glean.mediadrm.decryption.has_hardware_decryption.set(
+      hasHardwareDecryption
+    );
+    Glean.mediadrm.decryption.has_hardware_clearlead.set(hasHardwareClearlead);
+    Glean.mediadrm.decryption.has_software_clearlead.set(hasSoftwareClearlead);
+    Glean.mediadrm.decryption.has_hdcp22_plus.set(hasHdcp22Plus);
+    Glean.mediadrm.decryption.has_wmf.set(hasWMF);
   }
 }

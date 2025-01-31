@@ -86,8 +86,11 @@
 }
 
 .img.file {
-  mask-image: url(chrome://devtools/content/debugger/images/file-small.svg);
-  mask-size: 12px 12px;
+  background-image: url(chrome://devtools/content/debugger/images/file-small.svg);
+  background-size: 12px 12px;
+  background-color: transparent !important;
+  -moz-context-properties: fill;
+  fill: var(--theme-icon-color);
 }
 
 .img.folder {
@@ -115,6 +118,13 @@
 
 html[dir="rtl"] .img.more-tabs {
   transform: scaleX(-1);
+}
+
+.img.sourcemap {
+  background-image: url(chrome://devtools/content/debugger/images/sourcemap.svg);
+  -moz-context-properties: fill;
+  fill: var(--theme-icon-warning-color);
+  background-color: unset;
 }
 
 .img.next {
@@ -191,4 +201,8 @@ html[dir="rtl"] .img.more-tabs {
 
 .img.worker {
   mask-image: url(chrome://devtools/content/debugger/images/worker.svg);
+}
+
+.img.extension {
+  mask-image: url(chrome://devtools/content/debugger/images/sources/extension.svg);
 }

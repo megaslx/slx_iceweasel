@@ -491,9 +491,9 @@ test_socket(int argc, char *argv[])
         portNum = (PRUint16)LDAP_PORT;
     }
     /*
-         * The hostname may be a fully-qualified name. Just
-         * use the leftmost component in our lookup.
-         */
+     * The hostname may be a fully-qualified name. Just
+     * use the leftmost component in our lookup.
+     */
     sepPtr = strchr(serverName, '.');
     if (sepPtr) {
         *sepPtr++ = '\0';
@@ -509,7 +509,7 @@ test_socket(int argc, char *argv[])
 
     serverNetAddr.inet.family = PR_AF_INET;
     serverNetAddr.inet.port = PR_htons(portNum);
-    serverNetAddr.inet.ip = PR_INADDR_ANY;
+    serverNetAddr.inet.ip = PR_htonl(PR_INADDR_ANY);
 
     hostenum = PR_EnumerateHostEnt(0, &hostent, portNum, &clientNetAddr);
     if (hostenum == -1) {

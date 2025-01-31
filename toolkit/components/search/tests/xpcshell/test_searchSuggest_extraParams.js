@@ -1,23 +1,33 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const TEST_CONFIG = [
+const CONFIG = [
   {
-    webExtension: { id: "get@search.mozilla.org" },
-    appliesTo: [{ included: { everywhere: true } }],
-    suggestExtraParams: [
-      {
-        name: "custom_param",
-        pref: "test_pref_param",
-        condition: "pref",
+    identifier: "get",
+    base: {
+      name: "Get Engine",
+      urls: {
+        suggestions: {
+          base: "https://example.com",
+          params: [
+            {
+              name: "custom_param",
+              experimentConfig: "test_pref_param",
+            },
+            {
+              name: "webExtension",
+              value: "1",
+            },
+          ],
+          searchTermParamName: "suggest",
+        },
       },
-    ],
+    },
   },
 ];
 
-add_task(async function setup() {
-  await SearchTestUtils.useTestEngines("method-extensions", null, TEST_CONFIG);
-  await AddonTestUtils.promiseStartupManager();
+add_setup(async function () {
+  SearchTestUtils.setRemoteSettingsConfig(CONFIG);
   await Services.search.init();
 });
 

@@ -8,8 +8,8 @@ DIRS += [
     "content",
 ]
 
-BROWSER_CHROME_MANIFESTS += ["test/browser.ini"]
-XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.ini"]
+BROWSER_CHROME_MANIFESTS += ["test/browser.toml", "test/browserSidebarRevamp.toml"]
+XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.toml"]
 
 TESTING_JS_MODULES += [
     "test/CustomizableUITestUtils.sys.mjs",
@@ -22,6 +22,7 @@ EXTRA_JS_MODULES += [
     "DragPositionManager.sys.mjs",
     "PanelMultiView.sys.mjs",
     "SearchWidgetTracker.sys.mjs",
+    "ToolbarContextMenu.sys.mjs",
 ]
 
 with Files("**"):

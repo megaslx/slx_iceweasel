@@ -9,7 +9,7 @@ async function locateBookmarkAndTestCtrlClick(menupopup) {
     node => node.label == "Test1"
   );
   ok(testMenuitem, "Found test bookmark.");
-  ok(BrowserTestUtils.is_visible(testMenuitem), "Should be visible");
+  ok(BrowserTestUtils.isVisible(testMenuitem), "Should be visible");
   let promiseTabOpened = BrowserTestUtils.waitForNewTab(gBrowser, null);
   EventUtils.synthesizeMouseAtCenter(testMenuitem, { accelKey: true });
   let newTab = await promiseTabOpened;
@@ -67,7 +67,7 @@ add_setup(async function () {
   // Create our test bookmarks.
   await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.menuGuid,
-    url: "http://example.com/",
+    url: "https://example.com/",
     title: "Test1",
   });
   let folder = await PlacesUtils.bookmarks.insert({
@@ -78,7 +78,7 @@ add_setup(async function () {
   });
   await PlacesUtils.bookmarks.insert({
     parentGuid: folder.guid,
-    url: "http://example.com/",
+    url: "https://example.com/",
     title: "Test1",
   });
 
@@ -202,8 +202,9 @@ add_task(async function testStayopenBookmarksClicks() {
   let toolbarbutton = BT.firstElementChild;
   ok(toolbarbutton, "Folder should be first item on Bookmarks Toolbar.");
   let buttonMenupopup = toolbarbutton.firstElementChild;
-  ok(
-    buttonMenupopup.tagName == "menupopup",
+  Assert.equal(
+    buttonMenupopup.tagName,
+    "menupopup",
     "Found toolbar button's menupopup."
   );
   promiseEvent = BrowserTestUtils.waitForEvent(buttonMenupopup, "popupshown");

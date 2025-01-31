@@ -251,10 +251,9 @@ void PeerConnectionDelegateAdapter::OnIceCandidatesRemoved(
   NSMutableArray* ice_candidates =
       [NSMutableArray arrayWithCapacity:candidates.size()];
   for (const auto& candidate : candidates) {
-    std::unique_ptr<JsepIceCandidate> candidate_wrapper(
-        new JsepIceCandidate(candidate.transport_name(), -1, candidate));
+    JsepIceCandidate candidate_wrapper(candidate.transport_name(), -1, candidate);
     RTC_OBJC_TYPE(RTCIceCandidate) *ice_candidate =
-        [[RTC_OBJC_TYPE(RTCIceCandidate) alloc] initWithNativeCandidate:candidate_wrapper.get()];
+        [[RTC_OBJC_TYPE(RTCIceCandidate) alloc] initWithNativeCandidate:&candidate_wrapper];
     [ice_candidates addObject:ice_candidate];
   }
   RTC_OBJC_TYPE(RTCPeerConnection) *peer_connection = peer_connection_;
@@ -265,14 +264,14 @@ void PeerConnectionDelegateAdapter::OnIceCandidatesRemoved(
 void PeerConnectionDelegateAdapter::OnIceSelectedCandidatePairChanged(
     const cricket::CandidatePairChangeEvent &event) {
   const auto &selected_pair = event.selected_candidate_pair;
-  auto local_candidate_wrapper = std::make_unique<JsepIceCandidate>(
+  JsepIceCandidate local_candidate_wrapper(
       selected_pair.local_candidate().transport_name(), -1, selected_pair.local_candidate());
-  RTC_OBJC_TYPE(RTCIceCandidate) *local_candidate = [[RTC_OBJC_TYPE(RTCIceCandidate) alloc]
-      initWithNativeCandidate:local_candidate_wrapper.release()];
-  auto remote_candidate_wrapper = std::make_unique<JsepIceCandidate>(
+  RTC_OBJC_TYPE(RTCIceCandidate) *local_candidate =
+      [[RTC_OBJC_TYPE(RTCIceCandidate) alloc] initWithNativeCandidate:&local_candidate_wrapper];
+  JsepIceCandidate remote_candidate_wrapper(
       selected_pair.remote_candidate().transport_name(), -1, selected_pair.remote_candidate());
-  RTC_OBJC_TYPE(RTCIceCandidate) *remote_candidate = [[RTC_OBJC_TYPE(RTCIceCandidate) alloc]
-      initWithNativeCandidate:remote_candidate_wrapper.release()];
+  RTC_OBJC_TYPE(RTCIceCandidate) *remote_candidate =
+      [[RTC_OBJC_TYPE(RTCIceCandidate) alloc] initWithNativeCandidate:&remote_candidate_wrapper];
   RTC_OBJC_TYPE(RTCPeerConnection) *peer_connection = peer_connection_;
   NSString *nsstr_reason = [NSString stringForStdString:event.reason];
   if ([peer_connection.delegate
@@ -366,12 +365,13 @@ void PeerConnectionDelegateAdapter::OnRemoveTrack(
   if (!config) {
     return nil;
   }
-  if (self = [super init]) {
+  self = [super init];
+  if (self) {
     _observer.reset(new webrtc::PeerConnectionDelegateAdapter(self));
     _nativeConstraints = constraints.nativeConstraints;
     CopyConstraintsIntoRtcConfiguration(_nativeConstraints.get(), config.get());
 
-    webrtc::PeerConnectionDependencies deps = std::move(*dependencies.release());
+    webrtc::PeerConnectionDependencies deps = std::move(*dependencies);
     deps.observer = _observer.get();
     auto result = factory.nativeFactory->CreatePeerConnectionOrError(*config, std::move(deps));
 
@@ -622,13 +622,13 @@ void PeerConnectionDelegateAdapter::OnRemoveTrack(
               maxBitrateBps:(nullable NSNumber *)maxBitrateBps {
   webrtc::BitrateSettings params;
   if (minBitrateBps != nil) {
-    params.min_bitrate_bps = absl::optional<int>(minBitrateBps.intValue);
+    params.min_bitrate_bps = std::optional<int>(minBitrateBps.intValue);
   }
   if (currentBitrateBps != nil) {
-    params.start_bitrate_bps = absl::optional<int>(currentBitrateBps.intValue);
+    params.start_bitrate_bps = std::optional<int>(currentBitrateBps.intValue);
   }
   if (maxBitrateBps != nil) {
-    params.max_bitrate_bps = absl::optional<int>(maxBitrateBps.intValue);
+    params.max_bitrate_bps = std::optional<int>(maxBitrateBps.intValue);
   }
   return _peerConnection->SetBitrate(params).ok();
 }

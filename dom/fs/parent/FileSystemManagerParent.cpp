@@ -41,12 +41,19 @@ FileSystemManagerParent::FileSystemManagerParent(
 
 FileSystemManagerParent::~FileSystemManagerParent() {
   LOG(("Destroying FileSystemManagerParent %p", this));
+  MOZ_ASSERT(!mRegistered);
 }
 
 void FileSystemManagerParent::AssertIsOnIOTarget() const {
   MOZ_ASSERT(mDataManager);
 
   mDataManager->AssertIsOnIOTarget();
+}
+
+bool FileSystemManagerParent::IsAlive() const {
+  mozilla::ipc::AssertIsOnBackgroundThread();
+
+  return !!mDataManager;
 }
 
 const RefPtr<fs::data::FileSystemDataManager>&
@@ -507,7 +514,9 @@ void FileSystemManagerParent::ActorDestroy(ActorDestroyReason aWhy) {
 
   InvokeAsync(mDataManager->MutableBackgroundTargetPtr(), __func__,
               [self = RefPtr<FileSystemManagerParent>(this)]() {
-                self->mDataManager->UnregisterActor(WrapNotNull(self));
+                if (self->mRegistered) {
+                  self->mDataManager->UnregisterActor(WrapNotNull(self));
+                }
 
                 self->mDataManager = nullptr;
 

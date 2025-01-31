@@ -57,9 +57,12 @@ class MenuButton extends PureComponent {
       // A text content for the button.
       label: PropTypes.string,
 
-      // URL of the icon to associate with the MenuButton. (Optional)
-      // e.g. chrome://devtools/skin/image/foo.svg
-      icon: PropTypes.string,
+      // Optional, either:
+      // - false or missing if no icon should be displayed
+      // - true if an icon should be displayed and is set via CSS
+      // - a string set to the URL of the icon to associate with the MenuButton
+      //   e.g. chrome://devtools/skin/image/foo.svg
+      icon: PropTypes.oneOfType([PropTypes.bool, PropTypes.string]),
 
       // An optional ID to assign to the menu's container tooltip object.
       menuId: PropTypes.string,
@@ -427,9 +430,12 @@ class MenuButton extends PureComponent {
       buttonProps.className = buttonProps.className
         ? `${buttonProps.className} ${iconClass}`
         : iconClass;
-      buttonProps.style = {
-        "--menuitem-icon-image": "url(" + this.props.icon + ")",
-      };
+      // `icon` may be a boolean and the icon URL will be set in CSS.
+      if (typeof this.props.icon == "string") {
+        buttonProps.style = {
+          "--menuitem-icon-image": "url(" + this.props.icon + ")",
+        };
+      }
     }
 
     if (this.state.isMenuInitialized) {

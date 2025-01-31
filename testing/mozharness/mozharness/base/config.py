@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """Generic config parsing and dumping, the way I remember it from scripts
 gone by.
 
@@ -100,7 +98,7 @@ class ReadOnlyDict(dict):
         assert not self._lock, "ReadOnlyDict is locked!"
 
     def lock(self):
-        for (k, v) in list(self.items()):
+        for k, v in list(self.items()):
             self[k] = make_immutable(v)
         self._lock = True
 

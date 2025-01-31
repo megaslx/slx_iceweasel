@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -39,26 +39,10 @@ void av1_inverse_transform_block(const MACROBLOCKD *xd,
 void av1_highbd_iwht4x4_add(const tran_low_t *input, uint8_t *dest, int stride,
                             int eob, int bd);
 
-static INLINE const int32_t *cast_to_int32(const tran_low_t *input) {
+static inline const int32_t *cast_to_int32(const tran_low_t *input) {
   assert(sizeof(int32_t) == sizeof(tran_low_t));
   return (const int32_t *)input;
 }
-
-typedef void(highbd_inv_txfm_add)(const tran_low_t *input, uint8_t *dest,
-                                  int stride, const TxfmParam *param);
-
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_4x8;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_8x4;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_16x32;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_32x16;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_32x64;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_64x32;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_16x64;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_64x16;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_16x4;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_4x16;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_8x32;
-highbd_inv_txfm_add av1_highbd_inv_txfm_add_32x8;
 
 #ifdef __cplusplus
 }  // extern "C"

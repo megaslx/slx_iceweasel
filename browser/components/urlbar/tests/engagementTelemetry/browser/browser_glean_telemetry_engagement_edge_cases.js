@@ -5,11 +5,6 @@
 
 // Test edge cases for engagement.
 
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/browser/components/urlbar/tests/ext/browser/head.js",
-  this
-);
-
 add_setup(async function () {
   await setup();
 });
@@ -20,14 +15,14 @@ add_setup(async function () {
 class NoResponseTestProvider extends UrlbarTestUtils.TestProvider {
   constructor() {
     super({ name: "TestProviderNoResponse ", results: [] });
-    this.#deferred = PromiseUtils.defer();
+    this.#deferred = Promise.withResolvers();
   }
 
   get type() {
     return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
   }
 
-  async startQuery(context, addCallback) {
+  async startQuery(_context, _addCallback) {
     await this.#deferred.promise;
   }
 
@@ -45,7 +40,7 @@ const noResponseProvider = new NoResponseTestProvider();
 class AnotherHeuristicProvider extends UrlbarTestUtils.TestProvider {
   constructor({ results }) {
     super({ name: "TestProviderAnotherHeuristic ", results });
-    this.#deferred = PromiseUtils.defer();
+    this.#deferred = Promise.withResolvers();
   }
 
   get type() {
@@ -53,7 +48,7 @@ class AnotherHeuristicProvider extends UrlbarTestUtils.TestProvider {
   }
 
   async startQuery(context, addCallback) {
-    for (const result of this._results) {
+    for (const result of this.results) {
       addCallback(this, result);
     }
 
@@ -86,12 +81,8 @@ add_task(async function engagement_before_showing_results() {
   });
 
   // Increase chunk delays to delay the call to notifyResults.
-  let originalHeuristicTimeout =
-    UrlbarProvidersManager.CHUNK_HEURISTIC_RESULTS_DELAY_MS;
-  UrlbarProvidersManager.CHUNK_HEURISTIC_RESULTS_DELAY_MS = 1000000;
-  let originalOtherTimeout =
-    UrlbarProvidersManager.CHUNK_OTHER_RESULTS_DELAY_MS;
-  UrlbarProvidersManager.CHUNK_OTHER_RESULTS_DELAY_MS = 1000000;
+  let originalChunkTimeout = UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS;
+  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = 1000000;
 
   // Add a provider that waits forever in startQuery() to avoid fireing
   // heuristicProviderTimer.
@@ -103,13 +94,11 @@ add_task(async function engagement_before_showing_results() {
   const cleanup = () => {
     UrlbarProvidersManager.unregisterProvider(noResponseProvider);
     UrlbarProvidersManager.unregisterProvider(anotherHeuristicProvider);
-    UrlbarProvidersManager.CHUNK_HEURISTIC_RESULTS_DELAY_MS =
-      originalHeuristicTimeout;
-    UrlbarProvidersManager.CHUNK_OTHER_RESULTS_DELAY_MS = originalOtherTimeout;
+    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = originalChunkTimeout;
   };
   registerCleanupFunction(cleanup);
 
-  await doTest(async browser => {
+  await doTest(async () => {
     // Try to show the results.
     await UrlbarTestUtils.inputIntoURLBar(window, "exam");
 
@@ -132,7 +121,6 @@ add_task(async function engagement_before_showing_results() {
     assertEngagementTelemetry([
       {
         selected_result: "input_field",
-        selected_result_subtype: "",
         provider: undefined,
         results: "",
         groups: "",
@@ -150,15 +138,24 @@ add_task(async function engagement_before_showing_results() {
 add_task(async function engagement_after_closing_results() {
   const TRIGGERS = [
     () => EventUtils.synthesizeKey("KEY_Escape"),
-    () =>
+    () => {
+      // We intentionally turn off this a11y check, because the following click
+      // is sent to test the telemetry behavior using an alternative way of the
+      // urlbar dismissal, where other ways are accessible (and tested above),
+      // therefore this test can be ignored.
+      AccessibilityUtils.setEnv({
+        mustHaveAccessibleRule: false,
+      });
       EventUtils.synthesizeMouseAtCenter(
         document.getElementById("customizableui-special-spring2"),
         {}
-      ),
+      );
+      AccessibilityUtils.resetEnv();
+    },
   ];
 
   for (const trigger of TRIGGERS) {
-    await doTest(async browser => {
+    await doTest(async () => {
       await openPopup("test");
       await UrlbarTestUtils.promisePopupClose(window, () => {
         trigger();
@@ -176,11 +173,10 @@ add_task(async function engagement_after_closing_results() {
 
       assertEngagementTelemetry([
         {
-          selected_result: "input_field",
-          selected_result_subtype: "",
-          provider: undefined,
-          results: "",
-          groups: "",
+          selected_result: "search_engine",
+          provider: "HeuristicFallback",
+          results: "search_engine",
+          groups: "heuristic",
         },
       ]);
     });
@@ -188,7 +184,7 @@ add_task(async function engagement_after_closing_results() {
 });
 
 add_task(async function enter_to_reload_current_url() {
-  await doTest(async browser => {
+  await doTest(async () => {
     // Open a URL once.
     await openPopup("https://example.com");
     await doEnter();
@@ -198,7 +194,6 @@ add_task(async function enter_to_reload_current_url() {
     await BrowserTestUtils.waitForCondition(
       () => window.document.activeElement === gURLBar.inputField
     );
-    await UrlbarTestUtils.promiseSearchComplete(window);
 
     // Press Enter key to reload the page without selecting any suggestions.
     await doEnter();
@@ -206,17 +201,15 @@ add_task(async function enter_to_reload_current_url() {
     assertEngagementTelemetry([
       {
         selected_result: "url",
-        selected_result_subtype: "",
         provider: "HeuristicFallback",
         results: "url",
         groups: "heuristic",
       },
       {
         selected_result: "input_field",
-        selected_result_subtype: "",
         provider: undefined,
-        results: "action",
-        groups: "suggested_index",
+        results: "",
+        groups: "",
       },
     ]);
   });

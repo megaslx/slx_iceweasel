@@ -32,7 +32,7 @@ pub fn get_registered_sync_engine(
         None => None,
         Some(store) => match engine_id {
             SyncEngineId::Tabs => Some(Box::new(TabsEngine::new(Arc::clone(&store)))),
-            // panicing here seems reasonable - it's a static error if this
+            // panicking here seems reasonable - it's a static error if this
             // it hit, not something that runtime conditions can influence.
             _ => unreachable!("can't provide unknown engine: {}", engine_id),
         },
@@ -92,6 +92,7 @@ impl RemoteTab {
             url_history: tab.url_history.clone(),
             icon: tab.icon.clone(),
             last_used: tab.last_used.checked_mul(1000).unwrap_or_default(),
+            inactive: tab.inactive,
         }
     }
     pub(super) fn to_record_tab(&self) -> TabsRecordTab {
@@ -100,6 +101,7 @@ impl RemoteTab {
             url_history: self.url_history.clone(),
             icon: self.icon.clone(),
             last_used: self.last_used.checked_div(1000).unwrap_or_default(),
+            inactive: self.inactive,
         }
     }
 }
@@ -186,9 +188,10 @@ impl SyncEngine for TabsEngine {
         // In desktop we might end up here with zero records when doing a quick-write, in
         // which case we don't want to wipe the DB.
         if !remote_tabs.is_empty() {
-            storage.replace_remote_tabs(remote_tabs)?;
+            storage.replace_remote_tabs(&remote_tabs)?;
         }
         storage.remove_stale_clients()?;
+        storage.remove_old_pending_closures(&remote_tabs)?;
         Ok(())
     }
 

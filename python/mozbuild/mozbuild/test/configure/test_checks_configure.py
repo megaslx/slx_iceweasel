@@ -15,7 +15,6 @@ from six import StringIO
 from common import ConfigureTestSandbox, ensure_exe_extension, fake_short_path
 from mozbuild.configure import ConfigureError, ConfigureSandbox
 from mozbuild.shellutil import quote as shell_quote
-from mozbuild.util import exec_
 
 
 class TestChecksConfigure(unittest.TestCase):
@@ -26,7 +25,7 @@ class TestChecksConfigure(unittest.TestCase):
                 sandbox = ConfigureSandbox({}, stdout=out, stderr=out)
                 base_dir = os.path.join(topsrcdir, "build", "moz.configure")
                 sandbox.include_file(os.path.join(base_dir, "checks.configure"))
-                exec_(to_exec, sandbox)
+                exec(to_exec, sandbox)
                 sandbox["foo"](val)
                 self.assertEqual(out.getvalue(), msg)
 
@@ -119,7 +118,7 @@ class TestChecksConfigure(unittest.TestCase):
 
         status = 0
         try:
-            exec_(command, sandbox)
+            exec(command, sandbox)
             sandbox.run()
         except SystemExit as e:
             status = e.code
@@ -299,7 +298,7 @@ class TestChecksConfigure(unittest.TestCase):
         config, out, status = self.get_result(
             textwrap.dedent(
                 """
-            option("--with-ccache", nargs=1, help="ccache")
+            option("--with-ccache", nargs=1, help="Ccache")
             check_prog("CCACHE", ("known-a",), input="--with-ccache")
         """
             ),
@@ -311,7 +310,7 @@ class TestChecksConfigure(unittest.TestCase):
 
         script = textwrap.dedent(
             """
-            option(env="CC", nargs=1, help="compiler")
+            option(env="CC", nargs=1, help="Compiler")
             @depends("CC")
             def compiler(value):
                 return value[0].split()[0] if value else None
@@ -346,7 +345,7 @@ class TestChecksConfigure(unittest.TestCase):
 
         script = textwrap.dedent(
             """
-            option(env="TARGET", nargs=1, default="linux", help="target")
+            option(env="TARGET", nargs=1, default="linux", help="Target")
             @depends("TARGET")
             def compiler(value):
                 if value:
@@ -593,7 +592,7 @@ class TestChecksConfigure(unittest.TestCase):
         javac = mozpath.abspath("/usr/bin/javac")
         paths = {java: None, javac: None}
         expected_error_message = (
-            "ERROR: Could not locate Java at /mozbuild/jdk/jdk-17.0.8+7/bin, "
+            "ERROR: Could not locate Java at /mozbuild/jdk/jdk-17.0.13+11/bin, "
             "please run ./mach bootstrap --no-system-changes\n"
         )
 
@@ -726,12 +725,12 @@ class TestChecksConfigure(unittest.TestCase):
             return self.get_result(
                 textwrap.dedent(
                     """\
-                option('--disable-compile-environment', help='compile env')
+                option('--disable-compile-environment', help='Compile env')
                 compile_environment = depends(when='--enable-compile-environment')(lambda: True)
                 toolchain_prefix = depends(when=True)(lambda: None)
                 target_multiarch_dir = depends(when=True)(lambda: None)
                 target_sysroot = depends(when=True)(lambda: %(sysroot)s)
-                target = depends(when=True)(lambda: None)
+                target = depends(when=True)(lambda: namespace(os="unknown"))
                 include('%(topsrcdir)s/build/moz.configure/util.configure')
                 include('%(topsrcdir)s/build/moz.configure/checks.configure')
                 # Skip bootstrapping.
@@ -743,9 +742,11 @@ class TestChecksConfigure(unittest.TestCase):
             """
                     % {
                         "topsrcdir": topsrcdir,
-                        "sysroot": "namespace(bootstrapped=True)"
-                        if bootstrapped_sysroot
-                        else "None",
+                        "sysroot": (
+                            "namespace(bootstrapped=True)"
+                            if bootstrapped_sysroot
+                            else "None"
+                        ),
                     }
                 )
                 + cmd,

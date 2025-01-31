@@ -4,9 +4,9 @@
  */
 
 const INITIAL_URL =
-  "http://example.com/tests/toolkit/components/places/tests/browser/begin.html";
+  "https://example.com/tests/toolkit/components/places/tests/browser/begin.html";
 const FINAL_URL =
-  "http://test1.example.com/tests/toolkit/components/places/tests/browser/final.html";
+  "https://test1.example.com/tests/toolkit/components/places/tests/browser/final.html";
 
 /**
  * One-time observer callback.
@@ -32,7 +32,7 @@ add_task(async function () {
   let browserLoadedPromise = BrowserTestUtils.browserLoaded(
     gBrowser.selectedBrowser
   );
-  BrowserTestUtils.loadURIString(gBrowser, FINAL_URL);
+  BrowserTestUtils.startLoadingURIString(gBrowser, FINAL_URL);
   await browserLoadedPromise;
 
   let subject = await visitUriPromise;

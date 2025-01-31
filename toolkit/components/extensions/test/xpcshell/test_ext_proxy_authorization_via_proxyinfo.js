@@ -73,7 +73,7 @@ add_task(async function test_webRequest_auth_proxy() {
     );
 
     browser.webRequest.onAuthRequired.addListener(
-      details => {
+      () => {
         // Using proxyAuthorizationHeader should prevent an auth request coming to us in the extension.
         browser.test.fail("onAuthRequired");
       },
@@ -106,9 +106,8 @@ add_task(async function test_webRequest_auth_proxy() {
 
   authManager.clearAll();
 
-  let contentPage = await ExtensionTestUtils.loadContentPage(
-    `http://mozilla.org/`
-  );
+  let contentPage =
+    await ExtensionTestUtils.loadContentPage(`http://mozilla.org/`);
 
   await extension.awaitFinish("requestCompleted");
   await contentPage.close();

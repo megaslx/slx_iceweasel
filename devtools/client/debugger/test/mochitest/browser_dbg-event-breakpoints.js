@@ -5,7 +5,8 @@
 "use strict";
 
 add_task(async function () {
-  await pushPref("apz.scrollend-event.content.enabled", true);
+  await pushPref("dom.element.invokers.enabled", true);
+  await pushPref("dom.events.textevent.enabled", true);
 
   const dbg = await initDebugger(
     "doc-event-breakpoints.html",
@@ -20,14 +21,14 @@ add_task(async function () {
 
   invokeInTab("clickHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
 
   const whyPaused = await waitFor(
     () => dbg.win.document.querySelector(".why-paused")?.innerText
   );
   is(
     whyPaused,
-    `Paused on event breakpoint\nDOM 'click' event`,
+    `Paused on event breakpoint\nclickTargetClicked - event-breakpoints.js:12:2\nDOM 'click' event`,
     "whyPaused does state that the debugger is paused as a result of a click event breakpoint"
   );
   await resume(dbg);
@@ -35,36 +36,37 @@ add_task(async function () {
   await toggleEventBreakpoint(dbg, "XHR", "event.xhr.load");
   invokeInTab("xhrHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 20);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 20);
   await resume(dbg);
 
   await toggleEventBreakpoint(dbg, "Timer", "timer.timeout.set");
   await toggleEventBreakpoint(dbg, "Timer", "timer.timeout.fire");
   invokeInTab("timerHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 27);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 27);
   await resume(dbg);
 
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 28);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 28);
   await resume(dbg);
 
   await toggleEventBreakpoint(dbg, "Script", "script.source.firstStatement");
   invokeInTab("evalHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, findSource(dbg, "eval-test.js").id, 2);
+  await assertPausedAtSourceAndLine(dbg, findSource(dbg, "eval-test.js").id, 2);
   await resume(dbg);
+  await toggleEventBreakpoint(dbg, "Script", "script.source.firstStatement");
 
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusin");
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusout");
   invokeOnElement("#focus-text", "focus");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 43);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 43);
   await resume(dbg);
 
   // wait for focus-out event to fire
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 48);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 48);
   await resume(dbg);
 
   info("Deselect focus events");
@@ -72,6 +74,25 @@ add_task(async function () {
   // focus breakpoints to fire.
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusin");
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusout");
+
+  await toggleEventBreakpoint(dbg, "Control", "event.control.invoke");
+  invokeOnElement("#invoker", "click");
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 73);
+  await resume(dbg);
+
+  info("Enable beforetoggle and toggle events");
+  await toggleEventBreakpoint(dbg, "Control", "event.control.beforetoggle");
+  await toggleEventBreakpoint(dbg, "Control", "event.control.toggle");
+  invokeOnElement("#popover-toggle", "click");
+  info("Wait for pause in beforetoggle event listener");
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 89);
+  await resume(dbg);
+  info("And wait for pause in toggle event listener after resuming");
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 93);
+  await resume(dbg);
 
   await toggleEventBreakpoint(
     dbg,
@@ -84,7 +105,7 @@ add_task(async function () {
   invokeComposition();
 
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 53);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 53);
   await resume(dbg);
 
   info("Deselect compositionstart and select compositionupdate");
@@ -105,7 +126,7 @@ add_task(async function () {
   invokeComposition();
 
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 58);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 58);
   await resume(dbg);
 
   info("Deselect compositionupdate and select compositionend");
@@ -127,8 +148,17 @@ add_task(async function () {
   });
 
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 63);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 63);
   await resume(dbg);
+
+  info("Test textInput");
+  await toggleEventBreakpoint(dbg, "Keyboard", "event.keyboard.textInput");
+  invokeOnElement("#focus-text", "focus");
+  EventUtils.sendChar("N");
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 98);
+  await resume(dbg);
+  await toggleEventBreakpoint(dbg, "Keyboard", "event.keyboard.textInput");
 
   info(`Check that breakpoint can be set on "scrollend"`);
   await toggleEventBreakpoint(dbg, "Control", "event.control.scrollend");
@@ -138,13 +168,13 @@ add_task(async function () {
   });
 
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 68);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 68);
   await resume(dbg);
 
   info("Check that the click event breakpoint is still enabled");
   invokeInTab("clickHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
   await resume(dbg);
 
   info("Check that disabling an event breakpoint works");
@@ -158,7 +188,7 @@ add_task(async function () {
   await toggleEventBreakpoint(dbg, "Mouse", "event.mouse.click");
   invokeInTab("clickHandler");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 12);
   await resume(dbg);
 
   info(
@@ -185,23 +215,65 @@ add_task(async function () {
   // Cleanup - unblackbox the source
   await clickElement(dbg, "blackbox");
   await waitForDispatch(dbg.store, "UNBLACKBOX_WHOLE_SOURCES");
+
+  info(`Check that breakpoint can be set on "beforeUnload" event`);
+  await toggleEventBreakpoint(dbg, "Load", "event.load.beforeunload");
+  let onReload = reload(dbg);
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 78);
+  await resume(dbg);
+  await onReload;
+  await toggleEventBreakpoint(dbg, "Load", "event.load.beforeunload");
+
+  info(`Check that breakpoint can be set on "unload" event`);
+  await toggleEventBreakpoint(dbg, "Load", "event.load.unload");
+  onReload = reload(dbg);
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 83);
+  await resume(dbg);
+  await onReload;
+  await toggleEventBreakpoint(dbg, "Load", "event.load.unload");
 });
 
-add_task(async function checkUnavailableEvents() {
-  await pushPref("apz.scrollend-event.content.enabled", false);
-
+// Cover CmdOrCtrl+click on event breakpoints
+add_task(async function () {
   const dbg = await initDebugger(
     "doc-event-breakpoints.html",
     "event-breakpoints.js"
   );
-  await selectSource(dbg, "event-breakpoints.js");
-  await waitForSelectedSource(dbg, "event-breakpoints.js");
 
-  is(
-    await getEventBreakpointCheckbox(dbg, "Control", "event.control.scrollend"),
-    null,
-    `"scrollend" item is not displayed when "apz.scrollend-event.content.enabled" is false`
+  // Toggle two distinct categories
+  await toggleEventBreakpoint(dbg, "Load", "event.load.unload");
+  await toggleEventBreakpoint(dbg, "Mouse", "event.mouse.click");
+
+  info("CmdOrCtrl + click on the Timer category");
+  const loadGroupCheckbox = findElementWithSelector(dbg, `input[value="Load"]`);
+  const mouseGroupCheckbox = findElementWithSelector(
+    dbg,
+    `input[value="Mouse"]`
   );
+  const timerGroupCheckbox = findElementWithSelector(
+    dbg,
+    `input[value="Timer"]`
+  );
+  is(loadGroupCheckbox.indeterminate, true);
+  is(mouseGroupCheckbox.indeterminate, true);
+  is(timerGroupCheckbox.checked, false);
+  timerGroupCheckbox.scrollIntoView();
+  EventUtils.synthesizeMouseAtCenter(
+    timerGroupCheckbox,
+    { [Services.appinfo.OS === "Darwin" ? "metaKey" : "ctrlKey"]: true },
+    dbg.win
+  );
+  info("Wait for the checkboxes to update");
+  await waitFor(
+    () =>
+      timerGroupCheckbox.checked === true &&
+      loadGroupCheckbox.indeterminate === false
+  );
+  is(loadGroupCheckbox.indeterminate, false);
+  is(mouseGroupCheckbox.indeterminate, false);
+  is(timerGroupCheckbox.checked, true);
 });
 
 function getEventListenersPanel(dbg) {
@@ -224,8 +296,15 @@ async function toggleEventBreakpoint(
     dbg.store,
     "UPDATE_EVENT_LISTENERS"
   );
+  const checked = eventCheckbox.checked;
   eventCheckbox.click();
   await onEventListenersUpdate;
+
+  info("Wait for the event breakpoint checkbox to be toggled");
+  // Wait for he UI to be toggled, otherwise, the reducer may not be fully updated
+  await waitFor(() => {
+    return eventCheckbox.checked == !checked;
+  });
 }
 
 async function getEventBreakpointCheckbox(
@@ -234,10 +313,10 @@ async function getEventBreakpointCheckbox(
   eventBreakpointName
 ) {
   if (!getEventListenersPanel(dbg)) {
-    // Event listeners panel is collapse, expand it
+    // Event listeners panel is collapsed, expand it
     findElementWithSelector(
       dbg,
-      `.event-listeners-pane ._header .arrow`
+      `.event-listeners-pane ._header .header-label`
     ).click();
     await waitFor(() => getEventListenersPanel(dbg));
   }

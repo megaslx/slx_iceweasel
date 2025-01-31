@@ -1,23 +1,27 @@
-From: Michael Froman <mjfroman@mac.com>
-Date: Wed, 13 Jul 2022 12:50:36 -0500
-Subject: Bug 1766646 - (fix-4d12174ca5) add missing include to fix build
+From: Andreas Pehrson <apehrson@mozilla.com>
+Date: Thu, 6 Jan 2022 00:16:00 +0000
+Subject: Bug 1748458 - Add TRACE_EVENT for keyframe requests. r=bwc
 
+Differential Revision: https://phabricator.services.mozilla.com/D135113
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/5b2a7894ef1cf096d0e8977754507c0820e757fc
 ---
- modules/audio_processing/aec3/multi_channel_content_detector.h | 1 +
- 1 file changed, 1 insertion(+)
+ video/rtp_video_stream_receiver2.cc | 6 ++++++
+ 1 file changed, 6 insertions(+)
 
-diff --git a/modules/audio_processing/aec3/multi_channel_content_detector.h b/modules/audio_processing/aec3/multi_channel_content_detector.h
-index be8717f3af..1742c5fc17 100644
---- a/modules/audio_processing/aec3/multi_channel_content_detector.h
-+++ b/modules/audio_processing/aec3/multi_channel_content_detector.h
-@@ -11,6 +11,7 @@
- #ifndef MODULES_AUDIO_PROCESSING_AEC3_MULTI_CHANNEL_CONTENT_DETECTOR_H_
- #define MODULES_AUDIO_PROCESSING_AEC3_MULTI_CHANNEL_CONTENT_DETECTOR_H_
+diff --git a/video/rtp_video_stream_receiver2.cc b/video/rtp_video_stream_receiver2.cc
+index 23c24c2c45..483012c88d 100644
+--- a/video/rtp_video_stream_receiver2.cc
++++ b/video/rtp_video_stream_receiver2.cc
+@@ -750,6 +750,12 @@ void RtpVideoStreamReceiver2::OnRtpPacket(const RtpPacketReceived& packet) {
  
-+#include <memory>
- #include <stddef.h>
- 
- #include <memory>
--- 
-2.34.1
-
+ void RtpVideoStreamReceiver2::RequestKeyFrame() {
+   RTC_DCHECK_RUN_ON(&worker_task_checker_);
++  TRACE_EVENT2("webrtc", "RtpVideoStreamReceiver2::RequestKeyFrame",
++               "remote_ssrc", config_.rtp.remote_ssrc, "method",
++               keyframe_request_method_ == KeyFrameReqMethod::kPliRtcp   ? "PLI"
++               : keyframe_request_method_ == KeyFrameReqMethod::kFirRtcp ? "FIR"
++               : keyframe_request_method_ == KeyFrameReqMethod::kNone ? "None"
++                                                                      : "Other");
+   // TODO(bugs.webrtc.org/10336): Allow the sender to ignore key frame requests
+   // issued by anything other than the LossNotificationController if it (the
+   // sender) is relying on LNTF alone.

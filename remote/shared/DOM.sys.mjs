@@ -69,7 +69,7 @@ dom.Strategy = {
  * See the {@link dom.Strategy} enum for a full list of supported
  * search strategies that can be passed to <var>strategy</var>.
  *
- * @param {Object<string, WindowProxy>} container
+ * @param {Record<string, WindowProxy>} container
  *     Window object.
  * @param {string} strategy
  *     Search strategy whereby to locate the element(s).
@@ -110,15 +110,19 @@ dom.find = function (container, strategy, selector, options = {}) {
 
   return new Promise((resolve, reject) => {
     let findElements = new lazy.PollPromise(
-      (resolve, reject) => {
-        let res = find_(container, strategy, selector, searchFn, {
-          all,
-          startNode,
-        });
-        if (res.length) {
-          resolve(Array.from(res));
-        } else {
-          reject([]);
+      async (resolve, reject) => {
+        try {
+          let res = await find_(container, strategy, selector, searchFn, {
+            all,
+            startNode,
+          });
+          if (res.length) {
+            resolve(Array.from(res));
+          } else {
+            reject([]);
+          }
+        } catch (e) {
+          reject(e);
         }
       },
       { timeout }
@@ -140,7 +144,7 @@ dom.find = function (container, strategy, selector, options = {}) {
   });
 };
 
-function find_(
+async function find_(
   container,
   strategy,
   selector,
@@ -161,7 +165,7 @@ function find_(
 
   let res;
   try {
-    res = searchFn(strategy, selector, rootNode, startNode);
+    res = await searchFn(strategy, selector, rootNode, startNode);
   } catch (e) {
     throw new lazy.error.InvalidSelectorError(
       `Given ${strategy} expression "${selector}" is invalid: ${e}`
@@ -242,10 +246,10 @@ dom.findByXPathAll = function* (document, startNode, expression) {
  *     Sequence of link elements which text is <var>s</var>.
  */
 dom.findByLinkText = function (startNode, linkText) {
-  return filterLinks(
-    startNode,
-    link => lazy.atom.getElementText(link).trim() === linkText
-  );
+  return filterLinks(startNode, async link => {
+    const visibleText = await lazy.atom.getVisibleText(link, link.ownerGlobal);
+    return visibleText.trim() === linkText;
+  });
 };
 
 /**
@@ -262,9 +266,11 @@ dom.findByLinkText = function (startNode, linkText) {
  *     <var>linkText</var>.
  */
 dom.findByPartialLinkText = function (startNode, linkText) {
-  return filterLinks(startNode, link =>
-    lazy.atom.getElementText(link).includes(linkText)
-  );
+  return filterLinks(startNode, async link => {
+    const visibleText = await lazy.atom.getVisibleText(link, link.ownerGlobal);
+
+    return visibleText.includes(linkText);
+  });
 };
 
 /**
@@ -277,17 +283,19 @@ dom.findByPartialLinkText = function (startNode, linkText) {
  *     Function that determines if given link should be included in
  *     return value or filtered away.
  *
- * @returns {Iterable.<HTMLAnchorElement>}
- *     Iterator of link elements matching <var>predicate</var>.
+ * @returns {Array.<HTMLAnchorElement>}
+ *     Array of link elements matching <var>predicate</var>.
  */
-function* filterLinks(startNode, predicate) {
-  const links = getLinks(startNode);
+async function filterLinks(startNode, predicate) {
+  const links = [];
 
-  for (const link of links) {
-    if (predicate(link)) {
-      yield link;
+  for (const link of getLinks(startNode)) {
+    if (await predicate(link)) {
+      links.push(link);
     }
   }
+
+  return links;
 }
 
 /**
@@ -310,7 +318,12 @@ function* filterLinks(startNode, predicate) {
  * @throws {Error}
  *     If selector expression <var>selector</var> is malformed.
  */
-function findElement(strategy, selector, document, startNode = undefined) {
+async function findElement(
+  strategy,
+  selector,
+  document,
+  startNode = undefined
+) {
   switch (strategy) {
     case dom.Strategy.ID: {
       if (startNode.getElementById) {
@@ -340,7 +353,11 @@ function findElement(strategy, selector, document, startNode = undefined) {
     case dom.Strategy.LinkText: {
       const links = getLinks(startNode);
       for (const link of links) {
-        if (lazy.atom.getElementText(link).trim() === selector) {
+        const visibleText = await lazy.atom.getVisibleText(
+          link,
+          link.ownerGlobal
+        );
+        if (visibleText.trim() === selector) {
           return link;
         }
       }
@@ -350,7 +367,11 @@ function findElement(strategy, selector, document, startNode = undefined) {
     case dom.Strategy.PartialLinkText: {
       const links = getLinks(startNode);
       for (const link of links) {
-        if (lazy.atom.getElementText(link).includes(selector)) {
+        const visibleText = await lazy.atom.getVisibleText(
+          link,
+          link.ownerGlobal
+        );
+        if (visibleText.includes(selector)) {
           return link;
         }
       }
@@ -390,7 +411,12 @@ function findElement(strategy, selector, document, startNode = undefined) {
  * @throws {Error}
  *     If selector expression <var>selector</var> is malformed.
  */
-function findElements(strategy, selector, document, startNode = undefined) {
+async function findElements(
+  strategy,
+  selector,
+  document,
+  startNode = undefined
+) {
   switch (strategy) {
     case dom.Strategy.ID:
       selector = `.//*[@id="${selector}"]`;
@@ -414,10 +440,10 @@ function findElements(strategy, selector, document, startNode = undefined) {
       return startNode.getElementsByTagName(selector);
 
     case dom.Strategy.LinkText:
-      return [...dom.findByLinkText(startNode, selector)];
+      return [...(await dom.findByLinkText(startNode, selector))];
 
     case dom.Strategy.PartialLinkText:
-      return [...dom.findByPartialLinkText(startNode, selector)];
+      return [...(await dom.findByPartialLinkText(startNode, selector))];
 
     case dom.Strategy.Selector:
       return startNode.querySelectorAll(selector);
@@ -596,24 +622,14 @@ dom.isDisabled = function (el) {
     return false;
   }
 
-  switch (el.localName) {
-    case "option":
-    case "optgroup":
-      if (el.disabled) {
-        return true;
-      }
-      let parent = dom.findClosest(el, "optgroup,select");
-      return dom.isDisabled(parent);
-
-    case "button":
-    case "input":
-    case "select":
-    case "textarea":
-      return el.disabled;
-
-    default:
-      return false;
+  // Selenium expects that even an enabled "option" element that is a child
+  // of a disabled "optgroup" or "select" element to be disabled.
+  if (["optgroup", "option"].includes(el.localName) && !el.disabled) {
+    const parent = dom.findClosest(el, "optgroup,select");
+    return dom.isDisabled(parent);
   }
+
+  return el.matches(":disabled");
 };
 
 /**
@@ -738,7 +754,7 @@ dom.isEditable = function (el) {
  *     Vertical offset relative to target's top-left corner.  Defaults to
  *     the centre of the target's bounding box.
  *
- * @returns {Object<string, number>}
+ * @returns {Record<string, number>}
  *     X- and Y coordinates.
  *
  * @throws TypeError
@@ -848,6 +864,7 @@ dom.getContainer = function (el) {
  */
 dom.isInView = function (el) {
   let originalPointerEvents = el.style.pointerEvents;
+  let originalStyleAttrValue = el.getAttribute("style");
 
   try {
     el.style.pointerEvents = "auto";
@@ -862,6 +879,11 @@ dom.isInView = function (el) {
     return tree.includes(el);
   } finally {
     el.style.pointerEvents = originalPointerEvents;
+    if (originalStyleAttrValue === null) {
+      el.removeAttribute("style");
+    } else if (el.getAttribute("style") != originalStyleAttrValue) {
+      el.setAttribute("style", originalStyleAttrValue);
+    }
   }
 };
 
@@ -881,10 +903,10 @@ dom.isInView = function (el) {
  * @returns {boolean}
  *     True if visible, false otherwise.
  */
-dom.isVisible = function (el, x = undefined, y = undefined) {
+dom.isVisible = async function (el, x = undefined, y = undefined) {
   let win = el.ownerGlobal;
 
-  if (!lazy.atom.isElementDisplayed(el, win)) {
+  if (!(await lazy.atom.isElementDisplayed(el, win))) {
     return false;
   }
 
@@ -987,8 +1009,7 @@ dom.getInViewCentrePoint = function (rect, win) {
  *     Sequence of elements in paint order.
  */
 dom.getPointerInteractablePaintTree = function (el) {
-  const doc = el.ownerDocument;
-  const win = doc.defaultView;
+  const win = el.ownerGlobal;
   const rootNode = el.getRootNode();
 
   // pointer-interactable elements tree, step 1
@@ -1037,6 +1058,16 @@ dom.scrollIntoView = function (el) {
  */
 dom.isElement = function (obj) {
   return dom.isDOMElement(obj) || dom.isXULElement(obj);
+};
+
+dom.isEnabled = function (el) {
+  let enabled = false;
+
+  if (el.ownerDocument.contentType !== "text/xml") {
+    enabled = !dom.isDisabled(el);
+  }
+
+  return enabled;
 };
 
 /**

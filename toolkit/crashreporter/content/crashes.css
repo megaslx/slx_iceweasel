@@ -49,16 +49,12 @@ th,
 }
 
 .submitting {
-  background-image: url(chrome://global/skin/icons/loading.png);
+  background-image: url("chrome://global/skin/icons/loading.svg");
   background-position: center;
   background-repeat: no-repeat;
   background-size: 16px;
-}
-
-@media (min-resolution: 1.1dppx) {
-  .submitting {
-    background-image: url(chrome://global/skin/icons/loading@2x.png);
-  }
+  -moz-context-properties: fill;
+  fill: currentColor;
 }
 
 .submitting .submit-crash-button-label {

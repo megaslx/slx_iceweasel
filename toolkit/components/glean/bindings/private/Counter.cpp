@@ -6,14 +6,48 @@
 
 #include "mozilla/glean/bindings/Counter.h"
 
+#include "nsITelemetry.h"
 #include "nsString.h"
-#include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/dom/GleanMetricsBinding.h"
+#include "mozilla/glean/bindings/HistogramGIFFTMap.h"
 #include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
-#include "Common.h"
-#include "nsIClassInfoImpl.h"
-#include "nsIScriptError.h"
+#include "GIFFTFwd.h"
+
+using mozilla::Telemetry::HistogramID;
+
+/* static */
+void accumulateToBoolean(HistogramID aId, const nsACString& aLabel,
+                         int32_t aAmount) {
+  MOZ_ASSERT(aAmount == 1,
+             "When mirroring to boolean histograms, we only support "
+             "accumulating one sample at a time.");
+  if (aLabel.EqualsASCII("true")) {
+    mozilla::Telemetry::Accumulate(aId, true);
+  } else if (aLabel.EqualsASCII("false")) {
+    mozilla::Telemetry::Accumulate(aId, false);
+  } else {
+    MOZ_ASSERT_UNREACHABLE(
+        "When mirroring to boolean histograms, we only support labels 'true' "
+        "and 'false'");
+  }
+}
+
+/* static */
+void accumulateToKeyedCount(HistogramID aId, const nsCString& aLabel,
+                            int32_t aAmount) {
+  mozilla::Telemetry::Accumulate(aId, aLabel, aAmount);
+}
+
+/* static */
+void accumulateToCategorical(HistogramID aId, const nsCString& aLabel,
+                             int32_t aAmount) {
+  MOZ_ASSERT(aAmount == 1,
+             "When mirroring to categorical histograms, we only support "
+             "accumulating one sample at a time.");
+  mozilla::Telemetry::AccumulateCategorical(aId, aLabel);
+}
 
 namespace mozilla::glean {
 
@@ -23,15 +57,46 @@ void CounterMetric::Add(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
   if (aAmount >= 0) {
     if (scalarId) {
-      Telemetry::ScalarAdd(scalarId.extract(), aAmount);
+      TelemetryScalar::Add(scalarId.extract(), aAmount);
     } else if (IsSubmetricId(mId)) {
-      GetLabeledMirrorLock().apply([&](auto& lock) {
+      bool mirrorsToKeyedScalar = false;
+      GetLabeledMirrorLock().apply([&](const auto& lock) {
         auto tuple = lock.ref()->MaybeGet(mId);
+        mirrorsToKeyedScalar = !!tuple;
         if (tuple && aAmount > 0) {
-          Telemetry::ScalarAdd(std::get<0>(tuple.ref()),
+          TelemetryScalar::Add(std::get<0>(tuple.ref()),
                                std::get<1>(tuple.ref()), (uint32_t)aAmount);
         }
       });
+      if (!mirrorsToKeyedScalar) {
+        GetLabeledDistributionMirrorLock().apply([&](const auto& lock) {
+          auto tuple = lock.ref()->MaybeGet(mId);
+          if (tuple) {
+            HistogramID hId = std::get<0>(tuple.ref());
+            switch (TelemetryHistogram::GetHistogramType(hId)) {
+              case nsITelemetry::HISTOGRAM_BOOLEAN:
+                accumulateToBoolean(hId, std::get<1>(tuple.ref()), aAmount);
+                break;
+              case nsITelemetry::HISTOGRAM_COUNT:
+                accumulateToKeyedCount(hId, std::get<1>(tuple.ref()), aAmount);
+                break;
+              case nsITelemetry::HISTOGRAM_CATEGORICAL:
+                accumulateToCategorical(hId, std::get<1>(tuple.ref()), aAmount);
+                break;
+              default:
+                MOZ_ASSERT_UNREACHABLE(
+                    "Asked to mirror labeled_counter to unsupported histogram "
+                    "type.");
+                break;
+            }
+          }
+        });
+      }
+    } else {
+      auto hgramId = HistogramIdForMetric(mId);
+      if (hgramId) {
+        Telemetry::Accumulate(hgramId.extract(), aAmount);
+      }
     }
   }
   fog_counter_add(mId, aAmount);
@@ -51,32 +116,27 @@ Result<Maybe<int32_t>, nsCString> CounterMetric::TestGetValue(
 
 }  // namespace impl
 
-NS_IMPL_CLASSINFO(GleanCounter, nullptr, 0, {0})
-NS_IMPL_ISUPPORTS_CI(GleanCounter, nsIGleanCounter)
-
-NS_IMETHODIMP
-GleanCounter::Add(int32_t aAmount) {
-  mCounter.Add(aAmount);
-  return NS_OK;
+/* virtual */
+JSObject* GleanCounter::WrapObject(JSContext* aCx,
+                                   JS::Handle<JSObject*> aGivenProto) {
+  return dom::GleanCounter_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMETHODIMP
-GleanCounter::TestGetValue(const nsACString& aStorageName,
-                           JS::MutableHandle<JS::Value> aResult) {
-  auto result = mCounter.TestGetValue(aStorageName);
+void GleanCounter::Add(int32_t aAmount) { mCounter.Add(aAmount); }
+
+dom::Nullable<int32_t> GleanCounter::TestGetValue(const nsACString& aPingName,
+                                                  ErrorResult& aRv) {
+  dom::Nullable<int32_t> ret;
+  auto result = mCounter.TestGetValue(aPingName);
   if (result.isErr()) {
-    aResult.set(JS::UndefinedValue());
-    LogToBrowserConsole(nsIScriptError::errorFlag,
-                        NS_ConvertUTF8toUTF16(result.unwrapErr()));
-    return NS_ERROR_LOSS_OF_SIGNIFICANT_DATA;
+    aRv.ThrowDataError(result.unwrapErr());
+    return ret;
   }
   auto optresult = result.unwrap();
-  if (optresult.isNothing()) {
-    aResult.set(JS::UndefinedValue());
-  } else {
-    aResult.set(JS::Int32Value(optresult.value()));
+  if (!optresult.isNothing()) {
+    ret.SetValue(optresult.value());
   }
-  return NS_OK;
+  return ret;
 }
 
 }  // namespace mozilla::glean

@@ -250,6 +250,11 @@ interface nsIURI : nsISupports
      */
     readonly attribute boolean hasRef;
 
+    /**
+     * Returns if there is user and pass in the URI.
+     */
+    readonly attribute boolean hasUserPass;
+
     /************************************************************************
      * Additional attributes added for .query support:
      */
@@ -272,10 +277,13 @@ interface nsIURI : nsISupports
     readonly attribute AUTF8String query;
 
     /**
-     * If the URI has a punycode encoded hostname, this will hold the UTF8
-     * representation of that hostname (if that representation doesn't contain
-     * blacklisted characters, and the network.IDN_show_punycode pref is false)
-     * Otherwise, if the hostname is ASCII, it will return the same as .asciiHost
+     * Returns if there is a query portion (the part after the "?") of the URI.
+     */
+    readonly attribute boolean hasQuery;
+
+    /**
+     * Returns the host in a form suitable for display in the UI (with Punycode
+     * potentially decoded).
      */
     readonly attribute AUTF8String displayHost;
 
@@ -285,16 +293,12 @@ interface nsIURI : nsISupports
     readonly attribute AUTF8String displayHostPort;
 
     /**
-     * Returns the same as calling .spec, only with a UTF8 encoded hostname
-     * (if that hostname doesn't contain blacklisted characters, and
-     * the network.IDN_show_punycode pref is false)
+     * Returns the same as calling .spec, but with displayHost in the host position.
      */
     readonly attribute AUTF8String displaySpec;
 
     /**
-     * Returns the same as calling .prePath, only with a UTF8 encoded hostname
-     * (if that hostname doesn't contain blacklisted characters, and
-     * the network.IDN_show_punycode pref is false)
+     * Returns the same as calling .prePath, but with displayHost in the host position.
      */
     readonly attribute AUTF8String displayPrePath;
 

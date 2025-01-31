@@ -10,12 +10,14 @@
 #include "test/pc/e2e/analyzer/video/analyzing_video_sink.h"
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 
 #include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
+#include "api/test/metrics/metric.h"
+#include "api/test/metrics/metrics_logger.h"
 #include "api/test/pclf/media_configuration.h"
 #include "api/test/video/video_frame_writer.h"
 #include "api/units/timestamp.h"
@@ -26,6 +28,7 @@
 #include "rtc_base/synchronization/mutex.h"
 #include "test/pc/e2e/analyzer/video/simulcast_dummy_buffer_helper.h"
 #include "test/pc/e2e/analyzer/video/video_dumping.h"
+#include "test/pc/e2e/metric_metadata_keys.h"
 #include "test/testsupport/fixed_fps_video_frame_writer_adapter.h"
 #include "test/video_renderer.h"
 
@@ -55,7 +58,7 @@ void AnalyzingVideoSink::UpdateSubscription(
     MutexLock lock(&mutex_);
     subscription_ = subscription;
     for (auto it = stream_sinks_.cbegin(); it != stream_sinks_.cend();) {
-      absl::optional<VideoResolution> new_requested_resolution =
+      std::optional<VideoResolution> new_requested_resolution =
           subscription_.GetResolutionForPeer(it->second.sender_peer_name);
       if (!new_requested_resolution.has_value() ||
           (*new_requested_resolution != it->second.resolution)) {
@@ -105,6 +108,26 @@ void AnalyzingVideoSink::OnFrame(const VideoFrame& frame) {
       stats_.analyzing_sink_processing_time_ms.AddSample(
           (processing_finished - processing_started).ms<double>());
     }
+  }
+}
+
+void AnalyzingVideoSink::LogMetrics(webrtc::test::MetricsLogger& metrics_logger,
+                                    absl::string_view test_case_name) const {
+  if (report_infra_stats_) {
+    MutexLock lock(&mutex_);
+    const std::string test_case(test_case_name);
+    // TODO(bugs.webrtc.org/14757): Remove kExperimentalTestNameMetadataKey.
+    std::map<std::string, std::string> metadata = {
+        {MetricMetadataKey::kPeerMetadataKey, peer_name_},
+        {MetricMetadataKey::kExperimentalTestNameMetadataKey, test_case}};
+    metrics_logger.LogMetric(
+        "analyzing_sink_processing_time_ms", test_case + "/" + peer_name_,
+        stats_.analyzing_sink_processing_time_ms, test::Unit::kMilliseconds,
+        test::ImprovementDirection::kSmallerIsBetter, metadata);
+    metrics_logger.LogMetric("scaling_tims_ms", test_case + "/" + peer_name_,
+                             stats_.scaling_tims_ms, test::Unit::kMilliseconds,
+                             test::ImprovementDirection::kSmallerIsBetter,
+                             metadata);
   }
 }
 
@@ -168,14 +191,14 @@ AnalyzingVideoSink::SinksDescriptor* AnalyzingVideoSink::PopulateSinks(
   }
 
   // Slow pass: we need to create and save sinks
-  absl::optional<std::pair<std::string, VideoConfig>> peer_and_config =
+  std::optional<std::pair<std::string, VideoConfig>> peer_and_config =
       sinks_helper_->GetPeerAndConfig(stream_label);
   RTC_CHECK(peer_and_config.has_value())
       << "No video config for stream " << stream_label;
   const std::string& sender_peer_name = peer_and_config->first;
   const VideoConfig& config = peer_and_config->second;
 
-  absl::optional<VideoResolution> resolution =
+  std::optional<VideoResolution> resolution =
       subscription_.GetResolutionForPeer(sender_peer_name);
   if (!resolution.has_value()) {
     RTC_LOG(LS_ERROR) << peer_name_ << " received stream " << stream_label

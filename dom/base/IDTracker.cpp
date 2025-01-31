@@ -55,11 +55,11 @@ IDTracker::IDTracker() = default;
 
 IDTracker::~IDTracker() { Unlink(); }
 
-void IDTracker::ResetToURIFragmentID(nsIContent* aFromContent, nsIURI* aURI,
-                                     nsIReferrerInfo* aReferrerInfo,
-                                     bool aWatch, bool aReferenceImage) {
+void IDTracker::ResetToURIWithFragmentID(nsIContent* aFromContent, nsIURI* aURI,
+                                         nsIReferrerInfo* aReferrerInfo,
+                                         bool aReferenceImage) {
   MOZ_ASSERT(aFromContent,
-             "ResetToURIFragmentID() expects non-null content pointer");
+             "ResetToURIWithFragmentID() expects non-null content pointer");
 
   Unlink();
 
@@ -105,7 +105,7 @@ void IDTracker::ResetToURIFragmentID(nsIContent* aFromContent, nsIURI* aURI,
                                        getter_AddRefs(load));
     docOrShadow = doc;
     if (!doc) {
-      if (!load || !aWatch) {
+      if (!load) {
         // Nothing will ever happen here
         return;
       }
@@ -120,27 +120,58 @@ void IDTracker::ResetToURIFragmentID(nsIContent* aFromContent, nsIURI* aURI,
     docOrShadow = FindTreeToWatch(*aFromContent, ref, aReferenceImage);
   }
 
-  if (aWatch) {
-    mWatchID = NS_Atomize(ref);
-  }
-
+  mWatchID = NS_Atomize(ref);
   mReferencingImage = aReferenceImage;
-  HaveNewDocumentOrShadowRoot(docOrShadow, aWatch, ref);
+  HaveNewDocumentOrShadowRoot(docOrShadow, /*aWatch*/ true, ref);
 }
 
-void IDTracker::ResetWithID(Element& aFrom, nsAtom* aID, bool aWatch) {
-  MOZ_ASSERT(aID);
+void IDTracker::ResetToLocalFragmentID(Element& aFrom,
+                                       const nsAString& aLocalRef) {
+  MOZ_ASSERT(nsContentUtils::IsLocalRefURL(aLocalRef));
 
-  if (aWatch) {
-    mWatchID = aID;
+  auto ref = Substring(aLocalRef, 1);
+  if (ref.IsEmpty()) {
+    Unlink();
+    return;
   }
 
+  nsAutoCString utf8Ref;
+  if (!AppendUTF16toUTF8(ref, utf8Ref, mozilla::fallible)) {
+    Unlink();
+    return;
+  }
+
+  // Only unescape ASCII characters; if we were to unescape arbitrary bytes,
+  // we'd potentially end up with invalid UTF-8.
+  nsAutoCString unescaped;
+  bool appended;
+  if (NS_FAILED(NS_UnescapeURL(utf8Ref.BeginReading(), utf8Ref.Length(),
+                               esc_OnlyASCII | esc_AlwaysCopy, unescaped,
+                               appended, mozilla::fallible))) {
+    Unlink();
+    return;
+  }
+
+  RefPtr<nsAtom> idAtom = NS_Atomize(unescaped);
+  ResetToID(aFrom, idAtom);
+}
+
+void IDTracker::ResetToID(Element& aFrom, nsAtom* aID) {
+  MOZ_ASSERT(aID);
+
+  Unlink();
+
+  if (aID->IsEmpty()) {
+    return;
+  }
+
+  mWatchID = aID;
   mReferencingImage = false;
 
   nsDependentAtomString str(aID);
   DocumentOrShadowRoot* docOrShadow =
       FindTreeToWatch(aFrom, str, /* aReferenceImage = */ false);
-  HaveNewDocumentOrShadowRoot(docOrShadow, aWatch, str);
+  HaveNewDocumentOrShadowRoot(docOrShadow, /*aWatch*/ true, str);
 }
 
 void IDTracker::HaveNewDocumentOrShadowRoot(DocumentOrShadowRoot* aDocOrShadow,
@@ -240,8 +271,7 @@ IDTracker::DocumentLoadNotification::Observe(nsISupports* aSubject,
     nsCOMPtr<Document> doc = do_QueryInterface(aSubject);
     mTarget->mPendingNotification = nullptr;
     NS_ASSERTION(!mTarget->mElement, "Why do we have content here?");
-    // If we got here, that means we had Reset*() called with
-    // aWatch == true.  So keep watching if IsPersistent().
+    // Keep watching if IsPersistent().
     mTarget->HaveNewDocumentOrShadowRoot(doc, mTarget->IsPersistent(), mRef);
     mTarget->ElementChanged(nullptr, mTarget->mElement);
   }

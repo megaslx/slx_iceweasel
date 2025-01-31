@@ -36,17 +36,12 @@ interface nsISearchEngine : nsISupports
    *   The MIME type that we'd like to receive in response
    *   to this submission.  If null, will default to "text/html".
    *
-   * @param purpose [optional]
-   *   A string that indicates the context of the search request. This may then
-   *   be used to provide different submission data depending on the context.
-   *
    * @returns nsISearchSubmission
    *   The submission data. If no appropriate submission can be determined for
    *   the request type, this may be null.
    */
   nsISearchSubmission getSubmission(in AString searchTerms,
-                                    [optional] in AString responseType,
-                                    [optional] in AString purpose);
+                                    [optional] in AString responseType);
   /**
    * Returns the search term of a possible search result URI if and only if:
    * - The URI has the same scheme, host, and path as the engine.
@@ -55,8 +50,8 @@ interface nsISearchEngine : nsISupports
    *   value, which contains a placeholder, i.e. {searchTerms}.
    * - If an engine has query parameters with "null" values, they will be ignored.
    *
-   * @param  uri
-   *         A URI that may or may not be from a search result matching the engine.
+   * @param uri
+   *   A URI that may or may not be from a search result matching the engine.
    *
    * @returns A string representing the termsParameterName value of the URI,
    *          or an empty string if the URI isn't matched to the engine.
@@ -68,7 +63,7 @@ interface nsISearchEngine : nsISupports
    * URL of type `SearchUtils.URL_TYPE.SEARCH`.
    *
    * @returns A string which is the name of the parameter, or empty string
-   *          if no parameter cannot be found or is not supported (e.g. POST).
+   *          if no parameter can be found or is not supported (e.g. POST).
    */
   readonly attribute AString searchUrlQueryParamName;
 
@@ -92,23 +87,14 @@ interface nsISearchEngine : nsISupports
   boolean supportsResponseType(in AString responseType);
 
   /**
-   * Returns a string with the URL to an engine's icon matching both width and
-   * height. Returns null if icon with specified dimensions is not found.
+   * Returns a string with the URL to an engine's icon matching the preferred
+   * width as closely as possible. Returns undefined if the engine has no icon.
    *
-   * @param width
-   *        Width of the requested icon.
-   * @param height
-   *        Height of the requested icon.
+   * @param preferredWidth
+   *   Width of the requested icon. If not specified, it is assumed that
+   *   16x16 is desired.
    */
-  AString getIconURLBySize(in long width, in long height);
-
-  /**
-   * Gets an array of all available icons. Each entry is an object with
-   * width, height and url properties. width and height are numeric and
-   * represent the icon's dimensions. url is a string with the URL for
-   * the icon.
-   */
-  jsval getIcons();
+  Promise getIconURL([optional] in unsigned short preferredWidth);
 
   /**
    * Opens a speculative connection to the engine's search URI
@@ -125,8 +111,8 @@ interface nsISearchEngine : nsISupports
   void speculativeConnect(in jsval options);
 
   /**
-   * An optional shortcut alias for the engine.
-   * When not an empty string, this is a unique identifier.
+   * A user defined alias for the engine.
+   * When not an empty string, this should be a unique identifier.
    */
   attribute AString alias;
 
@@ -152,11 +138,6 @@ interface nsISearchEngine : nsISupports
   attribute boolean hideOneOffButton;
 
   /**
-   * A nsIURI corresponding to the engine's icon, stored locally. May be null.
-   */
-  readonly attribute nsIURI iconURI;
-
-  /**
    * The display name of the search engine. This is a unique identifier.
    */
   readonly attribute AString name;
@@ -165,24 +146,6 @@ interface nsISearchEngine : nsISupports
    * The display of the search engine id. This is a unique identifier.
    */
   readonly attribute AString id;
-
-  /**
-   * The searchForm URL points to the engine's organic search page. This should
-   * not contain neither search term parameters nor partner codes, but may
-   * contain parameters which set the engine in the correct way.
-   *
-   * This URL is typically the prePath and filePath of the search submission URI,
-   * but may vary for different engines. For example, some engines may use a
-   * different domain, e.g. https://sub.example.com for the search URI but
-   * https://example.org/ for the organic search page.
-   */
-  readonly attribute AString searchForm;
-
-  /**
-   * A boolean to indicate if we should send an attribution request to Mozilla's
-   * server.
-   */
-  readonly attribute boolean sendAttributionRequest;
 
   /**
    * The identifier to use for this engine when submitting to telemetry.
@@ -219,11 +182,26 @@ interface nsISearchEngine : nsISupports
   readonly attribute boolean isGeneralPurposeEngine;
 
   /**
-  * The domain from which search results are returned for this engine.
-  *
-  * @return the domain of the the search URL.
-  */
-readonly attribute AString searchUrlDomain;
+   * The domain from which search results are returned for this engine.
+   *
+   * @return the domain of the the search URL.
+   */
+  readonly attribute AString searchUrlDomain;
+
+  /**
+   * The URL to report the search to.
+   *
+   * @return the reporting URL.
+   */
+  readonly attribute AString clickUrl;
+
+  /**
+   * The URL of the homepage of the engine. Defaults to the pre path
+   * of the search URL but search engines can specify an arbitrary URL.
+   *
+   * @return the URL of the search engine home page.
+   */
+  readonly attribute AString searchForm;
 
 };
 
@@ -269,6 +247,7 @@ interface nsISearchService : nsISupports
   const unsigned short CHANGE_REASON_EXPERIMENT = 0xA;
   const unsigned short CHANGE_REASON_ENTERPRISE = 0xB;
   const unsigned short CHANGE_REASON_UITOUR = 0xC;
+  const unsigned short CHANGE_REASON_ENGINE_UPDATE = 0xD;
 
   /**
    * Start asynchronous initialization.
@@ -282,6 +261,16 @@ interface nsISearchService : nsISupports
   Promise init();
 
   /**
+   * A promise that is resolved when initialization has finished, but does not
+   * trigger initialization to begin.
+   *
+   * @returns {Promise}
+   *   Resolved when initalization has successfully finished, and rejected if it
+   *   has failed.
+   */
+  readonly attribute Promise promiseInitialized;
+
+  /**
    * Determine whether initialization has been completed.
    *
    * Clients of the service can use this attribute to quickly determine whether
@@ -293,13 +282,13 @@ interface nsISearchService : nsISupports
    * @return |true| if the search service is now initialized, |false| if
    * initialization has not been triggered yet.
    */
-  readonly attribute bool isInitialized;
+  readonly attribute boolean isInitialized;
 
   /**
    * Determine whether initialization has been completed successfully.
    *
    */
-  readonly attribute bool hasSuccessfullyInitialized;
+  readonly attribute boolean hasSuccessfullyInitialized;
 
 
   /**
@@ -423,6 +412,36 @@ interface nsISearchService : nsISupports
    * @returns an array of nsISearchEngine objects.
    */
   Promise getEnginesByExtensionID(in AString extensionID);
+
+  /**
+   * Returns an engine definition if it's search url matches the host provided.
+   *
+   * @param   host
+   *          The host to search for.
+   * @returns An nsISearchEngine engine object if one matched.
+   */
+  Promise findContextualSearchEngineByHost(in AString host);
+
+  /**
+   * Returns whether the user should be given a prompt to install the
+   * engine they are currently using. A prompt is shown after the
+   * second time a user picks a contextual engine to search with. After
+   * the second time the prompt should not be shown again.
+   *
+   * @param   engine
+   *          The engine to check.
+   * @returns {boolean}
+   *          Whether or not to show the prompt.
+   */
+  Promise shouldShowInstallPrompt(in jsval engine);
+
+  /**
+   * Installs an engine into the users engine list.
+   *
+   * @param   engine
+   *          An engine configuration definition.
+   */
+  Promise addSearchEngine(in jsval engine);
 
   /**
    * Moves a visible search engine.
@@ -551,4 +570,14 @@ interface nsISearchService : nsISupports
    *        "https://www.google.com/search?q=terms".
    */
   nsISearchParseSubmissionResult parseSubmissionURL(in AString url);
+
+  /**
+   * Returns a list of alternate domains for a given search engine domain.
+   *
+   * @param domain
+   *        The domain of the search engine.
+   * @returns {Array}
+   *          An array which contains all alternate domains.
+   */
+  Array<ACString> getAlternateDomains(in ACString domain);
 };

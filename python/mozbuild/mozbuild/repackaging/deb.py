@@ -4,7 +4,6 @@
 
 import datetime
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -17,11 +16,10 @@ from string import Template
 
 import mozfile
 import mozpack.path as mozpath
-import requests
 from mozilla_version.gecko import GeckoVersion
-from redo import retry
 
 from mozbuild.repackaging.application_ini import get_application_ini_values
+from mozbuild.repackaging.desktop_file import generate_browser_desktop_entry_file_text
 
 
 class NoDebPackageFound(Exception):
@@ -40,18 +38,33 @@ class HgServerError(Exception):
         super().__init__(msg)
 
 
+# Maps our CI/release pipeline's architecture names (e.g., "x86_64")
+# into architectures ("amd64") compatible with Debian's dpkg-buildpackage tool.
+# This is the target architecture we are building the .deb package for.
 _DEB_ARCH = {
     "all": "all",
     "x86": "i386",
     "x86_64": "amd64",
+    "aarch64": "arm64",
 }
-# At the moment the Firefox build baseline is jessie.
-# The debian-repackage image defined in taskcluster/docker/debian-repackage/Dockerfile
-# bootstraps the /srv/jessie-i386 and /srv/jessie-amd64 chroot environments we use to
-# create the `.deb` repackages. By running the repackage using chroot we generate shared
-# library dependencies that match the Firefox build baseline
-# defined in taskcluster/scripts/misc/build-sysroot.sh
-_DEB_DIST = "jessie"
+
+# Defines the sysroot (build host's) architecture for each target architecture in the pipeline.
+# It defines the architecture dpkg-buildpackage runs on.
+_DEB_SYSROOT_ARCH = {
+    "all": "amd64",
+    "x86": "i386",
+    "x86_64": "amd64",
+    "aarch64": "amd64",
+}
+
+# Assigns the Debian distribution version for the sysroot based on the target architecture.
+# It defines the Debian distribution dpkg-buildpackage runs on.
+_DEB_SYSROOT_DIST = {
+    "all": "jessie",
+    "x86": "jessie",
+    "x86_64": "jessie",
+    "aarch64": "buster",
+}
 
 
 def repackage_deb(
@@ -74,17 +87,21 @@ def repackage_deb(
     source_dir = os.path.join(tmpdir, "source")
     try:
         mozfile.extract_tarball(infile, source_dir)
-        application_ini_data = _extract_application_ini_data(infile)
+        application_ini_data = _load_application_ini_data(infile, version, build_number)
         build_variables = _get_build_variables(
             application_ini_data,
             arch,
-            version,
-            build_number,
             depends="${shlibs:Depends},",
+            release_product=release_product,
         )
 
         _copy_plain_deb_config(template_dir, source_dir)
-        _render_deb_templates(template_dir, source_dir, build_variables)
+        _render_deb_templates(
+            template_dir,
+            source_dir,
+            build_variables,
+            exclude_file_names=["package-prefs.js"],
+        )
 
         app_name = application_ini_data["name"]
         with open(
@@ -102,6 +119,8 @@ def repackage_deb(
             fluent_localization,
             fluent_resource_loader,
         )
+        _mv_manpage_files(source_dir, build_variables)
+        _inject_deb_prefs_file(source_dir, app_name, template_dir)
         _generate_deb_archive(
             source_dir,
             target_dir=tmpdir,
@@ -115,7 +134,13 @@ def repackage_deb(
 
 
 def repackage_deb_l10n(
-    input_xpi_file, input_tar_file, output, template_dir, version, build_number
+    input_xpi_file,
+    input_tar_file,
+    output,
+    template_dir,
+    version,
+    build_number,
+    release_product,
 ):
     arch = "all"
 
@@ -124,17 +149,24 @@ def repackage_deb_l10n(
     try:
         langpack_metadata = _extract_langpack_metadata(input_xpi_file)
         langpack_dir = mozpath.join(source_dir, "firefox", "distribution", "extensions")
-        application_ini_data = _extract_application_ini_data(input_tar_file)
+        application_ini_data = _load_application_ini_data(
+            input_tar_file, version, build_number
+        )
         langpack_id = langpack_metadata["langpack_id"]
+        if release_product == "devedition":
+            depends = (
+                f"firefox-devedition (= {application_ini_data['deb_pkg_version']})"
+            )
+        else:
+            depends = f"{application_ini_data['remoting_name']} (= {application_ini_data['deb_pkg_version']})"
         build_variables = _get_build_variables(
             application_ini_data,
             arch,
-            version,
-            build_number,
-            depends=application_ini_data["remoting_name"],
+            depends=depends,
             # Debian package names are only lowercase
             package_name_suffix=f"-l10n-{langpack_id.lower()}",
             description_suffix=f" - {langpack_metadata['description']}",
+            release_product=release_product,
         )
         _copy_plain_deb_config(template_dir, source_dir)
         _render_deb_templates(template_dir, source_dir, build_variables)
@@ -178,7 +210,43 @@ def _extract_application_ini_data(input_tar_file):
 
             tar.extract(application_ini_files[0], path=d)
 
-        return _extract_application_ini_data_from_directory(d)
+        application_ini_data = _extract_application_ini_data_from_directory(d)
+
+        return application_ini_data
+
+
+def _load_application_ini_data(infile, version, build_number):
+    extracted_application_ini_data = _extract_application_ini_data(infile)
+    parsed_application_ini_data = _parse_application_ini_data(
+        extracted_application_ini_data, version, build_number
+    )
+    return parsed_application_ini_data
+
+
+def _parse_application_ini_data(application_ini_data, version, build_number):
+    application_ini_data["timestamp"] = datetime.datetime.strptime(
+        application_ini_data["build_id"], "%Y%m%d%H%M%S"
+    )
+
+    application_ini_data["remoting_name"] = application_ini_data[
+        "remoting_name"
+    ].lower()
+
+    application_ini_data["deb_pkg_version"] = _get_deb_pkg_version(
+        version, application_ini_data["build_id"], build_number
+    )
+
+    return application_ini_data
+
+
+def _get_deb_pkg_version(version, build_id, build_number):
+    gecko_version = GeckoVersion.parse(version)
+    deb_pkg_version = (
+        f"{gecko_version}~{build_id}"
+        if gecko_version.is_nightly
+        else f"{gecko_version}~build{build_number}"
+    )
+    return deb_pkg_version
 
 
 def _extract_application_ini_data_from_directory(application_directory):
@@ -198,7 +266,6 @@ def _extract_application_ini_data_from_directory(application_directory):
         "remoting_name": next(values),
         "build_id": next(values),
     }
-    data["timestamp"] = datetime.datetime.strptime(data["build_id"], "%Y%m%d%H%M%S")
 
     return data
 
@@ -206,30 +273,30 @@ def _extract_application_ini_data_from_directory(application_directory):
 def _get_build_variables(
     application_ini_data,
     arch,
-    version_string,
-    build_number,
     depends,
     package_name_suffix="",
     description_suffix="",
+    release_product="",
 ):
-    version = GeckoVersion.parse(version_string)
-    # Nightlies don't have build numbers
-    deb_pkg_version = (
-        f"{version}~{application_ini_data['build_id']}"
-        if version.is_nightly
-        else f"{version}~build{build_number}"
-    )
-    remoting_name = application_ini_data["remoting_name"].lower()
-
+    if release_product == "devedition":
+        deb_pkg_install_path = "usr/lib/firefox-devedition"
+        deb_pkg_name = f"firefox-devedition{package_name_suffix}"
+    else:
+        deb_pkg_install_path = f"usr/lib/{application_ini_data['remoting_name']}"
+        deb_pkg_name = f"{application_ini_data['remoting_name']}{package_name_suffix}"
     return {
         "DEB_DESCRIPTION": f"{application_ini_data['vendor']} {application_ini_data['display_name']}"
         f"{description_suffix}",
-        "DEB_PKG_INSTALL_PATH": f"usr/lib/{remoting_name}",
-        "DEB_PKG_NAME": f"{remoting_name}{package_name_suffix}",
-        "DEB_PKG_VERSION": deb_pkg_version,
+        "DEB_PKG_INSTALL_PATH": deb_pkg_install_path,
+        "DEB_PKG_NAME": deb_pkg_name,
+        "DEB_PRODUCT_NAME": application_ini_data["name"],
+        "DEB_DISPLAY_NAME": application_ini_data["display_name"],
+        "DEB_PKG_VERSION": application_ini_data["deb_pkg_version"],
         "DEB_CHANGELOG_DATE": format_datetime(application_ini_data["timestamp"]),
+        "DEB_MANPAGE_DATE": application_ini_data["timestamp"].strftime("%B %d, %Y"),
         "DEB_ARCH_NAME": _DEB_ARCH[arch],
         "DEB_DEPENDS": depends,
+        "Icon": deb_pkg_name,
     }
 
 
@@ -238,7 +305,7 @@ def _copy_plain_deb_config(input_template_dir, source_dir):
     plain_filenames = [
         mozpath.basename(filename)
         for filename in template_dir_filenames
-        if not filename.endswith(".in")
+        if not filename.endswith(".in") and not filename.endswith(".js")
     ]
     os.makedirs(mozpath.join(source_dir, "debian"), exist_ok=True)
 
@@ -270,6 +337,21 @@ def _render_deb_templates(
 
 
 def _inject_deb_distribution_folder(source_dir, app_name):
+    distribution_ini_path = mozpath.join(source_dir, "debian", "distribution.ini")
+
+    # Check to see if a distribution.ini file is already supplied in the debian templates directory
+    # If not, continue to download default Firefox distribution.ini from GitHub
+    if os.path.exists(distribution_ini_path):
+        os.makedirs(
+            mozpath.join(source_dir, app_name.lower(), "distribution"), exist_ok=True
+        )
+        shutil.move(
+            distribution_ini_path,
+            mozpath.join(source_dir, app_name.lower(), "distribution"),
+        )
+
+        return
+
     with tempfile.TemporaryDirectory() as git_clone_dir:
         subprocess.check_call(
             [
@@ -285,6 +367,23 @@ def _inject_deb_distribution_folder(source_dir, app_name):
         )
 
 
+def _inject_deb_prefs_file(source_dir, app_name, template_dir):
+    src = mozpath.join(template_dir, "package-prefs.js")
+    dst = mozpath.join(source_dir, app_name.lower(), "defaults/pref")
+    shutil.copy(src, dst)
+
+
+def _mv_manpage_files(source_dir, build_variables):
+    src = mozpath.join(source_dir, "debian", "manpage.1")
+    dst = mozpath.join(source_dir, "debian", f"{build_variables['DEB_PKG_NAME']}.1")
+    shutil.move(src, dst)
+    src = mozpath.join(source_dir, "debian", "manpages")
+    dst = mozpath.join(
+        source_dir, "debian", f"{build_variables['DEB_PKG_NAME']}.manpages"
+    )
+    shutil.move(src, dst)
+
+
 def _inject_deb_desktop_entry_file(
     log,
     source_dir,
@@ -294,7 +393,22 @@ def _inject_deb_desktop_entry_file(
     fluent_localization,
     fluent_resource_loader,
 ):
-    desktop_entry_file_text = _generate_browser_desktop_entry_file_text(
+    desktop_entry_template_path = mozpath.join(
+        source_dir, "debian", f"{build_variables['DEB_PRODUCT_NAME'].lower()}.desktop"
+    )
+    desktop_entry_file_filename = f"{build_variables['DEB_PKG_NAME']}.desktop"
+
+    # Check to see if a .desktop file is already supplied in the debian templates directory
+    # If not, continue to generate default Firefox .desktop file
+    if os.path.exists(desktop_entry_template_path):
+        shutil.move(
+            desktop_entry_template_path,
+            mozpath.join(source_dir, "debian", desktop_entry_file_filename),
+        )
+
+        return
+
+    desktop_entry_file_text = generate_browser_desktop_entry_file_text(
         log,
         build_variables,
         release_product,
@@ -302,321 +416,11 @@ def _inject_deb_desktop_entry_file(
         fluent_localization,
         fluent_resource_loader,
     )
-    desktop_entry_file_filename = f"{build_variables['DEB_PKG_NAME']}.desktop"
     os.makedirs(mozpath.join(source_dir, "debian"), exist_ok=True)
     with open(
         mozpath.join(source_dir, "debian", desktop_entry_file_filename), "w"
     ) as f:
         f.write(desktop_entry_file_text)
-
-
-def _generate_browser_desktop_entry_file_text(
-    log,
-    build_variables,
-    release_product,
-    release_type,
-    fluent_localization,
-    fluent_resource_loader,
-):
-    localizations = _create_fluent_localizations(
-        fluent_resource_loader, fluent_localization, release_type, release_product, log
-    )
-    desktop_entry = _generate_browser_desktop_entry(build_variables, localizations)
-    desktop_entry_file_text = "\n".join(desktop_entry)
-    return desktop_entry_file_text
-
-
-def _create_fluent_localizations(
-    fluent_resource_loader, fluent_localization, release_type, release_product, log
-):
-    brand_fluent_filename = "brand.ftl"
-    l10n_central_url = "https://hg.mozilla.org/l10n-central"
-    desktop_entry_fluent_filename = "linuxDesktopEntry.ftl"
-
-    l10n_dir = tempfile.mkdtemp()
-
-    loader = fluent_resource_loader(os.path.join(l10n_dir, "{locale}"))
-
-    localizations = {}
-    linux_l10n_changesets = _load_linux_l10n_changesets(
-        "browser/locales/l10n-changesets.json"
-    )
-    locales = ["en-US"]
-    locales.extend(linux_l10n_changesets.keys())
-    en_US_brand_fluent_filename = _get_en_US_brand_fluent_filename(
-        brand_fluent_filename, release_type, release_product
-    )
-
-    for locale in locales:
-        locale_dir = os.path.join(l10n_dir, locale)
-        os.mkdir(locale_dir)
-        localized_desktop_entry_filename = os.path.join(
-            locale_dir, desktop_entry_fluent_filename
-        )
-        if locale == "en-US":
-            en_US_desktop_entry_fluent_filename = os.path.join(
-                "browser/locales/en-US/browser", desktop_entry_fluent_filename
-            )
-            shutil.copyfile(
-                en_US_desktop_entry_fluent_filename,
-                localized_desktop_entry_filename,
-            )
-        else:
-            non_en_US_desktop_entry_fluent_filename = os.path.join(
-                "browser/browser", desktop_entry_fluent_filename
-            )
-            non_en_US_fluent_resource_file_url = os.path.join(
-                l10n_central_url,
-                locale,
-                "raw-file",
-                linux_l10n_changesets[locale]["revision"],
-                non_en_US_desktop_entry_fluent_filename,
-            )
-            response = requests.get(non_en_US_fluent_resource_file_url)
-            response = retry(
-                requests.get,
-                args=[non_en_US_fluent_resource_file_url],
-                attempts=5,
-                sleeptime=3,
-                jitter=2,
-            )
-            mgs = "Missing {fluent_resource_file_name} for {locale}: received HTTP {status_code} for GET {resource_file_url}"
-            params = {
-                "fluent_resource_file_name": desktop_entry_fluent_filename,
-                "locale": locale,
-                "resource_file_url": non_en_US_fluent_resource_file_url,
-                "status_code": response.status_code,
-            }
-            action = "repackage-deb"
-            if response.status_code == 404:
-                log(
-                    logging.WARNING,
-                    action,
-                    params,
-                    mgs,
-                )
-                continue
-            if response.status_code != 200:
-                log(
-                    logging.ERROR,
-                    action,
-                    params,
-                    mgs,
-                )
-                raise HgServerError(mgs.format(**params))
-
-            with open(localized_desktop_entry_filename, "w", encoding="utf-8") as f:
-                f.write(response.text)
-
-        shutil.copyfile(
-            en_US_brand_fluent_filename,
-            os.path.join(locale_dir, brand_fluent_filename),
-        )
-
-        fallbacks = [locale]
-        if locale != "en-US":
-            fallbacks.append("en-US")
-        localizations[locale] = fluent_localization(
-            fallbacks, [desktop_entry_fluent_filename, brand_fluent_filename], loader
-        )
-
-    return localizations
-
-
-def _get_en_US_brand_fluent_filename(
-    brand_fluent_filename, release_type, release_product
-):
-    branding_fluent_filename_template = os.path.join(
-        "browser/branding/{brand}/locales/en-US", brand_fluent_filename
-    )
-    if release_type == "nightly":
-        return branding_fluent_filename_template.format(brand="nightly")
-    elif release_type == "beta" and release_product == "firefox":
-        return branding_fluent_filename_template.format(brand="official")
-    elif release_type == "beta" and release_product == "devedition":
-        return branding_fluent_filename_template.format(brand="aurora")
-    else:
-        return branding_fluent_filename_template.format(brand="unofficial")
-
-
-def _load_linux_l10n_changesets(l10n_changesets_filename):
-    with open(l10n_changesets_filename) as l10n_changesets_file:
-        l10n_changesets = json.load(l10n_changesets_file)
-        return {
-            locale: changeset
-            for locale, changeset in l10n_changesets.items()
-            if any(platform.startswith("linux") for platform in changeset["platforms"])
-        }
-
-
-def _generate_browser_desktop_entry(build_variables, localizations):
-    mime_types = [
-        "application/json",
-        "application/pdf",
-        "application/rdf+xml",
-        "application/rss+xml",
-        "application/x-xpinstall",
-        "application/xhtml+xml",
-        "application/xml",
-        "audio/flac",
-        "audio/ogg",
-        "audio/webm",
-        "image/avif",
-        "image/gif",
-        "image/jpeg",
-        "image/png",
-        "image/svg+xml",
-        "image/webp",
-        "text/html",
-        "text/xml",
-        "video/ogg",
-        "video/webm",
-        "x-scheme-handler/chrome",
-        "x-scheme-handler/http",
-        "x-scheme-handler/https",
-        "x-scheme-handler/mailto",
-    ]
-
-    categories = [
-        "GNOME",
-        "GTK",
-        "Network",
-        "WebBrowser",
-    ]
-
-    actions = [
-        {
-            "name": "new-window",
-            "message": "desktop-action-new-window-name",
-            "command": f"{build_variables['DEB_PKG_NAME']} --new-window %u",
-        },
-        {
-            "name": "new-private-window",
-            "message": "desktop-action-new-private-window-name",
-            "command": f"{build_variables['DEB_PKG_NAME']} --private-window %u",
-        },
-        {
-            "name": "open-profile-manager",
-            "message": "desktop-action-open-profile-manager",
-            "command": f"{build_variables['DEB_PKG_NAME']} --ProfileManager",
-        },
-    ]
-
-    desktop_entry = _desktop_entry_section(
-        "Desktop Entry",
-        [
-            {
-                "key": "Version",
-                "value": "1.0",
-            },
-            {
-                "key": "Type",
-                "value": "Application",
-            },
-            {
-                "key": "Exec",
-                "value": f"{build_variables['DEB_PKG_NAME']} %u",
-            },
-            {
-                "key": "Terminal",
-                "value": "false",
-            },
-            {
-                "key": "X-MultipleArgs",
-                "value": "false",
-            },
-            {
-                "key": "Icon",
-                "value": build_variables["DEB_PKG_NAME"],
-            },
-            {
-                "key": "StartupWMClass",
-                "value": build_variables["DEB_PKG_NAME"],
-            },
-            {
-                "key": "Categories",
-                "value": _desktop_entry_list(categories),
-            },
-            {
-                "key": "MimeType",
-                "value": _desktop_entry_list(mime_types),
-            },
-            {
-                "key": "StartupNotify",
-                "value": "true",
-            },
-            {
-                "key": "Actions",
-                "value": _desktop_entry_list([action["name"] for action in actions]),
-            },
-            {"key": "Name", "value": "desktop-entry-name", "l10n": True},
-            {"key": "Comment", "value": "desktop-entry-comment", "l10n": True},
-            {"key": "GenericName", "value": "desktop-entry-generic-name", "l10n": True},
-            {"key": "Keywords", "value": "desktop-entry-keywords", "l10n": True},
-            {
-                "key": "X-GNOME-FullName",
-                "value": "desktop-entry-x-gnome-full-name",
-                "l10n": True,
-            },
-        ],
-        localizations,
-    )
-
-    for action in actions:
-        desktop_entry.extend(
-            _desktop_entry_section(
-                f"Desktop Action {action['name']}",
-                [
-                    {
-                        "key": "Name",
-                        "value": action["message"],
-                        "l10n": True,
-                    },
-                    {
-                        "key": "Exec",
-                        "value": action["command"],
-                    },
-                ],
-                localizations,
-            )
-        )
-
-    return desktop_entry
-
-
-def _desktop_entry_list(iterable):
-    delimiter = ";"
-    return f"{delimiter.join(iterable)}{delimiter}"
-
-
-def _desktop_entry_attribute(key, value, locale=None, localizations=None):
-    if not locale and not localizations:
-        return f"{key}={value}"
-    if locale and locale == "en-US":
-        return f"{key}={localizations[locale].format_value(value)}"
-    else:
-        return f"{key}[{locale.replace('-', '_')}]={localizations[locale].format_value(value)}"
-
-
-def _desktop_entry_section(header, attributes, localizations):
-    desktop_entry_section = [f"[{header}]"]
-    l10n_attributes = [attribute for attribute in attributes if attribute.get("l10n")]
-    non_l10n_attributes = [
-        attribute for attribute in attributes if not attribute.get("l10n")
-    ]
-    for attribute in non_l10n_attributes:
-        desktop_entry_section.append(
-            _desktop_entry_attribute(attribute["key"], attribute["value"])
-        )
-    for attribute in l10n_attributes:
-        for locale in localizations:
-            desktop_entry_section.append(
-                _desktop_entry_attribute(
-                    attribute["key"], attribute["value"], locale, localizations
-                )
-            )
-    desktop_entry_section.append("")
-    return desktop_entry_section
 
 
 def _generate_deb_archive(
@@ -679,8 +483,15 @@ def _is_chroot_available(arch):
 
 
 def _get_chroot_path(arch):
-    deb_arch = "amd64" if arch == "all" else _DEB_ARCH[arch]
-    return f"/srv/{_DEB_DIST}-{deb_arch}"
+    # At the moment the Firefox build baseline for i386 and amd64 is jessie and the baseline for arm64 is buster.
+    # These baselines are defined in taskcluster/scripts/misc/build-sysroot.sh
+    # The debian-repackage image defined in taskcluster/docker/debian-repackage/Dockerfile
+    # bootstraps /srv/jessie-i386, /srv/jessie-amd64, and /srv/buster-amd64 roots.
+    # We use these roots to run the repackage step and generate shared
+    # library dependencies that match the Firefox build baseline.
+    deb_sysroot_dist = _DEB_SYSROOT_DIST[arch]
+    deb_sysroot_arch = _DEB_SYSROOT_ARCH[arch]
+    return f"/srv/{deb_sysroot_dist}-{deb_sysroot_arch}"
 
 
 _MANIFEST_FILE_NAME = "manifest.json"

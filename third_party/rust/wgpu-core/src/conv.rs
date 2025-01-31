@@ -1,12 +1,6 @@
-use crate::resource;
+use wgt::TextureFormatFeatures;
 
-pub fn is_power_of_two_u16(val: u16) -> bool {
-    val != 0 && (val & (val - 1)) == 0
-}
-
-pub fn is_power_of_two_u32(val: u32) -> bool {
-    val != 0 && (val & (val - 1)) == 0
-}
+use crate::resource::{self, TextureDescriptor};
 
 pub fn is_valid_copy_src_texture_format(
     format: wgt::TextureFormat,
@@ -88,12 +82,24 @@ pub fn map_buffer_usage(usage: wgt::BufferUsages) -> hal::BufferUses {
         usage.contains(wgt::BufferUsages::UNIFORM),
     );
     u.set(
-        hal::BufferUses::STORAGE_READ | hal::BufferUses::STORAGE_READ_WRITE,
+        hal::BufferUses::STORAGE_READ_ONLY | hal::BufferUses::STORAGE_READ_WRITE,
         usage.contains(wgt::BufferUsages::STORAGE),
     );
     u.set(
         hal::BufferUses::INDIRECT,
         usage.contains(wgt::BufferUsages::INDIRECT),
+    );
+    u.set(
+        hal::BufferUses::QUERY_RESOLVE,
+        usage.contains(wgt::BufferUsages::QUERY_RESOLVE),
+    );
+    u.set(
+        hal::BufferUses::BOTTOM_LEVEL_ACCELERATION_STRUCTURE_INPUT,
+        usage.contains(wgt::BufferUsages::BLAS_INPUT),
+    );
+    u.set(
+        hal::BufferUses::TOP_LEVEL_ACCELERATION_STRUCTURE_INPUT,
+        usage.contains(wgt::BufferUsages::TLAS_INPUT),
     );
     u
 }
@@ -101,6 +107,7 @@ pub fn map_buffer_usage(usage: wgt::BufferUsages) -> hal::BufferUses {
 pub fn map_texture_usage(
     usage: wgt::TextureUsages,
     aspect: hal::FormatAspects,
+    flags: wgt::TextureFormatFeatureFlags,
 ) -> hal::TextureUses {
     let mut u = hal::TextureUses::empty();
     u.set(
@@ -115,10 +122,20 @@ pub fn map_texture_usage(
         hal::TextureUses::RESOURCE,
         usage.contains(wgt::TextureUsages::TEXTURE_BINDING),
     );
-    u.set(
-        hal::TextureUses::STORAGE_READ | hal::TextureUses::STORAGE_READ_WRITE,
-        usage.contains(wgt::TextureUsages::STORAGE_BINDING),
-    );
+    if usage.contains(wgt::TextureUsages::STORAGE_BINDING) {
+        u.set(
+            hal::TextureUses::STORAGE_READ_ONLY,
+            flags.contains(wgt::TextureFormatFeatureFlags::STORAGE_READ_ONLY),
+        );
+        u.set(
+            hal::TextureUses::STORAGE_WRITE_ONLY,
+            flags.contains(wgt::TextureFormatFeatureFlags::STORAGE_WRITE_ONLY),
+        );
+        u.set(
+            hal::TextureUses::STORAGE_READ_WRITE,
+            flags.contains(wgt::TextureFormatFeatureFlags::STORAGE_READ_WRITE),
+        );
+    }
     let is_color = aspect.contains(hal::FormatAspects::COLOR);
     u.set(
         hal::TextureUses::COLOR_TARGET,
@@ -127,6 +144,61 @@ pub fn map_texture_usage(
     u.set(
         hal::TextureUses::DEPTH_STENCIL_READ | hal::TextureUses::DEPTH_STENCIL_WRITE,
         usage.contains(wgt::TextureUsages::RENDER_ATTACHMENT) && !is_color,
+    );
+    u
+}
+
+pub fn map_texture_usage_for_texture(
+    desc: &TextureDescriptor,
+    format_features: &TextureFormatFeatures,
+) -> hal::TextureUses {
+    // Enforce having COPY_DST/DEPTH_STENCIL_WRITE/COLOR_TARGET otherwise we
+    // wouldn't be able to initialize the texture.
+    map_texture_usage(desc.usage, desc.format.into(), format_features.flags)
+        | if desc.format.is_depth_stencil_format() {
+            hal::TextureUses::DEPTH_STENCIL_WRITE
+        } else if desc.usage.contains(wgt::TextureUsages::COPY_DST) {
+            hal::TextureUses::COPY_DST // (set already)
+        } else {
+            // Use COPY_DST only if we can't use COLOR_TARGET
+            if format_features
+                .allowed_usages
+                .contains(wgt::TextureUsages::RENDER_ATTACHMENT)
+                && desc.dimension == wgt::TextureDimension::D2
+            // Render targets dimension must be 2d
+            {
+                hal::TextureUses::COLOR_TARGET
+            } else {
+                hal::TextureUses::COPY_DST
+            }
+        }
+}
+
+pub fn map_texture_usage_from_hal(uses: hal::TextureUses) -> wgt::TextureUsages {
+    let mut u = wgt::TextureUsages::empty();
+    u.set(
+        wgt::TextureUsages::COPY_SRC,
+        uses.contains(hal::TextureUses::COPY_SRC),
+    );
+    u.set(
+        wgt::TextureUsages::COPY_DST,
+        uses.contains(hal::TextureUses::COPY_DST),
+    );
+    u.set(
+        wgt::TextureUsages::TEXTURE_BINDING,
+        uses.contains(hal::TextureUses::RESOURCE),
+    );
+    u.set(
+        wgt::TextureUsages::STORAGE_BINDING,
+        uses.intersects(
+            hal::TextureUses::STORAGE_READ_ONLY
+                | hal::TextureUses::STORAGE_WRITE_ONLY
+                | hal::TextureUses::STORAGE_READ_WRITE,
+        ),
+    );
+    u.set(
+        wgt::TextureUsages::RENDER_ATTACHMENT,
+        uses.contains(hal::TextureUses::COLOR_TARGET),
     );
     u
 }
@@ -176,7 +248,7 @@ pub fn check_texture_dimension_size(
             return Err(Tde::LimitExceeded { dim, given, limit });
         }
     }
-    if sample_size == 0 || sample_size > sample_limit || !is_power_of_two_u32(sample_size) {
+    if sample_size == 0 || sample_size > sample_limit || !sample_size.is_power_of_two() {
         return Err(Tde::InvalidSampleCount(sample_size));
     }
 

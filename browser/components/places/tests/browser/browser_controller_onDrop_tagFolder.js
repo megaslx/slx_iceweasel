@@ -29,11 +29,11 @@ add_setup(async function () {
     children: [
       {
         title: "bm1",
-        url: "http://example1.com",
+        url: "https://example1.com",
       },
       {
         title: "bm2",
-        url: "http://example2.com",
+        url: "https://example2.com",
         tags: [TAG_NAME],
       },
     ],
@@ -81,10 +81,10 @@ async function run_drag_test(startBookmarkIndex, newParentGuid) {
       mozCursor: "auto",
       mozItemCount: 1,
       types: [PlacesUtils.TYPE_X_MOZ_PLACE],
-      mozTypesAt(i) {
+      mozTypesAt() {
         return this.types;
       },
-      mozGetDataAt(i) {
+      mozGetDataAt() {
         return bookmarkWithId;
       },
     };

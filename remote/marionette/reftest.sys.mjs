@@ -79,7 +79,7 @@ reftest.Runner = class {
    * This will open a non-browser window in which the tests will
    * be loaded, and set up various caches for the reftest run.
    *
-   * @param {Object<number>} urlCount
+   * @param {Record<string, number>} urlCount
    *     Object holding a map of URL: number of times the URL
    *     will be opened during the reftest run, where that's
    *     greater than 1.
@@ -529,6 +529,17 @@ reftest.Runner = class {
         lazy.logger.debug(
           `rhs canvas size ${rhs.canvas.width}x${rhs.canvas.height}`
         );
+        if (
+          lhs.canvas.width != rhs.canvas.width ||
+          lhs.canvas.height != rhs.canvas.height
+        ) {
+          msg =
+            `Got different page sizes; test is ` +
+            `${lhs.canvas.width}x${lhs.canvas.height}px, ref is ` +
+            `${rhs.canvas.width}x${rhs.canvas.height}px`;
+          passed = false;
+          break;
+        }
         try {
           pixelsDifferent = this.windowUtils.compareCanvases(
             lhs.canvas,
@@ -640,7 +651,7 @@ reftest.Runner = class {
     }
   }
 
-  async loadTestUrl(win, url, timeout) {
+  async loadTestUrl(win, url, timeout, warnOnOverflow = true) {
     const browsingContext = this.driver.getBrowsingContext({ top: true });
     const webProgress = browsingContext.webProgress;
 
@@ -674,7 +685,11 @@ reftest.Runner = class {
         webProgress.browsingContext.currentWindowGlobal.getActor(
           "MarionetteReftest"
         );
-      isReftestReady = await actor.reftestWait(url, this.useRemoteTabs);
+      isReftestReady = await actor.reftestWait(
+        url,
+        this.useRemoteTabs,
+        warnOnOverflow
+      );
     }
   }
 
@@ -767,7 +782,7 @@ browserRect.height: ${browserRect.height}`);
 
   async screenshotPaginated(win, url, timeout, pageRanges) {
     url = new URL(url).href; // normalize the URL
-    await this.loadTestUrl(win, url, timeout);
+    await this.loadTestUrl(win, url, timeout, false);
 
     const [width, height] = [DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT];
     const margin = DEFAULT_PAGE_MARGIN;
@@ -807,13 +822,14 @@ browserRect.height: ${browserRect.height}`);
     await new Promise((resolve, reject) => {
       const doc = this.parentWindow.document;
       const script = doc.createElement("script");
-      script.src = "resource://pdf.js/build/pdf.js";
+      script.type = "module";
+      script.src = "resource://pdf.js/build/pdf.mjs";
       script.onload = resolve;
       script.onerror = () => reject(new Error("pdfjs load failed"));
       doc.documentElement.appendChild(script);
     });
     this.parentWindow.pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "resource://pdf.js/build/pdf.worker.js";
+      "resource://pdf.js/build/pdf.worker.mjs";
   }
 
   async loadPdf(data) {

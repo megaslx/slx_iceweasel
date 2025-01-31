@@ -1,5 +1,6 @@
 import pytest
 
+from webdriver.bidi.error import MoveTargetOutOfBoundsException, NoSuchFrameException
 from webdriver.bidi.modules.input import Actions, get_element_origin
 from webdriver.bidi.modules.script import ContextTarget
 
@@ -12,6 +13,75 @@ from . import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+CONTEXT_LOAD_EVENT = "browsingContext.load"
+
+
+async def test_pointer_down_closes_browsing_context(
+    bidi_session, configuration, get_element, new_tab, inline, subscribe_events,
+    wait_for_event
+):
+    url = inline("""<input onpointerdown="window.close()">close</input>""")
+
+    # Opening a new context via `window.open` is required for script to be able
+    # to close it.
+    await subscribe_events(events=[CONTEXT_LOAD_EVENT])
+    on_load = wait_for_event(CONTEXT_LOAD_EVENT)
+
+    await bidi_session.script.evaluate(
+        expression=f"window.open('{url}')",
+        target=ContextTarget(new_tab["context"]),
+        await_promise=True
+    )
+    # Wait for the new context to be created and get it.
+    new_context = await on_load
+
+    element = await get_element("input", context=new_context)
+    origin = get_element_origin(element)
+
+    actions = Actions()
+    (
+        actions.add_pointer(pointer_type="touch")
+        .pointer_move(0, 0, origin=origin)
+        .pointer_down(button=0)
+        .pause(250 * configuration["timeout_multiplier"])
+        .pointer_up(button=0)
+    )
+
+    with pytest.raises(NoSuchFrameException):
+        await bidi_session.input.perform_actions(
+            actions=actions, context=new_context["context"]
+        )
+
+
+@pytest.mark.parametrize("origin", ["element", "pointer", "viewport"])
+async def test_params_actions_origin_outside_viewport(
+    bidi_session, get_actions_origin_page, top_context, get_element, origin
+):
+    if origin == "element":
+        url = get_actions_origin_page(
+            """width: 100px; height: 50px; background: green;
+            position: relative; left: -200px; top: -100px;"""
+        )
+        await bidi_session.browsing_context.navigate(
+            context=top_context["context"],
+            url=url,
+            wait="complete",
+        )
+
+        element = await get_element("#inner")
+        origin = get_element_origin(element)
+
+    actions = Actions()
+    (
+        actions.add_pointer(pointer_type="touch")
+        .pointer_move(x=-100, y=-100, origin=origin)
+    )
+
+    with pytest.raises(MoveTargetOutOfBoundsException):
+        await bidi_session.input.perform_actions(
+            actions=actions, context=top_context["context"]
+        )
 
 
 @pytest.mark.parametrize("mode", ["open", "closed"])
@@ -81,8 +151,6 @@ async def test_touch_pointer_properties(
             width=23,
             height=31,
             pressure=0.78,
-            tilt_x=21,
-            tilt_y=-8,
             twist=355,
         )
         .pointer_move(
@@ -92,8 +160,6 @@ async def test_touch_pointer_properties(
             width=39,
             height=35,
             pressure=0.91,
-            tilt_x=-19,
-            tilt_y=62,
             twist=345,
         )
         .pointer_up(button=0)
@@ -105,6 +171,8 @@ async def test_touch_pointer_properties(
     )
 
     events = await get_events(bidi_session, top_context["context"])
+    # Filter mouse events.
+    events = [e for e in events if e["pointerType"] == "touch"]
 
     assert len(events) == 7
     event_types = [e["type"] for e in events]
@@ -135,17 +203,13 @@ async def test_touch_pointer_properties(
     assert round(events[3]["pressure"], 2) == 0.91
 
 
-async def test_touch_pointer_properties_tilt_twist(
+async def test_touch_pointer_properties_angle_twist(
     bidi_session, top_context, get_element, load_static_test_page
 ):
-    # This test only covers the tilt/twist properties which are
-    # more specific to pen-type pointers, but which the spec allows
-    # for generic touch pointers. Seperating this out gives better
-    # coverage of the basic properties in test_touch_pointer_properties
     await load_static_test_page(page="test_actions_pointer.html")
 
     pointerArea = await get_element("#pointerArea")
-    center = await get_inview_center_bidi(
+    await get_inview_center_bidi(
         bidi_session, context=top_context, element=pointerArea
     )
 
@@ -158,8 +222,8 @@ async def test_touch_pointer_properties_tilt_twist(
             width=23,
             height=31,
             pressure=0.78,
-            tilt_x=21,
-            tilt_y=-8,
+            altitude_angle=1.2,
+            azimuth_angle=6,
             twist=355,
         )
         .pointer_move(
@@ -169,8 +233,8 @@ async def test_touch_pointer_properties_tilt_twist(
             width=39,
             height=35,
             pressure=0.91,
-            tilt_x=-19,
-            tilt_y=62,
+            altitude_angle=0.5,
+            azimuth_angle=1.8,
             twist=345,
         )
         .pointer_up(button=0)
@@ -182,6 +246,8 @@ async def test_touch_pointer_properties_tilt_twist(
     )
 
     events = await get_events(bidi_session, top_context["context"])
+    # Filter mouse events.
+    events = [e for e in events if e["pointerType"] == "touch"]
 
     assert len(events) == 7
     event_types = [e["type"] for e in events]
@@ -195,10 +261,10 @@ async def test_touch_pointer_properties_tilt_twist(
         "pointerleave",
     ] == event_types
     assert events[2]["type"] == "pointerdown"
-    assert events[2]["tiltX"] == 21
-    assert events[2]["tiltY"] == -8
+    assert events[2]["tiltX"] == 20
+    assert events[2]["tiltY"] == -6
     assert events[2]["twist"] == 355
     assert events[3]["type"] == "pointermove"
-    assert events[3]["tiltX"] == -19
-    assert events[3]["tiltY"] == 62
+    assert events[3]["tiltX"] == -23
+    assert events[3]["tiltY"] == 61
     assert events[3]["twist"] == 345

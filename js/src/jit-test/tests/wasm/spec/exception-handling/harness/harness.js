@@ -75,11 +75,33 @@ class F64x2Pattern {
   }
 }
 
-let externrefs = {};
+class RefWithType {
+  constructor(type) {
+    this.type = type;
+  }
+
+  formatExpected() {
+    return `RefWithType(${this.type})`;
+  }
+
+  test(refGlobal) {
+    try {
+      new WebAssembly.Global({value: this.type}, refGlobal.value);
+      return true;
+    } catch (err) {
+      assertEq(err instanceof TypeError, true, `wrong type of error when creating global: ${err}`);
+      assertEq(!!err.message.match(/can only pass/), true, `wrong type of error when creating global: ${err}`);
+      return false;
+    }
+  }
+}
+
+// ref.extern values created by spec tests will be JS objects of the form
+// { [externsym]: <number> }. Other externref values are possible to observe
+// if extern.convert_any is used.
 let externsym = Symbol("externref");
 function externref(s) {
-  if (!(s in externrefs)) externrefs[s] = { [externsym]: s };
-  return externrefs[s];
+  return { [externsym]: s };
 }
 function is_externref(x) {
   return (x !== null && externsym in x) ? 1 : 0;
@@ -92,6 +114,55 @@ function eq_externref(x, y) {
 }
 function eq_funcref(x, y) {
   return x === y ? 1 : 0;
+}
+
+class ExternRefResult {
+  constructor(n) {
+    this.n = n;
+  }
+
+  formatExpected() {
+    return `ref.extern ${this.n}`;
+  }
+
+  test(global) {
+    // the global's value can either be an externref or just a plain old JS number
+    let result = global.value;
+    if (typeof global.value === "object" && externsym in global.value) {
+      result = global.value[externsym];
+    }
+    return result === this.n;
+  }
+}
+
+// ref.host values created by spectests will be whatever the JS API does to
+// convert the given value to anyref. It should implicitly be like any.convert_extern.
+function hostref(v) {
+  const { internalizeNum } = new WebAssembly.Instance(
+    new WebAssembly.Module(wasmTextToBinary(`(module
+      (func (import "test" "coerce") (param i32) (result anyref))
+      (func (export "internalizeNum") (param i32) (result anyref)
+        (call 0 (local.get 0))
+      )
+    )`)),
+    { "test": { "coerce": x => x } },
+  ).exports;
+  return internalizeNum(v);
+}
+
+class HostRefResult {
+  constructor(n) {
+    this.n = n;
+  }
+
+  formatExpected() {
+    return `ref.host ${this.n}`;
+  }
+
+  test(externrefGlobal) {
+    assertEq(externsym in externrefGlobal.value, true, `HostRefResult only works with externref inputs`);
+    return externrefGlobal.value[externsym] === this.n;
+  }
 }
 
 let spectest = {
@@ -122,16 +193,10 @@ let linkage = {
   spectest,
 };
 
-function getInstance(instanceish) {
-  if (typeof instanceish === "string") {
-    assertEq(
-      instanceish in linkage,
-      true,
-      `'${instanceish}'' must be registered`,
-    );
-    return linkage[instanceish];
-  }
-  return instanceish;
+function module(source) {
+  let bytecode = wasmTextToBinary(source);
+  let module = new WebAssembly.Module(bytecode);
+  return module;
 }
 
 function instantiate(source) {
@@ -141,18 +206,23 @@ function instantiate(source) {
   return instance.exports;
 }
 
-function register(instanceish, name) {
-  linkage[name] = getInstance(instanceish);
+function instantiateFromModule(module) {
+  let instance = new WebAssembly.Instance(module, linkage);
+  return instance.exports;
 }
 
-function invoke(instanceish, field, params) {
-  let func = getInstance(instanceish)[field];
+function register(instance, name) {
+  linkage[name] = instance;
+}
+
+function invoke(instance, field, params) {
+  let func = instance[field];
   assertEq(func instanceof Function, true, "expected a function");
   return wasmLosslessInvoke(func, ...params);
 }
 
-function get(instanceish, field) {
-  let global = getInstance(instanceish)[field];
+function get(instance, field) {
+  let global = instance[field];
   assertEq(
     global instanceof WebAssembly.Global,
     true,
@@ -164,13 +234,13 @@ function get(instanceish, field) {
 function assert_trap(thunk, message) {
   try {
     thunk();
-    assertEq("normal return", "trap");
+    throw new Error(`got no error`);
   } catch (err) {
-    assertEq(
-      err instanceof WebAssembly.RuntimeError,
-      true,
-      "expected trap",
-    );
+    if (err instanceof WebAssembly.RuntimeError) {
+      return;
+    }
+    err.message = `expected trap (${message}): ${err.message}`;
+    throw err;
   }
 }
 
@@ -185,57 +255,57 @@ try {
 function assert_exhaustion(thunk, message) {
   try {
     thunk();
-    assertEq("normal return", "exhaustion");
+    throw new Error(`got no error`);
   } catch (err) {
-    assertEq(
-      err instanceof StackOverflow,
-      true,
-      "expected exhaustion",
-    );
+    if (err instanceof StackOverflow) {
+      return;
+    }
+    err.message = `expected exhaustion (${message}): ${err.message}`;
+    throw err;
   }
 }
 
 function assert_invalid(thunk, message) {
   try {
     thunk();
-    assertEq("valid module", "invalid module");
+    throw new Error(`got no error`);
   } catch (err) {
-    assertEq(
-      err instanceof WebAssembly.LinkError ||
-        err instanceof WebAssembly.CompileError,
-      true,
-      "expected an invalid module",
-    );
+    if (err instanceof WebAssembly.LinkError || err instanceof WebAssembly.CompileError) {
+      return;
+    }
+    err.message = `expected invalid module (${message}): ${err.message}`;
+    throw err;
   }
 }
 
 function assert_unlinkable(thunk, message) {
   try {
     thunk();
-    assertEq(true, false, "expected an unlinkable module");
+    throw new Error(`got no error`);
   } catch (err) {
-    assertEq(
-      err instanceof WebAssembly.LinkError ||
-        err instanceof WebAssembly.CompileError,
-      true,
-      "expected an unlinkable module",
-    );
+    if (err instanceof WebAssembly.LinkError || err instanceof WebAssembly.CompileError) {
+      return;
+    }
+    err.message = `expected an unlinkable module (${message}): ${err.message}`;
+    throw err;
   }
 }
 
 function assert_malformed(thunk, message) {
   try {
     thunk();
-    assertEq("valid module", "malformed module");
+    throw new Error(`got no error`);
   } catch (err) {
-    assertEq(
+    if (
       err instanceof TypeError ||
-        err instanceof SyntaxError ||
-        err instanceof WebAssembly.CompileError ||
-        err instanceof WebAssembly.LinkError,
-      true,
-      `expected a malformed module`,
-    );
+      err instanceof SyntaxError ||
+      err instanceof WebAssembly.CompileError ||
+      err instanceof WebAssembly.LinkError
+    ) {
+      return;
+    }
+    err.message = `expected a malformed module (${message}): ${err.message}`;
+    throw err;
   }
 }
 
@@ -298,6 +368,12 @@ function formatExpected(expected) {
     })`;
   } else if (expected instanceof EitherVariants) {
     return expected.formatExpected();
+  } else if (expected instanceof RefWithType) {
+    return expected.formatExpected();
+  } else if (expected instanceof ExternRefResult) {
+    return expected.formatExpected();
+  } else if (expected instanceof HostRefResult) {
+    return expected.formatExpected();
   } else if (typeof (expected) === "object") {
     return wasmGlobalToString(expected);
   } else {
@@ -338,6 +414,8 @@ function compareResult(result, expected) {
     expected === `arithmetic_nan`
   ) {
     return wasmGlobalIsNaN(result, expected);
+  } else if (expected === null) {
+    return result.value === null;
   } else if (expected instanceof F32x4Pattern) {
     return compareResult(
       wasmGlobalExtractLane(result, "f32x4", 0),
@@ -352,6 +430,12 @@ function compareResult(result, expected) {
       expected.x,
     ) &&
       compareResult(wasmGlobalExtractLane(result, "f64x2", 1), expected.y);
+  } else if (expected instanceof RefWithType) {
+    return expected.test(result);
+  } else if (expected instanceof ExternRefResult) {
+    return expected.test(result);
+  } else if (expected instanceof HostRefResult) {
+    return expected.test(result);
   } else if (typeof (expected) === "object") {
     return wasmGlobalsEqual(result, expected);
   } else {

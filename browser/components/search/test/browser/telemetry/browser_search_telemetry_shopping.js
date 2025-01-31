@@ -15,7 +15,7 @@ const BASE_TEST_PROVIDER = {
   telemetryId: "example",
   searchPageRegexp:
     /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd/,
-  queryParamName: "s",
+  queryParamNames: ["s"],
   codeParamName: "abc",
   taggedCodes: ["ff"],
   extraAdServersRegexps: [/^https:\/\/example\.org\/ad/],
@@ -55,12 +55,6 @@ add_setup(async function () {
   // Enable local telemetry recording for the duration of the tests.
   let oldCanRecord = Services.telemetry.canRecordExtended;
   Services.telemetry.canRecordExtended = true;
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.search.log", true],
-      ["browser.search.serpEventTelemetry.enabled", true],
-    ],
-  });
 
   registerCleanupFunction(async () => {
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
@@ -74,8 +68,9 @@ async function loadSerpAndClickShoppingTab(page) {
     gBrowser,
     getSERPUrl(page)
   );
+  await waitForPageWithAdImpressions();
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -83,17 +78,26 @@ async function loadSerpAndClickShoppingTab(page) {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "true",
+        is_signed_in: "false",
       },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.SHOPPING_TAB,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
     },
   ]);
-  await waitForPageWithAdImpressions();
 
   let pageLoadPromise = BrowserTestUtils.waitForLocationChange(gBrowser);
   BrowserTestUtils.synthesizeMouseAtCenter("#shopping", {}, tab.linkedBrowser);
   await pageLoadPromise;
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -101,12 +105,22 @@ async function loadSerpAndClickShoppingTab(page) {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "true",
+        is_signed_in: "false",
       },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
           target: SearchSERPTelemetryUtils.COMPONENTS.SHOPPING_TAB,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.SHOPPING_TAB,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
         },
       ],
     },

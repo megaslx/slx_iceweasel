@@ -6,7 +6,7 @@ const { HttpServer } = ChromeUtils.importESModule(
 
 var httpserver = null;
 
-XPCOMUtils.defineLazyGetter(this, "uri", function () {
+ChromeUtils.defineLazyGetter(this, "uri", function () {
   return "http://localhost:" + httpserver.identity.primaryPort + "/multipart";
 });
 
@@ -51,7 +51,7 @@ var multipartListener = {
     "nsIRequestObserver",
   ]),
 
-  onStartRequest(request) {
+  onStartRequest() {
     this._buffer = "";
   },
 
@@ -64,7 +64,7 @@ var multipartListener = {
     }
   },
 
-  onStopRequest(request, status) {
+  onStopRequest(request) {
     this._index++;
     // Second part should be last part
     Assert.equal(

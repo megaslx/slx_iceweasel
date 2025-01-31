@@ -12,7 +12,6 @@
 #include "mozilla/dom/TimeoutManager.h"
 #include "mozilla/dom/WindowBinding.h"
 #include "nsComponentManagerUtils.h"
-#include "nsGlobalWindow.h"
 #include "nsPIDOMWindow.h"
 
 namespace mozilla::dom {
@@ -41,7 +40,7 @@ void IdleRequest::SetTimeoutHandle(int32_t aHandle) {
   mTimeoutHandle = Some(aHandle);
 }
 
-uint32_t IdleRequest::GetTimeoutHandle() const {
+int32_t IdleRequest::GetTimeoutHandle() const {
   MOZ_DIAGNOSTIC_ASSERT(mTimeoutHandle.isSome());
   return mTimeoutHandle.value();
 }

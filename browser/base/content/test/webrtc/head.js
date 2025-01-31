@@ -11,11 +11,6 @@ const PREF_FOCUS_SOURCE = "media.getusermedia.window.focus_source.enabled";
 const STATE_CAPTURE_ENABLED = Ci.nsIMediaManagerService.STATE_CAPTURE_ENABLED;
 const STATE_CAPTURE_DISABLED = Ci.nsIMediaManagerService.STATE_CAPTURE_DISABLED;
 
-const USING_LEGACY_INDICATOR = Services.prefs.getBoolPref(
-  "privacy.webrtc.legacyGlobalIndicator",
-  false
-);
-
 const ALLOW_SILENCING_NOTIFICATIONS = Services.prefs.getBoolPref(
   "privacy.webrtc.allowSilencingNotifications",
   false
@@ -26,9 +21,19 @@ const SHOW_GLOBAL_MUTE_TOGGLES = Services.prefs.getBoolPref(
   false
 );
 
-const INDICATOR_PATH = USING_LEGACY_INDICATOR
-  ? "chrome://browser/content/webrtcLegacyIndicator.xhtml"
-  : "chrome://browser/content/webrtcIndicator.xhtml";
+const SHOW_ALWAYS_ASK = Services.prefs.getBoolPref(
+  "permissions.media.show_always_ask.enabled",
+  false
+);
+
+let IsIndicatorDisabled =
+  AppConstants.isPlatformAndVersionAtLeast("macosx", 14.0) &&
+  !Services.prefs.getBoolPref(
+    "privacy.webrtc.showIndicatorsOnMacos14AndAbove",
+    false
+  );
+
+const INDICATOR_PATH = "chrome://browser/content/webrtcIndicator.xhtml";
 
 const IS_MAC = AppConstants.platform == "macosx";
 
@@ -62,11 +67,6 @@ function whenDelayedStartupFinished(aWindow) {
 
 function promiseIndicatorWindow() {
   let startTime = performance.now();
-
-  // We don't show the legacy indicator window on Mac.
-  if (USING_LEGACY_INDICATOR && IS_MAC) {
-    return Promise.resolve();
-  }
 
   return new Promise(resolve => {
     Services.obs.addObserver(function obs(win) {
@@ -112,7 +112,7 @@ async function assertWebRTCIndicatorStatus(expected) {
   let expectVideo = false,
     expectAudio = false,
     expectScreen = "";
-  if (expected) {
+  if (expected && !IsIndicatorDisabled) {
     if (expected.video) {
       expectVideo = true;
     }
@@ -148,14 +148,10 @@ async function assertWebRTCIndicatorStatus(expected) {
     );
   }
 
-  if (USING_LEGACY_INDICATOR && IS_MAC) {
-    return;
-  }
-
   if (!expected) {
     let win = Services.wm.getMostRecentWindow("Browser:WebRTCGlobalIndicator");
     if (win) {
-      await new Promise((resolve, reject) => {
+      await new Promise(resolve => {
         win.addEventListener("unload", function listener(e) {
           if (e.target == win.document) {
             win.removeEventListener("unload", listener);
@@ -192,11 +188,7 @@ async function assertWebRTCIndicatorStatus(expected) {
       });
     }
 
-    if (
-      !USING_LEGACY_INDICATOR &&
-      expected.screen &&
-      expected.screen.startsWith("Window")
-    ) {
+    if (expected.screen && expected.screen.startsWith("Window")) {
       // These tests were originally written to express window sharing by
       // having expected.screen start with "Window". This meant that the
       // legacy indicator is expected to have the "sharingscreen" attribute
@@ -210,7 +202,7 @@ async function assertWebRTCIndicatorStatus(expected) {
       expected.window = true;
     }
 
-    if (!USING_LEGACY_INDICATOR && !SHOW_GLOBAL_MUTE_TOGGLES) {
+    if (!SHOW_GLOBAL_MUTE_TOGGLES) {
       expected.video = false;
       expected.audio = false;
 
@@ -226,11 +218,7 @@ async function assertWebRTCIndicatorStatus(expected) {
     for (let item of ["video", "audio", "screen", "window", "browserwindow"]) {
       let expectedValue;
 
-      if (USING_LEGACY_INDICATOR) {
-        expectedValue = expected && expected[item] ? "true" : "";
-      } else {
-        expectedValue = expected && expected[item] ? "true" : null;
-      }
+      expectedValue = expected && expected[item] ? "true" : null;
 
       is(
         docElt.getAttribute("sharing" + item),
@@ -325,7 +313,7 @@ function expectObserverCalledOnClose(
       {
         topic: aTopic,
         count: 1,
-        filterFunctionSource: ((subject, topic, data) => {
+        filterFunctionSource: ((subject, topic) => {
           Services.cpmm.sendAsyncMessage("WebRTCTest:ObserverCalled", {
             topic,
           });
@@ -558,9 +546,9 @@ async function getMediaCaptureState() {
   if (screen != Ci.nsIMediaManagerService.STATE_NOCAPTURE) {
     result.screen = "Screen";
   } else if (window != Ci.nsIMediaManagerService.STATE_NOCAPTURE) {
-    result.screen = "Window";
+    result.window = true;
   } else if (browser != Ci.nsIMediaManagerService.STATE_NOCAPTURE) {
-    result.screen = "Browser";
+    result.browserwindow = true;
   }
 
   ChromeUtils.addProfilerMarker("getMediaCaptureState", {
@@ -933,18 +921,28 @@ async function checkSharingUI(
   // First check the icon above the control center (i) icon.
   let permissionBox = doc.getElementById("identity-permission-box");
   let webrtcSharingIcon = doc.getElementById("webrtc-sharing-icon");
-  ok(webrtcSharingIcon.hasAttribute("sharing"), "sharing attribute is set");
+  let expectOn = aExpected.audio || aExpected.video || aExpected.screen;
+  if (expectOn) {
+    ok(webrtcSharingIcon.hasAttribute("sharing"), "sharing attribute is set");
+  } else {
+    ok(
+      !webrtcSharingIcon.hasAttribute("sharing"),
+      "sharing attribute is not set"
+    );
+  }
   let sharing = webrtcSharingIcon.getAttribute("sharing");
-  if (aExpected.screen) {
-    is(sharing, "screen", "showing screen icon in the identity block");
-  } else if (aExpected.video == STATE_CAPTURE_ENABLED) {
-    is(sharing, "camera", "showing camera icon in the identity block");
-  } else if (aExpected.audio == STATE_CAPTURE_ENABLED) {
-    is(sharing, "microphone", "showing mic icon in the identity block");
-  } else if (aExpected.video) {
-    is(sharing, "camera", "showing camera icon in the identity block");
-  } else if (aExpected.audio) {
-    is(sharing, "microphone", "showing mic icon in the identity block");
+  if (!IsIndicatorDisabled) {
+    if (aExpected.screen) {
+      is(sharing, "screen", "showing screen icon in the identity block");
+    } else if (aExpected.video == STATE_CAPTURE_ENABLED) {
+      is(sharing, "camera", "showing camera icon in the identity block");
+    } else if (aExpected.audio == STATE_CAPTURE_ENABLED) {
+      is(sharing, "microphone", "showing mic icon in the identity block");
+    } else if (aExpected.video) {
+      is(sharing, "camera", "showing camera icon in the identity block");
+    } else if (aExpected.audio) {
+      is(sharing, "microphone", "showing mic icon in the identity block");
+    }
   }
 
   let allStreamsPaused = Object.values(aExpected).every(isPaused);
@@ -1020,6 +1018,13 @@ async function checkSharingUI(
         true,
         "should not show " + id + " state label in the permission panel"
       );
+      if (state != SitePermissions.PROMPT || SHOW_ALWAYS_ASK) {
+        isnot(
+          scope,
+          SitePermissions.SCOPE_PERSISTENT,
+          "persistent permission not shown"
+        );
+      }
     } else {
       // This will happen if there are persistent permissions set.
       ok(
@@ -1028,6 +1033,21 @@ async function checkSharingUI(
       );
       is(item.length, 1, "should not show more than 1 " + id + " item");
       is(icon.length, 1, "should not show more than 1 " + id + " icon");
+
+      // Note: To pass, this one needs state and/or scope passed into
+      // checkSharingUI() for values other than ALLOW and SCOPE_TEMPORARY
+      is(
+        stateLabel?.textContent,
+        SitePermissions.getCurrentStateLabel(state, id, scope),
+        "should show correct item label for " + id
+      );
+      if (!SHOW_ALWAYS_ASK) {
+        isnot(
+          state,
+          state == SitePermissions.PROMPT,
+          "always ask permission should be hidden"
+        );
+      }
     }
   }
   aWin.gPermissionPanel._permissionPopup.hidePopup();
@@ -1037,7 +1057,9 @@ async function checkSharingUI(
   );
 
   // Check the global indicators.
-  await assertWebRTCIndicatorStatus(aExpectedGlobal || aExpected);
+  if (expectOn) {
+    await assertWebRTCIndicatorStatus(aExpectedGlobal || aExpected);
+  }
 }
 
 async function checkNotSharing() {
@@ -1078,7 +1100,7 @@ async function promiseReloadFrame(aFrameId, aBrowsingContext) {
   let loadedPromise = BrowserTestUtils.browserLoaded(
     gBrowser.selectedBrowser,
     true,
-    arg => {
+    () => {
       return true;
     }
   );

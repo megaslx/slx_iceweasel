@@ -53,6 +53,11 @@ class GfxInfoBase : public nsIGfxInfo,
                               int32_t* _retval) override;
   NS_IMETHOD GetFeatureSuggestedDriverVersion(int32_t aFeature,
                                               nsAString& _retval) override;
+  NS_IMETHOD GetFeatureStatusStr(const nsAString& aFeature,
+                                 nsACString& aFailureId,
+                                 nsAString& _retval) override;
+  NS_IMETHOD GetFeatureSuggestedDriverVersionStr(const nsAString& aFeature,
+                                                 nsAString& _retval) override;
 
   NS_IMETHOD GetMonitors(JSContext* cx,
                          JS::MutableHandle<JS::Value> _retval) override;
@@ -64,10 +69,17 @@ class GfxInfoBase : public nsIGfxInfo,
   NS_IMETHOD GetFeatureLog(JSContext*, JS::MutableHandle<JS::Value>) override;
   NS_IMETHOD GetActiveCrashGuards(JSContext*,
                                   JS::MutableHandle<JS::Value>) override;
+  NS_IMETHOD GetFontVisibilityDetermination(
+      nsIGfxInfo::FontVisibilityDeviceDetermination*
+          aFontVisibilityDetermination) override;
+  NS_IMETHOD GetFontVisibilityDeterminationStr(
+      nsAString& aFontVisibilityDeterminationStr) override;
   NS_IMETHOD GetContentBackend(nsAString& aContentBackend) override;
   NS_IMETHOD GetAzureCanvasBackend(nsAString& aBackend) override;
   NS_IMETHOD GetAzureContentBackend(nsAString& aBackend) override;
   NS_IMETHOD GetUsingGPUProcess(bool* aOutValue) override;
+  NS_IMETHOD GetUsingRemoteCanvas(bool* aOutValue) override;
+  NS_IMETHOD GetUsingAcceleratedCanvas(bool* aOutValue) override;
   NS_IMETHOD GetIsHeadless(bool* aIsHeadless) override;
   NS_IMETHOD GetTargetFrameRate(uint32_t* aTargetFrameRate) override;
   NS_IMETHOD GetCodecSupportInfo(nsACString& aCodecSupportInfo) override;
@@ -86,6 +98,7 @@ class GfxInfoBase : public nsIGfxInfo,
 
   NS_IMETHOD_(void) GetData() override;
   NS_IMETHOD_(int32_t) GetMaxRefreshRate(bool* aMixed) override;
+  NS_IMETHOD GetTextScaleFactor(float* aOutValue) override;
 
   static void AddCollector(GfxInfoCollectorBase* collector);
   static void RemoveCollector(GfxInfoCollectorBase* collector);
@@ -110,6 +123,8 @@ class GfxInfoBase : public nsIGfxInfo,
 
   static void SetFeatureStatus(
       nsTArray<mozilla::gfx::GfxInfoFeatureStatus>&& aFS);
+
+  static bool OnlyAllowFeatureOnKnownConfig(int32_t aFeature);
 
  protected:
   virtual ~GfxInfoBase();
@@ -155,6 +170,9 @@ class GfxInfoBase : public nsIGfxInfo,
       const nsTArray<GfxDriverInfo>& aDriverInfo, nsAString& aSuggestedVersion,
       int32_t aFeature, nsACString& aFailureId, OperatingSystem os,
       bool aForAllowing);
+
+  std::pair<nsIGfxInfo::FontVisibilityDeviceDetermination, nsString>*
+  GetFontVisibilityDeterminationPair();
 
   bool IsFeatureAllowlisted(int32_t aFeature) const;
 

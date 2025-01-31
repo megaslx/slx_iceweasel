@@ -55,6 +55,10 @@ mr1-onboarding-theme-header = Make it your own
 mr1-onboarding-theme-subtitle = Personalize { -brand-short-name } with a theme.
 mr1-onboarding-theme-secondary-button-label = Not now
 
+newtab-wallpaper-onboarding-title = Try a splash of color
+newtab-wallpaper-onboarding-subtitle = Choose a wallpaper to give your New Tab a fresh look.
+newtab-wallpaper-onboarding-primary-button-label = Set wallpaper
+
 # System theme uses operating system color settings
 mr1-onboarding-theme-label-system = System theme
 
@@ -191,23 +195,14 @@ mr2022-onboarding-easy-setup-import-checkbox-label = Import from previous browse
 
 ## MR2022 New User Pin Firefox screen strings
 
-# Title used on about:welcome for new users when Firefox is not pinned.
-# In this context, open up is synonymous with "Discover".
-# The metaphor is that when they open their Firefox browser, it helps them discover an amazing internet.
-# If this translation does not make sense in your language, feel free to use the word "discover."
-mr2022-onboarding-welcome-pin-header = Open up an amazing internet
-# Subtitle is used on onboarding page for new users page when Firefox is not pinned
-mr2022-onboarding-welcome-pin-subtitle = Launch { -brand-short-name } from anywhere with a single click. Every time you do, you’re choosing a more open and independent web.
 # Primary button string used on welcome page for when Firefox is not pinned.
 mr2022-onboarding-pin-primary-button-label = { PLATFORM() ->
     [macos] Keep { -brand-short-name } in Dock
    *[other] Pin { -brand-short-name } to taskbar
 }
-# Subtitle will be used when user already has Firefox pinned, but
-# has not set it as their default browser.
-# When translating "zip", please feel free to pick a verb that signifies movement and/or exploration
-# and makes sense in the context of navigating the web.
-mr2022-onboarding-set-default-only-subtitle = Start with a browser backed by a non-profit. We defend your privacy while you zip around the web.
+
+# Primary button string used on welcome page for when Firefox is not pinned on MSIX
+mr2022-onboarding-pin-primary-button-label-msix = Pin { -brand-short-name } to taskbar and start menu
 
 ## MR2022 Existing User Pin Firefox Screen Strings
 
@@ -238,61 +233,10 @@ mr2022-onboarding-set-default-subtitle = Use a browser backed by a non-profit. W
 mr2022-onboarding-get-started-primary-subtitle = Our latest version is built around you, making it easier than ever to zip around the web. It’s packed with features we think you’ll adore.
 mr2022-onboarding-get-started-primary-button-label = Set up in seconds
 
-## MR2022 Import Settings screen strings
-
-mr2022-onboarding-import-header = Lightning-fast setup
-mr2022-onboarding-import-subtitle = Set up { -brand-short-name } how you like it. Add your bookmarks, passwords, and more from your old browser.
 mr2022-onboarding-import-primary-button-label-no-attribution = Import from previous browser
-
-## If your language uses grammatical genders, in the description for the
-## colorway feel free to switch from "You are a X. You…" (e.g. "You are a
-## Playmaker. You create…") to "X: you…" ("Playmaker: You create…"). This might
-## help creating a more inclusive translation.
-
-mr2022-onboarding-colorway-title = Choose the color that inspires you
-mr2022-onboarding-colorway-subtitle = Independent voices can change culture.
-mr2022-onboarding-colorway-primary-button-label-continue = Set and continue
-mr2022-onboarding-existing-colorway-checkbox-label = Make { -firefox-home-brand-name } your colorful homepage
-
-mr2022-onboarding-colorway-label-default = Default
-mr2022-onboarding-colorway-tooltip-default2 =
-  .title = Current { -brand-short-name } colors
-mr2022-onboarding-colorway-description-default = <b>Use my current { -brand-short-name } colors.</b>
-
-mr2022-onboarding-colorway-label-playmaker = Playmaker
-mr2022-onboarding-colorway-tooltip-playmaker2 =
-  .title = Playmaker (red)
-mr2022-onboarding-colorway-description-playmaker = <b>You are a Playmaker.</b> You create opportunities to win and help everyone around you elevate their game.
-
-mr2022-onboarding-colorway-label-expressionist = Expressionist
-mr2022-onboarding-colorway-tooltip-expressionist2 =
-  .title = Expressionist (yellow)
-mr2022-onboarding-colorway-description-expressionist = <b>You are an Expressionist.</b> You see the world differently and your creations stir the emotions of others.
-
-mr2022-onboarding-colorway-label-visionary = Visionary
-mr2022-onboarding-colorway-tooltip-visionary2 =
-  .title = Visionary (green)
-mr2022-onboarding-colorway-description-visionary = <b>You are a Visionary.</b> You question the status quo and move others to imagine a better future.
-
-mr2022-onboarding-colorway-label-activist = Activist
-mr2022-onboarding-colorway-tooltip-activist2 =
-  .title = Activist (blue)
-mr2022-onboarding-colorway-description-activist = <b>You are an Activist.</b> You leave the world a better place than you found it and lead others to believe.
-
-mr2022-onboarding-colorway-label-dreamer = Dreamer
-mr2022-onboarding-colorway-tooltip-dreamer2 =
-  .title = Dreamer (purple)
-mr2022-onboarding-colorway-description-dreamer = <b>You are a Dreamer.</b> You believe that fortune favors the bold and inspire others to be brave.
-
-mr2022-onboarding-colorway-label-innovator = Innovator
-mr2022-onboarding-colorway-tooltip-innovator2 =
-  .title = Innovator (orange)
-mr2022-onboarding-colorway-description-innovator = <b>You are an Innovator.</b> You see opportunities everywhere and make an impact on the lives of everyone around you.
 
 ## MR2022 Multistage Mobile Download screen strings
 
-mr2022-onboarding-mobile-download-title = Hop from laptop to phone and back again
-mr2022-onboarding-mobile-download-subtitle = Grab tabs from one device and pick up where you left off on another. Plus sync your bookmarks and passwords anywhere you use { -brand-product-name }.
 mr2022-onboarding-mobile-download-cta-text = Scan the QR code to get { -brand-product-name } for mobile or <a data-l10n-name="download-label">send yourself a download link.</a>
 mr2022-onboarding-no-mobile-download-cta-text = Scan the QR code to get { -brand-product-name } for mobile.
 
@@ -344,13 +288,160 @@ mr2022-onboarding-privacy-segmentation-image-alt =
   .aria-label = Light-skinned and dark-skinned hands high five
 mr2022-onboarding-gratitude-image-alt =
   .aria-label = View of a sunset through a window with a fox and a house plant on a windowsill
-mr2022-onboarding-colorways-image-alt =
-  .aria-label = A hand spray paints a colorful collage of a green eye, orange shoe, red basketball, purple headphones, blue heart, and yellow crown
 
 ## Device migration onboarding
 
 onboarding-device-migration-image-alt =
   .aria-label = A fox on the screen of a laptop computer waving. The laptop has a mouse plugged into it.
 onboarding-device-migration-title = Welcome back!
-onboarding-device-migration-subtitle = Sign in to your { -fxaccount-brand-name(capitalization: "sentence") } to bring your bookmarks, passwords, and history with you on your new device.
+onboarding-device-migration-subtitle2 = Sign in to your account to bring your bookmarks, passwords, and history with you on your new device.
 onboarding-device-migration-primary-button-label = Sign in
+
+## Add-ons Picker screen
+
+amo-picker-title = Customize your { -brand-short-name }
+amo-picker-subtitle = Extensions are like apps for your browser, and they let you protect passwords, download videos, find deals, block annoying ads, change how your browser looks, and much more.
+amo-picker-install-button-label = Add to { -brand-short-name }
+amo-picker-install-complete-label = Installed
+amo-picker-collection-link = Explore more add-ons
+
+## The following screens have been updated to use security and privacy focused strings:
+
+# Easy setup screen
+onboarding-easy-setup-security-and-privacy-title = We love keeping you safe
+onboarding-easy-setup-security-and-privacy-subtitle = Our non-profit backed browser helps stop companies from secretly following you around the web.
+
+# Mobile download screen
+onboarding-mobile-download-security-and-privacy-title = Stay encrypted when you hop between devices
+onboarding-mobile-download-security-and-privacy-subtitle = When you’re synced up, { -brand-short-name } encrypts your passwords, bookmarks, and more. Plus you can grab tabs from your other devices.
+
+# Gratitude screen
+onboarding-gratitude-security-and-privacy-title = { -brand-short-name } has your back
+onboarding-gratitude-security-and-privacy-subtitle = Thank you for using { -brand-short-name }, backed by the Mozilla Foundation. With your support, we’re working to make the internet safer and more accessible for everyone.
+
+# Sign up or Sign in screen
+onboarding-sign-up-title = Sync your data across devices
+onboarding-sign-up-description = Sign up for an account and all of your important info — passwords, bookmarks, and more — will be securely stored and available when you sign in to any device.
+onboarding-sign-up-button = Sign up or sign in
+onboarding-sign-up-secondary-button = Start browsing
+
+## New user time and familiarity survey strings
+
+onboarding-new-user-time-based-survey-title = How long have you been using { -brand-short-name }?
+onboarding-new-user-familiarity-based-survey-title = How familiar are you with { -brand-short-name }?
+
+onboarding-new-user-survey-subtitle = Your feedback helps make { -brand-short-name } even better.
+
+# When translating "next" it means the next screen in onboarding.
+onboarding-new-user-survey-next-button-label = Next
+onboarding-new-user-survey-legal-link-label = By selecting “{ onboarding-new-user-survey-next-button-label },” you agree to { -brand-product-name }’s <a data-l10n-name="privacy_notice">Privacy Notice</a>
+
+# When translating "brand new" it means completely new.
+onboarding-new-user-survey-time-based-option-1 = I’m brand new
+onboarding-new-user-survey-time-based-option-2 = Less than 1 month
+onboarding-new-user-survey-time-based-option-3 = More than 1 month, regularly
+onboarding-new-user-survey-time-based-option-4 = More than 1 month, occasionally
+# When translating "brand new" it means completely new.
+onboarding-new-user-survey-familiarity-based-option-1 = I’m brand new
+onboarding-new-user-survey-familiarity-based-option-2 = I’ve used it some
+onboarding-new-user-survey-familiarity-based-option-3 = I’m very familiar with it
+onboarding-new-user-survey-familiarity-based-option-4 = I used it in the past, but it’s been a while
+
+## UI strings for the sidebar and vertical tabs
+
+# New users
+
+# Setup screen for vertical tabs
+onboarding-new-tabs-title = Tell us where you’d like your tabs
+
+# Setup screen for vertical tabs - "Switch it up" refers to switching between horizontal and vertical tabs.
+onboarding-new-tabs-subtitle = Switch it up whenever you want in the sidebar settings.
+
+# Setup screen for vertical tabs - too many tabs variation
+onboarding-many-tabs-title = Your tabs, your way
+
+# Setup screen for vertical tabs - subtitle for too many tabs variation
+onboarding-many-tabs-subtitle = Keep a lot of tabs open? Try your tabs on the side for a more streamlined view. Or keep it classic with tabs on the top. Switch anytime.
+
+# Setup screen for vertical tabs - focused variation
+onboarding-focused-tabs-title = Choose your tab layout
+
+# Setup screen for vertical tabs - subtitle for focused variation
+onboarding-focused-tabs-subtitle = For a streamlined view that can help you stay focused, try your tabs on the side. Or keep it classic with tabs on the top. Switch anytime.
+
+# Text underneath an image used for selecting browser tabs to appear on the side of the browser.
+onboarding-new-vertical-tabs-label = Tabs on the side
+
+# Text underneath an image used for selecting browser tabs to appear at the top of the browser.
+onboarding-new-horizontal-tabs-label = Tabs on the top
+
+# Existing users
+
+# Setup screen for vertical tabs for existing users
+onboarding-existing-tabs-title = Vertical tabs are here
+
+# Setup screen for vertical tabs for existing users
+onboarding-existing-tabs-title2 = Introducing vertical tabs
+
+# Setup screen for vertical tabs for existing users - "Switch it up" refers to switching between horizontal and vertical tabs.
+onboarding-existing-tabs-subtitle = Try your tabs on the side. Switch it up whenever you want in the sidebar settings.
+
+# Text underneath an image used for selecting browser tabs to appear on the side of the browser.
+onboarding-existing-vertical-tabs-label = Try vertical tabs
+onboarding-flair-text = New!
+
+# Text underneath an image used for selecting browser tabs to appear at the top of the browser.
+onboarding-existing-horizontal-tabs-label = Keep horizontal tabs
+
+# All users - Initial setup card
+
+# Tooltip displayed on hover for vertical tabs image
+onboarding-vertical-tabs-tooltip =
+    .title = A browser window displaying tabs along the side of the screen as a part of the { -brand-shorter-name } sidebar.
+
+# Description for vertical tabs image
+onboarding-vertical-tabs-description =
+    .aria-description = A browser window displaying tabs along the side of the screen as a part of the { -brand-shorter-name } sidebar.
+
+# Tooltip displayed on hover for horizontal tabs image
+onboarding-horizontal-tabs-tooltip =
+    .title = A browser window displaying tabs along the top.
+
+# Description for horizontal tabs image
+onboarding-horizontal-tabs-description =
+    .aria-description = A browser window displaying tabs along the top.
+
+# Existing users - additional setup card
+
+# Additional setup card for setting up aichatbot in the sidebar
+onboarding-genai-sidebar-title = Try an AI chatbot in the sidebar
+
+# Setup card for setting up AI chatbot in the sidebar; "Providers" refers to AI chatbot providers (e.g. OpenAI, etc). "Switch anytime" refers to allowing the user to switch to a different chatbot.
+onboarding-genai-sidebar-subtitle = Summarize web content, brainstorm ideas, draft messages — all as you browse. Choose from multiple providers. Switch anytime. <a data-l10n-name="learn-more">Learn more</a>
+onboarding-genai-sidebar-primary-button = Choose a chatbot
+onboarding-genai-sidebar-secondary-button = Start browsing
+
+## New user onboarding checklist
+
+onboarding-checklist-title = Finish setting up { -brand-short-name }
+onboarding-checklist-subtitle = Complete these steps to get the most out of your browsing experience.
+onboarding-checklist-set-default = Set { -brand-short-name } as default browser
+onboarding-checklist-pin = Pin { -brand-short-name } to taskbar
+onboarding-checklist-import = Import from previous browser
+onboarding-checklist-extension = Add an extension
+onboarding-checklist-sign-up = Sign up or sign in to your account
+
+## Tab Groups feature onboarding strings
+
+tab-groups-onboarding-feature-callout-title = Try tab groups for less clutter, more focus
+tab-groups-onboarding-feature-callout-subtitle = Get organized by dragging one tab on top of another to create your first group.
+
+## Multi Profiles feature onboarding messages
+
+multi-profile-spotlight-title = Say hello to { -brand-product-name } profiles
+multi-profile-spotlight-body = Easily switch between browsing for work and fun. Profiles keep your browsing info, including search history and passwords, totally separate so you can stay organized.
+multi-profile-spotlight-cta = Create a profile
+
+multi-profile-callout-title = Create different profiles for work and fun
+multi-profile-callout-subtitle = Profiles let you keep your browsing info, like search history and passwords, totally separate.
+multi-profile-callout-cta = Create a profile

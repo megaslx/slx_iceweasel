@@ -12,6 +12,9 @@ const { ExperimentFakes } = ChromeUtils.importESModule(
 const { ExperimentManager } = ChromeUtils.importESModule(
   "resource://nimbus/lib/ExperimentManager.sys.mjs"
 );
+const { ExperimentAPI } = ChromeUtils.importESModule(
+  "resource://nimbus/ExperimentAPI.sys.mjs"
+);
 const { RemoteSettingsExperimentLoader } = ChromeUtils.importESModule(
   "resource://nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs"
 );
@@ -645,40 +648,67 @@ decorate_task(
 add_task(async function test_nimbus_about_studies_experiment() {
   const recipe = ExperimentFakes.recipe("about-studies-foo");
   await ExperimentManager.enroll(recipe);
+  const activeBranchSlug = ExperimentAPI.getActiveBranch({
+    slug: recipe.slug,
+  })?.slug;
   await BrowserTestUtils.withNewTab(
-    { gBrowser, url: "about:studies" },
+    { gBrowser, url: "about:studies", activeBranchSlug },
     async browser => {
-      const name = await SpecialPowers.spawn(browser, [], async () => {
-        await ContentTaskUtils.waitForCondition(
-          () => content.document.querySelector(".nimbus .remove-button"),
-          "waiting for page/experiment to load"
-        );
-        return content.document.querySelector(".study-name").innerText;
-      });
+      const [name, renderedBranchSlug] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus .remove-button"),
+            "waiting for page to load"
+          );
+          return [
+            content.document.querySelector(".study-name").innerText,
+            content.document.querySelector(".study-branch-slug").innerText,
+          ];
+        }
+      );
       // Make sure strings are properly shown
       Assert.equal(
         name,
         recipe.userFacingName,
         "Correct active experiment name"
       );
+      Assert.equal(
+        renderedBranchSlug,
+        activeBranchSlug,
+        "Correct active experiment branch slug"
+      );
     }
   );
   ExperimentManager.unenroll(recipe.slug);
   await BrowserTestUtils.withNewTab(
-    { gBrowser, url: "about:studies" },
+    { gBrowser, url: "about:studies", activeBranchSlug },
     async browser => {
-      const name = await SpecialPowers.spawn(browser, [], async () => {
-        await ContentTaskUtils.waitForCondition(
-          () => content.document.querySelector(".nimbus.disabled"),
-          "waiting for experiment to become disabled"
-        );
-        return content.document.querySelector(".study-name").innerText;
-      });
+      const [name, renderedBranchSlug] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus.disabled"),
+            "waiting for experiment to become disabled"
+          );
+          return [
+            content.document.querySelector(".study-name").innerText,
+            content.document.querySelector(".study-branch-slug").innerText,
+          ];
+        }
+      );
       // Make sure strings are properly shown
       Assert.equal(
         name,
         recipe.userFacingName,
         "Correct disabled experiment name"
+      );
+      Assert.equal(
+        renderedBranchSlug,
+        activeBranchSlug,
+        "Correct disabled experiment branch slug"
       );
     }
   );
@@ -706,22 +736,31 @@ add_task(async function test_nimbus_about_studies_rollout() {
         return content.document.querySelectorAll(".study-name").length;
       });
       // Make sure strings are properly shown
-      Assert.equal(studyCount, 0, "Rollout not loaded in non-debug mode");
+      Assert.equal(studyCount, 1, "Rollout loaded in non-debug mode");
     }
   );
   Services.prefs.setBoolPref("nimbus.debug", true);
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:studies" },
     async browser => {
-      const studyName = await SpecialPowers.spawn(browser, [], async () => {
-        await ContentTaskUtils.waitForCondition(
-          () => content.document.querySelector(".nimbus .remove-button"),
-          "waiting for page/experiment to load"
-        );
-        return content.document.querySelector(".study-header").innerText;
-      });
+      const [studyName, branchShown] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus .remove-button"),
+            "waiting for page/experiment to load"
+          );
+          return [
+            content.document.querySelector(".study-header").innerText,
+            !!content.document.querySelector(".study-branch-slug"),
+          ];
+        }
+      );
       // Make sure strings are properly shown
       Assert.ok(studyName.includes("Active"), "Rollout loaded in debug mode");
+      // Make sure the branch slug is not shown for rollouts
+      Assert.ok(!branchShown, "Branch slug not shown for rollouts");
     }
   );
   await BrowserTestUtils.withNewTab(
@@ -745,7 +784,7 @@ add_task(async function test_nimbus_about_studies_rollout() {
 });
 
 add_task(async function test_getStudiesEnabled() {
-  RecipeRunner.initializedPromise = PromiseUtils.defer();
+  RecipeRunner.initializedPromise = Promise.withResolvers();
   let promise = AboutPages.aboutStudies.getStudiesEnabled();
 
   RecipeRunner.initializedPromise.resolve();
@@ -820,6 +859,94 @@ add_task(async function test_forceEnroll() {
       });
     }
   );
+
+  add_task(async function test_inactive_rollouts_under_completed_studies() {
+    // Adds an active experiment and rollout
+    const experiment = ExperimentFakes.recipe("my-testing-experiment");
+    const rollout = ExperimentFakes.recipe("my-testing-rollout", {
+      isRollout: true,
+    });
+
+    // Enrolls in the experiment and rollout
+    await ExperimentManager.enroll(experiment);
+    await ExperimentManager.enroll(rollout);
+
+    // Checks about:studies to ensure they are both in the active section
+    await BrowserTestUtils.withNewTab(
+      { gBrowser, url: "about:studies" },
+      async browser => {
+        const activeListItems = await SpecialPowers.spawn(
+          browser,
+          [],
+          async () => {
+            await ContentTaskUtils.waitForCondition(
+              () => content.document.querySelector(".nimbus .remove-button"),
+              "waiting for page to load"
+            );
+            return Array.from(
+              content.document.querySelectorAll("ul.active-study-list li")
+            ).map(el => el.dataset.studySlug);
+          }
+        );
+
+        Assert.ok(
+          activeListItems.includes(experiment.slug),
+          "active list should include enrolled experiment"
+        );
+        Assert.ok(
+          activeListItems.includes(rollout.slug),
+          "active list should include enrolled rollout"
+        );
+        Assert.equal(
+          activeListItems.length,
+          2,
+          "should be 2 elements in active list"
+        );
+      }
+    );
+
+    // Unenrolls from the experiment and rollout
+    ExperimentManager.unenroll(experiment.slug);
+    ExperimentManager.unenroll(rollout.slug);
+
+    // Checks about:studies to ensure they are both in the inactive section
+    await BrowserTestUtils.withNewTab(
+      { gBrowser, url: "about:studies" },
+      async browser => {
+        const inactiveListItems = await SpecialPowers.spawn(
+          browser,
+          [],
+          async () => {
+            await ContentTaskUtils.waitForCondition(
+              () => content.document.querySelector(".nimbus.disabled"),
+              "waiting for the experiment to become disabled"
+            );
+            return Array.from(
+              content.document.querySelectorAll("ul.inactive-study-list li")
+            ).map(el => el.dataset.studySlug);
+          }
+        );
+
+        Assert.ok(
+          inactiveListItems.includes(experiment.slug),
+          "inactive list should include unenrolled experiment"
+        );
+        Assert.ok(
+          inactiveListItems.includes(rollout.slug),
+          "inactive list should include unenrolled rollout"
+        );
+        Assert.equal(
+          inactiveListItems.length,
+          2,
+          "should be 2 items in inactive list"
+        );
+      }
+    );
+
+    // Cleanup for multiple test runs
+    ExperimentManager.store._deleteForTests(experiment.slug);
+    ExperimentManager.store._deleteForTests(rollout.slug);
+  });
 
   sandbox.restore();
 });

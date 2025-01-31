@@ -18,6 +18,7 @@
 #include "mozilla/TextEditor.h"
 #include "mozilla/gfx/2D.h"
 #include "nsGkAtoms.h"
+#include "nsLineBreaker.h"
 #include "nsSpecialCasingData.h"
 #include "nsStyleConsts.h"
 #include "nsTextFrameUtils.h"
@@ -78,6 +79,26 @@ bool nsTransformedTextRun::SetPotentialLineBreaks(Range aRange,
     mNeedsRebuild = true;
   }
   return changed;
+}
+
+void nsTransformedTextRun::SetEmergencyWrapPositions() {
+  // This parallels part of what gfxShapedText::SetupClusterBoundaries() does
+  // for normal textruns.
+  bool prevWasHyphen = false;
+  for (uint32_t pos : IntegerRange(mString.Length())) {
+    const char16_t ch = mString[pos];
+    if (prevWasHyphen) {
+      if (nsContentUtils::IsAlphanumeric(ch)) {
+        mCharacterGlyphs[pos].SetCanBreakBefore(
+            CompressedGlyph::FLAG_BREAK_TYPE_EMERGENCY_WRAP);
+      }
+      prevWasHyphen = false;
+    }
+    if (nsContentUtils::IsHyphen(ch) && pos &&
+        nsContentUtils::IsAlphanumeric(mString[pos - 1])) {
+      prevWasHyphen = true;
+    }
+  }
 }
 
 size_t nsTransformedTextRun::SizeOfExcludingThis(
@@ -299,8 +320,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
   uint32_t sigmaIndex = uint32_t(-1);
   nsUGenCategory cat;
 
-  StyleTextTransform style =
-      aGlobalTransform.valueOr(StyleTextTransform::None());
+  StyleTextTransform style = aGlobalTransform.valueOr(StyleTextTransform::NONE);
   bool forceNonFullWidth = false;
   const nsAtom* lang = aLanguage;
 
@@ -315,6 +335,10 @@ bool nsCaseTransformTextRunFactory::TransformString(
   uint32_t greekMark = uint32_t(-1);  // location of uppercase ETA that may need
                                       // tonos added (if it is disjunctive eta)
   const char16_t kGreekUpperEta = 0x0397;
+
+  // If we're doing capitalization and don't have a textrun, this is the state
+  // to be passed to each call to nsLineBreaker::ShouldCapitalize.
+  bool capitalizeNext = true;
 
   for (uint32_t i = 0; i < length; ++i, ++aOffsetInTextRun) {
     uint32_t ch = str[i];
@@ -346,7 +370,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
 
     bool maskPassword = (charStyle && charStyle->mMaskPassword) || aMaskChar;
     int extraChars = 0;
-    const mozilla::unicode::MultiCharMapping* mcm;
+    const unicode::MultiCharMapping* mcm;
     bool inhibitBreakBefore = false;  // have we just deleted preceding hyphen?
 
     if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
@@ -356,11 +380,10 @@ bool nsCaseTransformTextRunFactory::TransformString(
 
     // Skip case transform if we're masking current character.
     if (!maskPassword) {
-      switch (style.case_) {
-        case StyleTextTransformCase::None:
+      switch ((style & StyleTextTransform::CASE_TRANSFORMS)._0) {
+        case StyleTextTransform::NONE._0:
           break;
-
-        case StyleTextTransformCase::Lowercase:
+        case StyleTextTransform::LOWERCASE._0:
           if (languageSpecificCasing == eLSCB_Turkish) {
             if (ch == 'I') {
               ch = LATIN_SMALL_LETTER_DOTLESS_I;
@@ -430,7 +453,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
             }
           }
 
-          cat = mozilla::unicode::GetGenCategory(ch);
+          cat = unicode::GetGenCategory(ch);
 
           if (languageSpecificCasing == eLSCB_Irish &&
               cat == nsUGenCategory::kLetter) {
@@ -510,7 +533,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
             sigmaIndex = uint32_t(-1);
           }
 
-          mcm = mozilla::unicode::SpecialLower(ch);
+          mcm = unicode::SpecialLower(ch);
           if (mcm) {
             int j = 0;
             while (j < 2 && mcm->mMappedChars[j + 1]) {
@@ -525,7 +548,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           ch = ToLowerCase(ch);
           break;
 
-        case StyleTextTransformCase::Uppercase:
+        case StyleTextTransform::UPPERCASE._0:
           if (languageSpecificCasing == eLSCB_Turkish && ch == 'i') {
             ch = LATIN_CAPITAL_LETTER_I_WITH_DOT_ABOVE;
             break;
@@ -583,8 +606,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
               switch (action) {
                 case 1:
                   // lowercase a single prefix letter
-                  NS_ASSERTION(str.Length() > 0 && irishMark < str.Length(),
-                               "bad irishMark!");
+                  MOZ_ASSERT(str.Length() > 0 && irishMark < str.Length(),
+                             "bad irishMark!");
                   str.SetCharAt(ToLowerCase(str[irishMark]), irishMark);
                   irishMark = uint32_t(-1);
                   irishMarkSrc = uint32_t(-1);
@@ -592,9 +615,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
                 case 2:
                   // lowercase two prefix letters (immediately before current
                   // pos)
-                  NS_ASSERTION(
-                      str.Length() >= 2 && irishMark == str.Length() - 2,
-                      "bad irishMark!");
+                  MOZ_ASSERT(str.Length() >= 2 && irishMark == str.Length() - 2,
+                             "bad irishMark!");
                   str.SetCharAt(ToLowerCase(str[irishMark]), irishMark);
                   str.SetCharAt(ToLowerCase(str[irishMark + 1]), irishMark + 1);
                   irishMark = uint32_t(-1);
@@ -603,9 +625,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
                 case 3:
                   // lowercase one prefix letter, and delete following hyphen
                   // (which must be the immediately-preceding char)
-                  NS_ASSERTION(
-                      str.Length() >= 2 && irishMark == str.Length() - 2,
-                      "bad irishMark!");
+                  MOZ_ASSERT(str.Length() >= 2 && irishMark == str.Length() - 2,
+                             "bad irishMark!");
                   MOZ_ASSERT(
                       irishMark != uint32_t(-1) && irishMarkSrc != uint32_t(-1),
                       "failed to set irishMarks");
@@ -613,11 +634,14 @@ bool nsCaseTransformTextRunFactory::TransformString(
                   aDeletedCharsArray[irishMarkSrc + 1] = true;
                   // Remove the trailing entries (corresponding to the deleted
                   // hyphen) from the auxiliary arrays.
-                  aCharsToMergeArray.SetLength(aCharsToMergeArray.Length() - 1);
+                  uint32_t len = aCharsToMergeArray.Length();
+                  MOZ_ASSERT(len >= 2);
+                  aCharsToMergeArray.TruncateLength(len - 1);
                   if (auxiliaryOutputArrays) {
-                    aStyleArray->SetLength(aStyleArray->Length() - 1);
-                    aCanBreakBeforeArray->SetLength(
-                        aCanBreakBeforeArray->Length() - 1);
+                    MOZ_ASSERT(aStyleArray->Length() == len);
+                    MOZ_ASSERT(aCanBreakBeforeArray->Length() == len);
+                    aStyleArray->TruncateLength(len - 1);
+                    aCanBreakBeforeArray->TruncateLength(len - 1);
                     inhibitBreakBefore = true;
                   }
                   mergeNeeded = true;
@@ -645,7 +669,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
             break;
           }
 
-          mcm = mozilla::unicode::SpecialUpper(ch);
+          mcm = unicode::SpecialUpper(ch);
           if (mcm) {
             int j = 0;
             while (j < 2 && mcm->mMappedChars[j + 1]) {
@@ -657,73 +681,75 @@ bool nsCaseTransformTextRunFactory::TransformString(
             break;
           }
 
-          // Bug 1476304: we exclude Georgian letters U+10D0..10FF because of
-          // lack of widespread font support for the corresponding Mtavruli
-          // characters at this time (July 2018).
-          // This condition is to be removed once the major platforms ship with
-          // fonts that support U+1C90..1CBF.
-          if (ch < 0x10D0 || ch > 0x10FF) {
-            ch = ToUpperCase(ch);
-          }
+          ch = ToUpperCase(ch);
           break;
 
-        case StyleTextTransformCase::Capitalize:
+        case StyleTextTransform::CAPITALIZE._0: {
+          if (capitalizeDutchIJ && ch == 'j') {
+            ch = 'J';
+            capitalizeDutchIJ = false;
+            break;
+          }
+          capitalizeDutchIJ = false;
+          // If we have a textrun, its mCapitalize array tells us which chars
+          // are to be capitalized. If not, we track the state locally, and
+          // assume there's no context to be considered.
+          bool doCapitalize = false;
           if (aTextRun) {
-            if (capitalizeDutchIJ && ch == 'j') {
-              ch = 'J';
-              capitalizeDutchIJ = false;
+            if (aOffsetInTextRun < aTextRun->mCapitalize.Length()) {
+              doCapitalize = aTextRun->mCapitalize[aOffsetInTextRun];
+            }
+          } else {
+            doCapitalize = nsLineBreaker::ShouldCapitalize(ch, capitalizeNext);
+          }
+          if (doCapitalize) {
+            if (languageSpecificCasing == eLSCB_Turkish && ch == 'i') {
+              ch = LATIN_CAPITAL_LETTER_I_WITH_DOT_ABOVE;
               break;
             }
-            capitalizeDutchIJ = false;
-            if (aOffsetInTextRun < aTextRun->mCapitalize.Length() &&
-                aTextRun->mCapitalize[aOffsetInTextRun]) {
-              if (languageSpecificCasing == eLSCB_Turkish && ch == 'i') {
-                ch = LATIN_CAPITAL_LETTER_I_WITH_DOT_ABOVE;
+            if (languageSpecificCasing == eLSCB_Dutch && ch == 'i') {
+              ch = 'I';
+              capitalizeDutchIJ = true;
+              break;
+            }
+            if (languageSpecificCasing == eLSCB_Lithuanian) {
+              /*
+               * # Remove DOT ABOVE after "i" with upper or titlecase
+               *
+               * 0307; 0307; ; ; lt After_Soft_Dotted; # COMBINING DOT ABOVE
+               */
+              if (ch == 'i' || ch == 'j' || ch == 0x012F) {
+                seenSoftDotted = true;
+                ch = ToTitleCase(ch);
                 break;
               }
-              if (languageSpecificCasing == eLSCB_Dutch && ch == 'i') {
-                ch = 'I';
-                capitalizeDutchIJ = true;
-                break;
-              }
-              if (languageSpecificCasing == eLSCB_Lithuanian) {
-                /*
-                 * # Remove DOT ABOVE after "i" with upper or titlecase
-                 *
-                 * 0307; 0307; ; ; lt After_Soft_Dotted; # COMBINING DOT ABOVE
-                 */
-                if (ch == 'i' || ch == 'j' || ch == 0x012F) {
-                  seenSoftDotted = true;
-                  ch = ToTitleCase(ch);
+              if (seenSoftDotted) {
+                seenSoftDotted = false;
+                if (ch == 0x0307) {
+                  ch = uint32_t(-1);
                   break;
                 }
-                if (seenSoftDotted) {
-                  seenSoftDotted = false;
-                  if (ch == 0x0307) {
-                    ch = uint32_t(-1);
-                    break;
-                  }
-                }
               }
-
-              mcm = mozilla::unicode::SpecialTitle(ch);
-              if (mcm) {
-                int j = 0;
-                while (j < 2 && mcm->mMappedChars[j + 1]) {
-                  aConvertedString.Append(mcm->mMappedChars[j]);
-                  ++extraChars;
-                  ++j;
-                }
-                ch = mcm->mMappedChars[j];
-                break;
-              }
-
-              ch = ToTitleCase(ch);
             }
+
+            mcm = unicode::SpecialTitle(ch);
+            if (mcm) {
+              int j = 0;
+              while (j < 2 && mcm->mMappedChars[j + 1]) {
+                aConvertedString.Append(mcm->mMappedChars[j]);
+                ++extraChars;
+                ++j;
+              }
+              ch = mcm->mMappedChars[j];
+              break;
+            }
+
+            ch = ToTitleCase(ch);
           }
           break;
+        }
 
-        case StyleTextTransformCase::MathAuto:
+        case StyleTextTransform::MATH_AUTO._0:
           // text-transform: math-auto is used for automatic italicization of
           // single-char <mi> elements. However, some legacy cases (italic style
           // fallback and <mi> with leading/trailing whitespace) are still
@@ -737,31 +763,30 @@ bool nsCaseTransformTextRunFactory::TransformString(
               // Bug 930504. Some platforms do not have fonts for Mathematical
               // Alphanumeric Symbols. Hence we only perform the transform if a
               // character is actually available.
+              auto* fontGroup = aTextRun->GetFontGroup();
+              fontGroup->EnsureFontList();
               FontMatchType matchType;
-              RefPtr<gfxFont> mathFont =
-                  aTextRun->GetFontGroup()->FindFontForChar(
-                      ch2, 0, 0, intl::Script::COMMON, nullptr, &matchType);
+              RefPtr<gfxFont> mathFont = fontGroup->FindFontForChar(
+                  ch2, 0, 0, intl::Script::COMMON, nullptr, &matchType);
               if (mathFont) {
                 ch = ch2;
               }
             }
           }
           break;
-
         default:
           MOZ_ASSERT_UNREACHABLE("all cases should be handled");
           break;
       }
 
       if (!aCaseTransformsOnly) {
-        if (!forceNonFullWidth &&
-            (style.other_ & StyleTextTransformOther::FULL_WIDTH)) {
-          ch = mozilla::unicode::GetFullWidth(ch);
+        if (!forceNonFullWidth && (style & StyleTextTransform::FULL_WIDTH)) {
+          ch = unicode::GetFullWidth(ch);
         }
 
-        if (style.other_ & StyleTextTransformOther::FULL_SIZE_KANA) {
+        if (style & StyleTextTransform::FULL_SIZE_KANA) {
           // clang-format off
-          static const uint16_t kSmallKanas[] = {
+          static const uint32_t kSmallKanas[] = {
               // ぁ   ぃ      ぅ      ぇ      ぉ      っ      ゃ      ゅ      ょ
               0x3041, 0x3043, 0x3045, 0x3047, 0x3049, 0x3063, 0x3083, 0x3085, 0x3087,
               // ゎ   ゕ      ゖ
@@ -775,7 +800,11 @@ bool nsCaseTransformTextRunFactory::TransformString(
               // ㇿ
               0x31FF,
               // ｧ    ｨ       ｩ       ｪ       ｫ       ｬ       ｭ       ｮ       ｯ
-              0xFF67, 0xFF68, 0xFF69, 0xFF6A, 0xFF6B, 0xFF6C, 0xFF6D, 0xFF6E, 0xFF6F};
+              0xFF67, 0xFF68, 0xFF69, 0xFF6A, 0xFF6B, 0xFF6C, 0xFF6D, 0xFF6E, 0xFF6F,
+              // 𛄲    𛅐       𛅑       𛅒       𛅕       𛅤       𛅥       𛅦
+              0x1B132, 0x1B150, 0x1B151, 0x1B152, 0x1B155, 0x1B164, 0x1B165, 0x1B166,
+              // 𛅧
+              0x1B167};
           static const uint16_t kFullSizeKanas[] = {
               // あ   い      う      え      お      つ      や      ゆ      よ
               0x3042, 0x3044, 0x3046, 0x3048, 0x304A, 0x3064, 0x3084, 0x3086, 0x3088,
@@ -790,11 +819,13 @@ bool nsCaseTransformTextRunFactory::TransformString(
               // ロ
               0x30ED,
               // ｱ    ｲ       ｳ       ｴ       ｵ       ﾔ       ﾕ       ﾖ        ﾂ
-              0xFF71, 0xFF72, 0xFF73, 0xFF74, 0xFF75, 0xFF94, 0xFF95, 0xFF96, 0xFF82};
+              0xFF71, 0xFF72, 0xFF73, 0xFF74, 0xFF75, 0xFF94, 0xFF95, 0xFF96, 0xFF82,
+              // こ   ゐ       ゑ      を      コ       ヰ      ヱ      ヲ       ン
+              0x3053, 0x3090, 0x3091, 0x3092, 0x30B3, 0x30F0, 0x30F1, 0x30F2, 0x30F3};
           // clang-format on
 
           size_t index;
-          const uint16_t len = MOZ_ARRAY_LENGTH(kSmallKanas);
+          const uint16_t len = std::size(kSmallKanas);
           if (mozilla::BinarySearch(kSmallKanas, 0, len, ch, &index)) {
             ch = kFullSizeKanas[index];
           }
@@ -802,7 +833,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
       }
 
       if (forceNonFullWidth) {
-        ch = mozilla::unicode::GetFullWidthInverse(ch);
+        ch = unicode::GetFullWidthInverse(ch);
       }
     }
 
@@ -821,7 +852,6 @@ bool nsCaseTransformTextRunFactory::TransformString(
       }
 
       if (IS_IN_BMP(ch)) {
-        MOZ_ASSERT(IS_IN_BMP(originalCh));
         aConvertedString.Append(maskPassword ? mask : ch);
       } else {
         if (maskPassword) {
@@ -833,12 +863,12 @@ bool nsCaseTransformTextRunFactory::TransformString(
           aConvertedString.Append(L_SURROGATE(ch));
         }
         ++extraChars;
-        if (!IS_IN_BMP(originalCh)) {
-          // Skip the trailing surrogate.
-          ++aOffsetInTextRun;
-          ++i;
-          aDeletedCharsArray.AppendElement(true);
-        }
+      }
+      if (!IS_IN_BMP(originalCh)) {
+        // Skip the trailing surrogate.
+        ++aOffsetInTextRun;
+        ++i;
+        aDeletedCharsArray.AppendElement(true);
       }
 
       while (extraChars-- > 0) {
@@ -851,6 +881,13 @@ bool nsCaseTransformTextRunFactory::TransformString(
         }
       }
     }
+  }
+
+  // These output arrays, if present, must always have matching lengths:
+  if (auxiliaryOutputArrays) {
+    DebugOnly<uint32_t> len = aCharsToMergeArray.Length();
+    MOZ_ASSERT(aStyleArray->Length() == len);
+    MOZ_ASSERT(aCanBreakBeforeArray->Length() == len);
   }
 
   return mergeNeeded;
@@ -866,9 +903,7 @@ void nsCaseTransformTextRunFactory::RebuildTextRun(
   AutoTArray<RefPtr<nsTransformedCharStyle>, 50> styleArray;
 
   auto globalTransform =
-      mAllUppercase
-          ? Some(StyleTextTransform{StyleTextTransformCase::Uppercase, {}})
-          : Nothing();
+      mAllUppercase ? Some(StyleTextTransform::UPPERCASE) : Nothing();
   bool mergeNeeded = TransformString(
       aTextRun->mString, convertedString, globalTransform, mMaskChar,
       /* aCaseTransformsOnly = */ false, nullptr, charsToMergeArray,

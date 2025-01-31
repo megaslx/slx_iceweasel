@@ -15,7 +15,6 @@
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "vm/GlobalObject.h"
 #include "vm/Interpreter.h"
-#include "vm/WellKnownAtom.h"  // js_*_str
 
 #include "gc/GCContext-inl.h"
 #include "vm/JSObject-inl.h"
@@ -27,7 +26,9 @@ using namespace js;
 // FinalizationRecordObject
 
 const JSClass FinalizationRecordObject::class_ = {
-    "FinalizationRecord", JSCLASS_HAS_RESERVED_SLOTS(SlotCount)};
+    "FinalizationRecord",
+    JSCLASS_HAS_RESERVED_SLOTS(SlotCount),
+};
 
 /* static */
 FinalizationRecordObject* FinalizationRecordObject::create(
@@ -87,7 +88,9 @@ void FinalizationRecordObject::clear() {
 const JSClass FinalizationRegistrationsObject::class_ = {
     "FinalizationRegistrations",
     JSCLASS_HAS_RESERVED_SLOTS(SlotCount) | JSCLASS_BACKGROUND_FINALIZE,
-    &classOps_, JS_NULL_CLASS_SPEC};
+    &classOps_,
+    JS_NULL_CLASS_SPEC,
+};
 
 const JSClassOps FinalizationRegistrationsObject::classOps_ = {
     nullptr,                                    // addProperty
@@ -194,12 +197,16 @@ const JSClass FinalizationRegistryObject::class_ = {
     "FinalizationRegistry",
     JSCLASS_HAS_CACHED_PROTO(JSProto_FinalizationRegistry) |
         JSCLASS_HAS_RESERVED_SLOTS(SlotCount) | JSCLASS_FOREGROUND_FINALIZE,
-    &classOps_, &classSpec_};
+    &classOps_,
+    &classSpec_,
+};
 
 const JSClass FinalizationRegistryObject::protoClass_ = {
     "FinalizationRegistry.prototype",
-    JSCLASS_HAS_CACHED_PROTO(JSProto_FinalizationRegistry), JS_NULL_CLASS_OPS,
-    &classSpec_};
+    JSCLASS_HAS_CACHED_PROTO(JSProto_FinalizationRegistry),
+    JS_NULL_CLASS_OPS,
+    &classSpec_,
+};
 
 const JSClassOps FinalizationRegistryObject::classOps_ = {
     nullptr,                               // addProperty
@@ -220,16 +227,20 @@ const ClassSpec FinalizationRegistryObject::classSpec_ = {
     nullptr,
     nullptr,
     methods_,
-    properties_};
+    properties_,
+};
 
 const JSFunctionSpec FinalizationRegistryObject::methods_[] = {
-    JS_FN(js_register_str, register_, 2, 0),
-    JS_FN(js_unregister_str, unregister, 1, 0),
-    JS_FN(js_cleanupSome_str, cleanupSome, 0, 0), JS_FS_END};
+    JS_FN("register", register_, 2, 0),
+    JS_FN("unregister", unregister, 1, 0),
+    JS_FN("cleanupSome", cleanupSome, 0, 0),
+    JS_FS_END,
+};
 
 const JSPropertySpec FinalizationRegistryObject::properties_[] = {
     JS_STRING_SYM_PS(toStringTag, "FinalizationRegistry", JSPROP_READONLY),
-    JS_PS_END};
+    JS_PS_END,
+};
 
 /* static */
 bool FinalizationRegistryObject::construct(JSContext* cx, unsigned argc,
@@ -638,7 +649,8 @@ bool FinalizationRegistryObject::cleanupSome(JSContext* cx, unsigned argc,
 const JSClass FinalizationQueueObject::class_ = {
     "FinalizationQueue",
     JSCLASS_HAS_RESERVED_SLOTS(SlotCount) | JSCLASS_FOREGROUND_FINALIZE,
-    &classOps_};
+    &classOps_,
+};
 
 const JSClassOps FinalizationQueueObject::classOps_ = {
     nullptr,                            // addProperty
@@ -664,7 +676,7 @@ FinalizationQueueObject* FinalizationQueueObject::create(
     return nullptr;
   }
 
-  Handle<PropertyName*> funName = cx->names().empty;
+  Handle<PropertyName*> funName = cx->names().empty_;
   RootedFunction doCleanupFunction(
       cx, NewNativeFunction(cx, doCleanup, 0, funName,
                             gc::AllocKind::FUNCTION_EXTENDED));
@@ -676,8 +688,8 @@ FinalizationQueueObject* FinalizationQueueObject::create(
   // you don't know how far to unwrap it to get the original object
   // back. Instead store a CCW to a plain object in the same compartment as the
   // global (this uses Object.prototype).
-  RootedObject incumbentObject(cx);
-  if (!GetObjectFromIncumbentGlobal(cx, &incumbentObject) || !incumbentObject) {
+  Rooted<JSObject*> hostDefinedData(cx);
+  if (!GetObjectFromHostDefinedData(cx, &hostDefinedData)) {
     return nullptr;
   }
 
@@ -688,7 +700,8 @@ FinalizationQueueObject* FinalizationQueueObject::create(
   }
 
   queue->initReservedSlot(CleanupCallbackSlot, ObjectValue(*cleanupCallback));
-  queue->initReservedSlot(IncumbentObjectSlot, ObjectValue(*incumbentObject));
+  queue->initReservedSlot(HostDefinedDataSlot,
+                          JS::ObjectOrNullValue(hostDefinedData));
   InitReservedSlot(queue, RecordsToBeCleanedUpSlot,
                    recordsToBeCleanedUp.release(),
                    MemoryUse::FinalizationRegistryRecordVector);
@@ -742,12 +755,12 @@ inline JSObject* FinalizationQueueObject::cleanupCallback() const {
   return &value.toObject();
 }
 
-JSObject* FinalizationQueueObject::incumbentObject() const {
-  Value value = getReservedSlot(IncumbentObjectSlot);
+JSObject* FinalizationQueueObject::getHostDefinedData() const {
+  Value value = getReservedSlot(HostDefinedDataSlot);
   if (value.isUndefined()) {
     return nullptr;
   }
-  return &value.toObject();
+  return value.toObjectOrNull();
 }
 
 FinalizationRecordVector* FinalizationQueueObject::recordsToBeCleanedUp()

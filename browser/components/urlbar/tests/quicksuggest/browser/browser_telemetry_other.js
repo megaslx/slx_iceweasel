@@ -30,13 +30,12 @@ add_setup(async function () {
   await UrlbarTestUtils.formHistory.clear();
 
   Services.telemetry.clearScalars();
-  Services.telemetry.clearEvents();
 
   // Add a mock engine so we don't hit the network.
   await SearchTestUtils.installSearchExtension({}, { setAsDefault: true });
 
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
-    remoteSettingsResults: [
+    remoteSettingsRecords: [
       {
         type: "data",
         attachment: REMOTE_SETTINGS_RESULTS,
@@ -47,24 +46,13 @@ add_setup(async function () {
 
 // Tests telemetry recorded when toggling the
 // `suggest.quicksuggest.nonsponsored` pref:
-// * contextservices.quicksuggest enable_toggled event telemetry
 // * TelemetryEnvironment
 add_task(async function enableToggled() {
-  Services.telemetry.clearEvents();
-
-  // Toggle the suggest.quicksuggest.nonsponsored pref twice. We should get two
-  // events.
+  // Toggle the suggest.quicksuggest.nonsponsored pref twice.
   let enabled = UrlbarPrefs.get("suggest.quicksuggest.nonsponsored");
   for (let i = 0; i < 2; i++) {
     enabled = !enabled;
     UrlbarPrefs.set("suggest.quicksuggest.nonsponsored", enabled);
-    QuickSuggestTestUtils.assertEvents([
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "enable_toggled",
-        object: enabled ? "enabled" : "disabled",
-      },
-    ]);
     Assert.equal(
       TelemetryEnvironment.currentEnvironment.settings.userPrefs[
         "browser.urlbar.suggest.quicksuggest.nonsponsored"
@@ -75,13 +63,12 @@ add_task(async function enableToggled() {
   }
 
   // Set the main quicksuggest.enabled pref to false and toggle the
-  // suggest.quicksuggest.nonsponsored pref again.  We shouldn't get any events.
+  // suggest.quicksuggest.nonsponsored pref again.
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.quicksuggest.enabled", false]],
   });
   enabled = !enabled;
   UrlbarPrefs.set("suggest.quicksuggest.nonsponsored", enabled);
-  QuickSuggestTestUtils.assertEvents([]);
   await SpecialPowers.popPrefEnv();
 
   // Set the pref back to what it was at the start of the task.
@@ -93,21 +80,11 @@ add_task(async function enableToggled() {
 // * contextservices.quicksuggest enable_toggled event telemetry
 // * TelemetryEnvironment
 add_task(async function sponsoredToggled() {
-  Services.telemetry.clearEvents();
-
-  // Toggle the suggest.quicksuggest.sponsored pref twice. We should get two
-  // events.
+  // Toggle the suggest.quicksuggest.sponsored pref twice.
   let enabled = UrlbarPrefs.get("suggest.quicksuggest.sponsored");
   for (let i = 0; i < 2; i++) {
     enabled = !enabled;
     UrlbarPrefs.set("suggest.quicksuggest.sponsored", enabled);
-    QuickSuggestTestUtils.assertEvents([
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "sponsored_toggled",
-        object: enabled ? "enabled" : "disabled",
-      },
-    ]);
     Assert.equal(
       TelemetryEnvironment.currentEnvironment.settings.userPrefs[
         "browser.urlbar.suggest.quicksuggest.sponsored"
@@ -118,13 +95,12 @@ add_task(async function sponsoredToggled() {
   }
 
   // Set the main quicksuggest.enabled pref to false and toggle the
-  // suggest.quicksuggest.sponsored pref again. We shouldn't get any events.
+  // suggest.quicksuggest.sponsored pref again.
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.quicksuggest.enabled", false]],
   });
   enabled = !enabled;
   UrlbarPrefs.set("suggest.quicksuggest.sponsored", enabled);
-  QuickSuggestTestUtils.assertEvents([]);
   await SpecialPowers.popPrefEnv();
 
   // Set the pref back to what it was at the start of the task.
@@ -133,24 +109,13 @@ add_task(async function sponsoredToggled() {
 
 // Tests telemetry recorded when toggling the
 // `quicksuggest.dataCollection.enabled` pref:
-// * contextservices.quicksuggest data_collect_toggled event telemetry
 // * TelemetryEnvironment
 add_task(async function dataCollectionToggled() {
-  Services.telemetry.clearEvents();
-
-  // Toggle the quicksuggest.dataCollection.enabled pref twice. We should get
-  // two events.
+  // Toggle the quicksuggest.dataCollection.enabled pref twice.
   let enabled = UrlbarPrefs.get("quicksuggest.dataCollection.enabled");
   for (let i = 0; i < 2; i++) {
     enabled = !enabled;
     UrlbarPrefs.set("quicksuggest.dataCollection.enabled", enabled);
-    QuickSuggestTestUtils.assertEvents([
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: enabled ? "enabled" : "disabled",
-      },
-    ]);
     Assert.equal(
       TelemetryEnvironment.currentEnvironment.settings.userPrefs[
         "browser.urlbar.quicksuggest.dataCollection.enabled"
@@ -161,128 +126,16 @@ add_task(async function dataCollectionToggled() {
   }
 
   // Set the main quicksuggest.enabled pref to false and toggle the data
-  // collection pref again. We shouldn't get any events.
+  // collection pref again.
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.quicksuggest.enabled", false]],
   });
   enabled = !enabled;
   UrlbarPrefs.set("quicksuggest.dataCollection.enabled", enabled);
-  QuickSuggestTestUtils.assertEvents([]);
   await SpecialPowers.popPrefEnv();
 
   // Set the pref back to what it was at the start of the task.
   UrlbarPrefs.set("quicksuggest.dataCollection.enabled", !enabled);
-});
-
-// Tests telemetry recorded when clicking the checkbox for best match in
-// preferences UI. The telemetry will be stored as following keyed scalar.
-// scalar: browser.ui.interaction.preferences_panePrivacy
-// key:    firefoxSuggestBestMatch
-add_task(async function bestmatchCheckbox() {
-  // Set the initial enabled status.
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.bestMatch.enabled", true]],
-  });
-
-  // Open preferences page for best match.
-  await BrowserTestUtils.openNewForegroundTab(
-    gBrowser,
-    "about:preferences#privacy",
-    true
-  );
-
-  for (let i = 0; i < 2; i++) {
-    Services.telemetry.clearScalars();
-
-    // Click on the checkbox.
-    const doc = gBrowser.selectedBrowser.contentDocument;
-    const checkboxId = "firefoxSuggestBestMatch";
-    const checkbox = doc.getElementById(checkboxId);
-    checkbox.scrollIntoView();
-    await BrowserTestUtils.synthesizeMouseAtCenter(
-      "#" + checkboxId,
-      {},
-      gBrowser.selectedBrowser
-    );
-
-    TelemetryTestUtils.assertKeyedScalar(
-      TelemetryTestUtils.getProcessScalars("parent", true, true),
-      "browser.ui.interaction.preferences_panePrivacy",
-      checkboxId,
-      1
-    );
-  }
-
-  // Clean up.
-  gBrowser.removeCurrentTab();
-  await SpecialPowers.popPrefEnv();
-});
-
-// Tests telemetry recorded when opening the learn more link for best match in
-// the preferences UI. The telemetry will be stored as following keyed scalar.
-// scalar: browser.ui.interaction.preferences_panePrivacy
-// key:    firefoxSuggestBestMatchLearnMore
-add_task(async function bestmatchLearnMore() {
-  // Set the initial enabled status.
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.bestMatch.enabled", true]],
-  });
-
-  // Open preferences page for best match.
-  await BrowserTestUtils.openNewForegroundTab(
-    gBrowser,
-    "about:preferences#privacy",
-    true
-  );
-
-  // Click on the learn more link.
-  Services.telemetry.clearScalars();
-  const learnMoreLinkId = "firefoxSuggestBestMatchLearnMore";
-  const doc = gBrowser.selectedBrowser.contentDocument;
-  const link = doc.getElementById(learnMoreLinkId);
-  link.scrollIntoView();
-  const onLearnMoreOpenedByClick = BrowserTestUtils.waitForNewTab(
-    gBrowser,
-    QuickSuggest.HELP_URL
-  );
-  await BrowserTestUtils.synthesizeMouseAtCenter(
-    "#" + learnMoreLinkId,
-    {},
-    gBrowser.selectedBrowser
-  );
-  TelemetryTestUtils.assertKeyedScalar(
-    TelemetryTestUtils.getProcessScalars("parent", true, true),
-    "browser.ui.interaction.preferences_panePrivacy",
-    "firefoxSuggestBestMatchLearnMore",
-    1
-  );
-  await onLearnMoreOpenedByClick;
-  gBrowser.removeCurrentTab();
-
-  // Type enter key on the learm more link.
-  Services.telemetry.clearScalars();
-  link.focus();
-  const onLearnMoreOpenedByKey = BrowserTestUtils.waitForNewTab(
-    gBrowser,
-    QuickSuggest.HELP_URL
-  );
-  await BrowserTestUtils.synthesizeKey(
-    "KEY_Enter",
-    {},
-    gBrowser.selectedBrowser
-  );
-  TelemetryTestUtils.assertKeyedScalar(
-    TelemetryTestUtils.getProcessScalars("parent", true, true),
-    "browser.ui.interaction.preferences_panePrivacy",
-    "firefoxSuggestBestMatchLearnMore",
-    1
-  );
-  await onLearnMoreOpenedByKey;
-  gBrowser.removeCurrentTab();
-
-  // Clean up.
-  gBrowser.removeCurrentTab();
-  await SpecialPowers.popPrefEnv();
 });
 
 // Simulates the race on startup between telemetry environment initialization

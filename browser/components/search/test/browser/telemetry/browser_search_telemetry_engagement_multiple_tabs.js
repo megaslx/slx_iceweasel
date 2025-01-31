@@ -13,7 +13,7 @@ const TEST_PROVIDER_INFO = [
     telemetryId: "example",
     searchPageRegexp:
       /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd_/,
-    queryParamName: "s",
+    queryParamNames: ["s"],
     codeParamName: "abc",
     taggedCodes: ["ff"],
     adServerAttributes: ["mozAttr"],
@@ -63,11 +63,7 @@ add_setup(async function () {
   SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
   await waitForIdle();
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.search.log", true],
-      ["browser.search.serpEventTelemetry.enabled", true],
-      ["dom.ipc.processCount.webIsolated", MAX_IPC],
-    ],
+    set: [["dom.ipc.processCount.webIsolated", MAX_IPC]],
   });
 
   registerCleanupFunction(async () => {

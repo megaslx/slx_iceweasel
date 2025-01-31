@@ -30,12 +30,15 @@
 
 #include "mozilla/Logging.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/net/DNSPacket.h"
+#include "nsIDNSService.h"
+#include "nsINetworkLinkService.h"
 
 namespace mozilla::net {
 
 static StaticRefPtr<NativeDNSResolverOverride> gOverrideService;
 
-static LazyLogModule gGetAddrInfoLog("GetAddrInfo");
+LazyLogModule gGetAddrInfoLog("GetAddrInfo");
 #define LOG(msg, ...) \
   MOZ_LOG(gGetAddrInfoLog, LogLevel::Debug, ("[DNS]: " msg, ##__VA_ARGS__))
 #define LOG_WARNING(msg, ...) \
@@ -161,7 +164,7 @@ static MOZ_ALWAYS_INLINE nsresult _GetTTLData_Windows(const nsACString& aHost,
 static MOZ_ALWAYS_INLINE nsresult
 _DNSQuery_A_SingleLabel(const nsACString& aCanonHost, uint16_t aAddressFamily,
                         uint16_t aFlags, AddrInfo** aAddrInfo) {
-  bool setCanonName = aFlags & nsHostResolver::RES_CANON_NAME;
+  bool setCanonName = aFlags & nsIDNSService::RESOLVE_CANONICAL_NAME;
   nsAutoCString canonName;
   const DWORD flags = (DNS_QUERY_STANDARD | DNS_QUERY_NO_MULTICAST |
                        DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE);
@@ -198,9 +201,18 @@ _DNSQuery_A_SingleLabel(const nsACString& aCanonHost, uint16_t aAddressFamily,
 // PORTABLE RUNTIME IMPLEMENTATION//
 ////////////////////////////////////
 
+static bool SkipIPv6DNSLookup() {
+#if defined(XP_WIN) || defined(XP_LINUX) || defined(XP_MACOSX)
+  return StaticPrefs::network_dns_skip_ipv6_when_no_addresses() &&
+         !nsINetworkLinkService::HasNonLocalIPv6Address();
+#else
+  return false;
+#endif
+}
+
 static MOZ_ALWAYS_INLINE nsresult
 _GetAddrInfo_Portable(const nsACString& aCanonHost, uint16_t aAddressFamily,
-                      uint16_t aFlags, AddrInfo** aAddrInfo) {
+                      nsIDNSService::DNSFlags aFlags, AddrInfo** aAddrInfo) {
   MOZ_ASSERT(!aCanonHost.IsEmpty());
   MOZ_ASSERT(aAddrInfo);
 
@@ -208,7 +220,7 @@ _GetAddrInfo_Portable(const nsACString& aCanonHost, uint16_t aAddressFamily,
   // need to translate the aFlags into a form that PR_GetAddrInfoByName
   // accepts.
   int prFlags = PR_AI_ADDRCONFIG;
-  if (!(aFlags & nsHostResolver::RES_CANON_NAME)) {
+  if (!(aFlags & nsIDNSService::RESOLVE_CANONICAL_NAME)) {
     prFlags |= PR_AI_NOCANONNAME;
   }
 
@@ -217,6 +229,16 @@ _GetAddrInfo_Portable(const nsACString& aCanonHost, uint16_t aAddressFamily,
   bool disableIPv4 = aAddressFamily == PR_AF_INET6;
   if (disableIPv4) {
     aAddressFamily = PR_AF_UNSPEC;
+  }
+
+  if (SkipIPv6DNSLookup()) {
+    // If the family was AF_UNSPEC initially, make it AF_INET
+    // when there are no IPv6 addresses.
+    // If the DNS request specified IPv6 specifically, let it
+    // go through.
+    if (aAddressFamily == PR_AF_UNSPEC && !disableIPv4) {
+      aAddressFamily = PR_AF_INET;
+    }
   }
 
 #if defined(DNSQUERY_AVAILABLE)
@@ -248,12 +270,12 @@ _GetAddrInfo_Portable(const nsACString& aCanonHost, uint16_t aAddressFamily,
   }
 
   nsAutoCString canonName;
-  if (aFlags & nsHostResolver::RES_CANON_NAME) {
+  if (aFlags & nsIDNSService::RESOLVE_CANONICAL_NAME) {
     canonName.Assign(PR_GetCanonNameFromAddrInfo(prai));
   }
 
   bool filterNameCollision =
-      !(aFlags & nsHostResolver::RES_ALLOW_NAME_COLLISION);
+      !(aFlags & nsIDNSService::RESOLVE_ALLOW_NAME_COLLISION);
   RefPtr<AddrInfo> ai(new AddrInfo(aCanonHost, prai, disableIPv4,
                                    filterNameCollision, canonName));
   PR_FreeAddrInfo(prai);
@@ -295,7 +317,7 @@ nsresult GetAddrInfoShutdown() {
 }
 
 bool FindAddrOverride(const nsACString& aHost, uint16_t aAddressFamily,
-                      uint16_t aFlags, AddrInfo** aAddrInfo) {
+                      nsIDNSService::DNSFlags aFlags, AddrInfo** aAddrInfo) {
   RefPtr<NativeDNSResolverOverride> overrideService = gOverrideService;
   if (!overrideService) {
     return false;
@@ -306,7 +328,7 @@ bool FindAddrOverride(const nsACString& aHost, uint16_t aAddressFamily,
     return false;
   }
   nsCString* cname = nullptr;
-  if (aFlags & nsHostResolver::RES_CANON_NAME) {
+  if (aFlags & nsIDNSService::RESOLVE_CANONICAL_NAME) {
     cname = overrideService->mCnames.Lookup(aHost).DataPtrOrNull();
   }
 
@@ -332,7 +354,8 @@ bool FindAddrOverride(const nsACString& aHost, uint16_t aAddressFamily,
 }
 
 nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
-                     uint16_t aFlags, AddrInfo** aAddrInfo, bool aGetTtl) {
+                     nsIDNSService::DNSFlags aFlags, AddrInfo** aAddrInfo,
+                     bool aGetTtl) {
   if (NS_WARN_IF(aHost.IsEmpty()) || NS_WARN_IF(!aAddrInfo)) {
     return NS_ERROR_NULL_POINTER;
   }
@@ -345,7 +368,7 @@ nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
 #ifdef DNSQUERY_AVAILABLE
   // The GetTTLData needs the canonical name to function properly
   if (aGetTtl) {
-    aFlags |= nsHostResolver::RES_CANON_NAME;
+    aFlags |= nsIDNSService::RESOLVE_CANONICAL_NAME;
   }
 #endif
 
@@ -364,7 +387,7 @@ nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
     host = aHost;
   }
 
-  if (gNativeIsLocalhost) {
+  if (StaticPrefs::network_dns_native_is_localhost()) {
     // pretend we use the given host but use IPv4 localhost instead!
     host = "localhost"_ns;
     aAddressFamily = PR_AF_INET;
@@ -402,6 +425,147 @@ nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
 
   info.forget(aAddrInfo);
   return rv;
+}
+
+bool FindHTTPSRecordOverride(const nsACString& aHost,
+                             TypeRecordResultType& aResult) {
+  LOG("FindHTTPSRecordOverride aHost=%s", nsCString(aHost).get());
+  RefPtr<NativeDNSResolverOverride> overrideService = gOverrideService;
+  if (!overrideService) {
+    return false;
+  }
+
+  AutoReadLock lock(overrideService->mLock);
+  auto overrides = overrideService->mHTTPSRecordOverrides.Lookup(aHost);
+  if (!overrides) {
+    return false;
+  }
+
+  DNSPacket packet;
+  nsAutoCString host(aHost);
+
+  LOG("resolving %s\n", host.get());
+  // Perform the query
+  nsresult rv = packet.FillBuffer(
+      [&](unsigned char response[DNSPacket::MAX_SIZE]) -> int {
+        if (overrides->Length() > DNSPacket::MAX_SIZE) {
+          return -1;
+        }
+        memcpy(response, overrides->Elements(), overrides->Length());
+        return overrides->Length();
+      });
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  uint32_t ttl = 0;
+  rv = ParseHTTPSRecord(host, packet, aResult, ttl);
+
+  return NS_SUCCEEDED(rv);
+}
+
+nsresult ParseHTTPSRecord(nsCString& aHost, DNSPacket& aDNSPacket,
+                          TypeRecordResultType& aResult, uint32_t& aTTL) {
+  nsAutoCString cname;
+  nsresult rv;
+
+  aDNSPacket.SetNativePacket(true);
+
+  int32_t loopCount = 64;
+  while (loopCount > 0 && aResult.is<Nothing>()) {
+    loopCount--;
+    DOHresp resp;
+    nsClassHashtable<nsCStringHashKey, DOHresp> additionalRecords;
+    rv = aDNSPacket.Decode(aHost, TRRTYPE_HTTPSSVC, cname, true, resp, aResult,
+                           additionalRecords, aTTL);
+    if (NS_FAILED(rv)) {
+      LOG("Decode failed %x", static_cast<uint32_t>(rv));
+      return rv;
+    }
+    if (!cname.IsEmpty() && aResult.is<Nothing>()) {
+      aHost = cname;
+      cname.Truncate();
+      continue;
+    }
+  }
+
+  if (aResult.is<Nothing>()) {
+    LOG("Result is nothing");
+    // The call succeeded, but no HTTPS records were found.
+    return NS_ERROR_UNKNOWN_HOST;
+  }
+
+  return NS_OK;
+}
+
+nsresult ResolveHTTPSRecord(const nsACString& aHost,
+                            nsIDNSService::DNSFlags aFlags,
+                            TypeRecordResultType& aResult, uint32_t& aTTL) {
+  if (gOverrideService) {
+    return FindHTTPSRecordOverride(aHost, aResult) ? NS_OK
+                                                   : NS_ERROR_UNKNOWN_HOST;
+  }
+
+  return ResolveHTTPSRecordImpl(aHost, aFlags, aResult, aTTL);
+}
+
+nsresult CreateAndResolveMockHTTPSRecord(const nsACString& aHost,
+                                         nsIDNSService::DNSFlags aFlags,
+                                         TypeRecordResultType& aResult,
+                                         uint32_t& aTTL) {
+  nsCString buffer;
+  buffer += '\0';
+  buffer += '\0';  // 16 bit id
+  buffer += 0x80;
+  buffer += '\0';  // Flags
+  buffer += '\0';
+  buffer += '\0';  // Question count
+  buffer += '\0';
+  buffer += 0x1;  // Answer count
+  buffer += '\0';
+  buffer += '\0';
+  buffer += '\0';
+  buffer += '\0';
+
+  nsresult rv = DNSPacket::EncodeHost(buffer, aHost);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  buffer += '\0';
+  buffer += 0x41;  // TYPE 65
+
+  buffer += '\0';
+  buffer += 0x1;  // Class
+
+  buffer += '\0';
+  buffer += '\0';
+  buffer += '\0';
+  buffer += 0xFF;  // TTL
+  buffer += '\0';
+  buffer += 0x03;  // RDLENGTH
+  buffer += '\0';
+  buffer += 0x01;  // SvcPriority
+  buffer += '\0';
+
+  DNSPacket packet;
+  nsAutoCString host(aHost);
+
+  LOG("resolving %s\n", host.get());
+  // Perform the query
+  rv = packet.FillBuffer(
+      [&](unsigned char response[DNSPacket::MAX_SIZE]) -> int {
+        if (buffer.Length() > DNSPacket::MAX_SIZE) {
+          return -1;
+        }
+        memcpy(response, buffer.BeginReading(), buffer.Length());
+        return buffer.Length();
+      });
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  return ParseHTTPSRecord(host, packet, aResult, aTTL);
 }
 
 // static
@@ -444,6 +608,15 @@ NS_IMETHODIMP NativeDNSResolverOverride::AddIPOverride(
   return NS_OK;
 }
 
+NS_IMETHODIMP NativeDNSResolverOverride::AddHTTPSRecordOverride(
+    const nsACString& aHost, const uint8_t* aData, uint32_t aLength) {
+  AutoWriteLock lock(mLock);
+  nsTArray<uint8_t> data(aData, aLength);
+  mHTTPSRecordOverrides.InsertOrUpdate(aHost, std::move(data));
+
+  return NS_OK;
+}
+
 NS_IMETHODIMP NativeDNSResolverOverride::SetCnameOverride(
     const nsACString& aHost, const nsACString& aCNAME) {
   if (aCNAME.IsEmpty()) {
@@ -475,5 +648,20 @@ NS_IMETHODIMP NativeDNSResolverOverride::ClearOverrides() {
   mCnames.Clear();
   return NS_OK;
 }
+
+#ifdef MOZ_NO_HTTPS_IMPL
+
+// If there is no platform specific implementation of ResolveHTTPSRecordImpl
+// we link a dummy implementation here.
+// Otherwise this is implemented in PlatformDNSWin/Linux/etc
+nsresult ResolveHTTPSRecordImpl(const nsACString& aHost,
+                                nsIDNSService::DNSFlags aFlags,
+                                TypeRecordResultType& aResult, uint32_t& aTTL) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+void DNSThreadShutdown() {}
+
+#endif  // MOZ_NO_HTTPS_IMPL
 
 }  // namespace mozilla::net

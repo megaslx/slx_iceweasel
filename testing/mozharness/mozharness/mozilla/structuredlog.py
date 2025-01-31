@@ -1,10 +1,10 @@
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 import json
 from collections import defaultdict, namedtuple
+
+from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
 
 from mozharness.base import log
 from mozharness.base.log import ERROR, INFO, WARNING, OutputParser
@@ -102,6 +102,21 @@ class StructuredOutputParser(OutputParser):
         self.handler(data)
 
         action = data["action"]
+        if action == "test_start":
+            SystemResourceMonitor.begin_marker("test", data["test"])
+        elif action == "test_end":
+            SystemResourceMonitor.end_marker("test", data["test"])
+        elif action == "suite_start":
+            SystemResourceMonitor.begin_marker("suite", data["source"])
+        elif action == "suite_end":
+            SystemResourceMonitor.end_marker("suite", data["source"])
+        elif action == "group_start":
+            SystemResourceMonitor.begin_marker("test", data["name"])
+        elif action == "group_end":
+            SystemResourceMonitor.end_marker("test", data["name"])
+        if line.startswith("TEST-UNEXPECTED-FAIL"):
+            SystemResourceMonitor.record_event(line)
+
         if action in ("log", "process_output"):
             if action == "log":
                 message = data["message"]

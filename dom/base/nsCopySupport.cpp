@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsCopySupport.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIDocumentEncoder.h"
 #include "nsISupports.h"
 #include "nsIContent.h"
@@ -22,9 +23,10 @@
 #include "nsServiceManagerUtils.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/dom/DataTransfer.h"
+#include "mozilla/dom/BrowsingContext.h"
 
 #include "nsIDocShell.h"
-#include "nsIContentViewerEdit.h"
+#include "nsIDocumentViewerEdit.h"
 #include "nsISelectionController.h"
 
 #include "nsPIDOMWindow.h"
@@ -37,9 +39,9 @@
 #include "nsIImageLoadingContent.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsContentUtils.h"
-#include "nsContentCID.h"
 
 #ifdef XP_WIN
+#  include "mozilla/StaticPrefs_clipboard.h"
 #  include "nsCExternalHandlerService.h"
 #  include "nsEscape.h"
 #  include "nsIMIMEInfo.h"
@@ -79,7 +81,7 @@ static nsresult AppendDOMNode(nsITransferable* aTransferable,
 // copy image as file promise onto the transferable
 static nsresult AppendImagePromise(nsITransferable* aTransferable,
                                    imgIRequest* aImgRequest,
-                                   nsIImageLoadingContent* aImageElement);
+                                   nsINode* aImageNode);
 #endif
 
 static nsresult EncodeForTextUnicode(nsIDocumentEncoder& aEncoder,
@@ -130,13 +132,14 @@ static nsresult EncodeForTextUnicode(nsIDocumentEncoder& aEncoder,
     aSerializationResult.Assign(buf);
   } else {
     // Redo the encoding, but this time use pretty printing.
-    flags =
-        nsIDocumentEncoder::OutputSelectionOnly |
-        nsIDocumentEncoder::OutputAbsoluteLinks |
-        nsIDocumentEncoder::SkipInvisibleContent |
-        nsIDocumentEncoder::OutputDropInvisibleBreak |
-        (aAdditionalEncoderFlags & (nsIDocumentEncoder::OutputNoScriptContent |
-                                    nsIDocumentEncoder::OutputRubyAnnotation));
+    flags = nsIDocumentEncoder::OutputSelectionOnly |
+            nsIDocumentEncoder::OutputAbsoluteLinks |
+            nsIDocumentEncoder::SkipInvisibleContent |
+            nsIDocumentEncoder::OutputDropInvisibleBreak |
+            (aAdditionalEncoderFlags &
+             (nsIDocumentEncoder::OutputNoScriptContent |
+              nsIDocumentEncoder::OutputRubyAnnotation |
+              nsIDocumentEncoder::AllowCrossShadowBoundary));
 
     mimeType.AssignLiteral(kTextMime);
     rv = aEncoder.Init(&aDocument, mimeType, flags);
@@ -243,6 +246,7 @@ static nsresult CreateTransferable(
   NS_ENSURE_TRUE(aTransferable, NS_ERROR_NULL_POINTER);
 
   aTransferable->Init(aDocument.GetLoadContext());
+  aTransferable->SetDataPrincipal(aDocument.NodePrincipal());
   if (aEncodedDocumentWithContext.mUnicodeEncodingIsTextHTML) {
     // Set up a format converter so that clipboard flavor queries work.
     // This converter isn't really used for conversions.
@@ -319,7 +323,7 @@ static nsresult CreateTransferable(
 
 static nsresult PutToClipboard(
     const EncodedDocumentWithContext& aEncodedDocumentWithContext,
-    int16_t aClipboardID, Document& aDocument) {
+    nsIClipboard::ClipboardType aClipboardID, Document& aDocument) {
   nsresult rv;
   nsCOMPtr<nsIClipboard> clipboard = do_GetService(kCClipboardCID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -329,18 +333,24 @@ static nsresult PutToClipboard(
   rv = CreateTransferable(aEncodedDocumentWithContext, aDocument, transferable);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = clipboard->SetData(transferable, nullptr, aClipboardID);
+  rv = clipboard->SetData(transferable, nullptr, aClipboardID,
+                          aDocument.GetWindowContext());
   NS_ENSURE_SUCCESS(rv, rv);
 
   return rv;
 }
 
 nsresult nsCopySupport::EncodeDocumentWithContextAndPutToClipboard(
-    Selection* aSel, Document* aDoc, int16_t aClipboardID,
+    Selection* aSel, Document* aDoc, nsIClipboard::ClipboardType aClipboardID,
     bool aWithRubyAnnotation) {
   NS_ENSURE_TRUE(aDoc, NS_ERROR_NULL_POINTER);
 
   uint32_t additionalFlags = nsIDocumentEncoder::SkipInvisibleContent;
+
+  if (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled()) {
+    additionalFlags |= nsIDocumentEncoder::AllowCrossShadowBoundary;
+  }
+
   if (aWithRubyAnnotation) {
     additionalFlags |= nsIDocumentEncoder::OutputRubyAnnotation;
   }
@@ -394,7 +404,12 @@ nsresult nsCopySupport::GetTransferableForSelection(
   NS_ENSURE_TRUE(aDoc, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(aTransferable, NS_ERROR_NULL_POINTER);
 
-  const uint32_t additionalFlags = nsIDocumentEncoder::SkipInvisibleContent;
+  const uint32_t additionalFlags =
+      StaticPrefs::dom_shadowdom_selection_across_boundary_enabled()
+          ? nsIDocumentEncoder::SkipInvisibleContent |
+                nsIDocumentEncoder::AllowCrossShadowBoundary
+          : nsIDocumentEncoder::SkipInvisibleContent;
+
   return EncodeDocumentWithContextAndCreateTransferable(
       *aDoc, aSel, additionalFlags, aTransferable);
 }
@@ -452,17 +467,21 @@ nsresult nsCopySupport::GetContents(const nsACString& aMimeType,
   return docEncoder->EncodeToString(outdata);
 }
 
-nsresult nsCopySupport::ImageCopy(nsIImageLoadingContent* aImageElement,
-                                  nsILoadContext* aLoadContext,
-                                  int32_t aCopyFlags) {
+nsresult nsCopySupport::ImageCopy(
+    nsIImageLoadingContent* aImageElement, nsILoadContext* aLoadContext,
+    int32_t aCopyFlags, mozilla::dom::WindowContext* aSettingWindowContext) {
   nsresult rv;
+
+  nsCOMPtr<nsINode> imageNode = do_QueryInterface(aImageElement, &rv);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   // create a transferable for putting data on the Clipboard
   nsCOMPtr<nsITransferable> trans(do_CreateInstance(kCTransferableCID, &rv));
   NS_ENSURE_SUCCESS(rv, rv);
   trans->Init(aLoadContext);
+  trans->SetDataPrincipal(imageNode->NodePrincipal());
 
-  if (aCopyFlags & nsIContentViewerEdit::COPY_IMAGE_TEXT) {
+  if (aCopyFlags & nsIDocumentViewerEdit::COPY_IMAGE_TEXT) {
     // get the location from the element
     nsCOMPtr<nsIURI> uri;
     rv = aImageElement->GetCurrentURI(getter_AddRefs(uri));
@@ -478,7 +497,7 @@ nsresult nsCopySupport::ImageCopy(nsIImageLoadingContent* aImageElement,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  if (aCopyFlags & nsIContentViewerEdit::COPY_IMAGE_HTML) {
+  if (aCopyFlags & nsIDocumentViewerEdit::COPY_IMAGE_HTML) {
     // append HTML data to the transferable
     nsCOMPtr<nsINode> node(do_QueryInterface(aImageElement, &rv));
     NS_ENSURE_SUCCESS(rv, rv);
@@ -487,7 +506,7 @@ nsresult nsCopySupport::ImageCopy(nsIImageLoadingContent* aImageElement,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  if (aCopyFlags & nsIContentViewerEdit::COPY_IMAGE_DATA) {
+  if (aCopyFlags & nsIDocumentViewerEdit::COPY_IMAGE_DATA) {
     // get the image data and its request from the element
     nsCOMPtr<imgIRequest> imgRequest;
     nsCOMPtr<imgIContainer> image = nsContentUtils::GetImageFromContent(
@@ -502,8 +521,10 @@ nsresult nsCopySupport::ImageCopy(nsIImageLoadingContent* aImageElement,
     }
 
 #ifdef XP_WIN
-    rv = AppendImagePromise(trans, imgRequest, aImageElement);
-    NS_ENSURE_SUCCESS(rv, rv);
+    if (StaticPrefs::clipboard_imageAsFile_enabled()) {
+      rv = AppendImagePromise(trans, imgRequest, imageNode);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
 #endif
 
     // copy the image data onto the transferable
@@ -518,11 +539,13 @@ nsresult nsCopySupport::ImageCopy(nsIImageLoadingContent* aImageElement,
   // check whether the system supports the selection clipboard or not.
   if (clipboard->IsClipboardTypeSupported(nsIClipboard::kSelectionClipboard)) {
     // put the transferable on the clipboard
-    rv = clipboard->SetData(trans, nullptr, nsIClipboard::kSelectionClipboard);
+    rv = clipboard->SetData(trans, nullptr, nsIClipboard::kSelectionClipboard,
+                            aSettingWindowContext);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  return clipboard->SetData(trans, nullptr, nsIClipboard::kGlobalClipboard);
+  return clipboard->SetData(trans, nullptr, nsIClipboard::kGlobalClipboard,
+                            aSettingWindowContext);
 }
 
 static nsresult AppendString(nsITransferable* aTransferable,
@@ -590,10 +613,10 @@ static nsresult AppendDOMNode(nsITransferable* aTransferable,
 #ifdef XP_WIN
 static nsresult AppendImagePromise(nsITransferable* aTransferable,
                                    imgIRequest* aImgRequest,
-                                   nsIImageLoadingContent* aImageElement) {
+                                   nsINode* aImageNode) {
   nsresult rv;
 
-  NS_ENSURE_TRUE(aImgRequest, NS_OK);
+  NS_ENSURE_TRUE(aImgRequest && aImageNode, NS_OK);
 
   bool isMultipart;
   rv = aImgRequest->GetMultipart(&isMultipart);
@@ -601,9 +624,6 @@ static nsresult AppendImagePromise(nsITransferable* aTransferable,
   if (isMultipart) {
     return NS_OK;
   }
-
-  nsCOMPtr<nsINode> node = do_QueryInterface(aImageElement, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIMIMEService> mimeService = do_GetService("@mozilla.org/mime;1");
   if (NS_WARN_IF(!mimeService)) {
@@ -640,8 +660,8 @@ static nsresult AppendImagePromise(nsITransferable* aTransferable,
   rv = AppendString(aTransferable, validFileName, kFilePromiseDestFilename);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  aTransferable->SetRequestingPrincipal(node->NodePrincipal());
-  aTransferable->SetCookieJarSettings(node->OwnerDoc()->CookieJarSettings());
+  aTransferable->SetCookieJarSettings(
+      aImageNode->OwnerDoc()->CookieJarSettings());
   aTransferable->SetContentPolicyType(nsIContentPolicy::TYPE_INTERNAL_IMAGE);
 
   // add the dataless file promise flavor
@@ -661,7 +681,7 @@ already_AddRefed<Selection> nsCopySupport::GetSelectionForCopy(
     return nullptr;
   }
 
-  RefPtr<Selection> sel = frameSel->GetSelection(SelectionType::eNormal);
+  RefPtr<Selection> sel = &frameSel->NormalSelection();
   return sel.forget();
 }
 
@@ -708,11 +728,38 @@ static Element* GetElementOrNearestFlattenedTreeParentElement(nsINode* aNode) {
   return nullptr;
 }
 
-bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
-                                       int32_t aClipboardType,
-                                       PresShell* aPresShell,
-                                       Selection* aSelection,
-                                       bool* aActionTaken) {
+/**
+ * This class is used while processing clipboard paste event.
+ */
+class MOZ_RAII AutoHandlingPasteEvent final {
+ public:
+  explicit AutoHandlingPasteEvent(
+      nsGlobalWindowInner* aWindow, DataTransfer* aDataTransfer,
+      const EventMessage& aEventMessage,
+      const mozilla::Maybe<nsIClipboard::ClipboardType> aClipboardType) {
+    MOZ_ASSERT(aDataTransfer);
+    if (aWindow && aEventMessage == ePaste &&
+        aClipboardType == Some(nsIClipboard::kGlobalClipboard)) {
+      aWindow->SetCurrentPasteDataTransfer(aDataTransfer);
+      mInnerWindow = aWindow;
+    }
+  }
+
+  ~AutoHandlingPasteEvent() {
+    if (mInnerWindow) {
+      mInnerWindow->SetCurrentPasteDataTransfer(nullptr);
+    }
+  }
+
+ private:
+  RefPtr<nsGlobalWindowInner> mInnerWindow;
+};
+
+bool nsCopySupport::FireClipboardEvent(
+    EventMessage aEventMessage,
+    mozilla::Maybe<nsIClipboard::ClipboardType> aClipboardType,
+    PresShell* aPresShell, Selection* aSelection, DataTransfer* aDataTransfer,
+    bool* aActionTaken) {
   if (aActionTaken) {
     *aActionTaken = false;
   }
@@ -725,6 +772,8 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   NS_ASSERTION(originalEventMessage == eCut || originalEventMessage == eCopy ||
                    originalEventMessage == ePaste,
                "Invalid clipboard event type");
+
+  MOZ_ASSERT_IF(originalEventMessage != ePaste, aClipboardType.isSome());
 
   RefPtr<PresShell> presShell = aPresShell;
   if (!presShell) {
@@ -777,17 +826,33 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   bool doDefault = true;
   RefPtr<DataTransfer> clipboardData;
   if (chromeShell || StaticPrefs::dom_event_clipboardevents_enabled()) {
-    clipboardData =
-        new DataTransfer(doc->GetScopeObject(), aEventMessage,
-                         originalEventMessage == ePaste, aClipboardType);
+    MOZ_ASSERT_IF(aDataTransfer,
+                  aDataTransfer->GetParentObject() == doc->GetScopeObject());
+    MOZ_ASSERT_IF(aDataTransfer, (aDataTransfer->GetEventMessage() == ePaste) &&
+                                     (aEventMessage == ePaste ||
+                                      aEventMessage == ePasteNoFormatting));
+    MOZ_ASSERT_IF(aDataTransfer,
+                  aDataTransfer->ClipboardType() == aClipboardType);
+    clipboardData = aDataTransfer
+                        ? RefPtr<DataTransfer>(aDataTransfer)
+                        : MakeRefPtr<DataTransfer>(
+                              doc->GetScopeObject(), aEventMessage,
+                              originalEventMessage == ePaste, aClipboardType);
 
     nsEventStatus status = nsEventStatus_eIgnore;
     InternalClipboardEvent evt(true, originalEventMessage);
     evt.mClipboardData = clipboardData;
 
-    RefPtr<nsPresContext> presContext = presShell->GetPresContext();
-    EventDispatcher::Dispatch(targetElement, presContext, &evt, nullptr,
-                              &status);
+    {
+      AutoHandlingPasteEvent autoHandlingPasteEvent(
+          nsGlobalWindowInner::Cast(doc->GetInnerWindow()), clipboardData,
+          aEventMessage, aClipboardType);
+
+      RefPtr<nsPresContext> presContext = presShell->GetPresContext();
+      EventDispatcher::Dispatch(targetElement, presContext, &evt, nullptr,
+                                &status);
+    }
+
     // If the event was cancelled, don't do the clipboard operation
     doDefault = (status != nsEventStatus_eConsumeNoDefault);
   }
@@ -796,7 +861,7 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   // our DataTransfer, which means setting its mode to `Protected` and clearing
   // all stored data, before we return.
   auto clearAfter = MakeScopeExit([&] {
-    if (clipboardData) {
+    if (clipboardData && !aDataTransfer) {
       clipboardData->Disconnect();
 
       // NOTE: Disconnect may not actually clear the DataTransfer if the
@@ -855,7 +920,7 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
     // XXX this is probably the wrong editable flag to check
     if (originalEventMessage != eCut || targetElement->IsEditable()) {
       // get the data from the selection if any
-      if (sel->IsCollapsed()) {
+      if (sel->AreNormalAndCrossShadowBoundaryRangesCollapsed()) {
         if (aActionTaken) {
           *aActionTaken = true;
         }
@@ -867,7 +932,7 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
       // expose the full functionality in browser. See bug 1130891.
       bool withRubyAnnotation = IsSelectionInsideRuby(sel);
       nsresult rv = EncodeDocumentWithContextAndPutToClipboard(
-          sel, doc, aClipboardType, withRubyAnnotation);
+          sel, doc, *aClipboardType, withRubyAnnotation);
       if (NS_FAILED(rv)) {
         return false;
       }
@@ -888,7 +953,12 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
       NS_ENSURE_TRUE(transferable, false);
 
       // put the transferable on the clipboard
-      nsresult rv = clipboard->SetData(transferable, nullptr, aClipboardType);
+      WindowContext* settingWindowContext = nullptr;
+      if (aPresShell && aPresShell->GetDocument()) {
+        settingWindowContext = aPresShell->GetDocument()->GetWindowContext();
+      }
+      nsresult rv = clipboard->SetData(transferable, nullptr, *aClipboardType,
+                                       settingWindowContext);
       if (NS_FAILED(rv)) {
         return false;
       }
@@ -898,7 +968,11 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   // Now that we have copied, update the clipboard commands. This should have
   // the effect of updating the enabled state of the paste menu item.
   if (doDefault || count) {
-    piWindow->UpdateCommands(u"clipboard"_ns, nullptr, 0);
+    piWindow->UpdateCommands(u"clipboard"_ns);
+    if (aPresShell && aPresShell->GetDocument()) {
+      // Record that a copy to the clipboard was triggered by JS code
+      aPresShell->GetDocument()->SetClipboardCopyTriggered();
+    }
   }
 
   if (aActionTaken) {

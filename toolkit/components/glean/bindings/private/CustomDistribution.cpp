@@ -6,12 +6,11 @@
 
 #include "mozilla/glean/bindings/CustomDistribution.h"
 
-#include "Common.h"
-#include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/dom/GleanMetricsBinding.h"
 #include "mozilla/glean/bindings/HistogramGIFFTMap.h"
+#include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
-#include "nsIClassInfoImpl.h"
 #include "nsJSUtils.h"
 #include "nsPrintfCString.h"
 #include "nsString.h"
@@ -31,8 +30,35 @@ void CustomDistributionMetric::AccumulateSamples(
     for (auto sample : aSamples) {
       Telemetry::Accumulate(id, sample);
     }
+  } else if (IsSubmetricId(mId)) {
+    GetLabeledDistributionMirrorLock().apply([&](const auto& lock) {
+      auto tuple = lock.ref()->MaybeGet(mId);
+      if (tuple) {
+        for (auto sample : aSamples) {
+          Telemetry::Accumulate(std::get<0>(tuple.ref()),
+                                std::get<1>(tuple.ref()), sample);
+        }
+      }
+    });
   }
   fog_custom_distribution_accumulate_samples(mId, &aSamples);
+}
+
+void CustomDistributionMetric::AccumulateSingleSample(uint64_t aSample) const {
+  auto hgramId = HistogramIdForMetric(mId);
+  if (hgramId) {
+    auto id = hgramId.extract();
+    Telemetry::Accumulate(id, aSample);
+  } else if (IsSubmetricId(mId)) {
+    GetLabeledDistributionMirrorLock().apply([&](const auto& lock) {
+      auto tuple = lock.ref()->MaybeGet(mId);
+      if (tuple) {
+        Telemetry::Accumulate(std::get<0>(tuple.ref()),
+                              std::get<1>(tuple.ref()), aSample);
+      }
+    });
+  }
+  fog_custom_distribution_accumulate_single_sample(mId, aSample);
 }
 
 void CustomDistributionMetric::AccumulateSamplesSigned(
@@ -45,8 +71,36 @@ void CustomDistributionMetric::AccumulateSamplesSigned(
     for (auto sample : aSamples) {
       Telemetry::Accumulate(id, sample);
     }
+  } else if (IsSubmetricId(mId)) {
+    GetLabeledDistributionMirrorLock().apply([&](const auto& lock) {
+      auto tuple = lock.ref()->MaybeGet(mId);
+      if (tuple) {
+        for (auto sample : aSamples) {
+          Telemetry::Accumulate(std::get<0>(tuple.ref()),
+                                std::get<1>(tuple.ref()), sample);
+        }
+      }
+    });
   }
   fog_custom_distribution_accumulate_samples_signed(mId, &aSamples);
+}
+
+void CustomDistributionMetric::AccumulateSingleSampleSigned(
+    int64_t aSample) const {
+  auto hgramId = HistogramIdForMetric(mId);
+  if (hgramId) {
+    auto id = hgramId.extract();
+    Telemetry::Accumulate(id, aSample);
+  } else if (IsSubmetricId(mId)) {
+    GetLabeledDistributionMirrorLock().apply([&](const auto& lock) {
+      auto tuple = lock.ref()->MaybeGet(mId);
+      if (tuple) {
+        Telemetry::Accumulate(std::get<0>(tuple.ref()),
+                              std::get<1>(tuple.ref()), aSample);
+      }
+    });
+  }
+  fog_custom_distribution_accumulate_single_sample_signed(mId, aSample);
 }
 
 Result<Maybe<DistributionData>, nsCString>
@@ -61,65 +115,53 @@ CustomDistributionMetric::TestGetValue(const nsACString& aPingName) const {
   nsTArray<uint64_t> buckets;
   nsTArray<uint64_t> counts;
   uint64_t sum;
-  fog_custom_distribution_test_get_value(mId, &aPingName, &sum, &buckets,
-                                         &counts);
-  return Some(DistributionData(buckets, counts, sum));
+  uint64_t count;
+  fog_custom_distribution_test_get_value(mId, &aPingName, &sum, &count,
+                                         &buckets, &counts);
+  return Some(DistributionData(buckets, counts, sum, count));
 }
 
 }  // namespace impl
 
-NS_IMPL_CLASSINFO(GleanCustomDistribution, nullptr, 0, {0})
-NS_IMPL_ISUPPORTS_CI(GleanCustomDistribution, nsIGleanCustomDistribution)
-
-NS_IMETHODIMP
-GleanCustomDistribution::AccumulateSamples(const nsTArray<int64_t>& aSamples) {
-  mCustomDist.AccumulateSamplesSigned(aSamples);
-  return NS_OK;
+/* virtual */
+JSObject* GleanCustomDistribution::WrapObject(
+    JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
+  return dom::GleanCustomDistribution_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMETHODIMP
-GleanCustomDistribution::TestGetValue(const nsACString& aPingName,
-                                      JSContext* aCx,
-                                      JS::MutableHandle<JS::Value> aResult) {
+void GleanCustomDistribution::AccumulateSamples(
+    const dom::Sequence<int64_t>& aSamples) {
+  mCustomDist.AccumulateSamplesSigned(aSamples);
+}
+
+void GleanCustomDistribution::AccumulateSingleSample(const int64_t aSample) {
+  mCustomDist.AccumulateSingleSampleSigned(aSample);
+}
+
+void GleanCustomDistribution::TestGetValue(
+    const nsACString& aPingName,
+    dom::Nullable<dom::GleanDistributionData>& aRetval, ErrorResult& aRv) {
   auto result = mCustomDist.TestGetValue(aPingName);
   if (result.isErr()) {
-    aResult.set(JS::UndefinedValue());
-    LogToBrowserConsole(nsIScriptError::errorFlag,
-                        NS_ConvertUTF8toUTF16(result.unwrapErr()));
-    return NS_ERROR_LOSS_OF_SIGNIFICANT_DATA;
+    aRv.ThrowDataError(result.unwrapErr());
+    return;
   }
   auto optresult = result.unwrap();
   if (optresult.isNothing()) {
-    aResult.set(JS::UndefinedValue());
-  } else {
-    // Build return value of the form: { sum: #, values: {bucket1: count1, ...}
-    JS::Rooted<JSObject*> root(aCx, JS_NewPlainObject(aCx));
-    if (!root) {
-      return NS_ERROR_FAILURE;
-    }
-    uint64_t sum = optresult.ref().sum;
-    if (!JS_DefineProperty(aCx, root, "sum", static_cast<double>(sum),
-                           JSPROP_ENUMERATE)) {
-      return NS_ERROR_FAILURE;
-    }
-    JS::Rooted<JSObject*> valuesObj(aCx, JS_NewPlainObject(aCx));
-    if (!valuesObj ||
-        !JS_DefineProperty(aCx, root, "values", valuesObj, JSPROP_ENUMERATE)) {
-      return NS_ERROR_FAILURE;
-    }
-    auto& data = optresult.ref().values;
-    for (const auto& entry : data) {
-      const uint64_t bucket = entry.GetKey();
-      const uint64_t count = entry.GetData();
-      if (!JS_DefineProperty(aCx, valuesObj,
-                             nsPrintfCString("%" PRIu64, bucket).get(),
-                             static_cast<double>(count), JSPROP_ENUMERATE)) {
-        return NS_ERROR_FAILURE;
-      }
-    }
-    aResult.setObject(*root);
+    return;
   }
-  return NS_OK;
+
+  dom::GleanDistributionData ret;
+  ret.mSum = optresult.ref().sum;
+  ret.mCount = optresult.ref().count;
+  auto& data = optresult.ref().values;
+  for (const auto& entry : data) {
+    dom::binding_detail::RecordEntry<nsCString, uint64_t> bucket;
+    bucket.mKey = nsPrintfCString("%" PRIu64, entry.GetKey());
+    bucket.mValue = entry.GetData();
+    ret.mValues.Entries().EmplaceBack(std::move(bucket));
+  }
+  aRetval.SetValue(std::move(ret));
 }
 
 }  // namespace mozilla::glean

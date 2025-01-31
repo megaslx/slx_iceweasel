@@ -8,7 +8,7 @@ ChromeUtils.defineESModuleGetters(this, {
   TelemetryEventPing: "resource://gre/modules/EventPing.sys.mjs",
 });
 
-function checkPingStructure(type, payload, options) {
+function checkPingStructure(type, payload) {
   Assert.equal(
     type,
     TelemetryEventPing.EVENT_PING_TYPE,
@@ -44,7 +44,7 @@ function fail() {
 
 function recordEvents(howMany) {
   for (let i = 0; i < howMany; i++) {
-    Telemetry.recordEvent("telemetry.test", "test1", "object1");
+    Glean.telemetryTest.test1Object1.record();
   }
 }
 
@@ -56,7 +56,6 @@ add_task(async function setup() {
 
   await TelemetryController.testSetup();
   TelemetryEventPing.testReset();
-  Telemetry.setEventRecordingEnabled("telemetry.test", true);
 });
 
 // Tests often take the form of faking policy within faked policy.
@@ -84,8 +83,8 @@ add_task(async function test_eventLimitReached() {
   fakePolicy(pass, pass, fail);
   recordEvents(999);
   fakePolicy(
-    (callback, delay) => {
-      Telemetry.recordEvent("telemetry.test", "test2", "object1");
+    () => {
+      Glean.telemetryTest.test2Object1.record();
       fakePolicy(pass, pass, (type, payload, options) => {
         checkPingStructure(type, payload, options);
         Assert.ok(options.addClientId, "Adds the client id.");
@@ -113,16 +112,16 @@ add_task(async function test_eventLimitReached() {
     fail
   );
   // Now trigger the submit.
-  Telemetry.recordEvent("telemetry.test", "test1", "object1");
+  Glean.telemetryTest.test1Object1.record();
   Assert.equal(pingCount, 1, "Should have sent a ping");
 
   // With a recent MAX ping sent, record another max amount of events (and then two extras).
   fakePolicy(fail, fail, fail);
   recordEvents(998);
   fakePolicy(
-    (callback, delay) => {
-      Telemetry.recordEvent("telemetry.test", "test2", "object2");
-      Telemetry.recordEvent("telemetry.test", "test2", "object2");
+    callback => {
+      Glean.telemetryTest.test2Object2.record();
+      Glean.telemetryTest.test2Object2.record();
       fakePolicy(pass, pass, (type, payload, options) => {
         checkPingStructure(type, payload, options);
         Assert.ok(options.addClientId, "Adds the client id.");
@@ -162,7 +161,7 @@ add_task(async function test_eventLimitReached() {
   // the two events we lost.
   fakePolicy(fail, fail, fail);
   recordEvents(999);
-  fakePolicy((callback, delay) => {
+  fakePolicy(callback => {
     fakePolicy(pass, pass, (type, payload, options) => {
       checkPingStructure(type, payload, options);
       Assert.ok(options.addClientId, "Adds the client id.");

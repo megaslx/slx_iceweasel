@@ -22,7 +22,7 @@ JSObject* SVGFEDisplacementMapElement::WrapNode(
 }
 
 SVGElement::NumberInfo SVGFEDisplacementMapElement::sNumberInfo[1] = {
-    {nsGkAtoms::scale, 0, false},
+    {nsGkAtoms::scale, 0},
 };
 
 SVGEnumMapping SVGFEDisplacementMapElement::sChannelMap[] = {
@@ -116,7 +116,7 @@ nsresult SVGFEDisplacementMapElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feDisplacementMap);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEDisplacementMapElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -124,16 +124,16 @@ nsresult SVGFEDisplacementMapElement::BindToTree(BindContext& aCtx,
 
 SVGElement::NumberAttributesInfo SVGFEDisplacementMapElement::GetNumberInfo() {
   return NumberAttributesInfo(mNumberAttributes, sNumberInfo,
-                              ArrayLength(sNumberInfo));
+                              std::size(sNumberInfo));
 }
 
 SVGElement::EnumAttributesInfo SVGFEDisplacementMapElement::GetEnumInfo() {
-  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, ArrayLength(sEnumInfo));
+  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, std::size(sEnumInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFEDisplacementMapElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

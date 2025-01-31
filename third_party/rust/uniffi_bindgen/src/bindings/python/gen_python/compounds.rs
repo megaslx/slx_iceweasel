@@ -2,7 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::backend::{CodeType, Literal, Type};
+use super::CodeType;
+use crate::{
+    backend::{Literal, Type},
+    bindings::python::gen_python::AsCodeType,
+};
 
 #[derive(Debug)]
 pub struct OptionalCodeType {
@@ -32,8 +36,9 @@ impl CodeType for OptionalCodeType {
 
     fn literal(&self, literal: &Literal) -> String {
         match literal {
-            Literal::Null => "None".into(),
-            _ => super::PythonCodeOracle.find(&self.inner).literal(literal),
+            Literal::None => "None".into(),
+            Literal::Some { inner } => super::PythonCodeOracle.find(&self.inner).literal(inner),
+            _ => panic!("Invalid literal for Optional type: {literal:?}"),
         }
     }
 }
@@ -87,7 +92,11 @@ impl MapCodeType {
 
 impl CodeType for MapCodeType {
     fn type_label(&self) -> String {
-        "dict".to_string()
+        format!(
+            "dict[{}, {}]",
+            self.key.as_codetype().type_label(),
+            self.value.as_codetype().type_label()
+        )
     }
 
     fn canonical_name(&self) -> String {

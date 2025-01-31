@@ -8,22 +8,6 @@
   padding: 0 5%;
 }
 
-/* This styling was originally taken from the about:preferences page. */
-h1 {
-  margin: 0 0 8px;
-  font-size: 1.46em;
-  font-weight: 300;
-  line-height: 1.3em;
-}
-
-/* This styling was originally taken from the about:preferences page. */
-h2 {
-  /* This margin was enlarged */
-  margin: 30px 0 15px;
-  font-size: 1.14em;
-  line-height: normal;
-}
-
 /* Intro */
 
 .perf-intro-row {
@@ -142,11 +126,11 @@ h2 {
   margin: 0;
   padding: 0;
   overflow-y: auto;
-  background-color: var(--in-content-box-background);
+  background-color: var(--background-color-box);
 }
 
 .perf-settings-dir-list:hover {
-  border-color: var(--in-content-border-hover);
+  border-color: var(--border-color-interactive-hover);
 }
 
 .pref-settings-dir-list-item {

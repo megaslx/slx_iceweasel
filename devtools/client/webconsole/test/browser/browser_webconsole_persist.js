@@ -126,7 +126,9 @@ add_task(async function () {
 
   info("Go back to the first page");
   gBrowser.selectedBrowser.goBack();
-  // When going pack, the page isn't reloaded, so that we only get the pageshow event
+
+  // When going back, the page isn't reloaded, so in theory we should only get
+  // the pageshow event.
   await waitFor(
     () =>
       findMessagePartsByType(hud, {
@@ -136,6 +138,31 @@ add_task(async function () {
       }).length === 1
   );
   ok("First page message re-appeared");
+
+  // However `clearMessagesCache` can fail on navigation, and in this case the
+  // cache will still contain the two initial logs:
+  // - "first document load"
+  // - "first document show"
+  let isLoadMessageDisplayed = findMessagePartsByType(hud, {
+    text: "first document load",
+    typeSelector: ".console-api",
+    partSelector: ".message-body",
+  }).length;
+
+  // With the additional "first document show" from the new bfcache navigation
+  // this means we should wait for "first document show" to have a repeated
+  // count of 2.
+  // Otherwise the second "first document show" resource might be throttled and
+  // handled later in the test.
+  if (isLoadMessageDisplayed) {
+    await waitForRepeatedMessageByType(
+      hud,
+      "first document show",
+      ".console-api",
+      2
+    );
+  }
+
   is(
     gBrowser.selectedBrowser.browsingContext.currentWindowGlobal.innerWindowId,
     firstPageInnerWindowId,
@@ -162,6 +189,20 @@ add_task(async function () {
       }).length === 1
   );
   ok("Second page message appeared");
+
+  isLoadMessageDisplayed = findMessagePartsByType(hud, {
+    text: "second document load",
+    typeSelector: ".console-api",
+    partSelector: ".message-body",
+  }).length;
+  if (isLoadMessageDisplayed) {
+    await waitForRepeatedMessageByType(
+      hud,
+      "second document show",
+      ".console-api",
+      2
+    );
+  }
   is(
     gBrowser.selectedBrowser.browsingContext.currentWindowGlobal.innerWindowId,
     secondPageInnerWindowId,
@@ -286,8 +327,9 @@ add_task(async function consoleClearPersist() {
   await onConsoleClearPrevented;
   ok(true, "console.clear was handled by the client");
 
-  ok(
-    findAllMessages(hud).length === INITIAL_LOGS_NUMBER + 2,
+  Assert.strictEqual(
+    findAllMessages(hud).length,
+    INITIAL_LOGS_NUMBER + 2,
     "All initial messages are still displayed, with the 2 new ones"
   );
 
@@ -313,9 +355,14 @@ function assertLastMessageIsNavigationMessage(hud, timeBeforeNavigation, url) {
   );
   // It is surprising, but the navigation may be timestamped at the same exact time
   // as timeBeforeNavigation time record.
-  ok(
-    lastMessage.timeStamp >= timeBeforeNavigation,
+  Assert.greaterOrEqual(
+    lastMessage.timeStamp,
+    timeBeforeNavigation,
     "The navigation message has a timestamp newer (or equal) than the time before the navigation..."
   );
-  ok(lastMessage.timeStamp < Date.now(), "...and older than current time");
+  Assert.less(
+    lastMessage.timeStamp,
+    Date.now(),
+    "...and older than current time"
+  );
 }

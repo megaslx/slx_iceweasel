@@ -18,7 +18,7 @@ COMPLETION_TEMPLATES_DIR = Path(__file__).resolve().parent / "completion_templat
 
 
 @attr.s
-class CommandInfo(object):
+class CommandInfo:
     name = attr.ib(type=str)
     description = attr.ib(type=str)
     subcommands = attr.ib(type=list)
@@ -452,7 +452,6 @@ def completion_fish(command_context, outfile):
             cmds_opts.append(comp)
 
         for sub in cmd.subcommands:
-
             for opt_strs, description in sub.options.items():
                 comp = (
                     "complete -c mach -A -n '__fish_mach_complete_subcommand {} {}' "

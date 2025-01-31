@@ -12,29 +12,12 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Ident, Index, TraitBound};
 use synstructure::{decl_derive, Structure, BindStyle, AddBounds};
-use unicode_xid::UnicodeXID;
-
-// Internal method for sanitizing an identifier for hygiene purposes.
-fn sanitize_ident(s: &str) -> Ident {
-    let mut res = String::with_capacity(s.len());
-    for mut c in s.chars() {
-        if !UnicodeXID::is_xid_continue(c) {
-            c = '_'
-        }
-        // Deduplicate consecutive _ characters.
-        if res.ends_with('_') && c == '_' {
-            continue;
-        }
-        res.push(c);
-    }
-    Ident::new(&res, Span::call_site())
-}
 
 /// Calculates size type for number of variants (used for enums)
 fn get_discriminant_size_type(len: usize) -> TokenStream {
-    if len <= <u8>::max_value() as usize {
+    if len <= u8::MAX as usize {
         quote! { u8 }
-    } else if len <= <u16>::max_value() as usize {
+    } else if len <= u16::MAX as usize {
         quote! { u16 }
     } else {
         quote! { u32 }
@@ -43,7 +26,7 @@ fn get_discriminant_size_type(len: usize) -> TokenStream {
 
 fn is_struct(s: &Structure) -> bool {
     // a single variant with no prefix is 'struct'
-    matches!(&s.variants()[..], [v] if v.prefix.is_none())
+    matches!(s.variants(), [v] if v.prefix.is_none())
 }
 
 fn derive_max_size(s: &Structure) -> TokenStream {
@@ -136,7 +119,7 @@ fn derive_peek_from_for_enum(s: &mut Structure) -> TokenStream {
 }
 
 fn derive_peek_from_for_struct(s: &mut Structure) -> TokenStream {
-    assert!(is_struct(&s));
+    assert!(is_struct(s));
 
     s.variants_mut()[0].bind_with(|_| BindStyle::RefMut);
     let pat = s.variants()[0].pat();
@@ -166,7 +149,7 @@ fn derive_peek_from_for_struct(s: &mut Structure) -> TokenStream {
 }
 
 fn derive_poke_into(s: &Structure) -> TokenStream {
-    let is_struct = is_struct(&s);
+    let is_struct = is_struct(s);
     let discriminant_size_type = get_discriminant_size_type(s.variants().len());
     let body = s
         .variants()
@@ -241,11 +224,9 @@ fn peek_poke_derive(mut s: Structure) -> TokenStream {
     s.add_trait_bounds(&default_trait, &mut where_clause, AddBounds::Generics);
     s.add_trait_bounds(&peek_trait, &mut where_clause, AddBounds::Generics);
 
-    let dummy_const: Ident = sanitize_ident(&format!("_DERIVE_peek_poke_Peek_FOR_{}", name));
-
     let peek_impl = quote! {
         #[allow(non_upper_case_globals)]
-        const #dummy_const: () = {
+        const _: () = {
             extern crate peek_poke;
 
             impl #impl_generics peek_poke::Peek for #name #ty_generics #where_clause {

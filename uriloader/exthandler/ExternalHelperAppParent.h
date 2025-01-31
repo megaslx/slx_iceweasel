@@ -85,10 +85,9 @@ class ExternalHelperAppParent
                           const nsACString& aContentDispositionHeader,
                           const uint32_t& aContentDispositionHint,
                           const nsAString& aContentDispositionFilename);
-  bool Init(const Maybe<mozilla::net::LoadInfoArgs>& aLoadInfoArgs,
+  bool Init(const mozilla::net::LoadInfoArgs& aLoadInfoArgs,
             const nsACString& aMimeContentType, const bool& aForceSave,
-            nsIURI* aReferrer, BrowsingContext* aContext,
-            const bool& aShouldCloseWindow);
+            nsIURI* aReferrer, BrowsingContext* aContext);
 
  protected:
   virtual ~ExternalHelperAppParent();

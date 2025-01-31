@@ -13,9 +13,9 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/Result.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/Span.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/DOMParser.h"
 #include "mozilla/dom/PathUtilsBinding.h"
 #include "mozilla/dom/Promise.h"
@@ -90,8 +90,8 @@ nsresult PathUtils::InitFileWithPath(nsIFile* aFile, const nsAString& aPath) {
   return aFile->InitWithPath(aPath);
 }
 
-StaticDataMutex<Maybe<PathUtils::DirectoryCache>> PathUtils::sDirCache{
-    "sDirCache"};
+MOZ_RUNINIT StaticDataMutex<Maybe<PathUtils::DirectoryCache>>
+    PathUtils::sDirCache{"sDirCache"};
 
 /**
  * Return the leaf name, including leading path separators in the case of

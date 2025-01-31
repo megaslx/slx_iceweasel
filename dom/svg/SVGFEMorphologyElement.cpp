@@ -116,7 +116,7 @@ nsresult SVGFEMorphologyElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feMorphology);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEMorphologyElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -125,16 +125,16 @@ nsresult SVGFEMorphologyElement::BindToTree(BindContext& aCtx,
 SVGElement::NumberPairAttributesInfo
 SVGFEMorphologyElement::GetNumberPairInfo() {
   return NumberPairAttributesInfo(mNumberPairAttributes, sNumberPairInfo,
-                                  ArrayLength(sNumberPairInfo));
+                                  std::size(sNumberPairInfo));
 }
 
 SVGElement::EnumAttributesInfo SVGFEMorphologyElement::GetEnumInfo() {
-  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, ArrayLength(sEnumInfo));
+  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, std::size(sEnumInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFEMorphologyElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

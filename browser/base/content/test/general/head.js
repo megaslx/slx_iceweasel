@@ -161,31 +161,8 @@ function promiseWindowClosed(win) {
   return promise;
 }
 
-function promiseOpenAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
-  return new Promise(resolve => {
-    let win = OpenBrowserWindow(aOptions);
-    if (aWaitForDelayedStartup) {
-      Services.obs.addObserver(function onDS(aSubject, aTopic, aData) {
-        if (aSubject != win) {
-          return;
-        }
-        Services.obs.removeObserver(onDS, "browser-delayed-startup-finished");
-        resolve(win);
-      }, "browser-delayed-startup-finished");
-    } else {
-      win.addEventListener(
-        "load",
-        function () {
-          resolve(win);
-        },
-        { once: true }
-      );
-    }
-  });
-}
-
 async function whenNewTabLoaded(aWindow, aCallback) {
-  aWindow.BrowserOpenTab();
+  aWindow.BrowserCommands.openTab();
 
   let expectedURL = AboutNewTab.newTabURL;
   let browser = aWindow.gBrowser.selectedBrowser;
@@ -238,25 +215,10 @@ function promiseTabLoadEvent(tab, url) {
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
 
   if (url) {
-    BrowserTestUtils.loadURIString(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;
-}
-
-/**
- * Returns a Promise that resolves once a new tab has been opened in
- * a xul:tabbrowser.
- *
- * @param aTabBrowser
- *        The xul:tabbrowser to monitor for a new tab.
- * @return {Promise}
- *        Resolved when the new tab has been opened.
- * @resolves to the TabOpen event that was fired.
- * @rejects Never.
- */
-function waitForNewTabEvent(aTabBrowser) {
-  return BrowserTestUtils.waitForEvent(aTabBrowser.tabContainer, "TabOpen");
 }
 
 function is_hidden(element) {
@@ -281,7 +243,7 @@ function is_hidden(element) {
 
 function is_element_visible(element, msg) {
   isnot(element, null, "Element should not be null, when checking visibility");
-  ok(BrowserTestUtils.is_visible(element), msg || "Element should be visible");
+  ok(BrowserTestUtils.isVisible(element), msg || "Element should be visible");
 }
 
 function is_element_hidden(element, msg) {
@@ -327,13 +289,31 @@ function promiseOnBookmarkItemAdded(aExpectedURI) {
   });
 }
 
-async function loadBadCertPage(url) {
+async function loadBadCertPage(url, feltPrivacy = false) {
   let loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  BrowserTestUtils.loadURIString(gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, url);
   await loaded;
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
-    content.document.getElementById("exceptionDialogButton").click();
-  });
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [feltPrivacy],
+    async isFeltPrivacy => {
+      if (isFeltPrivacy) {
+        let netErrorCard =
+          content.document.querySelector("net-error-card").wrappedJSObject;
+        await netErrorCard.getUpdateComplete();
+        netErrorCard.advancedButton.click();
+        await ContentTaskUtils.waitForCondition(() => {
+          return (
+            netErrorCard.exceptionButton &&
+            !netErrorCard.exceptionButton.disabled
+          );
+        }, "Waiting for exception button");
+        netErrorCard.exceptionButton.click();
+      } else {
+        content.document.getElementById("exceptionDialogButton").click();
+      }
+    }
+  );
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 }

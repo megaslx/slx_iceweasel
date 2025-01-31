@@ -3,7 +3,15 @@
 
 "use strict";
 
+const THEME_PREF = "devtools.theme";
+
 add_task(async function () {
+  await pushPref(THEME_PREF, "light");
+  await pushPref("devtools.high-contrast-mode-support", true);
+  // force HCM
+  await pushPref("browser.display.document_color_use", 2);
+  await pushPref("ui.useAccessibilityTheme", 1);
+
   // For some reason, mochitest spawn a very special default tab,
   // whose WindowGlobal is still the initial about:blank document.
   // This seems to be specific to mochitest, this doesn't reproduce
@@ -20,31 +28,79 @@ add_task(async function () {
   const platform = root.getAttribute("platform");
   const expectedPlatform = getPlatform();
   is(platform, expectedPlatform, ":root[platform] is correct");
+  checkTheme(root, {
+    theme: "light",
+    className: "theme-light",
+    forcedColorsActive: false,
+  });
 
-  const theme = Services.prefs.getCharPref("devtools.theme");
-  const className = "theme-" + theme;
+  await switchTheme(root, "dark");
+  checkTheme(root, {
+    theme: "dark",
+    className: "theme-dark",
+    forcedColorsActive: false,
+  });
+
+  // When setting theme to "auto", we rely on Services.appinfo.chromeColorSchemeIsDark.
+  const isDark = Services.appinfo.chromeColorSchemeIsDark;
+  await switchTheme(root, "auto", isDark ? "dark" : "light");
+  checkTheme(root, {
+    theme: isDark ? "dark" : "light",
+    className: isDark ? "theme-dark" : "theme-light",
+    forcedColorsActive: true,
+  });
+
+  info(
+    "Check that disabling HCM will remove the forced-colors-active attribute"
+  );
+  await pushPref("browser.display.document_color_use", 0);
+  await pushPref("ui.useAccessibilityTheme", 0);
+  checkTheme(root, {
+    theme: isDark ? "dark" : "light",
+    className: isDark ? "theme-dark" : "theme-light",
+    forcedColorsActive: false,
+  });
+
+  await toolbox.destroy();
+});
+
+function switchTheme(root, themePrefValue, appliedTheme = themePrefValue) {
+  const ac = new AbortController();
+  const onThemeSwitched = new Promise(res =>
+    gDevTools.on(
+      "theme-switched",
+      (win, newTheme) => {
+        if (win === root.ownerGlobal && newTheme === appliedTheme) {
+          res();
+          ac.abort();
+        }
+      },
+      { signal: ac.signal }
+    )
+  );
+  pushPref(THEME_PREF, themePrefValue);
+  return onThemeSwitched;
+}
+
+function checkTheme(root, { theme, className, forcedColorsActive }) {
+  const themePrefValue = Services.prefs.getCharPref(THEME_PREF);
   ok(
     root.classList.contains(className),
-    ":root has " + className + " class (current theme)"
+    `:root has ${className} class for ${themePrefValue} theme (${root.className})`
   );
 
-  // Convert the xpath result into an array of strings
-  // like `href="{URL}" type="text/css"`
-  const sheetsIterator = doc.evaluate(
-    "processing-instruction('xml-stylesheet')",
-    doc,
-    null,
-    XPathResult.ANY_TYPE,
-    null
+  is(
+    root.hasAttribute("forced-colors-active"),
+    forcedColorsActive,
+    `high contrast mode is ${
+      !forcedColorsActive ? "not " : ""
+    }supported in ${themePrefValue} theme`
   );
-  const sheetsInDOM = [];
 
-  /* eslint-disable no-cond-assign */
-  let sheet;
-  while ((sheet = sheetsIterator.iterateNext())) {
-    sheetsInDOM.push(sheet.data);
-  }
-  /* eslint-enable no-cond-assign */
+  const sheetsInDOM = Array.from(
+    root.ownerDocument.querySelectorAll("link[rel='stylesheet']"),
+    l => l.href
+  );
 
   const sheetsFromTheme = gDevTools.getThemeDefinition(theme).stylesheets;
   info("Checking for existence of " + sheetsInDOM.length + " sheets");
@@ -54,9 +110,7 @@ add_task(async function () {
       "There is a stylesheet for " + themeSheet
     );
   }
-
-  await toolbox.destroy();
-});
+}
 
 function getPlatform() {
   const { OS } = Services.appinfo;

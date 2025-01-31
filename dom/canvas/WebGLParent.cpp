@@ -6,6 +6,7 @@
 #include "WebGLParent.h"
 
 #include "WebGLChild.h"
+#include "mozilla/layers/SharedSurfacesParent.h"
 #include "mozilla/layers/TextureClientSharedSurface.h"
 #include "ImageContainer.h"
 #include "HostWebGLContext.h"
@@ -18,13 +19,16 @@ mozilla::ipc::IPCResult WebGLParent::RecvInitialize(
   mHost = HostWebGLContext::Create({nullptr, this}, desc, out);
 
   if (!mHost) {
-    MOZ_ASSERT(!out->error.empty());
+    MOZ_ASSERT(!out->error->empty());
   }
 
   return IPC_OK();
 }
 
-WebGLParent::WebGLParent() = default;
+WebGLParent::WebGLParent(layers::SharedSurfacesHolder* aSharedSurfacesHolder,
+                         const dom::ContentParentId& aContentId)
+    : mSharedSurfacesHolder(aSharedSurfacesHolder), mContentId(aContentId) {}
+
 WebGLParent::~WebGLParent() = default;
 
 // -
@@ -54,21 +58,39 @@ IPCResult WebGLParent::RecvDispatchCommands(BigBuffer&& shmem,
     MOZ_ALWAYS_TRUE(!initialOffset);
   }
 
+  std::optional<std::string> fatalError;
+
   while (true) {
     view.AlignTo(kUniversalAlignment);
     size_t id = 0;
     if (!view.ReadParam(&id)) break;
 
-    const auto ok = WebGLMethodDispatcher<0>::DispatchCommand(*mHost, id, view);
+    // We split this up so that we don't end up in a long callstack chain of
+    // WebGLMethodDispatcher<i>|i=0->N. First get the lambda for dispatch, then
+    // invoke the lambda with our args.
+    const auto pfn =
+        WebGLMethodDispatcher<0>::DispatchCommandFuncById<HostWebGLContext>(id);
+    if (!pfn) {
+      const nsPrintfCString cstr(
+          "MethodDispatcher<%zu> not found. Please file a bug!", id);
+      fatalError = ToString(cstr);
+      gfxCriticalError() << *fatalError;
+      break;
+    };
+
+    const auto ok = (*pfn)(*mHost, view);
     if (!ok) {
       const nsPrintfCString cstr(
-          "DispatchCommand(id: %i) failed. Please file a bug!", int(id));
-      const auto str = ToString(cstr);
-      gfxCriticalError() << str;
-      mHost->JsWarning(str);
-      mHost->OnContextLoss(webgl::ContextLossReason::None);
+          "DispatchCommand(id: %zu) failed. Please file a bug!", id);
+      fatalError = ToString(cstr);
+      gfxCriticalError() << *fatalError;
       break;
     }
+  }
+
+  if (fatalError) {
+    mHost->JsWarning(*fatalError);
+    mHost->OnContextLoss(webgl::ContextLossReason::None);
   }
 
   return IPC_OK();
@@ -95,6 +117,15 @@ mozilla::ipc::IPCResult WebGLParent::Recv__delete__() {
 }
 
 void WebGLParent::ActorDestroy(ActorDestroyReason aWhy) { mHost = nullptr; }
+
+mozilla::ipc::IPCResult WebGLParent::RecvWaitForTxn(
+    layers::RemoteTextureOwnerId aOwnerId,
+    layers::RemoteTextureTxnType aTxnType, layers::RemoteTextureTxnId aTxnId) {
+  if (mHost) {
+    mHost->WaitForTxn(aOwnerId, aTxnType, aTxnId);
+  }
+  return IPC_OK();
+}
 
 // -
 
@@ -430,15 +461,6 @@ IPCResult WebGLParent::RecvGetVertexAttrib(GLuint index, GLenum pname,
   }
 
   *ret = mHost->GetVertexAttrib(index, pname);
-  return IPC_OK();
-}
-
-IPCResult WebGLParent::RecvIsEnabled(GLenum cap, bool* const ret) {
-  if (!mHost) {
-    return IPC_FAIL(this, "HostWebGLContext is not initialized.");
-  }
-
-  *ret = mHost->IsEnabled(cap);
   return IPC_OK();
 }
 

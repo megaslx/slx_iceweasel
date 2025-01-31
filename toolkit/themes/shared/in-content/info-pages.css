@@ -34,9 +34,11 @@ body.wide-container {
   background-position: left 0;
   background-repeat: no-repeat;
   background-size: 1.6em;
+  /* Ensure sufficient space for the background image: */
+  min-height: 1.6em;
   margin-inline-start: -2.3em;
   padding-inline-start: 2.3em;
-  font-size: 2.2em;
+  font-size: 2.2rem;
   -moz-context-properties: fill;
   fill: currentColor;
 }
@@ -47,7 +49,7 @@ body.wide-container {
 }
 
 .title-text {
-  font-size: inherit;
+  font-size: 2.2rem;
   padding-bottom: 0.4em;
 }
 

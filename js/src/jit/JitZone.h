@@ -8,6 +8,7 @@
 #define jit_JitZone_h
 
 #include "mozilla/Assertions.h"
+#include "mozilla/EnumeratedArray.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
@@ -19,6 +20,7 @@
 
 #include "gc/Barrier.h"
 #include "gc/Marking.h"
+#include "jit/CacheIRAOT.h"
 #include "jit/ExecutableAllocator.h"
 #include "jit/ICStubSpace.h"
 #include "jit/Invalidation.h"
@@ -88,8 +90,22 @@ struct BaselineCacheIRStubCodeMapGCPolicy {
 enum JitScriptFilter : bool { SkipDyingScripts, IncludeDyingScripts };
 
 class JitZone {
-  // Allocated space for optimized baseline stubs.
-  OptimizedICStubSpace optimizedStubSpace_;
+ public:
+  enum class StubKind : uint32_t {
+    StringConcat = 0,
+    RegExpMatcher,
+    RegExpSearcher,
+    RegExpExecMatch,
+    RegExpExecTest,
+    Count
+  };
+  template <typename Code>
+  using Stubs =
+      mozilla::EnumeratedArray<StubKind, Code, size_t(StubKind::Count)>;
+
+ private:
+  // Allocated space for CacheIR stubs.
+  ICStubSpace stubSpace_;
 
   // Set of CacheIRStubInfo instances used by Ion stubs in this Zone.
   using IonCacheIRStubInfoSet =
@@ -113,10 +129,45 @@ class JitZone {
 
   mozilla::LinkedList<JitScript> jitScripts_;
 
+  // The following two fields are a pair of associated scripts. If they are
+  // non-null, the child has been inlined into the parent, and we have bailed
+  // out due to a MonomorphicInlinedStubFolding bailout. If it wasn't
+  // trial-inlined, we need to track for the parent if we attach a new case to
+  // the corresponding folded stub which belongs to the child.
+  WeakHeapPtr<JSScript*> lastStubFoldingBailoutChild_;
+  WeakHeapPtr<JSScript*> lastStubFoldingBailoutParent_;
+
+  // The JitZone stores stubs to concatenate strings inline and perform RegExp
+  // calls inline. These bake in zone specific pointers and can't be stored in
+  // JitRuntime. They also are dependent on the value of 'initialStringHeap' and
+  // must be flushed when its value changes.
+  //
+  // These are weak pointers. Ion compilations store strong references to stubs
+  // they depend on in WarpSnapshot.
+  Stubs<WeakHeapPtr<JitCode*>> stubs_;
+
   mozilla::Maybe<IonCompilationId> currentCompilationId_;
   bool keepJitScripts_ = false;
 
+  // Whether AOT IC loading failed due to OOM; if so, disable
+  // enforcing-AOT checks.
+  bool incompleteAOTICs_ = false;
+
+  gc::Heap initialStringHeap = gc::Heap::Tenured;
+
+  JitCode* generateStringConcatStub(JSContext* cx);
+  JitCode* generateRegExpMatcherStub(JSContext* cx);
+  JitCode* generateRegExpSearcherStub(JSContext* cx);
+  JitCode* generateRegExpExecMatchStub(JSContext* cx);
+  JitCode* generateRegExpExecTestStub(JSContext* cx);
+
  public:
+  explicit JitZone(JSContext* cx, bool zoneHasNurseryStrings) {
+    setStringsCanBeInNursery(zoneHasNurseryStrings);
+#ifdef ENABLE_JS_AOT_ICS
+    js::jit::FillAOTICs(cx, this);
+#endif
+  }
   ~JitZone() {
     MOZ_ASSERT(jitScripts_.isEmpty());
     MOZ_ASSERT(!keepJitScripts_);
@@ -126,9 +177,9 @@ class JitZone {
 
   void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                               JS::CodeSizes* code, size_t* jitZone,
-                              size_t* baselineStubsOptimized) const;
+                              size_t* cacheIRStubs) const;
 
-  OptimizedICStubSpace* optimizedStubSpace() { return &optimizedStubSpace_; }
+  ICStubSpace* stubSpace() { return &stubSpace_; }
 
   JitCode* getBaselineCacheIRStubCode(const CacheIRStubKey::Lookup& key,
                                       CacheIRStubInfo** stubInfo) {
@@ -176,6 +227,24 @@ class JitZone {
     inlinedCompilations_.remove(inlined);
   }
 
+  void noteStubFoldingBailout(JSScript* child, JSScript* parent) {
+    lastStubFoldingBailoutChild_ = child;
+    lastStubFoldingBailoutParent_ = parent;
+  }
+  bool hasStubFoldingBailoutData(JSScript* child) const {
+    return lastStubFoldingBailoutChild_ &&
+           lastStubFoldingBailoutChild_.get() == child &&
+           lastStubFoldingBailoutParent_;
+  }
+  JSScript* stubFoldingBailoutParent() const {
+    MOZ_ASSERT(lastStubFoldingBailoutChild_);
+    return lastStubFoldingBailoutParent_.get();
+  }
+  void clearStubFoldingBailoutData() {
+    lastStubFoldingBailoutChild_ = nullptr;
+    lastStubFoldingBailoutParent_ = nullptr;
+  }
+
   void registerJitScript(JitScript* script) { jitScripts_.insertBack(script); }
 
   // Iterate over all JitScripts in this zone calling |f| on each, allowing |f|
@@ -220,6 +289,78 @@ class JitZone {
   }
   mozilla::Maybe<IonCompilationId>& currentCompilationIdRef() {
     return currentCompilationId_;
+  }
+
+  void setIncompleteAOTICs() { incompleteAOTICs_ = true; }
+  bool isIncompleteAOTICs() const { return incompleteAOTICs_; }
+
+  void traceWeak(JSTracer* trc, JS::Realm* realm);
+
+  void discardStubs() {
+    for (WeakHeapPtr<JitCode*>& stubRef : stubs_) {
+      stubRef = nullptr;
+    }
+  }
+
+  bool hasStubs() const {
+    for (const WeakHeapPtr<JitCode*>& stubRef : stubs_) {
+      if (stubRef) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void setStringsCanBeInNursery(bool allow) {
+    MOZ_ASSERT(!hasStubs());
+    initialStringHeap = allow ? gc::Heap::Default : gc::Heap::Tenured;
+  }
+
+  [[nodiscard]] JitCode* ensureStubExists(JSContext* cx, StubKind kind) {
+    if (JitCode* code = stubs_[kind]) {
+      return code;
+    }
+    switch (kind) {
+      case StubKind::StringConcat:
+        stubs_[kind] = generateStringConcatStub(cx);
+        break;
+      case StubKind::RegExpMatcher:
+        stubs_[kind] = generateRegExpMatcherStub(cx);
+        break;
+      case StubKind::RegExpSearcher:
+        stubs_[kind] = generateRegExpSearcherStub(cx);
+        break;
+      case StubKind::RegExpExecMatch:
+        stubs_[kind] = generateRegExpExecMatchStub(cx);
+        break;
+      case StubKind::RegExpExecTest:
+        stubs_[kind] = generateRegExpExecTestStub(cx);
+        break;
+      case StubKind::Count:
+        MOZ_CRASH("Invalid kind");
+    }
+    return stubs_[kind];
+  }
+
+  static constexpr size_t offsetOfStringConcatStub() {
+    return offsetof(JitZone, stubs_) +
+           size_t(StubKind::StringConcat) * sizeof(uintptr_t);
+  }
+  static constexpr size_t offsetOfRegExpMatcherStub() {
+    return offsetof(JitZone, stubs_) +
+           size_t(StubKind::RegExpMatcher) * sizeof(uintptr_t);
+  }
+  static constexpr size_t offsetOfRegExpSearcherStub() {
+    return offsetof(JitZone, stubs_) +
+           size_t(StubKind::RegExpSearcher) * sizeof(uintptr_t);
+  }
+  static constexpr size_t offsetOfRegExpExecMatchStub() {
+    return offsetof(JitZone, stubs_) +
+           size_t(StubKind::RegExpExecMatch) * sizeof(uintptr_t);
+  }
+  static constexpr size_t offsetOfRegExpExecTestStub() {
+    return offsetof(JitZone, stubs_) +
+           size_t(StubKind::RegExpExecTest) * sizeof(uintptr_t);
   }
 };
 

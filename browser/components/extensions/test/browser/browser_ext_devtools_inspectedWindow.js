@@ -139,9 +139,8 @@ add_task(async function test_devtools_inspectedWindow_tabId() {
 
   await extension.startup();
 
-  let backgroundPageCurrentTabId = await extension.awaitMessage(
-    "current-tab-id"
-  );
+  let backgroundPageCurrentTabId =
+    await extension.awaitMessage("current-tab-id");
 
   await openToolboxForTab(tab);
 
@@ -464,7 +463,7 @@ add_task(async function test_devtools_inspectedWindow_eval_target_lifecycle() {
   );
 
   function devtools_page() {
-    browser.test.onMessage.addListener(async (msg, ...args) => {
+    browser.test.onMessage.addListener(async msg => {
       if (msg !== "inspectedWindow-eval-requests") {
         browser.test.fail(`Unexpected test message received: ${msg}`);
         return;

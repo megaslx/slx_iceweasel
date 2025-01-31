@@ -7,8 +7,10 @@
             closeExtensionsPanel,
             createExtensions,
             ensureMaximizedWindow,
+            getBlockKey
             getMessageBars,
             getUnifiedExtensionsItem,
+            loadBlocklistRawData,
             openExtensionsPanel,
             openUnifiedExtensionsContextMenu,
             promiseSetToolbarVisibility
@@ -194,6 +196,46 @@ const promiseSetToolbarVisibility = (toolbar, visible) => {
 const getMessageBars = (win = window) => {
   const { panel } = win.gUnifiedExtensions;
   return panel.querySelectorAll(
-    "#unified-extensions-messages-container > message-bar"
+    "#unified-extensions-messages-container > moz-message-bar"
   );
+};
+
+const getBlockKey = ({ id, version }) => {
+  if (!id || !version) {
+    // Throw an error if the resulting block key would not be a valid one.
+    throw new Error(
+      "getBlockKey requires id and version to be defined and non-empty"
+    );
+  }
+  return `${id}:${version}`;
+};
+
+const loadBlocklistRawData = async stash => {
+  const { AddonTestUtils } = ChromeUtils.importESModule(
+    "resource://testing-common/AddonTestUtils.sys.mjs"
+  );
+  await AddonTestUtils.loadBlocklistRawData({
+    extensionsMLBF: [
+      {
+        stash: {
+          blocked: stash.blocked?.map(getBlockKey) ?? [],
+          softblocked: stash.softblocked?.map(getBlockKey) ?? [],
+          unblocked: stash.unblocked?.map(getBlockKey) ?? [],
+        },
+        stash_time: 0,
+      },
+    ],
+  });
+  let needsCleanupBlocklist = true;
+  const cleanupBlocklist = async () => {
+    if (!needsCleanupBlocklist) {
+      return;
+    }
+    await AddonTestUtils.loadBlocklistRawData({
+      extensionsMLBF: [],
+    });
+    needsCleanupBlocklist = false;
+  };
+  registerCleanupFunction(cleanupBlocklist);
+  return cleanupBlocklist;
 };

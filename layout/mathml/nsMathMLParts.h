@@ -52,16 +52,10 @@ nsContainerFrame* NS_NewMathMLmtdFrame(mozilla::PresShell* aPresShell,
                                        nsTableFrame* aTableFrame);
 nsContainerFrame* NS_NewMathMLmtdInnerFrame(mozilla::PresShell* aPresShell,
                                             mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLmsqrtFrame(mozilla::PresShell* aPresShell,
-                                 mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmrootFrame(mozilla::PresShell* aPresShell,
                                  mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLmactionFrame(mozilla::PresShell* aPresShell,
-                                   mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmencloseFrame(mozilla::PresShell* aPresShell,
                                     mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLsemanticsFrame(mozilla::PresShell* aPresShell,
-                                     mozilla::ComputedStyle* aStyle);
 
 nsContainerFrame* NS_NewMathMLmathBlockFrame(mozilla::PresShell* aPresShell,
                                              mozilla::ComputedStyle* aStyle);

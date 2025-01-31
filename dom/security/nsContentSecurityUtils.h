@@ -21,9 +21,10 @@ class NS_ConvertUTF8toUTF16;
 
 namespace mozilla::dom {
 class Document;
+class Element;
 }  // namespace mozilla::dom
 
-using FilenameTypeAndDetails = std::pair<nsCString, mozilla::Maybe<nsString>>;
+using FilenameTypeAndDetails = std::pair<nsCString, mozilla::Maybe<nsCString>>;
 
 class nsContentSecurityUtils {
  public:
@@ -38,9 +39,8 @@ class nsContentSecurityUtils {
   static bool IsEvalAllowed(JSContext* cx, bool aIsSystemPrincipal,
                             const nsAString& aScript);
   static void NotifyEvalUsage(bool aIsSystemPrincipal,
-                              NS_ConvertUTF8toUTF16& aFileNameA,
-                              uint64_t aWindowID, uint32_t aLineNumber,
-                              uint32_t aColumnNumber);
+                              const nsACString& aFileName, uint64_t aWindowID,
+                              uint32_t aLineNumber, uint32_t aColumnNumber);
 
   // Helper function for various checks:
   // This function detects profiles with userChrome.js or extension signatures
@@ -66,13 +66,20 @@ class nsContentSecurityUtils {
   // 2. x-frame-options
   static bool CheckCSPFrameAncestorAndXFO(nsIChannel* aChannel);
 
+  // Implements https://w3c.github.io/webappsec-csp/#is-element-nonceable.
+  //
+  // Returns an empty nonce for elements without a nonce OR when a potential
+  // dangling markup attack was detected.
+  static nsString GetIsElementNonceableNonce(
+      const mozilla::dom::Element& aElement);
+
   // Helper function to Check if a Download is allowed;
   static long ClassifyDownload(nsIChannel* aChannel,
                                const nsAutoCString& aMimeTypeGuess);
 
   // Public only for testing
   static FilenameTypeAndDetails FilenameToFilenameType(
-      const nsString& fileName, bool collectAdditionalExtensionData);
+      const nsACString& fileName, bool collectAdditionalExtensionData);
   static char* SmartFormatCrashString(const char* str);
   static char* SmartFormatCrashString(char* str);
   static nsCString SmartFormatCrashString(const char* part1, const char* part2,

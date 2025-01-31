@@ -3,7 +3,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* all localizable skin settings shall live here */
-@import url("chrome://global/skin/design-tokens-system.css");
+
+@import url("chrome://global/skin/design-system/tokens-platform.css");
+@import url("chrome://global/skin/design-system/text-and-typography.css");
 
 @import url("chrome://global/locale/intl.css");
 @import url("chrome://global/content/widgets.css");
@@ -17,6 +19,8 @@
   --default-focusring-width: 2px;
   --default-focusring: var(--default-focusring-width) dotted;
 
+  --animation-easing-function: cubic-bezier(.07, .95, 0, 1);
+
   --arrowpanel-background: Field;
   --arrowpanel-color: FieldText;
   --arrowpanel-border-color: ThreeDShadow;
@@ -27,43 +31,100 @@
   --arrowpanel-dimmed-further: color-mix(in srgb, currentColor 30%, transparent);
 
   --panel-separator-color: color-mix(in srgb, currentColor 25%, transparent);
-  --panel-disabled-color: color-mix(in srgb, currentColor 40%, transparent);
 
   --popup-notification-body-width: calc(31em - calc(2 * var(--arrowpanel-padding)));
 
+  --input-border-color: color-mix(in srgb, currentColor 46%, transparent);
+
   --toolbarbutton-icon-fill: currentColor;
+  --toolbarbutton-icon-fill-attention: AccentColor;
+  --toolbarbutton-icon-fill-attention-text: AccentColorText;
   --toolbarbutton-disabled-opacity: 0.4;
 
   --toolbar-field-background-color: Field;
   --toolbar-field-color: FieldText;
-  --toolbar-field-border-color: ThreeDShadow;
+  --toolbar-field-border-color: var(--input-border-color);
   --toolbar-field-focus-background-color: Field;
   --toolbar-field-focus-color: FieldText;
-}
+  --toolbar-field-focus-border-color: color-mix(in srgb, var(--focus-outline-color) 50%, transparent);
 
-:root:-moz-lwtheme {
-  --toolbar-field-background-color: rgba(255, 255, 255, 0.8);
-  --toolbar-field-focus-background-color: white;
-  --toolbar-field-color: black;
-  --toolbar-field-focus-color: black;
-  --toolbar-field-border-color: transparent;
-}
+  --toolbar-bgcolor: color-mix(in srgb, -moz-dialog 85%, white);
+  --toolbar-color: -moz-dialogtext;
 
-@media (prefers-contrast) {
-  :root {
+  /* Override some toolbar colors when not under prefers-contrast. Note that
+   * for the browser window these might be overridden by
+   * browser-colors.css.
+   *
+   * For the light theme we use .05 alpha, to increase the contrast of the
+   * text. For the dark theme, we use a darker background, which works because
+   * the toolbar background applies some white unconditionally.
+   */
+  @media not (prefers-contrast) {
+    --toolbar-field-border-color: transparent;
+    --toolbar-field-background-color: light-dark(rgba(0, 0, 0, .05), rgba(0, 0, 0, .3));
+    --toolbar-field-color: inherit;
+
+    @media (prefers-color-scheme: light) {
+      --toolbar-bgcolor: white;
+    }
+  }
+
+  &[lwtheme] {
+    --toolbar-bgcolor: rgba(255,255,255,.4);
+    --toolbar-color: var(--lwt-text-color, inherit);
+
+    --toolbarbutton-icon-fill-attention: light-dark(rgb(0, 97, 224), rgb(0, 221, 255));
+    --toolbarbutton-icon-fill-attention-text-light: rgb(240, 240, 244);
+    --toolbarbutton-icon-fill-attention-text-dark: rgb(28, 27, 34);
+    --toolbarbutton-icon-fill-attention-text: light-dark(
+      var(--toolbarbutton-icon-fill-attention-text-light),
+      var(--toolbarbutton-icon-fill-attention-text-dark)
+    );
+    &[lwt-icon-fill-attention="dark"] {
+      --toolbarbutton-icon-fill-attention-text: var(--toolbarbutton-icon-fill-attention-text-light);
+    }
+    &[lwt-icon-fill-attention="light"] {
+      --toolbarbutton-icon-fill-attention-text: var(--toolbarbutton-icon-fill-attention-text-dark);
+    }
+  }
+
+  /* This color scheme should match --toolbar-color. However, note that
+   * individual toolbars might override this (see ToolbarIconColor and the
+   * brighttext attribute). */
+  --toolbar-color-scheme: light dark;
+  &[lwt-toolbar="light"] {
+    --toolbar-color-scheme: light;
+  }
+  &[lwt-toolbar="dark"] {
+    --toolbar-color-scheme: dark;
+  }
+
+  @media (prefers-contrast) {
     /* Reduce the opacity of disabled toolbar buttons in order to increase
        contrast with the enabled state. */
     --toolbarbutton-disabled-opacity: 0.3;
 
     --panel-separator-color: currentColor;
+    --toolbar-field-focus-border-color: var(--focus-outline-color);
+
+    --input-border-color: currentColor;
   }
 
-  :root:not(:-moz-lwtheme) {
-    --panel-disabled-color: GrayText;
+  @media (forced-colors) {
+    --input-border-color: ThreeDShadow;
+  }
+
+  background-color: -moz-Dialog;
+  color: -moz-DialogText;
+  font: message-box;
+  -moz-box-collapse: legacy;
+
+  &[dialogroot] {
+    font: menu;
   }
 }
 
-:is(menupopup, panel)[type=arrow] {
+:is(menupopup, panel):where([type=arrow]) {
   --panel-background: var(--arrowpanel-background);
   --panel-color: var(--arrowpanel-color);
   --panel-border-color: var(--arrowpanel-border-color);
@@ -73,6 +134,17 @@
 
 /* Lightweight theme roots */
 
+:root[lwtheme] {
+  toolbar,
+  &[lwt-popup="light"] panel {
+    color-scheme: light;
+  }
+  toolbar[brighttext],
+  &[lwt-popup="dark"] panel {
+    color-scheme: dark;
+  }
+}
+
 :root[lwtheme-image] {
   text-shadow: 0 -0.5px 1.5px white;
 }
@@ -81,28 +153,95 @@
   text-shadow: 1px 1px 1.5px black;
 }
 
-/* General styles */
-
-.plain {
-  appearance: none;
-  margin: 0 !important;
-  border: none;
-  padding: 0;
+/* Rules for 'hiding' portions of the chrome for special
+   kinds of windows with toolbars (not just browser windows) */
+:root[chromehidden~="menubar"] .chromeclass-menubar,
+:root[chromehidden~="directories"] .chromeclass-directories,
+:root[chromehidden~="status"] .chromeclass-status,
+:root[chromehidden~="extrachrome"] .chromeclass-extrachrome,
+:root[chromehidden~="location"] .chromeclass-location,
+:root[chromehidden~="location"][chromehidden~="toolbar"] .chromeclass-toolbar,
+:root[chromehidden~="toolbar"] .chromeclass-toolbar-additional {
+  display: none;
 }
+
+/* General styles */
 
 moz-input-box,
 html|input {
   min-width: 0;
 }
 
+html|input {
+  margin: 2px 4px;
+}
+
 html|button,
 html|input,
+html|select,
 html|textarea {
   font: inherit;
 }
 
+html|input:where(:not([type=radio i], [type=checkbox i], [type=range i])),
+html|textarea {
+  appearance: none;
+  padding: var(--space-small);
+  border: 1px solid var(--input-border-color);
+  border-radius: var(--border-radius-small);
+  margin: 0;
+  background-color: var(--input-bgcolor, Field);
+  color: var(--input-color, FieldText);
+
+  &:where(:user-invalid) {
+    border-color: var(--outline-color-error);
+  }
+
+  &:where(:focus-visible) {
+    outline: var(--focus-outline);
+    outline-offset: var(--focus-outline-inset);
+  }
+}
+
+/* adapted from toolkit/themes/shared/menulist-shared.css */
+html|select:where(:not([size], [multiple])) {
+  appearance: none;
+  padding: 6px 16px;
+  padding-inline-end: 32px; /* 2 * 10px padding + image's 12px width */
+  margin: 5px 2px 3px;
+  border: none;
+  border-radius: var(--border-radius-small);
+
+  font-weight: var(--font-weight-bold);
+
+  color: var(--button-text-color);
+  background-color: var(--button-background-color);
+  background-image: url(chrome://global/skin/icons/arrow-down-12.svg);
+  background-position: right 10px center;
+  background-repeat: no-repeat;
+  -moz-context-properties: fill;
+  fill: currentColor;
+
+  &:-moz-locale-dir(rtl) {
+    background-position-x: left 10px;
+  }
+
+  &:hover {
+    background-color: var(--button-background-color-hover);
+  }
+
+  &:hover:active {
+    background-color: var(--button-background-color-active);
+  }
+
+  &:focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--focus-outline-offset);
+  }
+}
+
 .header {
-  font-weight: bold;
+  font-weight: var(--font-weight-bold);
 }
 
 .indent {
@@ -149,24 +288,19 @@ xul|label[disabled="true"] {
 /* Links */
 
 .text-link,
-a {
-  color: -moz-nativehyperlinktext;
+a,
+::part(support-link) {
+  color: var(--link-color);
   cursor: pointer;
   text-decoration: underline;
+
+  &:focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--link-focus-outline-offset);
+    border-radius: 1px;
+  }
 }
 
-:is(a, .text-link):-moz-lwtheme {
-  color: inherit;
-}
-
-:is(a, .text-link):focus-visible {
-  outline: var(--focus-outline);
-  /* Not using --focus-outline-offset here because that's intended for elements
-     with a background, and we only want a slight offset here while not
-     overlapping adjacent text. */
-  outline-offset: 1px;
-  border-radius: 1px;
-}
 
 /* Override properties set on buttons, to display the links without unwanted styling */
 button.text-link {
@@ -193,59 +327,68 @@ button.text-link .button-text {
 /* Panel footer buttons */
 
 .panel-footer {
-  display: flex;
-  justify-content: flex-end;
   margin: 8px 16px 16px;
 }
 
-.panel-footer > button {
+.footer-button {
   appearance: none;
   border: 0;
-  border-radius: 4px;
-  color: var(--button-color, inherit);
-  background-color: var(--button-bgcolor, color-mix(in srgb, currentColor 13%, transparent));
-  padding: 8px 16px;
+  border-radius: var(--border-radius-small);
+  color: var(--button-text-color);
+  background-color: var(--button-background-color);
+  padding: .45em 1em;
+  min-height: var(--size-item-large);
   font-weight: 600;
   min-width: 0;
   margin-inline: 8px 0;
   margin-bottom: 0;
-}
 
-.panel-footer > button[disabled] {
-  opacity: 0.4;
-}
+  &.small-button {
+    margin: 0;
+    min-height: var(--size-item-medium);
+    font-size: var(--font-size-small);
+    align-items: center;
+  }
 
-.panel-footer > button:focus-visible {
-  outline: var(--focus-outline);
-  outline-offset: var(--focus-outline-offset);
-}
+  &[disabled] {
+    opacity: 0.4;
+  }
 
-.panel-footer > button:not([disabled]):hover {
-  background-color: var(--button-hover-bgcolor, color-mix(in srgb, currentColor 17%, transparent));
-}
+  &:focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--focus-outline-offset);
+  }
 
-.panel-footer > button:not([disabled]):hover:active {
-  background-color: var(--button-active-bgcolor, color-mix(in srgb, currentColor 30%, transparent));
-}
+  &:not([disabled]) {
+    &:hover {
+      color: var(--button-text-color-hover);
+      background-color: var(--button-background-color-hover);
+    }
+    &:hover:active {
+      color: var(--button-text-color-active);
+      background-color: var(--button-background-color-active);
+    }
+    &[default],
+    &.primary {
+      color: var(--button-text-color-primary);
+      background-color: var(--color-accent-primary);
 
-.panel-footer > button:not([disabled])[default] {
-  color: var(--button-primary-color);
-  background-color: var(--button-primary-bgcolor);
-}
+      &:hover {
+        color: var(--button-text-color-primary-hover);
+        background-color: var(--color-accent-primary-hover);
+      }
+      &:hover:active {
+        background-color: var(--color-accent-primary-active);
+      }
+    }
+  }
 
-.panel-footer > button:not([disabled])[default]:hover {
-  background-color: var(--button-primary-hover-bgcolor);
-}
-
-.panel-footer > button:not([disabled])[default]:hover:active {
-  background-color: var(--button-primary-active-bgcolor);
-}
-
-@media (-moz-platform: windows) {
-  /* Swap the primary and secondary action, because Windows
-   * platform conventions put the primary action on the left. */
-  .panel-footer:not(moz-button-group) > button[default] {
-    order: -1;
+  &[type=menu] > .button-box > .button-menu-dropmarker {
+    appearance: none;
+    display: flex;
+    content: url("chrome://global/skin/icons/arrow-down-12.svg");
+    -moz-context-properties: fill;
+    fill: currentColor;
   }
 }
 
@@ -263,26 +406,28 @@ button.text-link .button-text {
   --panel-border-color: rgba(0,0,0,.4);
   --panel-padding: 0;
   --panel-background: rgba(249,249,250,.8) no-repeat center var(--autoscroll-background-image);
+  --panel-shadow: 0 0 var(--panel-shadow-margin) rgba(0,0,0,.2);
   --panel-shadow-margin: 4px;
-  /* Set pointer-events: none; so that mousemove events can be handled by AutoScrollChild.jsm. */
+  --panel-border-radius: 100%;
+
+  /* Set pointer-events: none; so that mousemove events can be handled by AutoScrollChild.sys.mjs. */
   pointer-events: none;
+
+  &::part(content) {
+    background-clip: padding-box;
+    width: 100%;
+    height: 100%;
+  }
+
+  &[scrolldir="NS"] {
+    --autoscroll-background-image: url("chrome://global/skin/icons/autoscroll-vertical.svg");
+  }
+
+  &[scrolldir="EW"] {
+    --autoscroll-background-image: url("chrome://global/skin/icons/autoscroll-horizontal.svg");
+  }
 }
 
-.autoscroller::part(content) {
-  border-radius: 100%;
-  background-clip: padding-box;
-  box-shadow: 0 0 var(--panel-shadow-margin) rgba(0,0,0,.2);
-  width: 100%;
-  height: 100%;
-}
-
-.autoscroller[scrolldir="NS"] {
-  --autoscroll-background-image: url("chrome://global/skin/icons/autoscroll-vertical.svg");
-}
-
-.autoscroller[scrolldir="EW"] {
-  --autoscroll-background-image: url("chrome://global/skin/icons/autoscroll-horizontal.svg");
-}
 
 /* Combobox dropdown renderer */
 #ContentSelectDropdown > menupopup {
@@ -301,6 +446,11 @@ button.text-link .button-text {
    * backgrounds, so we make sure to apply it on top of the default background. */
   background-image: var(--content-select-background-image, none);
   background-color: -moz-Combobox;
+}
+
+/* Full width separator in select */
+#ContentSelectDropdown menuseparator {
+  padding-inline: 0;
 }
 
 /* Indent options in optgroups */

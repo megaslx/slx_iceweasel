@@ -15,7 +15,7 @@ const ReferrerInfo = Components.Constructor(
   "init"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -141,7 +141,7 @@ function serverHandler(metadata, response) {
   }
 }
 
-function checkRequestResponse(request, data, context) {
+function checkRequestResponse(request, data) {
   if (dbg) {
     print("============== checkRequestResponse: in");
   }

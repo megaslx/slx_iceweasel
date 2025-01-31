@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -49,6 +49,9 @@ FILE *aom_video_reader_get_file(AvxVideoReader *reader);
 
 // Fills AvxVideoInfo with information from opened video file.
 const AvxVideoInfo *aom_video_reader_get_info(AvxVideoReader *reader);
+
+// Set fourcc.
+void aom_video_reader_set_fourcc(AvxVideoReader *reader, uint32_t fourcc);
 
 #ifdef __cplusplus
 }  // extern "C"

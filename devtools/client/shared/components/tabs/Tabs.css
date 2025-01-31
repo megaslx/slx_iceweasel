@@ -37,6 +37,8 @@ div[hidetabs=true] .tabs .tabs-navigation {
   margin: 0;
   margin-inline-end: 15px;
   flex-grow: 1;
+  /* Adjust outline so it's not clipped */
+  outline-offset: -2px;
 }
 
 /* The tab takes entire horizontal space and individual tabs
@@ -58,16 +60,27 @@ div[hidetabs=true] .tabs .tabs-navigation {
   color: var(--theme-toolbar-color);
 }
 
-.tabs .tabs-menu-item.is-active {
-  color: var(--theme-toolbar-selected-color);
-}
-
 .tabs .tabs-menu-item:hover {
   background-color: var(--theme-toolbar-hover);
+  color: var(--theme-toolbar-hover-color);
+}
+
+.tabs .tabs-menu-item.is-active {
+  color: var(--theme-toolbar-selected-color);
+  background-color:  var(--theme-toolbar-selected-background);
+
+  &:hover {
+    background-color: var(--theme-toolbar-selected-hover);
+    color: var(--theme-toolbar-selected-hover-color);
+  }
 }
 
 .tabs .tabs-menu-item:hover:active:not(.is-active) {
   background-color: var(--theme-toolbar-hover-active);
+}
+
+.tabs .tabs-menu-item:has(a:focus-visible) {
+  z-index: 1;
 }
 
 .tabs .tabs-menu-item a {
@@ -88,9 +101,16 @@ div[hidetabs=true] .tabs .tabs-navigation {
   text-align: center;
 }
 
-/* Remove the outline focusring from tabs-menu-item. */
-.tabs .tabs-navigation .tabs-menu-item > a:-moz-focusring {
-  outline: none;
+.tabs .tabs-menu-item a:focus-visible {
+  /* Override the box-shadow from the `:focus-visible` style of common.css. In
+     the tabbar, the focus ring should always be visible so we don't need to
+     force a box-shadow, which will otherwise overlap with the siblings of the
+     focused tab. */
+  box-shadow: unset;
+}
+
+.tabs .tabs-navigation .tabs-menu-item > a {
+  outline-offset: -2px;
 }
 
 .tabs .tabs-menu-item .tab-badge {

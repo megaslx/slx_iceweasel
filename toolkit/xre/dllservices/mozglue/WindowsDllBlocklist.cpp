@@ -15,7 +15,6 @@
 #include "BaseProfiler.h"
 #include "nsWindowsDllInterceptor.h"
 #include "mozilla/CmdLineAndEnvUtils.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/StackWalk_windows.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
@@ -44,11 +43,6 @@ glue::detail::DllServicesBase* gDllServices;
 
 using namespace mozilla;
 
-#ifdef MOZ_CRASHREPORTER
-using CrashReporter::Annotation;
-using CrashReporter::AnnotationWriter;
-#endif
-
 #define DLL_BLOCKLIST_ENTRY(name, ...) {name, __VA_ARGS__},
 #define DLL_BLOCKLIST_STRING_TYPE const char*
 #include "mozilla/WindowsDllBlocklistLegacyDefs.h"
@@ -56,10 +50,13 @@ using CrashReporter::AnnotationWriter;
 // define this for very verbose dll load debug spew
 #undef DEBUG_very_verbose
 
+using WritableBuffer = mozilla::glue::detail::WritableBuffer<1024>;
+
 static uint32_t sInitFlags;
 static bool sBlocklistInitAttempted;
 static bool sBlocklistInitFailed;
 static bool sUser32BeforeBlocklist;
+MOZ_RUNINIT static WritableBuffer sBlocklistWriter;
 
 typedef MOZ_NORETURN_PTR void(__fastcall* BaseThreadInitThunk_func)(
     BOOL aIsInitialThread, void* aStartAddress, void* aThreadParam);
@@ -175,8 +172,6 @@ class ReentrancySentinel {
 };
 
 std::map<DWORD, const char*>* ReentrancySentinel::sThreadMap;
-
-using WritableBuffer = mozilla::glue::detail::WritableBuffer<1024>;
 
 /**
  * This is a linked list of DLLs that have been blocked. It doesn't use
@@ -511,12 +506,7 @@ continue_loading:
   NTSTATUS ret;
   HANDLE myHandle;
 
-  {
-#if defined(_M_AMD64) || defined(_M_ARM64)
-    AutoSuppressStackWalking suppress;
-#endif
-    ret = stub_LdrLoadDll(filePath, flags, moduleFileName, &myHandle);
-  }
+  ret = stub_LdrLoadDll(filePath, flags, moduleFileName, &myHandle);
 
   if (handle) {
     *handle = myHandle;
@@ -527,11 +517,11 @@ continue_loading:
   return ret;
 }
 
-#if defined(NIGHTLY_BUILD)
+#if defined(BLOCK_LOADLIBRARY_INJECTION)
 // Map of specific thread proc addresses we should block. In particular,
 // LoadLibrary* APIs which indicate DLL injection
 static void* gStartAddressesToBlock[4];
-#endif  // defined(NIGHTLY_BUILD)
+#endif  // defined(BLOCK_LOADLIBRARY_INJECTION)
 
 static bool ShouldBlockThread(void* aStartAddress) {
   // Allows crashfirefox.exe to continue to work. Also if your threadproc is
@@ -540,7 +530,7 @@ static bool ShouldBlockThread(void* aStartAddress) {
     return false;
   }
 
-#if defined(NIGHTLY_BUILD)
+#if defined(BLOCK_LOADLIBRARY_INJECTION)
   for (auto p : gStartAddressesToBlock) {
     if (p == aStartAddress) {
       return true;
@@ -572,13 +562,13 @@ static MOZ_NORETURN void __fastcall patched_BaseThreadInitThunk(
   stub_BaseThreadInitThunk(aIsInitialThread, aStartAddress, aThreadParam);
 }
 
-static WindowsDllInterceptor NtDllIntercept;
-static WindowsDllInterceptor Kernel32Intercept;
+MOZ_RUNINIT static WindowsDllInterceptor NtDllIntercept;
+MOZ_RUNINIT static WindowsDllInterceptor Kernel32Intercept;
 
 static void GetNativeNtBlockSetWriter();
 
 static glue::LoaderObserver gMozglueLoaderObserver;
-static nt::WinLauncherServices gWinLauncher;
+MOZ_RUNINIT static nt::WinLauncherServices gWinLauncher;
 
 MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
   if (sBlocklistInitAttempted) {
@@ -603,7 +593,7 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
     }
   }
 
-#if defined(NIGHTLY_BUILD)
+#if defined(BLOCK_LOADLIBRARY_INJECTION)
   // Populate a list of thread start addresses to block.
   HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
   if (hKernel) {
@@ -682,23 +672,13 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
 MFBT_API void DllBlocklist_Shutdown() {}
 #endif  // DEBUG
 
+static void InternalWriteNotes(WritableBuffer& aBuffer) {
 #ifdef MOZ_CRASHREPORTER
-static void InternalWriteNotes(AnnotationWriter& aWriter) {
-  WritableBuffer buffer;
-  DllBlockSet::Write(buffer);
-
-  aWriter.Write(Annotation::BlockedDllList, buffer.Data(), buffer.Length());
-
-  if (sBlocklistInitFailed) {
-    aWriter.Write(Annotation::BlocklistInitFailed, "1");
-  }
-
-  if (sUser32BeforeBlocklist) {
-    aWriter.Write(Annotation::User32BeforeBlocklist, "1");
-  }
+  DllBlockSet::Write(aBuffer);
+#endif
 }
 
-using WriterFn = void (*)(AnnotationWriter&);
+using WriterFn = void (*)(WritableBuffer& aBuffer);
 static WriterFn gWriterFn = &InternalWriteNotes;
 
 static void GetNativeNtBlockSetWriter() {
@@ -709,15 +689,27 @@ static void GetNativeNtBlockSetWriter() {
   }
 }
 
-MFBT_API void DllBlocklist_WriteNotes(AnnotationWriter& aWriter) {
-  MOZ_ASSERT(gWriterFn);
-  gWriterFn(aWriter);
-}
+MFBT_API void DllBlocklist_WriteNotes() {
+#ifdef MOZ_CRASHREPORTER
+  gWriterFn(sBlocklistWriter);
 #endif
+}
 
 MFBT_API bool DllBlocklist_CheckStatus() {
   if (sBlocklistInitFailed || sUser32BeforeBlocklist) return false;
   return true;
+}
+
+MFBT_API bool* DllBlocklist_GetBlocklistInitFailedPointer() {
+  return &sBlocklistInitFailed;
+}
+
+MFBT_API bool* DllBlocklist_GetUser32BeforeBlocklistPointer() {
+  return &sUser32BeforeBlocklist;
+}
+
+MFBT_API const char* DllBlocklist_GetBlocklistWriterData() {
+  return sBlocklistWriter.Data();
 }
 
 // ============================================================================

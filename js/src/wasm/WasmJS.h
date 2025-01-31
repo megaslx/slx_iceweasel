@@ -111,6 +111,7 @@ bool IsWasmExportedFunction(JSFunction* fun);
 Instance& ExportedFunctionToInstance(JSFunction* fun);
 WasmInstanceObject* ExportedFunctionToInstanceObject(JSFunction* fun);
 uint32_t ExportedFunctionToFuncIndex(JSFunction* fun);
+const wasm::TypeDef& ExportedFunctionToTypeDef(JSFunction* fun);
 
 bool IsSharedWasmMemoryObject(JSObject* obj);
 
@@ -150,10 +151,6 @@ class WasmModuleObject : public NativeObject {
 // module exports a global twice, the two exported WasmGlobalObjects are the
 // same.
 
-// TODO/AnyRef-boxing: With boxed immediates and strings, JSObject* is no longer
-// the most appropriate representation for Cell::anyref.
-STATIC_ASSERT_ANYREF_IS_JSOBJECT;
-
 class WasmGlobalObject : public NativeObject {
   static const unsigned MUTABLE_SLOT = 0;
   static const unsigned VAL_SLOT = 1;
@@ -171,6 +168,8 @@ class WasmGlobalObject : public NativeObject {
   static bool valueSetterImpl(JSContext* cx, const CallArgs& args);
   static bool valueSetter(JSContext* cx, unsigned argc, Value* vp);
 
+  wasm::GCPtrVal& mutableVal();
+
  public:
   static const unsigned RESERVED_SLOTS = 2;
   static const JSClass class_;
@@ -186,7 +185,9 @@ class WasmGlobalObject : public NativeObject {
 
   bool isMutable() const;
   wasm::ValType type() const;
-  wasm::GCPtrVal& val() const;
+  const wasm::GCPtrVal& val() const;
+  void setVal(wasm::HandleVal value);
+  void* addressOfCell() const;
 };
 
 // The class of WebAssembly.Instance. Each WasmInstanceObject owns a
@@ -196,10 +197,9 @@ class WasmGlobalObject : public NativeObject {
 class WasmInstanceObject : public NativeObject {
   static const unsigned INSTANCE_SLOT = 0;
   static const unsigned EXPORTS_OBJ_SLOT = 1;
-  static const unsigned EXPORTS_SLOT = 2;
-  static const unsigned SCOPES_SLOT = 3;
-  static const unsigned INSTANCE_SCOPE_SLOT = 4;
-  static const unsigned GLOBALS_SLOT = 5;
+  static const unsigned SCOPES_SLOT = 2;
+  static const unsigned INSTANCE_SCOPE_SLOT = 3;
+  static const unsigned GLOBALS_SLOT = 4;
 
   static const JSClassOps classOps_;
   static const ClassSpec classSpec_;
@@ -209,20 +209,12 @@ class WasmInstanceObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
   static void trace(JSTracer* trc, JSObject* obj);
 
-  // ExportMap maps from function index to exported function object.
-  // This allows the instance to lazily create exported function
-  // objects on demand (instead up-front for all table elements) while
-  // correctly preserving observable function object identity.
-  using ExportMap = GCHashMap<uint32_t, HeapPtr<JSFunction*>,
-                              DefaultHasher<uint32_t>, CellAllocPolicy>;
-  ExportMap& exports() const;
-
   // See the definition inside WasmJS.cpp.
   class UnspecifiedScopeMap;
   UnspecifiedScopeMap& scopes() const;
 
  public:
-  static const unsigned RESERVED_SLOTS = 6;
+  static const unsigned RESERVED_SLOTS = 5;
   static const JSClass class_;
   static const JSClass& protoClass_;
   static const JSPropertySpec properties[];
@@ -233,8 +225,8 @@ class WasmInstanceObject : public NativeObject {
   static WasmInstanceObject* create(
       JSContext* cx, const RefPtr<const wasm::Code>& code,
       const wasm::DataSegmentVector& dataSegments,
-      const wasm::ElemSegmentVector& elemSegments, uint32_t instanceDataLength,
-      Handle<WasmMemoryObjectVector> memories,
+      const wasm::ModuleElemSegmentVector& elemSegments,
+      uint32_t instanceDataLength, Handle<WasmMemoryObjectVector> memories,
       Vector<RefPtr<wasm::Table>, 0, SystemAllocPolicy>&& tables,
       const JSObjectVector& funcImports, const wasm::GlobalDescVector& globals,
       const wasm::ValVector& globalImportValues,
@@ -250,8 +242,9 @@ class WasmInstanceObject : public NativeObject {
       JSContext* cx, Handle<WasmInstanceObject*> instanceObj,
       uint32_t funcIndex, MutableHandleFunction fun);
 
-  const wasm::CodeRange& getExportedFunctionCodeRange(JSFunction* fun,
-                                                      wasm::Tier tier);
+  void getExportedFunctionCodeRange(JSFunction* fun,
+                                    const wasm::CodeRange** range,
+                                    uint8_t** codeBase);
 
   static WasmInstanceScope* getScope(JSContext* cx,
                                      Handle<WasmInstanceObject*> instanceObj);
@@ -328,7 +321,7 @@ class WasmMemoryObject : public NativeObject {
   wasm::Pages clampedMaxPages() const;
   mozilla::Maybe<wasm::Pages> sourceMaxPages() const;
 
-  wasm::IndexType indexType() const;
+  wasm::AddressType addressType() const;
   bool isShared() const;
   bool isHuge() const;
   bool movingGrowable() const;
@@ -378,8 +371,7 @@ class WasmTableObject : public NativeObject {
   // Note that, after creation, a WasmTableObject's table() is not initialized
   // and must be initialized before use.
 
-  static WasmTableObject* create(JSContext* cx, uint32_t initialLength,
-                                 mozilla::Maybe<uint32_t> maximumLength,
+  static WasmTableObject* create(JSContext* cx, wasm::Limits limits,
                                  wasm::RefType tableType, HandleObject proto);
   wasm::Table& table() const;
 
@@ -417,7 +409,6 @@ class WasmTagObject : public NativeObject {
 
   const wasm::TagType* tagType() const;
   const wasm::ValTypeVector& valueTypes() const;
-  wasm::ResultType resultType() const;
 };
 
 // The class of WebAssembly.Exception. This class is used for
@@ -443,10 +434,13 @@ class WasmExceptionObject : public NativeObject {
   static bool getStack_impl(JSContext* cx, const CallArgs& args);
 
   uint8_t* typedMem() const;
-  [[nodiscard]] bool loadValue(JSContext* cx, size_t offset, wasm::ValType type,
-                               MutableHandleValue vp);
-  [[nodiscard]] bool initValue(JSContext* cx, size_t offset, wasm::ValType type,
-                               HandleValue value);
+  [[nodiscard]] bool loadArg(JSContext* cx, size_t offset, wasm::ValType type,
+                             MutableHandleValue vp) const;
+  [[nodiscard]] bool initArg(JSContext* cx, size_t offset, wasm::ValType type,
+                             HandleValue value);
+
+  void initRefArg(size_t offset, wasm::AnyRef ref);
+  wasm::AnyRef loadRefArg(size_t offset) const;
 
  public:
   static const unsigned RESERVED_SLOTS = 4;
@@ -459,11 +453,15 @@ class WasmExceptionObject : public NativeObject {
 
   static WasmExceptionObject* create(JSContext* cx, Handle<WasmTagObject*> tag,
                                      HandleObject stack, HandleObject proto);
+  static WasmExceptionObject* wrapJSValue(JSContext* cx, HandleValue value);
   bool isNewborn() const;
 
   JSObject* stack() const;
   const wasm::TagType* tagType() const;
   WasmTagObject& tag() const;
+
+  bool isWrappedJSValue() const;
+  Value wrappedJSValue() const;
 
   static size_t offsetOfData() {
     return NativeObject::getFixedSlotOffset(DATA_SLOT);
@@ -475,12 +473,49 @@ class WasmExceptionObject : public NativeObject {
 class WasmNamespaceObject : public NativeObject {
  public:
   static const JSClass class_;
+  static const unsigned JS_VALUE_TAG_SLOT = 0;
+  static const unsigned RESERVED_SLOTS = 1;
+
+  WasmTagObject* wrappedJSValueTag() const {
+    return &getReservedSlot(JS_VALUE_TAG_SLOT)
+                .toObjectOrNull()
+                ->as<WasmTagObject>();
+  }
+  void setWrappedJSValueTag(WasmTagObject* tag) {
+    return setReservedSlot(JS_VALUE_TAG_SLOT, ObjectValue(*tag));
+  }
+
+  static WasmNamespaceObject* getOrCreate(JSContext* cx);
 
  private:
   static const ClassSpec classSpec_;
 };
 
 extern const JSClass WasmFunctionClass;
+
+bool IsWasmSuspendingObject(JSObject* obj);
+
+#ifdef ENABLE_WASM_JSPI
+
+class WasmSuspendingObject : public NativeObject {
+ public:
+  static const ClassSpec classSpec_;
+  static const JSClass class_;
+  static const JSClass& protoClass_;
+  static const unsigned WRAPPED_FN_SLOT = 0;
+  static const unsigned RESERVED_SLOTS = 1;
+  static bool construct(JSContext*, unsigned, Value*);
+
+  JSObject* wrappedFunction() const {
+    return getReservedSlot(WRAPPED_FN_SLOT).toObjectOrNull();
+  }
+  void setWrappedFunction(HandleObject fn) {
+    return setReservedSlot(WRAPPED_FN_SLOT, ObjectValue(*fn));
+  }
+};
+
+JSObject* MaybeUnwrapSuspendingObject(JSObject* wrapper);
+#endif
 
 }  // namespace js
 

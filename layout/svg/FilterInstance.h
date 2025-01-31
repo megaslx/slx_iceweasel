@@ -28,6 +28,8 @@ class nsIFrame;
 struct WrFiltersHolder;
 
 namespace mozilla {
+class ISVGFilterObserverList;
+class SVGFilterFrame;
 
 namespace dom {
 class UserSpaceMetrics;
@@ -79,8 +81,8 @@ class FilterInstance {
    */
   static FilterDescription GetFilterDescription(
       nsIContent* aFilteredElement, Span<const StyleFilter> aFilterChain,
-      bool aFilterInputIsTainted, const UserSpaceMetrics& aMetrics,
-      const gfxRect& aBBox,
+      ISVGFilterObserverList* aFiltersObserverList, bool aFilterInputIsTainted,
+      const UserSpaceMetrics& aMetrics, const gfxRect& aBBox,
       nsTArray<RefPtr<SourceSurface>>& aOutAdditionalImages);
 
   /**
@@ -89,13 +91,12 @@ class FilterInstance {
    *   frame space (i.e. relative to its origin, the top-left corner of its
    *   border box).
    */
-  static void PaintFilteredFrame(nsIFrame* aFilteredFrame,
-                                 Span<const StyleFilter> aFilterChain,
-                                 gfxContext* aCtx,
-                                 const SVGFilterPaintCallback& aPaintCallback,
-                                 const nsRegion* aDirtyArea,
-                                 imgDrawingParams& aImgParams,
-                                 float aOpacity = 1.0f);
+  static void PaintFilteredFrame(
+      nsIFrame* aFilteredFrame, Span<const StyleFilter> aFilterChain,
+      const nsTArray<SVGFilterFrame*>& aFilterFrames, gfxContext* aCtx,
+      const SVGFilterPaintCallback& aPaintCallback, const nsRegion* aDirtyArea,
+      imgDrawingParams& aImgParams, float aOpacity = 1.0f,
+      const gfxRect* aOverrideBBox = nullptr);
 
   /**
    * Returns the post-filter area that could be dirtied when the given
@@ -113,7 +114,8 @@ class FilterInstance {
    *   to aFilteredFrame, in app units.
    */
   static nsRegion GetPreFilterNeededArea(
-      nsIFrame* aFilteredFrame, const nsRegion& aPostFilterDirtyRegion);
+      nsIFrame* aFilteredFrame, const nsTArray<SVGFilterFrame*>& aFilterFrames,
+      const nsRegion& aPostFilterDirtyRegion);
 
   /**
    * Returns the post-filter ink overflow rect (paint bounds) of
@@ -124,19 +126,34 @@ class FilterInstance {
    *   aFilteredFrame, if non-null.
    */
   static Maybe<nsRect> GetPostFilterBounds(
-      nsIFrame* aFilteredFrame, const gfxRect* aOverrideBBox = nullptr,
+      nsIFrame* aFilteredFrame, const nsTArray<SVGFilterFrame*>& aFilterFrames,
+      const gfxRect* aOverrideBBox = nullptr,
       const nsRect* aPreFilterBounds = nullptr);
 
   /**
    * Try to build WebRender filters for a frame if the filters applied to it are
-   * supported. aInitialized is set to true if the filter has been initialized
-   * and false otherwise (e.g. a bad url). If aInitialized is false the filter
-   * the filter contents should not be drawn.
+   * supported, returns a status that indicates which code path will handle the
+   * filters on this frame, or if we must fall back to blob image.
    */
-  static bool BuildWebRenderFilters(
+  static WrFiltersStatus BuildWebRenderFilters(
       nsIFrame* aFilteredFrame,
       mozilla::Span<const mozilla::StyleFilter> aFilters,
-      WrFiltersHolder& aWrFilters, bool& aInitialized);
+      StyleFilterType aStyleFilterType, WrFiltersHolder& aWrFilters,
+      const nsPoint& aOffsetForSVGFilters);
+
+  /**
+   * Try to build WebRender SVG filter graph for a frame based on SVG and CSS
+   * filters.  If given an unreasonably costly set of filters this can reject
+   * the entire filter graph (a behavior permitted by SVG spec).
+   *
+   * See WrFiltersStatus for possible outcomes.
+   * Prefs such as gfx.webrender.svg-filter-effects affect this.
+   */
+  static WrFiltersStatus BuildWebRenderSVGFiltersImpl(
+      nsIFrame* aFilteredFrame,
+      mozilla::Span<const mozilla::StyleFilter> aFilters,
+      StyleFilterType aStyleFilterType, WrFiltersHolder& aWrFilters,
+      const nsPoint& aOffsetForSVGFilters);
 
  private:
   /**
@@ -145,6 +162,7 @@ class FilterInstance {
    * @param aTargetContent The filtered element itself.
    * @param aMetrics The metrics to resolve SVG lengths against.
    * @param aFilterChain The list of filters to apply.
+   * @param aFilterFrames The frames for the filters in the chain.
    * @param aFilterInputIsTainted Describes whether the SourceImage /
    *   SourceAlpha input is tainted. This affects whether feDisplacementMap
    *   will respect the filter input as its map input.
@@ -162,22 +180,26 @@ class FilterInstance {
    *   ink overflow rect for the target element.
    * @param aOverrideBBox [optional] Use a different SVG bbox for the target
    *   element. Must be non-null if aTargetFrame is null.
+   * @param aFilterSpaceBoundsNotSnapped [optional] The calculated bbox in
+   *   userspace can be returend in the provided outparam.
    */
   FilterInstance(
       nsIFrame* aTargetFrame, nsIContent* aTargetContent,
       const UserSpaceMetrics& aMetrics, Span<const StyleFilter> aFilterChain,
+      const nsTArray<SVGFilterFrame*>& aFilterFrames,
       bool aFilterInputIsTainted,
       const SVGIntegrationUtils::SVGFilterPaintCallback& aPaintCallback,
       const gfxMatrix& aPaintTransform,
       const nsRegion* aPostFilterDirtyRegion = nullptr,
       const nsRegion* aPreFilterDirtyRegion = nullptr,
       const nsRect* aPreFilterInkOverflowRectOverride = nullptr,
-      const gfxRect* aOverrideBBox = nullptr);
+      const gfxRect* aOverrideBBox = nullptr,
+      gfxRect* aFilterSpaceBoundsNotSnapped = nullptr);
 
-  static bool BuildWebRenderFiltersImpl(
+  static WrFiltersStatus BuildWebRenderFiltersImpl(
       nsIFrame* aFilteredFrame,
       mozilla::Span<const mozilla::StyleFilter> aFilters,
-      WrFiltersHolder& aWrFilters, bool& aInitialized);
+      StyleFilterType aStyleFilterType, WrFiltersHolder& aWrFilters);
 
   /**
    * Returns true if the filter instance was created successfully.
@@ -269,7 +291,8 @@ class FilterInstance {
    * whether the SourceGraphic is tainted.
    */
   nsresult BuildPrimitives(Span<const StyleFilter> aFilterChain,
-                           nsIFrame* aTargetFrame, bool aFilterInputIsTainted);
+                           const nsTArray<SVGFilterFrame*>& aFilterFrames,
+                           bool aFilterInputIsTainted);
 
   /**
    * Add to the list of FilterPrimitiveDescriptions for a particular SVG
@@ -278,7 +301,8 @@ class FilterInstance {
    * tainted.
    */
   nsresult BuildPrimitivesForFilter(
-      const StyleFilter& aFilter, nsIFrame* aTargetFrame, bool aInputIsTainted,
+      const StyleFilter& aFilter, SVGFilterFrame* aFilterFrame,
+      bool aInputIsTainted,
       nsTArray<FilterPrimitiveDescription>& aPrimitiveDescriptions);
 
   /**
@@ -357,6 +381,11 @@ class FilterInstance {
    * The SVG bbox of the element that is being filtered, in filter space.
    */
   nsIntRect mTargetBBoxInFilterSpace;
+
+  /**
+   * The SVG filter element rect, in filter space, may be non-integer.
+   */
+  gfxRect mFilterSpaceBoundsNotSnapped;
 
   /**
    * Transform rects between filter space and frame space in CSS pixels.

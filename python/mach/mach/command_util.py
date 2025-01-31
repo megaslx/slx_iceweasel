@@ -4,15 +4,19 @@
 
 import argparse
 import ast
+import difflib
 import errno
-import imp
+import shlex
 import sys
+import types
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Dict, Optional, Union
 
-from .base import MissingFileError
+from mozfile import load_source
+
+from .base import MissingFileError, UnknownCommandError
 
 INVALID_ENTRY_POINT = r"""
 Entry points should return a list of command providers or directories
@@ -44,10 +48,12 @@ class MachCommandReference:
 
 
 MACH_COMMANDS = {
+    "addstory": MachCommandReference("toolkit/content/widgets/mach_commands.py"),
     "addtest": MachCommandReference("testing/mach_commands.py"),
     "addwidget": MachCommandReference("toolkit/content/widgets/mach_commands.py"),
     "android": MachCommandReference("mobile/android/mach_commands.py"),
     "android-emulator": MachCommandReference("mobile/android/mach_commands.py"),
+    "android-test": MachCommandReference("testing/android-test/mach_commands.py"),
     "artifact": MachCommandReference(
         "python/mozbuild/mozbuild/artifact_commands.py",
     ),
@@ -63,6 +69,7 @@ MACH_COMMANDS = {
         "python/mozbuild/mozbuild/build_commands.py",
     ),
     "buildsymbols": MachCommandReference("python/mozbuild/mozbuild/mach_commands.py"),
+    "buildtokens": MachCommandReference("toolkit/content/widgets/mach_commands.py"),
     "busted": MachCommandReference("tools/mach_commands.py"),
     "cargo": MachCommandReference("python/mozbuild/mozbuild/mach_commands.py"),
     "clang-format": MachCommandReference(
@@ -78,19 +85,17 @@ MACH_COMMANDS = {
     ),
     "configure": MachCommandReference("python/mozbuild/mozbuild/build_commands.py"),
     "cppunittest": MachCommandReference("testing/mach_commands.py"),
-    "cramtest": MachCommandReference("testing/mach_commands.py"),
     "crashtest": MachCommandReference("layout/tools/reftest/mach_commands.py"),
     "data-review": MachCommandReference(
         "toolkit/components/glean/build_scripts/mach_commands.py"
-    ),
-    "devtools-css-db": MachCommandReference(
-        "devtools/shared/css/generated/mach_commands.py"
     ),
     "doc": MachCommandReference("tools/moztreedocs/mach_commands.py"),
     "doctor": MachCommandReference("python/mozbuild/mozbuild/mach_commands.py"),
     "environment": MachCommandReference("python/mozbuild/mozbuild/mach_commands.py"),
     "eslint": MachCommandReference("tools/lint/mach_commands.py"),
-    "esmify": MachCommandReference("tools/esmify/mach_commands.py"),
+    "event-into-legacy": MachCommandReference(
+        "toolkit/components/glean/build_scripts/mach_commands.py"
+    ),
     "fetch-condprofile": MachCommandReference("testing/condprofile/mach_commands.py"),
     "file-info": MachCommandReference(
         "python/mozbuild/mozbuild/frontend/mach_commands.py"
@@ -104,8 +109,13 @@ MACH_COMMANDS = {
     "geckoview-junit": MachCommandReference(
         "testing/mochitest/mach_commands.py", ["test"]
     ),
+    "gen-uuid": MachCommandReference("dom/base/mach_commands.py"),
+    "gen-use-counter-metrics": MachCommandReference("dom/base/mach_commands.py"),
     "generate-test-certs": MachCommandReference(
         "security/manager/tools/mach_commands.py"
+    ),
+    "gifft": MachCommandReference(
+        "toolkit/components/telemetry/build_scripts/mach_commands.py"
     ),
     "gradle": MachCommandReference("mobile/android/mach_commands.py"),
     "gradle-install": MachCommandReference("mobile/android/mach_commands.py"),
@@ -122,9 +132,6 @@ MACH_COMMANDS = {
     "jsshell-bench": MachCommandReference("testing/mach_commands.py"),
     "jstestbrowser": MachCommandReference("layout/tools/reftest/mach_commands.py"),
     "jstests": MachCommandReference("testing/mach_commands.py"),
-    "l10n-cross-channel": MachCommandReference(
-        "tools/compare-locales/mach_commands.py"
-    ),
     "lint": MachCommandReference("tools/lint/mach_commands.py"),
     "logspam": MachCommandReference("tools/mach_commands.py"),
     "mach-commands": MachCommandReference("python/mach/mach/commands/commandinfo.py"),
@@ -132,6 +139,8 @@ MACH_COMMANDS = {
     "mach-debug-commands": MachCommandReference(
         "python/mach/mach/commands/commandinfo.py"
     ),
+    "macos-sign": MachCommandReference("tools/signing/macos/mach_commands.py"),
+    "manifest": MachCommandReference("testing/mach_commands.py"),
     "marionette-test": MachCommandReference("testing/marionette/mach_commands.py"),
     "mochitest": MachCommandReference("testing/mochitest/mach_commands.py", ["test"]),
     "mots": MachCommandReference("tools/mach_commands.py"),
@@ -200,6 +209,7 @@ MACH_COMMANDS = {
     ),
     "tps-build": MachCommandReference("testing/tps/mach_commands.py"),
     "try": MachCommandReference("tools/tryselect/mach_commands.py"),
+    "ts": MachCommandReference("tools/ts/mach_commands.py"),
     "uniffi": MachCommandReference(
         "toolkit/components/uniffi-bindgen-gecko-js/mach_commands.py"
     ),
@@ -233,9 +243,6 @@ MACH_COMMANDS = {
     "webidl-parser-test": MachCommandReference("dom/bindings/mach_commands.py"),
     "wpt": MachCommandReference("testing/web-platform/mach_commands.py"),
     "wpt-fetch-logs": MachCommandReference("testing/web-platform/mach_commands.py"),
-    "wpt-fission-regressions": MachCommandReference(
-        "testing/web-platform/mach_commands.py"
-    ),
     "wpt-interop-score": MachCommandReference("testing/web-platform/mach_commands.py"),
     "wpt-manifest-update": MachCommandReference(
         "testing/web-platform/mach_commands.py"
@@ -342,7 +349,13 @@ class DetermineCommandVenvAction(argparse.Action):
             return
 
         command = values[0]
-        setattr(namespace, "command_name", command)
+
+        aliases = namespace.mach_command_aliases
+
+        if command in aliases:
+            alias = aliases[command]
+            arg_string = shlex.split(alias)
+            command = arg_string.pop(0)
 
         # the "help" command does not have a module file, it's handled
         # a bit later and should be skipped here.
@@ -352,10 +365,17 @@ class DetermineCommandVenvAction(argparse.Action):
         command_reference = MACH_COMMANDS.get(command)
 
         if not command_reference:
-            # If there's no match for the command in the dictionary it
-            # means that the command doesn't exist, or that it's misspelled.
-            # We exit early and let both scenarios be handled elsewhere.
-            return
+            # Try to find similarly named commands, may raise UnknownCommandError.
+            suggested_command = suggest_command(command)
+
+            sys.stderr.write(
+                f"We're assuming the '{command}' command is '{suggested_command}' and we're executing it for you.\n\n"
+            )
+
+            command = suggested_command
+            command_reference = MACH_COMMANDS.get(command)
+
+        setattr(namespace, "command_name", command)
 
         if len(values) > 1:
             potential_sub_command_name = values[1]
@@ -387,6 +407,23 @@ class DetermineCommandVenvAction(argparse.Action):
         setattr(namespace, "site_name", site)
 
 
+def suggest_command(command):
+    names = MACH_COMMANDS.keys()
+    # We first try to look for a valid command that is very similar to the given command.
+    suggested_commands = difflib.get_close_matches(command, names, cutoff=0.8)
+    # If we find more than one matching command, or no command at all,
+    # we give command suggestions instead (with a lower matching threshold).
+    # All commands that start with the given command (for instance:
+    # 'mochitest-plain', 'mochitest-chrome', etc. for 'mochitest-')
+    # are also included.
+    if len(suggested_commands) != 1:
+        suggested_commands = set(difflib.get_close_matches(command, names, cutoff=0.5))
+        suggested_commands |= {cmd for cmd in names if cmd.startswith(command)}
+        raise UnknownCommandError(command, "run", suggested_commands)
+
+    return suggested_commands[0]
+
+
 def load_commands_from_directory(path: Path):
     """Scan for mach commands from modules in a directory.
 
@@ -414,14 +451,14 @@ def load_commands_from_file(path: Union[str, Path], module_name=None):
         # Ensure parent module is present otherwise we'll (likely) get
         # an error due to unknown parent.
         if "mach.commands" not in sys.modules:
-            mod = imp.new_module("mach.commands")
+            mod = types.ModuleType("mach.commands")
             sys.modules["mach.commands"] = mod
 
         module_name = f"mach.commands.{uuid.uuid4().hex}"
 
     try:
-        imp.load_source(module_name, str(path))
-    except IOError as e:
+        load_source(module_name, str(path))
+    except OSError as e:
         if e.errno != errno.ENOENT:
             raise
 
@@ -435,7 +472,7 @@ def load_commands_from_spec(
 
     Takes a dictionary mapping command names to their metadata.
     """
-    modules = set(spec[command].module for command in spec)
+    modules = {spec[command].module for command in spec}
 
     for path in modules:
         try:

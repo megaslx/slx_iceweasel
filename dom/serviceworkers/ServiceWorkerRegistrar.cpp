@@ -5,10 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ServiceWorkerRegistrar.h"
-#include "ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerRegistrarTypes.h"
 #include "mozilla/dom/DOMException.h"
-#include "mozilla/net/MozURL.h"
 #include "mozilla/StaticPrefs_dom.h"
 
 #include "nsIEventTarget.h"
@@ -18,6 +16,7 @@
 #include "nsIOutputStream.h"
 #include "nsISafeOutputStream.h"
 #include "nsIServiceWorkerManager.h"
+#include "nsIURI.h"
 #include "nsIWritablePropertyBag2.h"
 
 #include "MainThreadUtils.h"
@@ -46,13 +45,6 @@
 
 using namespace mozilla::ipc;
 
-extern mozilla::LazyLogModule sWorkerTelemetryLog;
-
-#ifdef LOG
-#  undef LOG
-#endif
-#define LOG(_args) MOZ_LOG(sWorkerTelemetryLog, LogLevel::Debug, _args);
-
 namespace mozilla::dom {
 
 namespace {
@@ -66,15 +58,25 @@ StaticRefPtr<ServiceWorkerRegistrar> gServiceWorkerRegistrar;
 
 nsresult GetOriginAndBaseDomain(const nsACString& aURL, nsACString& aOrigin,
                                 nsACString& aBaseDomain) {
-  RefPtr<net::MozURL> url;
-  nsresult rv = net::MozURL::Init(getter_AddRefs(url), aURL);
+  nsCOMPtr<nsIURI> url;
+  nsresult rv = NS_NewURI(getter_AddRefs(url), aURL);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
-  url->Origin(aOrigin);
+  OriginAttributes attrs;
+  nsCOMPtr<nsIPrincipal> principal =
+      BasePrincipal::CreateContentPrincipal(url, attrs);
+  if (!principal) {
+    return NS_ERROR_NULL_POINTER;
+  }
 
-  rv = url->BaseDomain(aBaseDomain);
+  rv = principal->GetOriginNoSuffix(aOrigin);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = principal->GetBaseDomain(aBaseDomain);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -136,8 +138,8 @@ nsresult CreatePrincipalInfo(nsILineInputStream* aStream,
   return NS_OK;
 }
 
-const IPCNavigationPreloadState gDefaultNavigationPreloadState(false,
-                                                               "true"_ns);
+MOZ_RUNINIT const IPCNavigationPreloadState
+    gDefaultNavigationPreloadState(false, "true"_ns);
 
 }  // namespace
 
@@ -288,18 +290,6 @@ void ServiceWorkerRegistrar::UnregisterServiceWorker(
 
     for (uint32_t i = 0; i < mData.Length(); ++i) {
       if (Equivalent(tmp, mData[i])) {
-        gServiceWorkersRegistered--;
-        if (mData[i].currentWorkerHandlesFetch()) {
-          gServiceWorkersRegisteredFetch--;
-        }
-        // Update Telemetry
-        Telemetry::ScalarSet(Telemetry::ScalarID::SERVICEWORKER_REGISTRATIONS,
-                             u"All"_ns, gServiceWorkersRegistered);
-        Telemetry::ScalarSet(Telemetry::ScalarID::SERVICEWORKER_REGISTRATIONS,
-                             u"Fetch"_ns, gServiceWorkersRegisteredFetch);
-        LOG(("Unregister ServiceWorker: %u, fetch %u\n",
-             gServiceWorkersRegistered, gServiceWorkersRegisteredFetch));
-
         mData.RemoveElementAt(i);
         mDataGeneration = GetNextGeneration();
         deleted = true;
@@ -930,12 +920,6 @@ void ServiceWorkerRegistrar::RegisterServiceWorkerInternal(
   for (uint32_t i = 0, len = mData.Length(); i < len; ++i) {
     if (Equivalent(aData, mData[i])) {
       found = true;
-      if (mData[i].currentWorkerHandlesFetch()) {
-        // Decrement here if we found it, in case the new registration no
-        // longer handles Fetch.  If it continues to handle fetch, we'll
-        // bump it back later.
-        gServiceWorkersRegisteredFetch--;
-      }
       mData[i] = aData;
       break;
     }
@@ -944,20 +928,7 @@ void ServiceWorkerRegistrar::RegisterServiceWorkerInternal(
   if (!found) {
     MOZ_ASSERT(ServiceWorkerRegistrationDataIsValid(aData));
     mData.AppendElement(aData);
-    // We didn't find an entry to update, so we have 1 more
-    gServiceWorkersRegistered++;
   }
-  // Handles bumping both for new registrations and updates
-  if (aData.currentWorkerHandlesFetch()) {
-    gServiceWorkersRegisteredFetch++;
-  }
-  // Update Telemetry
-  Telemetry::ScalarSet(Telemetry::ScalarID::SERVICEWORKER_REGISTRATIONS,
-                       u"All"_ns, gServiceWorkersRegistered);
-  Telemetry::ScalarSet(Telemetry::ScalarID::SERVICEWORKER_REGISTRATIONS,
-                       u"Fetch"_ns, gServiceWorkersRegisteredFetch);
-  LOG(("Register: %u, fetch %u\n", gServiceWorkersRegistered,
-       gServiceWorkersRegisteredFetch));
 
   mDataGeneration = GetNextGeneration();
 }
@@ -1124,7 +1095,7 @@ void ServiceWorkerRegistrar::MaybeResetGeneration() {
 
 bool ServiceWorkerRegistrar::IsSupportedVersion(
     const nsACString& aVersion) const {
-  uint32_t numVersions = ArrayLength(gSupportedRegistrarVersions);
+  uint32_t numVersions = std::size(gSupportedRegistrarVersions);
   for (uint32_t i = 0; i < numVersions; i++) {
     if (aVersion.EqualsASCII(gSupportedRegistrarVersions[i])) {
       return true;
@@ -1393,7 +1364,7 @@ ServiceWorkerRegistrar::GetState(nsIPropertyBag** aBagOut) {
 #define RELEASE_ASSERT_SUCCEEDED(rv, name)                                    \
   do {                                                                        \
     if (NS_FAILED(rv)) {                                                      \
-      if (rv == NS_ERROR_XPC_JAVASCRIPT_ERROR_WITH_DETAILS) {                 \
+      if ((rv) == NS_ERROR_XPC_JAVASCRIPT_ERROR_WITH_DETAILS) {               \
         if (auto* context = CycleCollectedJSContext::Get()) {                 \
           if (RefPtr<Exception> exn = context->GetPendingException()) {       \
             MOZ_CRASH_UNSAFE_PRINTF("Failed to get " name ": %s",             \

@@ -74,11 +74,7 @@ static void logMessage(nsIContent* aContent, const nsAString& aCoordsSpec,
                        int32_t aFlags, const char* aMessageName) {
   nsContentUtils::ReportToConsole(
       aFlags, "Layout: ImageMap"_ns, aContent->OwnerDoc(),
-      nsContentUtils::eLAYOUT_PROPERTIES, aMessageName,
-      nsTArray<nsString>(), /* params */
-      nullptr,
-      PromiseFlatString(u"coords=\""_ns + aCoordsSpec +
-                        u"\""_ns)); /* source line */
+      nsContentUtils::eLAYOUT_PROPERTIES, aMessageName);
 }
 
 void Area::ParseCoords(const nsAString& aSpec) {
@@ -415,8 +411,12 @@ bool PolyArea::IsInside(nscoord x, nscoord y) const {
       yval = mCoords[pointer];
       pointer += 2;
       if (yval >= wherey) {
-        while ((pointer < end) && (mCoords[pointer] >= wherey)) pointer += 2;
-        if (pointer >= end) break;
+        while ((pointer < end) && (mCoords[pointer] >= wherey)) {
+          pointer += 2;
+        }
+        if (pointer >= end) {
+          break;
+        }
         if ((mCoords[pointer - 3] >= wherex) ==
             (mCoords[pointer - 1] >= wherex)) {
           intersects += (mCoords[pointer - 3] >= wherex) ? 1 : 0;
@@ -430,8 +430,12 @@ bool PolyArea::IsInside(nscoord x, nscoord y) const {
                   : 0;
         }
       } else {
-        while ((pointer < end) && (mCoords[pointer] < wherey)) pointer += 2;
-        if (pointer >= end) break;
+        while ((pointer < end) && (mCoords[pointer] < wherey)) {
+          pointer += 2;
+        }
+        if (pointer >= end) {
+          break;
+        }
         if ((mCoords[pointer - 3] >= wherex) ==
             (mCoords[pointer - 1] >= wherex)) {
           intersects += (mCoords[pointer - 3] >= wherex) ? 1 : 0;
@@ -467,7 +471,7 @@ void PolyArea::Draw(nsIFrame* aFrame, DrawTarget& aDrawTarget,
       Point p1(pc->CSSPixelsToDevPixels(mCoords[0]),
                pc->CSSPixelsToDevPixels(mCoords[1]));
       Point p2, p1snapped, p2snapped;
-      for (int32_t i = 2; i < mNumCoords; i += 2) {
+      for (int32_t i = 2; i < mNumCoords - 1; i += 2) {
         p2.x = pc->CSSPixelsToDevPixels(mCoords[i]);
         p2.y = pc->CSSPixelsToDevPixels(mCoords[i + 1]);
         p1snapped = p1;
@@ -493,7 +497,7 @@ void PolyArea::GetRect(nsIFrame* aFrame, nsRect& aRect) {
     nscoord x1, x2, y1, y2, xtmp, ytmp;
     x1 = x2 = nsPresContext::CSSPixelsToAppUnits(mCoords[0]);
     y1 = y2 = nsPresContext::CSSPixelsToAppUnits(mCoords[1]);
-    for (int32_t i = 2; i < mNumCoords; i += 2) {
+    for (int32_t i = 2; i < mNumCoords - 1; i += 2) {
       xtmp = nsPresContext::CSSPixelsToAppUnits(mCoords[i]);
       ytmp = nsPresContext::CSSPixelsToAppUnits(mCoords[i + 1]);
       x1 = x1 < xtmp ? x1 : xtmp;
@@ -813,8 +817,7 @@ static UniquePtr<Area> TakeArea(nsImageMap::AreaList& aAreas,
   return result;
 }
 
-void nsImageMap::ContentRemoved(nsIContent* aChild,
-                                nsIContent* aPreviousSibling) {
+void nsImageMap::ContentWillBeRemoved(nsIContent* aChild) {
   if (aChild->GetParent() != mMap && !mConsiderWholeSubtree) {
     return;
   }

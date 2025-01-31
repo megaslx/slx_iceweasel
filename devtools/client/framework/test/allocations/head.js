@@ -16,7 +16,8 @@ let tracker, releaseTrackerLoader;
     useDistinctSystemPrincipalLoader,
     releaseDistinctSystemPrincipalLoader,
   } = ChromeUtils.importESModule(
-    "resource://devtools/shared/loader/DistinctSystemPrincipalLoader.sys.mjs"
+    "resource://devtools/shared/loader/DistinctSystemPrincipalLoader.sys.mjs",
+    { global: "shared" }
   );
 
   const requester = {};
@@ -38,7 +39,7 @@ let tracker, releaseTrackerLoader;
 // => Avoid loading devtools module as much as possible
 // => If you really have to, lazy load them
 
-XPCOMUtils.defineLazyGetter(this, "TrackedObjects", () => {
+ChromeUtils.defineLazyGetter(this, "TrackedObjects", () => {
   return ChromeUtils.importESModule(
     "resource://devtools/shared/test-helpers/tracked-objects.sys.mjs"
   );
@@ -132,9 +133,8 @@ async function stopRecordingAllocations(
   ok(!tracker.overflowed, "Allocation were all recorded in the parent process");
 
   // And finally, retrieve the record *after* having ran the test
-  const parentProcessData = await tracker.stopRecordingAllocations(
-    DEBUG_ALLOCATIONS
-  );
+  const parentProcessData =
+    await tracker.stopRecordingAllocations(DEBUG_ALLOCATIONS);
 
   const objectNodeIds = TrackedObjects.getAllNodeIds();
   if (objectNodeIds.length) {

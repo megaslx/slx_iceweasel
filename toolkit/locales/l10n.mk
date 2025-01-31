@@ -93,9 +93,7 @@ else
 	find $(UNPACKED_INSTALLER) -maxdepth 1 -print0 | xargs -0 $(RM) -r
 endif
 	$(NSINSTALL) -D $(UNPACKED_INSTALLER)
-	cd $(UNPACKED_INSTALLER) && \
-	  $(INNER_UNMAKE_PACKAGE)
-
+	$(call INNER_UNMAKE_PACKAGE,$(UNPACKED_INSTALLER))
 
 unpack: $(UNPACKED_INSTALLER)
 ifeq ($(OS_ARCH), WINNT)
@@ -121,14 +119,6 @@ ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
 ifneq (en,$(LPROJ_ROOT))
 	mv '$(STAGEDIST)'/en.lproj '$(STAGEDIST)'/$(LPROJ_ROOT).lproj
 endif
-ifdef MOZ_CRASHREPORTER
-# On Mac OS X, the crashreporter.ini file needs to be moved from under the
-# application bundle's Resources directory where all other l10n files are
-# located to the crash reporter bundle's Resources directory.
-	mv '$(STAGEDIST)'/crashreporter.app/Contents/Resources/crashreporter.ini \
-	  '$(STAGEDIST)'/../MacOS/crashreporter.app/Contents/Resources/crashreporter.ini
-	$(RM) -rf '$(STAGEDIST)'/crashreporter.app
-endif
 endif
 ifeq (WINNT,$(OS_ARCH))
 	$(MAKE) -C ../installer/windows CONFIG_DIR=l10ngen l10ngen/helper.exe
@@ -136,8 +126,7 @@ ifeq (WINNT,$(OS_ARCH))
 endif
 
 	$(NSINSTALL) -D $(DIST)/l10n-stage/$(PKG_PATH)
-	(cd $(DIST)/l10n-stage; \
-	  $(MAKE_PACKAGE))
+	$(call MAKE_PACKAGE,$(DIST)/l10n-stage)
 # packaging done, undo l10n stuff
 ifneq (en,$(LPROJ_ROOT))
 ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
@@ -156,24 +145,13 @@ repackage-zip-%: unpack
 # check DIST_SUBDIR, and if that isn't present, just package the default
 # chrome directory and top-level localization for Fluent.
 PKG_ZIP_DIRS = chrome localization $(or $(DIST_SUBDIRS),$(DIST_SUBDIR))
-
-# Clone a l10n repository, either via hg or git
-# Make this a variable as it's embedded in a sh conditional
-ifeq ($(VCS_CHECKOUT_TYPE),hg)
-L10N_CO = $(HG) --cwd $(L10NBASEDIR) clone https://hg.mozilla.org/l10n-central/$(AB_CD)/
-else
-ifeq ($(VCS_CHECKOUT_TYPE),git)
-L10N_CO = $(GIT) -C $(L10NBASEDIR) clone hg://hg.mozilla.org/l10n-central/$(AB_CD)/
-else
-L10N_CO = $(error You need to use either hg or git)
-endif
-endif
+GIT ?= git
 
 merge-%: IS_LANGUAGE_REPACK=1
 merge-%: AB_CD=$*
 merge-%:
 # For nightly builds, we automatically check out missing localizations
-# from l10n-central.  We never automatically check out in automation:
+# from firefox-l10n.  We never automatically check out in automation:
 # automation builds check out revisions that have been signed-off by
 # l10n drivers prior to use.
 ifdef MOZ_AUTOMATION
@@ -184,13 +162,20 @@ ifdef MOZ_AUTOMATION
 endif
 ifdef NIGHTLY_BUILD
 	if  ! test -d $(L10NBASEDIR)/$(AB_CD) ; then \
-		echo 'Checking out $(L10NBASEDIR)/$(AB_CD)' ; \
 		$(NSINSTALL) -D $(L10NBASEDIR) ; \
-		$(L10N_CO) ; \
+		$(GIT) clone https://github.com/mozilla-l10n/firefox-l10n.git $(L10NBASEDIR) --depth 1 ; \
+	fi
+ifndef MOZ_AUTOMATION
+	if  test -d $(L10NBASEDIR)/.git ; then \
+		$(GIT) -C $(L10NBASEDIR) pull --quiet ; \
+	else \
+		echo 'Error: folder is not a git repository - $(L10NBASEDIR)' ; \
+		exit 1 ; \
 	fi
 endif
+endif
 	$(RM) -rf $(REAL_LOCALE_MERGEDIR)
-	-$(PYTHON3) $(MOZILLA_DIR)/mach compare-locales --merge $(BASE_MERGE) $(srcdir)/l10n.toml $(L10NBASEDIR) $*
+	$(PYTHON3) -m moz.l10n.bin.build --config $(srcdir)/l10n.toml --base $(L10NBASEDIR) --target $(BASE_MERGE) --locales $(AB_CD)
 # Hunspell dictionaries are interesting, as we don't ship the en-US
 # dictionary in repacks. Thus we can't use the merge logic from
 # compare-locales above, which would add en-US.dic and en-US.aff to
@@ -217,11 +202,11 @@ package-langpack-%: XPI_NAME=locale-$*
 package-langpack-%: AB_CD=$*
 package-langpack-%:
 	$(NSINSTALL) -D $(DIST)/$(PKG_LANGPACK_PATH)
-	$(call py_action,langpack_manifest,--locales $(AB_CD) --app-version $(MOZ_APP_VERSION) --max-app-ver $(MOZ_APP_MAXVERSION) --app-name '$(MOZ_APP_DISPLAYNAME)' --l10n-basedir '$(L10NBASEDIR)' --metadata $(LANGPACK_METADATA) --langpack-eid '$(MOZ_LANGPACK_EID)' --input $(DIST)/xpi-stage/locale-$(AB_CD))
-	$(call py_action,zip,-C $(DIST)/xpi-stage/locale-$(AB_CD) -x **/*.manifest -x **/*.js -x **/*.ini $(LANGPACK_FILE) $(PKG_ZIP_DIRS) manifest.json)
+	$(call py_action,langpack_manifest $(AB_CD),--locales $(AB_CD) --app-version $(MOZ_APP_VERSION) --max-app-ver $(MOZ_APP_MAXVERSION) --app-name '$(MOZ_APP_DISPLAYNAME)' --l10n-basedir '$(L10NBASEDIR)' --metadata $(LANGPACK_METADATA) --langpack-eid '$(MOZ_LANGPACK_EID)' --input $(DIST)/xpi-stage/locale-$(AB_CD))
+	$(call py_action,zip $(PKG_LANGPACK_BASENAME).xpi,-C $(DIST)/xpi-stage/locale-$(AB_CD) -x **/*.manifest -x **/*.js -x **/*.ini $(LANGPACK_FILE) $(PKG_ZIP_DIRS) manifest.json)
 
 # This variable is to allow the wget-en-US target to know which ftp server to download from
-ifndef EN_US_BINARY_URL 
+ifndef EN_US_BINARY_URL
 EN_US_BINARY_URL = $(error You must set EN_US_BINARY_URL)
 endif
 

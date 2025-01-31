@@ -339,7 +339,7 @@ export var UITour = {
                   let callback = buttonData.callbackID;
                   let button = {
                     label: buttonData.label,
-                    callback: event => {
+                    callback: () => {
                       this.sendPageCallback(browser, callback);
                     },
                   };
@@ -694,7 +694,7 @@ export var UITour = {
     }
   },
 
-  observe(aSubject, aTopic, aData) {
+  observe(aSubject, aTopic) {
     lazy.log.debug("observe: aTopic =", aTopic);
     switch (aTopic) {
       // The browser message manager is disconnected when the <browser> is
@@ -918,7 +918,7 @@ export var UITour = {
     );
   },
 
-  getTarget(aWindow, aTargetName, aSticky = false) {
+  getTarget(aWindow, aTargetName) {
     lazy.log.debug("getTarget:", aTargetName);
     if (typeof aTargetName != "string" || !aTargetName) {
       lazy.log.warn("getTarget: Invalid target name specified");
@@ -986,7 +986,7 @@ export var UITour = {
    *
    * @param {ChromeWindow} aWindow the chrome window
    * @param {bool} aShouldOpen true means we should open the menu, otherwise false
-   * @param {Object} aOptions Extra config arguments, example `autohide: true`.
+   * @param {object} aOptions Extra config arguments, example `autohide: true`.
    */
   _setMenuStateForAnnotation(aWindow, aShouldOpen, aOptions = {}) {
     lazy.log.debug(
@@ -1028,8 +1028,8 @@ export var UITour = {
    * Ensure the target's visibility and the open/close states of menus for the target.
    *
    * @param {ChromeWindow} aChromeWindow The chrome window
-   * @param {Object} aTarget The target on which we show highlight or show info.
-   * @param {Object} options Extra config arguments, example `autohide: true`.
+   * @param {object} aTarget The target on which we show highlight or show info.
+   * @param {object} aOptions Extra config arguments, example `autohide: true`.
    */
   async _ensureTarget(aChromeWindow, aTarget, aOptions = {}) {
     let shouldOpenAppMenu = false;
@@ -1071,7 +1071,7 @@ export var UITour = {
    * that out and offer the overflow chevron as an alternative.
    *
    * @param {ChromeWindow} aChromeWindow The chrome window
-   * @param {Object} aTarget The target object whose node is supposed to be the anchor
+   * @param {object} aTarget The target object whose node is supposed to be the anchor
    * @type {Node}
    */
   async _correctAnchor(aChromeWindow, aTarget) {
@@ -1093,13 +1093,17 @@ export var UITour = {
   },
 
   /**
-   * @param aChromeWindow The chrome window that the highlight is in. Necessary since some targets
-   *                      are in a sub-frame so the defaultView is not the same as the chrome
-   *                      window.
-   * @param aTarget    The element to highlight.
-   * @param aEffect    (optional) The effect to use from UITour.highlightEffects or "none".
-   * @param aOptions   (optional) Extra config arguments, example `autohide: true`.
-   * @see UITour.highlightEffects
+   * @param {ChromeWindow} aChromeWindow
+   *   The chrome window that the highlight is in. Necessary since some targets
+   *   are in a sub-frame so the defaultView is not the same as the chrome
+   *   window.
+   * @param {DOMElement} aTarget
+   *   The element to highlight.
+   * @param {string} [aEffect]
+   *   The effect to use from UITour.highlightEffects or "none".
+   * @param {object} [aOptions]
+   *   Extra config arguments, example `autohide: true`.
+   *   @see UITour.highlightEffects
    */
   async showHighlight(aChromeWindow, aTarget, aEffect = "none", aOptions = {}) {
     let showHighlightElement = aAnchorEl => {
@@ -1203,13 +1207,13 @@ export var UITour = {
    *
    * @param {ChromeWindow} aChromeWindow
    * @param {Node}     aAnchor
-   * @param {String}   [aTitle=""]
-   * @param {String}   [aDescription=""]
-   * @param {String}   [aIconURL=""]
-   * @param {Object[]} [aButtons=[]]
-   * @param {Object}   [aOptions={}]
-   * @param {String}   [aOptions.closeButtonCallback]
-   * @param {String}   [aOptions.targetCallback]
+   * @param {string}   [aTitle=""]
+   * @param {string}   [aDescription=""]
+   * @param {string}   [aIconURL=""]
+   * @param {object[]} [aButtons=[]]
+   * @param {object}   [aOptions={}]
+   * @param {string}   [aOptions.closeButtonCallback]
+   * @param {string}   [aOptions.targetCallback]
    */
   async showInfo(
     aChromeWindow,
@@ -1276,7 +1280,7 @@ export var UITour = {
       tooltipButtons.hidden = !aButtons.length;
 
       let tooltipClose = document.getElementById("UITourTooltipClose");
-      let closeButtonCallback = event => {
+      let closeButtonCallback = () => {
         this.hideInfo(document.defaultView);
         if (aOptions && aOptions.closeButtonCallback) {
           aOptions.closeButtonCallback();
@@ -1297,7 +1301,7 @@ export var UITour = {
 
       tooltip.addEventListener(
         "popuphiding",
-        function (event) {
+        function () {
           tooltipClose.removeEventListener("command", closeButtonCallback);
           if (aOptions.targetCallback && aAnchor.removeTargetListener) {
             aAnchor.removeTargetListener(document, targetCallback);
@@ -1662,7 +1666,7 @@ export var UITour = {
         try {
           let shell = aWindow.getShellService();
           if (shell) {
-            shell.setDefaultBrowser(true, false);
+            await shell.setDefaultBrowser(false);
           }
         } catch (e) {}
         break;
@@ -1821,7 +1825,7 @@ export var UITour = {
 
       let canSetDefaultBrowserInBackground = true;
       if (
-        AppConstants.isPlatformAndVersionAtLeast("win", "6.2") ||
+        AppConstants.platform == "win" ||
         AppConstants.isPlatformAndVersionAtLeast("macosx", "10.10")
       ) {
         canSetDefaultBrowserInBackground = false;

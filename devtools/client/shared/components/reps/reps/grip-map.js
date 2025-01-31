@@ -7,21 +7,23 @@
 // Make this available to both AMD and CJS environments
 define(function (require, exports, module) {
   // Dependencies
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const {
+    span,
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
   const {
     lengthBubble,
-  } = require("devtools/client/shared/components/reps/shared/grip-length-bubble");
+  } = require("resource://devtools/client/shared/components/reps/shared/grip-length-bubble.js");
   const {
     interleave,
     wrapRender,
     ellipsisElement,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
-  const PropRep = require("devtools/client/shared/components/reps/reps/prop-rep");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
+  const PropRep = require("resource://devtools/client/shared/components/reps/reps/prop-rep.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
 
   /**
    * Renders an map. A map is represented by a list of its
@@ -51,7 +53,7 @@ define(function (require, exports, module) {
     const title = getTitle(props, object);
     const isEmpty = getLength(object) === 0;
 
-    if (isEmpty || mode === MODE.TINY) {
+    if (isEmpty || mode === MODE.TINY || mode === MODE.HEADER) {
       return span(config, title);
     }
 
@@ -168,7 +170,7 @@ define(function (require, exports, module) {
       return a - b;
     });
 
-    return indexes.map((index, i) => {
+    return indexes.map(index => {
       const [key, entryValue] = entries[index];
       const value =
         entryValue.value !== undefined ? entryValue.value : entryValue;

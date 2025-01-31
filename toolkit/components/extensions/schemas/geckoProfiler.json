@@ -45,7 +45,13 @@
           "unregisteredthreads",
           "processcpu",
           "power",
-          "responsiveness"
+          "responsiveness",
+          "cpufreq",
+          "bandwidth",
+          "memory",
+          "tracing",
+          "sandbox",
+          "flows"
         ]
       },
       {

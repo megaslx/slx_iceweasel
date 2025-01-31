@@ -7,7 +7,7 @@ const { XPCOMUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(
+ChromeUtils.defineLazyGetter(
   this,
   "l10n",
   () => new Localization(["security/pippki/pippki.ftl"], true)
@@ -200,9 +200,8 @@ function checkPasswords() {
       // was called with the intention to change the password.
       // The token currently uses an empty password.
       // We will not allow changing the password from empty to empty.
-      document
-        .getElementById("set_password")
-        .getButton("accept").disabled = true;
+      document.getElementById("set_password").getButton("accept").disabled =
+        true;
       return;
     }
   }

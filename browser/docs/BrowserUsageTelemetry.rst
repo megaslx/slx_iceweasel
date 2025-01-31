@@ -4,7 +4,7 @@
 Browser Usage Telemetry
 =======================
 
-The `BrowserUsageTelemetry.jsm <https://searchfox.org/mozilla-central/source/browser/modules/BrowserUsageTelemetry.jsm>`_ module is the main module for measurements regarding the browser usage (e.g. tab and window counts, search counts, ...).
+The `BrowserUsageTelemetry.sys.mjs <https://searchfox.org/mozilla-central/source/browser/modules/BrowserUsageTelemetry.sys.mjs>`_ module is the main module for measurements regarding the browser usage (e.g. tab and window counts, search counts, ...).
 
 The measurements recording begins right after the ``SessionStore`` has finished restoring the session (i.e. restoring tabs/windows after Firefox starts).
 
@@ -37,6 +37,7 @@ For the purposes of this telemetry a set of areas are defined:
   * ``menu-toolbar`` - The normally hidden toolbar that holds the main menu.
   * ``titlebar`` - The optional title bar.
   * ``tabs-bar`` - The area where tabs are displayed.
+  * ``vertical-tabs-container`` - The area where vertical tabs are displayed.
   * ``bookmarks-bar`` - The bookmarks toolbar.
   * ``app-menu`` - The main application (hamburger) menu.
   * ``tabs-context`` - The context menu shown from right-clicking a tab.

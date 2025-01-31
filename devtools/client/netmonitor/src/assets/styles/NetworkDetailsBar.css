@@ -98,11 +98,6 @@
   width: 100%;
 }
 
-.network-monitor .textbox-input:focus {
-  outline: 0;
-  box-shadow: var(--theme-focus-box-shadow-textbox);
-}
-
 /* Tree table in tab panels */
 
 .network-monitor .tree-container, .tree-container .treeTable {
@@ -395,6 +390,13 @@
   display: flex;
   flex: 1;
   align-items: center;
+  padding-inline-end: 20px;
+  --total-timings-width-percentage: 90%;
+
+}
+
+.network-monitor .requests-list-timings-total {
+  width: calc(100% - var(--total-timings-width-percentage));
 }
 
 .network-monitor .requests-list-timings-offset {
@@ -405,6 +407,13 @@
   border: none;
   min-width: 1px;
   transition: width 0.2s ease-out;
+  margin-inline-start: calc(var(--current-timing-offset, 0) * var(--total-timings-width-percentage));
+  width: calc(var(--current-timing-width, 0) * var(--total-timings-width-percentage));
+  forced-color-adjust: none;
+
+  :root[forced-colors-active] & {
+    border: 1px solid CanvasText;
+  }
 }
 
 .network-monitor .label-separator {
@@ -412,20 +421,6 @@
   margin-inline-start: 4px;
   font-weight: 600;
   color: var(--theme-comment);
-}
-
-.theme-light .network-monitor .requests-list-timings-box {
-  --timing-server-color-1: rgba(104, 195, 179, 0.8); /* teal */
-  --timing-server-color-2: rgba(123, 102, 167, 0.8); /* purple */
-  --timing-server-color-3: rgba(233, 236, 130, 0.8); /* yellow */
-  --timing-server-color-total: rgba(186, 90, 140, 0.8); /* pink */
-}
-
-.theme-dark .network-monitor .requests-list-timings-box {
-  --timing-server-color-1: rgba(74, 228, 201, 0.8); /* teal */
-  --timing-server-color-2: rgba(156, 119, 233, 0.8); /* purple */
-  --timing-server-color-3: rgba(234, 239, 73, 0.8); /* yellow */
-  --timing-server-color-total: rgba(186, 74, 133, 0.8); /* pink */
 }
 
 .network-monitor .server-timings-color-1 {
@@ -442,6 +437,19 @@
 
 .network-monitor .server-timings-color-total {
   background: var(--timing-server-color-total);
+}
+
+
+.network-monitor .serviceworker-timings-color-launch {
+  background: var(--timing-server-color-1);
+}
+
+.network-monitor .serviceworker-timings-color-requestTo {
+  background: var(--timing-server-color-2);
+}
+
+.network-monitor .serviceworker-timings-color-handledBy {
+  background: var(--timing-server-color-3);
 }
 
 
@@ -491,7 +499,7 @@
   height: 12px;
   vertical-align: -1px;
   margin-inline-start: 5px;
-  background-image: url(chrome://devtools/skin/images/alert-small.svg);
+  background-image: url(resource://devtools-shared-images/alert-small.svg);
   background-size: cover;
   -moz-context-properties: fill;
   fill: var(--yellow-60);

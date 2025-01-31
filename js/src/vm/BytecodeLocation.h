@@ -9,13 +9,16 @@
 
 #include "frontend/NameAnalysisTypes.h"
 #include "js/TypeDecls.h"
-#include "vm/AsyncFunctionResolveKind.h"
 #include "vm/BuiltinObjectKind.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/CheckIsObjectKind.h"   // CheckIsObjectKind
 #include "vm/CompletionKind.h"      // CompletionKind
 #include "vm/FunctionPrefixKind.h"  // FunctionPrefixKind
 #include "vm/GeneratorResumeKind.h"
+#include "vm/TypeofEqOperand.h"  // TypeofEqOperand
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+#  include "vm/UsingHint.h"
+#endif
 
 namespace js {
 
@@ -104,6 +107,7 @@ class BytecodeLocation {
 
   inline JSAtom* getAtom(const JSScript* script) const;
   inline JSString* getString(const JSScript* script) const;
+  inline bool atomizeString(JSContext* cx, JSScript* script);
   inline PropertyName* getPropertyName(const JSScript* script) const;
   inline JS::BigInt* getBigInt(const JSScript* script) const;
   inline JSObject* getObject(const JSScript* script) const;
@@ -199,8 +203,6 @@ class BytecodeLocation {
 
   bool isStrictSetOp() const { return IsStrictSetPC(rawBytecode_); }
 
-  bool isNameOp() const { return IsNameOp(getOp()); }
-
   bool isSpreadOp() const { return IsSpreadOp(getOp()); }
 
   bool isInvokeOp() const { return IsInvokeOp(getOp()); }
@@ -210,10 +212,6 @@ class BytecodeLocation {
 
   bool isSetPropOp() const { return IsSetPropOp(getOp()); }
   bool isSetElemOp() const { return IsSetElemOp(getOp()); }
-
-  AsyncFunctionResolveKind getAsyncFunctionResolveKind() {
-    return AsyncFunctionResolveKind(GET_UINT8(rawBytecode_));
-  }
 
   bool resultIsPopped() const {
     MOZ_ASSERT(StackDefs(getOp()) == 1);
@@ -284,6 +282,11 @@ class BytecodeLocation {
     return index;
   }
 
+  TypeofEqOperand getTypeofEqOperand() const {
+    MOZ_ASSERT(is(JSOp::TypeofEq));
+    return TypeofEqOperand::fromRawValue(GET_UINT8(rawBytecode_));
+  }
+
   FunctionPrefixKind getFunctionPrefixKind() const {
     MOZ_ASSERT(is(JSOp::SetFunName));
     return FunctionPrefixKind(GET_UINT8(rawBytecode_));
@@ -303,6 +306,13 @@ class BytecodeLocation {
     MOZ_ASSERT(is(JSOp::CloseIter));
     return CompletionKind(GET_UINT8(rawBytecode_));
   }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  UsingHint getUsingHint() const {
+    MOZ_ASSERT(is(JSOp::AddDisposable));
+    return UsingHint(GET_UINT8(rawBytecode_));
+  }
+#endif
 
   uint32_t getNewArrayLength() const {
     MOZ_ASSERT(is(JSOp::NewArray));

@@ -12,7 +12,6 @@
 #include "mozilla/dom/Client.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/ClonedErrorHolder.h"
-#include "mozilla/dom/ClonedErrorHolderBinding.h"
 #include "mozilla/dom/ExtensionBrowserBinding.h"
 #include "mozilla/dom/FunctionBinding.h"
 #include "mozilla/dom/WorkerScope.h"
@@ -89,9 +88,9 @@ ExtensionAPIRequestForwarder::APIRequestHandler() {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (MOZ_UNLIKELY(!sAPIRequestHandler)) {
-    sAPIRequestHandler =
-        do_ImportModule("resource://gre/modules/ExtensionProcessScript.jsm",
-                        "ExtensionAPIRequestHandler");
+    sAPIRequestHandler = do_ImportESModule(
+        "resource://gre/modules/ExtensionProcessScript.sys.mjs",
+        "ExtensionAPIRequestHandler");
     MOZ_RELEASE_ASSERT(sAPIRequestHandler);
     ClearOnShutdown(&sAPIRequestHandler);
   }
@@ -152,7 +151,7 @@ void ExtensionAPIRequestForwarder::Run(nsIGlobalObject* aGlobal, JSContext* aCx,
     return;
   }
 
-  runnable->Dispatch(dom::WorkerStatus::Canceling, rv);
+  runnable->Dispatch(workerPrivate, dom::WorkerStatus::Canceling, rv);
   if (NS_WARN_IF(rv.Failed())) {
     ThrowUnexpectedError(aCx, aRv);
     return;
@@ -264,7 +263,7 @@ bool ExtensionAPIRequestStructuredCloneWrite(JSContext* aCx,
   // Try to serialize the object as a CloneErrorHolder, if it fails then
   // the object wasn't an error.
   IgnoredErrorResult rv;
-  RefPtr<dom::ClonedErrorHolder> ceh =
+  UniquePtr<dom::ClonedErrorHolder> ceh =
       dom::ClonedErrorHolder::Create(aCx, aObj, rv);
   if (NS_WARN_IF(rv.Failed()) || !ceh) {
     return false;
@@ -292,9 +291,11 @@ void RequestWorkerRunnable::Init(nsIGlobalObject* aGlobal, JSContext* aCx,
                                  ErrorResult& aRv) {
   MOZ_ASSERT(dom::IsCurrentThreadRunningWorker());
 
-  mSWDescriptorId = mWorkerPrivate->ServiceWorkerID();
+  dom::WorkerPrivate* workerPrivate = dom::GetCurrentThreadWorkerPrivate();
 
-  auto* workerScope = mWorkerPrivate->GlobalScope();
+  mSWDescriptorId = workerPrivate->ServiceWorkerID();
+
+  auto* workerScope = workerPrivate->GlobalScope();
   if (NS_WARN_IF(!workerScope)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return;
@@ -340,7 +341,7 @@ void RequestWorkerRunnable::Init(nsIGlobalObject* aGlobal, JSContext* aCx,
 
   RefPtr<dom::PromiseWorkerProxy> promiseProxy =
       dom::PromiseWorkerProxy::Create(
-          mWorkerPrivate, aPromiseRetval,
+          dom::GetCurrentThreadWorkerPrivate(), aPromiseRetval,
           &kExtensionAPIRequestStructuredCloneCallbacks);
   if (!promiseProxy) {
     aRv.Throw(NS_ERROR_DOM_ABORT_ERR);
@@ -447,8 +448,8 @@ already_AddRefed<ExtensionAPIRequest> RequestWorkerRunnable::CreateAPIRequest(
 already_AddRefed<WebExtensionPolicy>
 RequestWorkerRunnable::GetWebExtensionPolicy() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mWorkerPrivate);
-  auto* baseURI = mWorkerPrivate->GetBaseURI();
+  MOZ_ASSERT(mWorkerRef);
+  auto* baseURI = mWorkerRef->Private()->GetBaseURI();
   RefPtr<WebExtensionPolicy> policy =
       ExtensionPolicyService::GetSingleton().GetByURL(baseURI);
   return policy.forget();
@@ -503,14 +504,10 @@ bool RequestWorkerRunnable::HandleAPIRequest(
     // runtime.lastError).
     JS::Rooted<JSObject*> errObj(aCx, &aRetval.toObject());
     IgnoredErrorResult rv;
-    RefPtr<dom::ClonedErrorHolder> ceh =
+    UniquePtr<dom::ClonedErrorHolder> ceh =
         dom::ClonedErrorHolder::Create(aCx, errObj, rv);
     if (!rv.Failed() && ceh) {
-      JS::Rooted<JSObject*> obj(aCx);
-      // Note: `ToJSValue` cannot be used because ClonedErrorHolder isn't
-      // wrapper cached.
-      okSerializedError = ceh->WrapObject(aCx, nullptr, &obj);
-      aRetval.setObject(*obj);
+      okSerializedError = ToJSValue(aCx, std::move(ceh), aRetval);
     } else {
       okSerializedError = false;
     }
@@ -518,7 +515,7 @@ bool RequestWorkerRunnable::HandleAPIRequest(
 
   if (isExtensionError && !okSerializedError) {
     NS_WARNING("Failed to wrap ClonedErrorHolder");
-    MOZ_DIAGNOSTIC_ASSERT(false, "Failed to wrap ClonedErrorHolder");
+    MOZ_DIAGNOSTIC_CRASH("Failed to wrap ClonedErrorHolder");
     return false;
   }
 
@@ -537,7 +534,7 @@ bool RequestWorkerRunnable::HandleAPIRequest(
       return ProcessHandlerResult(aCx, aRetval);
   }
 
-  MOZ_DIAGNOSTIC_ASSERT(false, "Unexpected API request ResultType");
+  MOZ_DIAGNOSTIC_CRASH("Unexpected API request ResultType");
   return false;
 }
 
@@ -593,14 +590,14 @@ bool RequestWorkerRunnable::ProcessHandlerResult(
     }
   }
 
-  MOZ_DIAGNOSTIC_ASSERT(false, "Unexpected API request ResultType");
+  MOZ_DIAGNOSTIC_CRASH("Unexpected API request ResultType");
   return false;
 }
 
 void RequestWorkerRunnable::ReadResult(JSContext* aCx,
                                        JS::MutableHandle<JS::Value> aResult,
                                        ErrorResult& aRv) {
-  MOZ_ASSERT(mWorkerPrivate->IsOnCurrentThread());
+  MOZ_ASSERT(dom::IsCurrentThreadRunningWorker());
   if (mResultHolder.isNothing() || !mResultHolder->get()->HasData()) {
     return;
   }
@@ -630,7 +627,7 @@ void RequestWorkerRunnable::ReadResult(JSContext* aCx,
       return;
   }
 
-  MOZ_DIAGNOSTIC_ASSERT(false, "Unexpected API request ResultType");
+  MOZ_DIAGNOSTIC_CRASH("Unexpected API request ResultType");
   aRv.Throw(NS_ERROR_UNEXPECTED);
 }
 
@@ -647,13 +644,16 @@ RequestInitWorkerRunnable::RequestInitWorkerRunnable(
 
 bool RequestInitWorkerRunnable::MainThreadRun() {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mWorkerRef);
 
-  auto* baseURI = mWorkerPrivate->GetBaseURI();
+  dom::WorkerPrivate* workerPrivate = mWorkerRef->Private();
+
+  auto* baseURI = workerPrivate->GetBaseURI();
   RefPtr<WebExtensionPolicy> policy =
       ExtensionPolicyService::GetSingleton().GetByURL(baseURI);
 
   RefPtr<ExtensionServiceWorkerInfo> swInfo = new ExtensionServiceWorkerInfo(
-      *mClientInfo, mWorkerPrivate->ServiceWorkerID());
+      *mClientInfo, workerPrivate->ServiceWorkerID());
 
   nsCOMPtr<mozIExtensionAPIRequestHandler> handler =
       &ExtensionAPIRequestForwarder::APIRequestHandler();

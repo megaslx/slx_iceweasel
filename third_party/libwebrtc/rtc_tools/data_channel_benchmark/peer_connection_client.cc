@@ -13,6 +13,9 @@
 #include <string>
 #include <utility>
 
+#include "api/audio/audio_device.h"
+#include "api/audio/audio_mixer.h"
+#include "api/audio/audio_processing.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/create_peerconnection_factory.h"
@@ -20,10 +23,23 @@
 #include "api/peer_connection_interface.h"
 #include "api/rtc_error.h"
 #include "api/scoped_refptr.h"
+#include "api/set_local_description_observer_interface.h"
 #include "api/set_remote_description_observer_interface.h"
-#include "api/video_codecs/builtin_video_decoder_factory.h"
-#include "api/video_codecs/builtin_video_encoder_factory.h"
+#include "api/video_codecs/video_decoder_factory.h"
+#include "api/video_codecs/video_decoder_factory_template.h"
+#include "api/video_codecs/video_decoder_factory_template_dav1d_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_open_h264_adapter.h"
+#include "api/video_codecs/video_encoder_factory.h"
+#include "api/video_codecs/video_encoder_factory_template.h"
+#include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
+#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/thread.h"
 
 namespace {
@@ -137,8 +153,12 @@ PeerConnectionClient::CreateDefaultFactory(rtc::Thread* signaling_thread) {
       /*signaling_thread*/ signaling_thread,
       /*default_adm=*/nullptr, webrtc::CreateBuiltinAudioEncoderFactory(),
       webrtc::CreateBuiltinAudioDecoderFactory(),
-      webrtc::CreateBuiltinVideoEncoderFactory(),
-      webrtc::CreateBuiltinVideoDecoderFactory(),
+      std::make_unique<VideoEncoderFactoryTemplate<
+          LibvpxVp8EncoderTemplateAdapter, LibvpxVp9EncoderTemplateAdapter,
+          OpenH264EncoderTemplateAdapter, LibaomAv1EncoderTemplateAdapter>>(),
+      std::make_unique<VideoDecoderFactoryTemplate<
+          LibvpxVp8DecoderTemplateAdapter, LibvpxVp9DecoderTemplateAdapter,
+          OpenH264DecoderTemplateAdapter, Dav1dDecoderTemplateAdapter>>(),
       /*audio_mixer=*/nullptr, /*audio_processing=*/nullptr);
 
   if (!factory) {

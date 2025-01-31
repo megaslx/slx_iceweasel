@@ -60,6 +60,12 @@ class nsHttpConnectionMgr final : public HttpConnectionMgrShell,
   [[nodiscard]] nsresult CancelTransactions(nsHttpConnectionInfo*,
                                             nsresult code);
 
+  // The connection manager needs to know the hashes used for a WebTransport
+  // connection authenticated with serverCertHashes
+  nsresult StoreServerCertHashes(
+      nsHttpConnectionInfo* aConnInfo, bool aNoSpdy, bool aNoHttp3,
+      nsTArray<RefPtr<nsIWebTransportHash>>&& aServerCertHashes);
+
   //-------------------------------------------------------------------------
   // NOTE: functions below may be called only on the socket thread.
   //-------------------------------------------------------------------------
@@ -142,6 +148,11 @@ class nsHttpConnectionMgr final : public HttpConnectionMgrShell,
   // increment mNumIdleConns and update PruneDeadConnections timer.
   void NewIdleConnectionAdded(uint32_t timeToLive);
   void DecrementNumIdleConns();
+
+  const nsTArray<RefPtr<nsIWebTransportHash>>* GetServerCertHashes(
+      nsHttpConnectionInfo* aConnInfo);
+
+  uint64_t GenerateNewWebTransportId() { return mMaxWebTransportId++; }
 
  private:
   virtual ~nsHttpConnectionMgr();
@@ -227,11 +238,8 @@ class nsHttpConnectionMgr final : public HttpConnectionMgrShell,
   uint16_t mMaxPersistConnsPerProxy{0};
   uint16_t mMaxRequestDelay{0};  // in seconds
   bool mThrottleEnabled{false};
-  uint32_t mThrottleVersion{2};
   uint32_t mThrottleSuspendFor{0};
   uint32_t mThrottleResumeFor{0};
-  uint32_t mThrottleReadLimit{0};
-  uint32_t mThrottleReadInterval{0};
   uint32_t mThrottleHoldTime{0};
   TimeDuration mThrottleMaxTime;
   bool mBeConservativeForProxy{true};
@@ -334,6 +342,7 @@ class nsHttpConnectionMgr final : public HttpConnectionMgrShell,
   void OnMsgPruneNoTraffic(int32_t, ARefBase*);
   void OnMsgUpdateCurrentBrowserId(int32_t, ARefBase*);
   void OnMsgClearConnectionHistory(int32_t, ARefBase*);
+  void OnMsgStoreServerCertHashes(int32_t, ARefBase*);
 
   // Total number of active connections in all of the ConnectionEntry objects
   // that are accessed from mCT connection table.
@@ -462,6 +471,10 @@ class nsHttpConnectionMgr final : public HttpConnectionMgrShell,
   void NotifyConnectionOfBrowserIdChange(uint64_t previousId);
 
   void CheckTransInPendingQueue(nsHttpTransaction* aTrans);
+
+  // Used for generating unique IDSs for dedicated connections, currently used
+  // by WebTransport
+  Atomic<uint64_t> mMaxWebTransportId{1};
 };
 
 }  // namespace mozilla::net

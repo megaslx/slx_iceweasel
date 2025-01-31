@@ -36,6 +36,15 @@ class APZCBasicTester : public APZCTesterBase {
         new TestAsyncPanZoomController(LayersId{0}, mcc, tm, mGestureBehavior);
     apzc->SetFrameMetrics(TestFrameMetrics());
     apzc->GetScrollMetadata().SetIsLayersIdRoot(true);
+    // Since we're working with just one APZC, make it the root-content one.
+    // Tests that want to test the behaviour of a non-root-content APZC
+    // generally want to do so in a context where it has a root-content
+    // ancestor, and so would use APZCTreeManagerTester.
+    // Note that some tests overwrite the initial FrameMetrics; such tests
+    // still need to take care that the root-content flag is set on the new
+    // FrameMetrics they set (if they care about root-content behaviours like
+    // zooming).
+    apzc->GetFrameMetrics().SetIsRootContent(true);
   }
 
   /**
@@ -49,8 +58,7 @@ class APZCBasicTester : public APZCTesterBase {
   }
 
   virtual void TearDown() {
-    while (mcc->RunThroughDelayedTasks())
-      ;
+    while (mcc->RunThroughDelayedTasks());
     apzc->Destroy();
     tm->ClearTree();
     tm->ClearContentController();
@@ -61,6 +69,7 @@ class APZCBasicTester : public APZCTesterBase {
   void MakeApzcWaitForMainThread() { apzc->SetWaitForMainThread(); }
 
   void MakeApzcZoomable() {
+    MOZ_ASSERT(apzc->GetFrameMetrics().IsRootContent());
     apzc->UpdateZoomConstraints(ZoomConstraints(
         true, true, CSSToParentLayerScale(0.25f), CSSToParentLayerScale(4.0f)));
   }
@@ -74,22 +83,22 @@ class APZCBasicTester : public APZCTesterBase {
   /**
    * Sample animations once, 1 ms later than the last sample.
    */
-  void SampleAnimationOnce() {
+  bool SampleAnimationOnce() {
     const TimeDuration increment = TimeDuration::FromMilliseconds(1);
     ParentLayerPoint pointOut;
     AsyncTransform viewTransformOut;
     mcc->AdvanceBy(increment);
-    apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
+    return apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
   }
   /**
    * Sample animations one frame, 17 ms later than the last sample.
    */
-  void SampleAnimationOneFrame() {
+  bool SampleAnimationOneFrame() {
     const TimeDuration increment = TimeDuration::FromMilliseconds(17);
     ParentLayerPoint pointOut;
     AsyncTransform viewTransformOut;
     mcc->AdvanceBy(increment);
-    apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
+    return apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
   }
 
   AsyncPanZoomController::GestureBehavior mGestureBehavior;

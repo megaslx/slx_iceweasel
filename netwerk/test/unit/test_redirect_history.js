@@ -9,7 +9,7 @@ const ReferrerInfo = Components.Constructor(
   "init"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpServer.identity.primaryPort;
 });
 
@@ -17,7 +17,7 @@ var httpServer = null;
 var redirects = [];
 const numRedirects = 10;
 
-function make_channel(url, callback, ctx) {
+function make_channel(url) {
   return NetUtil.newChannel({ uri: url, loadUsingSystemPrincipal: true });
 }
 

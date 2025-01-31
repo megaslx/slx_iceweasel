@@ -31,26 +31,32 @@ CacheControlParser::CacheControlParser(nsACString const& aHeader)
 }
 
 void CacheControlParser::Directive() {
+  nsAutoCString word;
   do {
     SkipWhites();
-    if (CheckWord("no-cache")) {
+    if (!ReadWord(word)) {
+      return;
+    }
+
+    ToLowerCase(word);
+    if (word == "no-cache") {
       mNoCache = true;
       IgnoreDirective();  // ignore any optionally added values
-    } else if (CheckWord("no-store")) {
+    } else if (word == "no-store") {
       mNoStore = true;
-    } else if (CheckWord("max-age")) {
+    } else if (word == "max-age") {
       mMaxAgeSet = SecondsValue(&mMaxAge);
-    } else if (CheckWord("max-stale")) {
+    } else if (word == "max-stale") {
       mMaxStaleSet = SecondsValue(&mMaxStale, PR_UINT32_MAX);
-    } else if (CheckWord("min-fresh")) {
+    } else if (word == "min-fresh") {
       mMinFreshSet = SecondsValue(&mMinFresh);
-    } else if (CheckWord("stale-while-revalidate")) {
+    } else if (word == "stale-while-revalidate") {
       mStaleWhileRevalidateSet = SecondsValue(&mStaleWhileRevalidate);
-    } else if (CheckWord("public")) {
+    } else if (word == "public") {
       mPublic = true;
-    } else if (CheckWord("private")) {
+    } else if (word == "private") {
       mPrivate = true;
-    } else if (CheckWord("immutable")) {
+    } else if (word == "immutable") {
       mImmutable = true;
     } else {
       IgnoreDirective();
@@ -69,6 +75,7 @@ void CacheControlParser::Directive() {
 bool CacheControlParser::SecondsValue(uint32_t* seconds, uint32_t defaultVal) {
   SkipWhites();
   if (!CheckChar('=')) {
+    IgnoreDirective();
     *seconds = defaultVal;
     return !!defaultVal;
   }
@@ -76,7 +83,9 @@ bool CacheControlParser::SecondsValue(uint32_t* seconds, uint32_t defaultVal) {
   SkipWhites();
   if (!ReadInteger(seconds)) {
     NS_WARNING("Unexpected value in Cache-control header value");
-    return false;
+    IgnoreDirective();
+    *seconds = defaultVal;
+    return !!defaultVal;
   }
 
   return true;

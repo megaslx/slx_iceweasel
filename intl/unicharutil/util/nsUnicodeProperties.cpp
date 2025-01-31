@@ -36,7 +36,6 @@ const nsCharProps2& GetCharProps2(uint32_t aCh) {
   // Default values for unassigned
   using namespace mozilla::unicode;
   static const nsCharProps2 undefined = {
-      VERTICAL_ORIENTATION_R,
       0  // IdentifierType
   };
   return undefined;
@@ -177,6 +176,10 @@ bool IsClusterExtenderExcludingJoiners(uint32_t aCh, uint8_t aCategory) {
 }
 
 uint32_t CountGraphemeClusters(Span<const char16_t> aText) {
+  if (aText.IsEmpty()) {
+    // Fast path for empty text.
+    return 0;
+  }
   intl::GraphemeClusterBreakIteratorUtf16 iter(aText);
   uint32_t result = 0;
   while (iter.Next()) {
@@ -187,7 +190,7 @@ uint32_t CountGraphemeClusters(Span<const char16_t> aText) {
 
 uint32_t GetNaked(uint32_t aCh) {
   uint32_t index = aCh >> 8;
-  if (index >= MOZ_ARRAY_LENGTH(BASE_CHAR_MAPPING_BLOCK_INDEX)) {
+  if (index >= std::size(BASE_CHAR_MAPPING_BLOCK_INDEX)) {
     return aCh;
   }
   index = BASE_CHAR_MAPPING_BLOCK_INDEX[index];

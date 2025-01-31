@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import {
   BaseProcess,
   PromiseWorker,
@@ -36,10 +35,6 @@ class WinPromiseWorker extends PromiseWorker {
 
     this.call("init", [
       {
-        breakAwayFromJob: !AppConstants.isPlatformAndVersionAtLeast(
-          "win",
-          "6.2"
-        ),
         comspec: Services.env.get("COMSPEC"),
         signalEvent: String(
           ctypes.cast(this.signalEvent, ctypes.uintptr_t).value
@@ -60,7 +55,7 @@ class WinPromiseWorker extends PromiseWorker {
 
 class Process extends BaseProcess {
   static get WORKER_URL() {
-    return "resource://gre/modules/subprocess/subprocess_worker_win.js";
+    return "resource://gre/modules/subprocess/subprocess_win.worker.js";
   }
 
   static get WorkerClass() {
@@ -172,6 +167,12 @@ var SubprocessWin = {
     let error = new Error(`Executable not found: ${bin}`);
     error.errorCode = SubprocessConstants.ERROR_BAD_EXECUTABLE;
     throw error;
+  },
+
+  connectRunning(_options) {
+    // Not relevant (yet?) on Windows. This is currently used only on Unix
+    // for native messaging through the WebExtensions portal.
+    throw new Error("Not implemented");
   },
 };
 

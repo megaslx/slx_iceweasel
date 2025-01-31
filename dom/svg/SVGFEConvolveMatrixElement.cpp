@@ -13,6 +13,7 @@
 #include "DOMSVGAnimatedNumberList.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/BindContext.h"
+#include <numeric>
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEConvolveMatrix)
 
@@ -26,7 +27,7 @@ JSObject* SVGFEConvolveMatrixElement::WrapNode(
 }
 
 SVGElement::NumberInfo SVGFEConvolveMatrixElement::sNumberInfo[2] = {
-    {nsGkAtoms::divisor, 1, false}, {nsGkAtoms::bias, 0, false}};
+    {nsGkAtoms::divisor, 1}, {nsGkAtoms::bias, 0}};
 
 SVGElement::NumberPairInfo SVGFEConvolveMatrixElement::sNumberPairInfo[1] = {
     {nsGkAtoms::kernelUnitLength, 0, 0}};
@@ -163,19 +164,13 @@ FilterPrimitiveDescription SVGFEConvolveMatrixElement::GetPrimitiveDescription(
   if (orderX > NS_SVG_OFFSCREEN_MAX_DIMENSION ||
       orderY > NS_SVG_OFFSCREEN_MAX_DIMENSION)
     return failureDescription;
-  UniquePtr<float[]> kernel = MakeUniqueFallible<float[]>(orderX * orderY);
-  if (!kernel) return failureDescription;
-  for (uint32_t i = 0; i < kmLength; i++) {
-    kernel[kmLength - 1 - i] = kernelMatrix[i];
-  }
 
   float divisor;
   if (mNumberAttributes[DIVISOR].IsExplicitlySet()) {
     divisor = mNumberAttributes[DIVISOR].GetAnimValue();
     if (divisor == 0) return failureDescription;
   } else {
-    divisor = kernel[0];
-    for (uint32_t i = 1; i < kmLength; i++) divisor += kernel[i];
+    divisor = std::accumulate(kernelMatrix.begin(), kernelMatrix.end(), 0.0f);
     if (divisor == 0) divisor = 1;
   }
 
@@ -227,7 +222,7 @@ nsresult SVGFEConvolveMatrixElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feConvolveMatrix);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEConvolveMatrixElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -235,44 +230,44 @@ nsresult SVGFEConvolveMatrixElement::BindToTree(BindContext& aCtx,
 
 SVGElement::NumberAttributesInfo SVGFEConvolveMatrixElement::GetNumberInfo() {
   return NumberAttributesInfo(mNumberAttributes, sNumberInfo,
-                              ArrayLength(sNumberInfo));
+                              std::size(sNumberInfo));
 }
 
 SVGElement::NumberPairAttributesInfo
 SVGFEConvolveMatrixElement::GetNumberPairInfo() {
   return NumberPairAttributesInfo(mNumberPairAttributes, sNumberPairInfo,
-                                  ArrayLength(sNumberPairInfo));
+                                  std::size(sNumberPairInfo));
 }
 
 SVGElement::IntegerAttributesInfo SVGFEConvolveMatrixElement::GetIntegerInfo() {
   return IntegerAttributesInfo(mIntegerAttributes, sIntegerInfo,
-                               ArrayLength(sIntegerInfo));
+                               std::size(sIntegerInfo));
 }
 
 SVGElement::IntegerPairAttributesInfo
 SVGFEConvolveMatrixElement::GetIntegerPairInfo() {
   return IntegerPairAttributesInfo(mIntegerPairAttributes, sIntegerPairInfo,
-                                   ArrayLength(sIntegerPairInfo));
+                                   std::size(sIntegerPairInfo));
 }
 
 SVGElement::BooleanAttributesInfo SVGFEConvolveMatrixElement::GetBooleanInfo() {
   return BooleanAttributesInfo(mBooleanAttributes, sBooleanInfo,
-                               ArrayLength(sBooleanInfo));
+                               std::size(sBooleanInfo));
 }
 
 SVGElement::EnumAttributesInfo SVGFEConvolveMatrixElement::GetEnumInfo() {
-  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, ArrayLength(sEnumInfo));
+  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, std::size(sEnumInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFEConvolveMatrixElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 SVGElement::NumberListAttributesInfo
 SVGFEConvolveMatrixElement::GetNumberListInfo() {
   return NumberListAttributesInfo(mNumberListAttributes, sNumberListInfo,
-                                  ArrayLength(sNumberListInfo));
+                                  std::size(sNumberListInfo));
 }
 
 }  // namespace mozilla::dom

@@ -7,6 +7,7 @@
 #define __FORKSERVICE_CHILD_H_
 
 #include "base/process_util.h"
+#include "mozilla/GeckoArgs.h"
 #include "nsIObserver.h"
 #include "nsString.h"
 #include "mozilla/ipc/MiniTransceiver.h"
@@ -36,18 +37,15 @@ class ForkServiceChild {
   /**
    * Ask the fork server to create a new process with given parameters.
    *
-   * The fork server uses |base::LaunchApp()| to create a new
-   * content process with the following parameters.
-   *
-   * \param aArgv assigns |argv| of the content process.
-   * \param aEnvMap sets |LaunchOptions::env_map|.
-   * \param aFdsRemap sets |LaunchOptions::fd_to_remap|.
-   * \param aPid returns the PID of the content process created.
-   * \return true if success.
+   * \param aArgs arguments with file attachments used in the content process.
+   * \param aOptions other options which will be used to create the process.
+   *                 Not all launch options are supported.
+   * \param aPid returns the PID of the content
+   * process created. \return true if success.
    */
   Result<Ok, LaunchError> SendForkNewSubprocess(
-      const nsTArray<nsCString>& aArgv, const nsTArray<EnvVar>& aEnvMap,
-      const nsTArray<FdMapping>& aFdsRemap, pid_t* aPid);
+      geckoargs::ChildProcessArgs&& aArgs, base::LaunchOptions&& aOptions,
+      pid_t* aPid);
 
   /**
    * Create a fork server process and the singleton of this class.
@@ -58,6 +56,7 @@ class ForkServiceChild {
    */
   static void StartForkServer();
   static void StopForkServer();
+
   /**
    * Return the singleton.
    */
@@ -66,6 +65,11 @@ class ForkServiceChild {
     return child == nullptr || child->mFailed ? nullptr : child;
   }
 
+  /**
+   * Returns whether the fork server was ever active.  Thread-safe.
+   */
+  static bool WasUsed() { return sForkServiceUsed; }
+
  private:
   // Called when a message is received.
   void OnMessageReceived(UniquePtr<IPC::Message> message);
@@ -73,6 +77,7 @@ class ForkServiceChild {
 
   UniquePtr<MiniTransceiver> mTcver;
   static UniquePtr<ForkServiceChild> sForkServiceChild;
+  static Atomic<bool> sForkServiceUsed;
   pid_t mRecvPid;
   bool mFailed;  // The forkserver has crashed or disconnected.
   GeckoChildProcessHost* mProcess;

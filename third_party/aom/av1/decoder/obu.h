@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2017, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -25,7 +25,7 @@ int aom_decode_frame_from_obus(struct AV1Decoder *pbi, const uint8_t *data,
                                const uint8_t **p_data_end);
 
 aom_codec_err_t aom_get_num_layers_from_operating_point_idc(
-    int operating_point_idc, unsigned int *num_spatial_layers,
-    unsigned int *num_temporal_layers);
+    int operating_point_idc, unsigned int *number_spatial_layers,
+    unsigned int *number_temporal_layers);
 
 #endif  // AOM_AV1_DECODER_OBU_H_

@@ -2,14 +2,32 @@
  *    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /*
- * Test of a search engine's identifier.
+ * Test of a search engine's telemetryId.
  */
 
 "use strict";
 
-add_task(async function setup() {
-  await SearchTestUtils.useTestEngines("simple-engines");
-  await AddonTestUtils.promiseStartupManager();
+add_setup(async function () {
+  SearchTestUtils.setRemoteSettingsConfig([
+    {
+      identifier: "basic",
+      base: {
+        name: "enterprise-a",
+      },
+    },
+    {
+      identifier: "suffix",
+      base: {
+        name: "enterprise-b",
+      },
+      variants: [
+        {
+          environment: { allRegionsAndLocales: true },
+          telemetrySuffix: "b",
+        },
+      ],
+    },
+  ]);
 
   const result = await Services.search.init();
   Assert.ok(
@@ -18,9 +36,6 @@ add_task(async function setup() {
   );
 
   useHttpServer();
-  await SearchTestUtils.promiseNewSearchEngine({
-    url: `${gDataUrl}engine.xml`,
-  });
 });
 
 function checkIdentifier(engineName, expectedIdentifier, expectedTelemetryId) {
@@ -31,30 +46,45 @@ function checkIdentifier(engineName, expectedIdentifier, expectedTelemetryId) {
   );
 
   Assert.equal(
-    engine.identifier,
-    expectedIdentifier,
-    "Should have the correct identifier"
-  );
-
-  Assert.equal(
     engine.telemetryId,
     expectedTelemetryId,
     "Should have the correct telemetry Id"
   );
+
+  // TODO: Bug 1877721 - We have 3 forms of identifiers which causes confusion,
+  // we can remove the identifier for nsISearchEngine.
+  Assert.equal(
+    engine.identifier,
+    expectedIdentifier,
+    "Should have the correct identifier"
+  );
 }
 
-add_task(async function test_from_profile() {
-  // An engine loaded from the profile directory won't have an identifier,
-  // because it's not built-in.
+add_task(async function test_appProvided_basic() {
+  checkIdentifier("enterprise-a", "basic", "basic");
+});
+
+add_task(async function test_appProvided_suffix() {
+  checkIdentifier("enterprise-b", "suffix-b", "suffix-b");
+});
+
+add_task(async function test_opensearch() {
+  await SearchTestUtils.installOpenSearchEngine({
+    url: `${gHttpURL}/opensearch/generic1.xml`,
+  });
+
+  // An OpenSearch engine won't have a dedicated identifier because it's not
+  // built-in.
   checkIdentifier(kTestEngineName, null, `other-${kTestEngineName}`);
 });
 
-add_task(async function test_from_telemetry_id() {
-  checkIdentifier("basic", "telemetry", "telemetry");
-});
+add_task(async function test_webExtension() {
+  await SearchTestUtils.installSearchExtension({
+    id: "enterprise-c",
+    name: "Enterprise C",
+  });
 
-add_task(async function test_from_webextension_id() {
-  // If not specified, the telemetry Id is derived from the WebExtension prefix,
-  // it should not use the WebExtension display name.
-  checkIdentifier("Simple Engine", "simple", "simple");
+  // A WebExtension engine won't have a dedicated identifier because it's not
+  // built-in.
+  checkIdentifier("Enterprise C", null, `other-Enterprise C`);
 });

@@ -33,7 +33,6 @@
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Unused.h"
 #include "mozilla/ipc/BackgroundChild.h"
@@ -43,6 +42,7 @@
 #include "mozilla/dom/PRemoteWorkerControllerChild.h"
 #include "mozilla/dom/ServiceWorkerRegistrationInfo.h"
 #include "mozilla/net/NeckoChannelParams.h"
+#include "mozilla/dom/RemoteWorkerControllerChild.h"
 
 namespace mozilla::dom {
 
@@ -67,7 +67,7 @@ bool CSPPermitsResponse(nsILoadInfo* aLoadInfo,
   }
 
   int16_t decision = nsIContentPolicy::ACCEPT;
-  rv = NS_CheckContentLoadPolicy(uri, aLoadInfo, ""_ns, &decision);
+  rv = NS_CheckContentLoadPolicy(uri, aLoadInfo, &decision);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return false;
   }
@@ -308,6 +308,14 @@ mozilla::ipc::IPCResult FetchEventOpChild::RecvRespondWith(
     ParentToParentFetchEventRespondWithResult&& aResult) {
   AssertIsOnMainThread();
 
+  RefPtr<RemoteWorkerControllerChild> mgr =
+      static_cast<RemoteWorkerControllerChild*>(Manager());
+
+  mInterceptedChannel->SetRemoteWorkerLaunchStart(
+      mgr->GetRemoteWorkerLaunchStart());
+  mInterceptedChannel->SetRemoteWorkerLaunchEnd(
+      mgr->GetRemoteWorkerLaunchEnd());
+
   switch (aResult.type()) {
     case ParentToParentFetchEventRespondWithResult::
         TParentToParentSynthesizeResponseArgs:
@@ -373,7 +381,7 @@ mozilla::ipc::IPCResult FetchEventOpChild::Recv__delete__(
   mPreloadResponseEndPromiseRequestHolder.DisconnectIfExists();
   if (mPreloadResponseReadyPromises) {
     RefPtr<FetchService> fetchService = FetchService::GetInstance();
-    fetchService->CancelFetch(std::move(mPreloadResponseReadyPromises));
+    fetchService->CancelFetch(std::move(mPreloadResponseReadyPromises), false);
   }
 
   /**
@@ -471,9 +479,6 @@ nsresult FetchEventOpChild::StartSynthesizedResponse(
   }
   if (!body) {
     response->GetUnfilteredBody(getter_AddRefs(body));
-  } else {
-    Telemetry::ScalarAdd(Telemetry::ScalarID::SW_ALTERNATIVE_BODY_USED_COUNT,
-                         1);
   }
 
   // Propagate the URL to the content if the request mode is not "navigate".

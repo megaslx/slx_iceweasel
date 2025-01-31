@@ -16,6 +16,7 @@ class PresShell;
 namespace dom {
 class Document;
 class EventTarget;
+enum class InteractiveWidget : uint8_t;
 }  // namespace dom
 
 /**
@@ -45,10 +46,11 @@ class GeckoMVMContext final : public MVMContext {
   bool IsResolutionUpdatedByApz() const override;
   LayoutDeviceMargin ScrollbarAreaToExcludeFromCompositionBounds()
       const override;
-  Maybe<LayoutDeviceIntSize> GetContentViewerSize() const override;
+  Maybe<LayoutDeviceIntSize> GetDocumentViewerSize() const override;
   bool AllowZoomingForDocument() const override;
   bool IsInReaderMode() const override;
   bool IsDocumentLoading() const override;
+  bool IsDocumentFullscreen() const override;
 
   void SetResolutionAndScaleTo(float aResolution,
                                ResolutionChangeOrigin aOrigin) override;
@@ -56,6 +58,8 @@ class GeckoMVMContext final : public MVMContext {
   void PostVisualViewportResizeEventByDynamicToolbar() override;
   void UpdateDisplayPortMargins() override;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void Reflow(const CSSSize& aNewSize) override;
+  ScreenIntCoord GetDynamicToolbarOffset() override;
+  dom::InteractiveWidget GetInteractiveWidgetMode() const override;
 
  private:
   RefPtr<dom::Document> mDocument;

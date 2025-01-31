@@ -60,5 +60,4 @@ fails-if(Android) fuzzy(0-2,0-80) == auto-size.html auto-size-ref.html # Snappin
 == range-track-bg.html range-track-bg-ref.html
 != track-default-rendering.html track-default-rendering-ref.html
 
-test-pref(layout.css.webkit-range-pseudos.enabled,true) == webkit.html webkit-ref.html
-test-pref(layout.css.webkit-range-pseudos.enabled,true) != webkit.html webkit-notref.html
+== 1887539.html 1887539-ref.html

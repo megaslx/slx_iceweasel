@@ -17,7 +17,7 @@ const VALID_HIGHLIGHT_L10N_IDs = new Map([
   ["quality", "shopping-highlight-quality"],
   ["shipping", "shopping-highlight-shipping"],
   ["competitiveness", "shopping-highlight-competitiveness"],
-  ["packaging", "shopping-highlight-packaging"],
+  ["packaging/appearance", "shopping-highlight-packaging"],
 ]);
 
 /**
@@ -33,6 +33,7 @@ class ReviewHighlights extends MozLitElement {
 
   static properties = {
     highlights: { type: Object },
+    lang: { type: String, reflect: true },
   };
 
   static get queries() {
@@ -84,10 +85,9 @@ class ReviewHighlights extends MozLitElement {
     let l10nId = VALID_HIGHLIGHT_L10N_IDs.get(type);
     highlightEl.id = type;
     highlightEl.l10nId = l10nId;
+    highlightEl.highlightType = type;
     highlightEl.reviews = reviews;
-    // At present, en is only supported. Once we support more locales,
-    // update this attribute accordingly.
-    highlightEl.lang = "en";
+    highlightEl.lang = this.lang;
     return highlightEl;
   }
 
@@ -106,10 +106,12 @@ class ReviewHighlights extends MozLitElement {
       let highlightEl = this.createHighlightElement(key, value);
       highlightsTemplate.push(highlightEl);
     }
+
     return html`
       <shopping-card
         data-l10n-id="shopping-highlights-label"
         data-l10n-attrs="label"
+        type="show-more"
       >
         <div slot="content" id="review-highlights-wrapper">
           <dl id="review-highlights-list">${highlightsTemplate}</dl>

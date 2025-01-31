@@ -13,7 +13,8 @@
  * limitations under the License.
  */
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
+use regex::Regex;
 use std::fmt::Write;
 use std::path::Path;
 use std::str;
@@ -90,8 +91,12 @@ fn convert_directive(
     } else {
         writeln!(out, "// {}:{}:{}", filename.display(), line + 1, col)?;
     }
+
+    // For full definitions of these directives, see
+    // https://github.com/WebAssembly/spec/blob/main/interpreter/README.md#scripts
     match directive {
-        Wat(wast::QuoteWat::Wat(wast::Wat::Module(module))) => {
+        // (module $M? ...): Instantiate a module with an optional identifier.
+        Module(wast::QuoteWat::Wat(wast::Wat::Module(module))) => {
             let next_instance = current_instance.map(|x| x + 1).unwrap_or(0);
             let module_text = module_to_js_string(&module, wast)?;
 
@@ -101,39 +106,88 @@ fn convert_directive(
                 next_instance, module_text
             )?;
             if let Some(id) = module.id {
-                writeln!(
-                    out,
-                    "register(${}, {});",
-                    next_instance,
-                    format!("`{}`", escape_template_string(id.name()))
-                )?;
+                writeln!(out, "let ${} = ${};", id.name(), next_instance)?;
             }
 
             *current_instance = Some(next_instance);
         }
-        Wat(_) => {
-            write!(out, "// unsupported quote wat")?;
-        }
-        Register {
-            span: _,
-            name,
-            module,
-        } => {
-            let instanceish = module
-                .map(|x| format!("`{}`", escape_template_string(x.name())))
-                .unwrap_or_else(|| format!("${}", current_instance.unwrap()));
+        // (module quote "..."): Instantiate a module using the given literal text.
+        // Identifiers are not supported.
+        Module(wast::QuoteWat::QuoteModule(_, source)) => {
+            let next_instance = current_instance.map(|x| x + 1).unwrap_or(0);
+            let module_text = quote_module_to_js_string(source)?;
 
             writeln!(
                 out,
-                "register({}, `{}`);",
-                instanceish,
-                escape_template_string(name)
+                "let ${} = instantiate(`{}`);",
+                next_instance, module_text
+            )?;
+
+            *current_instance = Some(next_instance);
+        }
+        Module(..) => bail!("unsupported module definition"),
+
+        // (module definition $M ...): Define and validate, but do not instantiate, a module
+        ModuleDefinition(wast::QuoteWat::Wat(wast::Wat::Module(module))) => {
+            let name = module
+                .id
+                .ok_or(anyhow!("`module define` directives must have IDs"))?
+                .name();
+            let module_text = module_definition_to_js_string(&module, wast)?;
+
+            writeln!(out, "let ${} = module(`{}`);", name, module_text)?;
+        }
+        ModuleDefinition(..) => bail!("unsupported module definition...definition"),
+
+        // (module instance $I $M): Instantiate a specific module
+        ModuleInstance {
+            span: _,
+            instance: Some(instance),
+            module: Some(module),
+        } => {
+            writeln!(
+                out,
+                "let ${} = instantiateFromModule(${});",
+                instance.name(),
+                module.name()
             )?;
         }
+        ModuleInstance { .. } => bail!("unsupported module instance definition"),
+
+        // (register "a"): Register the current instance
+        Register {
+            span: _,
+            name,
+            module: None,
+        } => {
+            writeln!(
+                out,
+                "register(${}, `{}`);",
+                current_instance.unwrap(),
+                escape_template_name_string(name)
+            )?;
+        }
+        // (register "a" $a): Register an item by identifier
+        Register {
+            span: _,
+            name,
+            module: Some(thing),
+        } => {
+            writeln!(
+                out,
+                "register(${}, `{}`);",
+                thing.name(),
+                escape_template_name_string(name)
+            )?;
+        }
+
+        // (invoke $M? "a" ...args): Call an exported function
         Invoke(i) => {
             let invoke_node = invoke_to_js(current_instance, i)?;
             writeln!(out, "{};", invoke_node.output(0))?;
         }
+
+        // (assert_return ...)
         AssertReturn {
             span: _,
             exec,
@@ -152,6 +206,8 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
+        // (assert_trap ...)
         AssertTrap {
             span: _,
             exec,
@@ -160,7 +216,7 @@ fn convert_directive(
             let exec_node = execute_to_js(current_instance, exec, wast)?;
             let expected_node = Box::new(JSNode::Raw(format!(
                 "`{}`",
-                escape_template_string(message)
+                escape_template_name_string(message)
             )));
             writeln!(
                 out,
@@ -173,6 +229,8 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
+        // (assert_exhaustion ...)
         AssertExhaustion {
             span: _,
             call,
@@ -181,7 +239,7 @@ fn convert_directive(
             let exec_node = invoke_to_js(current_instance, call)?;
             let expected_node = Box::new(JSNode::Raw(format!(
                 "`{}`",
-                escape_template_string(message)
+                escape_template_name_string(message)
             )));
             writeln!(
                 out,
@@ -194,6 +252,8 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
+        // (assert_invalid ...)
         AssertInvalid {
             span: _,
             module,
@@ -207,7 +267,7 @@ fn convert_directive(
             let exec = Box::new(JSNode::Raw(format!("instantiate(`{}`)", text)));
             let expected_node = Box::new(JSNode::Raw(format!(
                 "`{}`",
-                escape_template_string(message)
+                escape_template_name_string(message)
             )));
             writeln!(
                 out,
@@ -220,6 +280,8 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
+        // (assert_malformed ...)
         AssertMalformed {
             module,
             span: _,
@@ -227,13 +289,19 @@ fn convert_directive(
         } => {
             let text = match module {
                 wast::QuoteWat::Wat(wast::Wat::Module(m)) => module_to_js_string(&m, wast)?,
-                wast::QuoteWat::QuoteModule(_, source) => quote_module_to_js_string(source)?,
+                wast::QuoteWat::QuoteModule(_, source) => match quote_module_to_js_string(source) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        writeln!(out, "// ignoring badly-encoded assert_malformed: {:?}", err)?;
+                        return Ok(());
+                    }
+                },
                 other => bail!("unsupported {:?} in assert_malformed", other),
             };
             let exec = Box::new(JSNode::Raw(format!("instantiate(`{}`)", text)));
             let expected_node = Box::new(JSNode::Raw(format!(
                 "`{}`",
-                escape_template_string(message)
+                escape_template_name_string(message)
             )));
             writeln!(
                 out,
@@ -246,6 +314,8 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
+        // (assert_unlinkable ...)
         AssertUnlinkable {
             span: _,
             module,
@@ -258,7 +328,7 @@ fn convert_directive(
             let exec = Box::new(JSNode::Raw(format!("instantiate(`{}`)", text)));
             let expected_node = Box::new(JSNode::Raw(format!(
                 "`{}`",
-                escape_template_string(message)
+                escape_template_name_string(message)
             )));
             writeln!(
                 out,
@@ -271,25 +341,29 @@ fn convert_directive(
                 .output(0),
             )?;
         }
+
         AssertException { span: _, exec } => {
             // This assert doesn't have a second parameter, so we don't bother
             // formatting it using an Assert node.
             let exec_node = execute_to_js(current_instance, exec, wast)?;
             writeln!(out, "assert_exception(() => {});", exec_node.output(0))?;
         }
+        AssertSuspension { .. } => unimplemented!(),
+        Thread(..) => unimplemented!(),
+        Wait { .. } => unimplemented!(),
     }
 
     Ok(())
 }
 
-fn escape_template_string(text: &str) -> String {
+fn escape_template_string(text: &str, escape_ascii_lf_tab: bool) -> String {
     let mut escaped = String::new();
     for c in text.chars() {
         match c {
             '$' => escaped.push_str("$$"),
             '\\' => escaped.push_str("\\\\"),
             '`' => escaped.push_str("\\`"),
-            c if c.is_ascii_control() && c != '\n' && c != '\t' => {
+            c if c.is_ascii_control() && escape_ascii_lf_tab && c != '\n' && c != '\t' => {
                 escaped.push_str(&format!("\\x{:02x}", c as u32))
             }
             c if !c.is_ascii() => escaped.push_str(&c.escape_unicode().to_string()),
@@ -297,6 +371,19 @@ fn escape_template_string(text: &str) -> String {
         }
     }
     escaped
+}
+
+// Escape a module for use in a JS template string.
+fn escape_template_module_string(text: &str) -> String {
+    // Modules may have comments, where line-feeds must be passed through as-is
+    // to preserve their meaning
+    escape_template_string(text, false)
+}
+
+// Escape a name for use in a JS template string.
+fn escape_template_name_string(text: &str) -> String {
+    // Names don't care about line-feeds or tabs, just need equality
+    escape_template_string(text, true)
 }
 
 fn span_to_offset(span: wast::token::Span, text: &str) -> Result<usize> {
@@ -316,6 +403,10 @@ fn span_to_offset(span: wast::token::Span, text: &str) -> Result<usize> {
 }
 
 fn closed_module(module: &str) -> Result<&str> {
+    if !module.starts_with("module") {
+        bail!("expected module source");
+    }
+
     enum State {
         Module,
         QStr,
@@ -328,10 +419,7 @@ fn closed_module(module: &str) -> Result<&str> {
 
     let mut chars = module.chars();
     while level != 0 {
-        let next = match chars.next() {
-            Some(next) => next,
-            None => bail!("was unable to close module"),
-        };
+        let next = chars.next().ok_or(anyhow!("unable to close module"))?;
         match state {
             State::Module => match next {
                 '(' => level += 1,
@@ -357,9 +445,9 @@ fn module_to_js_string(module: &wast::core::Module, wast: &str) -> Result<String
     let offset = span_to_offset(module.span, wast)?;
     let opened_module = &wast[offset..];
     if !opened_module.starts_with("module") {
-        return Ok(escape_template_string(opened_module));
+        return Ok(escape_template_module_string(opened_module));
     }
-    Ok(escape_template_string(&format!(
+    Ok(escape_template_module_string(&format!(
         "({}",
         closed_module(opened_module)?
     )))
@@ -371,20 +459,35 @@ fn quote_module_to_js_string(quotes: Vec<(wast::token::Span, &[u8])>) -> Result<
         text.push_str(str::from_utf8(src)?);
         text.push_str(" ");
     }
-    let escaped = escape_template_string(&text);
+    let escaped = escape_template_module_string(&text);
     Ok(escaped)
 }
 
+fn module_definition_to_js_string(module: &wast::core::Module, wast: &str) -> Result<String> {
+    let offset = span_to_offset(module.span, wast)?;
+    let opened_module = &wast[offset..];
+
+    // strip "module definition $M" down to just "module"
+    let pattern = r"^module definition \$[a-zA-Z_$][a-zA-Z0-9_$]*(.*)";
+    let re = Regex::new(pattern).expect("Invalid regex pattern");
+    let without_definition = re.replace(opened_module, "module $1");
+
+    Ok(escape_template_module_string(&format!(
+        "({}",
+        closed_module(&without_definition)?
+    )))
+}
+
 fn invoke_to_js(current_instance: &Option<usize>, i: wast::WastInvoke) -> Result<Box<JSNode>> {
-    let instanceish = i
+    let instance = i
         .module
-        .map(|x| format!("`{}`", escape_template_string(x.name())))
+        .map(|x| format!("${}", x.name()))
         .unwrap_or_else(|| format!("${}", current_instance.unwrap()));
     let body = to_js_value_array(&i.args, arg_to_js_value)?;
 
     Ok(Box::new(JSNode::Invoke {
-        instance: instanceish,
-        name: escape_template_string(i.name),
+        instance: instance,
+        name: escape_template_name_string(i.name),
         body: body,
     }))
 }
@@ -403,12 +506,12 @@ fn execute_to_js(
             };
             Ok(Box::new(JSNode::Raw(format!("instantiate(`{}`)", text))))
         }
-        wast::WastExecute::Get { module, global } => {
+        wast::WastExecute::Get { module, global, .. } => {
             let instanceish = module
-                .map(|x| format!("`{}`", escape_template_string(x.name())))
-                .unwrap_or_else(|| format!("${}", current_instance.unwrap()));
+                .map(|x| format!("{}", x.name()))
+                .unwrap_or_else(|| format!("{}", current_instance.unwrap()));
             Ok(Box::new(JSNode::Raw(format!(
-                "get({}, `{}`)",
+                "get(${}, `{}`)",
                 instanceish, global
             ))))
         }
@@ -443,14 +546,14 @@ fn f64_needs_bits(a: f64) -> bool {
     return a.is_nan();
 }
 
-fn f32x4_needs_bits(a: &[wast::token::Float32; 4]) -> bool {
+fn f32x4_needs_bits(a: &[wast::token::F32; 4]) -> bool {
     a.iter().any(|x| {
         let as_f32 = f32::from_bits(x.bits);
         f32_needs_bits(as_f32)
     })
 }
 
-fn f64x2_needs_bits(a: &[wast::token::Float64; 2]) -> bool {
+fn f64x2_needs_bits(a: &[wast::token::F64; 2]) -> bool {
     a.iter().any(|x| {
         let as_f64 = f64::from_bits(x.bits);
         f64_needs_bits(as_f64)
@@ -481,7 +584,7 @@ fn f64_to_js_value(val: f64) -> String {
     }
 }
 
-fn float32_to_js_value(val: &wast::token::Float32) -> String {
+fn float32_to_js_value(val: &wast::token::F32) -> String {
     let as_f32 = f32::from_bits(val.bits);
     if f32_needs_bits(as_f32) {
         format!(
@@ -494,7 +597,7 @@ fn float32_to_js_value(val: &wast::token::Float32) -> String {
     }
 }
 
-fn float64_to_js_value(val: &wast::token::Float64) -> String {
+fn float64_to_js_value(val: &wast::token::F64) -> String {
     let as_f64 = f64::from_bits(val.bits);
     if f64_needs_bits(as_f64) {
         format!(
@@ -507,7 +610,7 @@ fn float64_to_js_value(val: &wast::token::Float64) -> String {
     }
 }
 
-fn f32_pattern_to_js_value(pattern: &wast::core::NanPattern<wast::token::Float32>) -> String {
+fn f32_pattern_to_js_value(pattern: &wast::core::NanPattern<wast::token::F32>) -> String {
     use wast::core::NanPattern::*;
     match pattern {
         CanonicalNan => format!("`canonical_nan`"),
@@ -516,7 +619,7 @@ fn f32_pattern_to_js_value(pattern: &wast::core::NanPattern<wast::token::Float32
     }
 }
 
-fn f64_pattern_to_js_value(pattern: &wast::core::NanPattern<wast::token::Float64>) -> String {
+fn f64_pattern_to_js_value(pattern: &wast::core::NanPattern<wast::token::F64>) -> String {
     use wast::core::NanPattern::*;
     match pattern {
         CanonicalNan => format!("`canonical_nan`"),
@@ -533,14 +636,42 @@ fn return_value_to_js_value(v: &wast::core::WastRetCore<'_>) -> Result<String> {
         F32(x) => f32_pattern_to_js_value(x),
         F64(x) => f64_pattern_to_js_value(x),
         RefNull(x) => match x {
-            Some(wast::core::HeapType::Func) => format!("value('anyfunc', null)"),
-            Some(wast::core::HeapType::Extern) => format!("value('externref', null)"),
+            Some(wast::core::HeapType::Abstract { shared: false, ty }) => match ty {
+                wast::core::AbstractHeapType::Any => format!("value('anyref', null)"),
+                wast::core::AbstractHeapType::Exn => format!("value('exnref', null)"),
+                wast::core::AbstractHeapType::Eq => format!("value('eqref', null)"),
+                wast::core::AbstractHeapType::Array => format!("value('arrayref', null)"),
+                wast::core::AbstractHeapType::Struct => format!("value('structref', null)"),
+                wast::core::AbstractHeapType::I31 => format!("value('i31ref', null)"),
+                wast::core::AbstractHeapType::None => format!("value('nullref', null)"),
+                wast::core::AbstractHeapType::Func => format!("value('anyfunc', null)"),
+                wast::core::AbstractHeapType::NoFunc => format!("value('nullfuncref', null)"),
+                wast::core::AbstractHeapType::Extern => format!("value('externref', null)"),
+                wast::core::AbstractHeapType::NoExtern => format!("value('nullexternref', null)"),
+                wast::core::AbstractHeapType::Exn => format!("value('exnref', null)"),
+                wast::core::AbstractHeapType::NoExn => format!("value('nullexnref', null)"),
+                other => bail!(
+                    "couldn't convert ref.null {:?} to a js assertion value",
+                    other
+                ),
+            },
+            None => "null".to_string(),
             other => bail!(
                 "couldn't convert ref.null {:?} to a js assertion value",
                 other
             ),
         },
-        RefExtern(x) => format!("value('externref', externref({}))", x),
+        RefFunc(_) => format!("new RefWithType('funcref')"),
+        RefExtern(x) => match x {
+            Some(v) => format!("new ExternRefResult({})", v),
+            None => format!("new RefWithType('externref')"),
+        },
+        RefHost(x) => format!("new HostRefResult({})", x),
+        RefAny => format!("new RefWithType('anyref')"),
+        RefEq => format!("new RefWithType('eqref')"),
+        RefArray => format!("new RefWithType('arrayref')"),
+        RefStruct => format!("new RefWithType('structref')"),
+        RefI31 => format!("new RefWithType('i31ref')"),
         V128(x) => {
             use wast::core::V128Pattern::*;
             match x {
@@ -667,6 +798,7 @@ fn arg_to_js_value(v: &wast::WastArg<'_>) -> Result<String> {
         }
         Core(RefNull(_)) => format!("null"),
         Core(RefExtern(x)) => format!("externref({})", x),
+        Core(RefHost(x)) => format!("hostref({})", x),
         other => bail!("couldn't convert {:?} to a js value", other),
     })
 }

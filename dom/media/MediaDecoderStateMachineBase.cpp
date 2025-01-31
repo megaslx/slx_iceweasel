@@ -49,6 +49,7 @@ MediaDecoderStateMachineBase::MediaDecoderStateMachineBase(
       INIT_CANONICAL(mCurrentPosition, media::TimeUnit::Zero()),
       INIT_CANONICAL(mIsAudioDataAudible, false),
       mMinimizePreroll(aDecoder->GetMinimizePreroll()),
+      mIsLiveStream(false),
       mWatchManager(this, mTaskQueue) {}
 
 MediaEventSource<void>& MediaDecoderStateMachineBase::OnMediaNotSeekable()
@@ -163,7 +164,9 @@ bool MediaDecoderStateMachineBase::OnTaskQueue() const {
 
 void MediaDecoderStateMachineBase::DecodeError(const MediaResult& aError) {
   MOZ_ASSERT(OnTaskQueue());
-  LOGE("Decode error: %s", aError.Description().get());
+  if (aError != NS_ERROR_DOM_MEDIA_EXTERNAL_ENGINE_NOT_SUPPORTED_ERR) {
+    LOGE("Decode error: %s", aError.Description().get());
+  }
   PROFILER_MARKER_TEXT("MDSMBase::DecodeError", MEDIA_PLAYBACK, {},
                        aError.Description());
   // Notify the decode error and MediaDecoder will shut down MDSM.
@@ -173,6 +176,14 @@ void MediaDecoderStateMachineBase::DecodeError(const MediaResult& aError) {
 RefPtr<SetCDMPromise> MediaDecoderStateMachineBase::SetCDMProxy(
     CDMProxy* aProxy) {
   return mReader->SetCDMProxy(aProxy);
+}
+
+void MediaDecoderStateMachineBase::SetIsLiveStream(bool aIsLiveStream) {
+  mIsLiveStream = aIsLiveStream;
+}
+
+bool MediaDecoderStateMachineBase::IsLiveStream() const {
+  return mIsLiveStream;
 }
 
 #undef INIT_MIRROR

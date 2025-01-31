@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2020 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -13,14 +13,6 @@ const expected = [
   // RejectObjectWithCalendarOrTimeZone
   "get fields.calendar",
   "get fields.timeZone",
-  // CalendarFields
-  "get this.calendar.fields",
-  "call this.calendar.fields",
-  // PrepareTemporalFields on receiver
-  "get this.calendar.day",
-  "call this.calendar.day",
-  "get this.calendar.monthCode",
-  "call this.calendar.monthCode",
   // PrepareTemporalFields on argument
   "get fields.day",
   "get fields.day.valueOf",
@@ -34,23 +26,14 @@ const expected = [
   "get fields.year",
   "get fields.year.valueOf",
   "call fields.year.valueOf",
-  // CalendarMergeFields
-  "get this.calendar.mergeFields",
-  "call this.calendar.mergeFields",
-  // CalendarMonthDayFromFields
-  "get this.calendar.monthDayFromFields",
-  "call this.calendar.monthDayFromFields",
-  // inside Calendar.p.monthDayFromFields
+  // GetTemporalOverflowOption
   "get options.overflow",
   "get options.overflow.toString",
   "call options.overflow.toString",
 ];
 const actual = [];
 
-const calendar = TemporalHelpers.calendarObserver(actual, "this.calendar");
-const instance = new Temporal.PlainMonthDay(5, 2, calendar);
-// clear observable operations that occurred during the constructor call
-actual.splice(0);
+const instance = new Temporal.PlainMonthDay(5, 2, "iso8601");
 
 const fields = TemporalHelpers.propertyBagObserver(actual, {
   year: 1.7,
@@ -59,7 +42,10 @@ const fields = TemporalHelpers.propertyBagObserver(actual, {
   day: 1.7,
 }, "fields");
 
-const options = TemporalHelpers.propertyBagObserver(actual, { overflow: "constrain" }, "options");
+const options = TemporalHelpers.propertyBagObserver(actual, {
+  overflow: "constrain",
+  extra: "property",
+}, "options");
 
 instance.with(fields, options);
 assert.compareArray(actual, expected, "order of operations");

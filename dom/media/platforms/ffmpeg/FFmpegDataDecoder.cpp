@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <string.h>
+#include "libavutil/dict.h"
+#include "libavcodec/avcodec.h"
 #ifdef __GNUC__
 #  include <unistd.h>
 #endif
@@ -15,6 +17,9 @@
 #include "mozilla/TaskQueue.h"
 #include "prsystem.h"
 #include "VideoUtils.h"
+#include "FFmpegUtils.h"
+
+#include "FFmpegLibs.h"
 
 namespace mozilla {
 
@@ -28,6 +33,7 @@ FFmpegDataDecoder<LIBAV_VER>::FFmpegDataDecoder(FFmpegLibWrapper* aLib,
       mFrame(nullptr),
       mExtraData(nullptr),
       mCodecID(aCodecID),
+      mVideoCodec(IsVideoCodec(aCodecID)),
       mTaskQueue(TaskQueue::Create(
           GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
           "FFmpegDataDecoder")),
@@ -72,7 +78,8 @@ MediaResult FFmpegDataDecoder<LIBAV_VER>::AllocateExtraData() {
 
 // Note: This doesn't run on the ffmpeg TaskQueue, it runs on some other media
 // taskqueue
-MediaResult FFmpegDataDecoder<LIBAV_VER>::InitDecoder() {
+MediaResult FFmpegDataDecoder<LIBAV_VER>::InitSWDecoder(
+    AVDictionary** aOptions) {
   FFMPEG_LOG("Initialising FFmpeg decoder");
 
   AVCodec* codec = FindAVCodec(mLib, mCodecID);
@@ -81,8 +88,10 @@ MediaResult FFmpegDataDecoder<LIBAV_VER>::InitDecoder() {
     return MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
                        RESULT_DETAIL("unable to find codec"));
   }
-  // openh264 has broken decoding of some h264 videos so
-  // don't use it unless explicitly allowed for now.
+  // This logic is mirrored in FFmpegDecoderModule::Supports. We prefer to use
+  // our own OpenH264 decoder through the plugin over ffmpeg by default due to
+  // broken decoding with some versions. openh264 has broken decoding of some
+  // h264 videos so don't use it unless explicitly allowed for now.
   if (!strcmp(codec->name, "libopenh264") &&
       !StaticPrefs::media_ffmpeg_allow_openh264()) {
     FFMPEG_LOG("  unable to find codec (openh264 disabled by pref)");
@@ -124,9 +133,12 @@ MediaResult FFmpegDataDecoder<LIBAV_VER>::InitDecoder() {
   }
 #endif
 
-  if (mLib->avcodec_open2(mCodecContext, codec, nullptr) < 0) {
+  if (mLib->avcodec_open2(mCodecContext, codec, aOptions) < 0) {
+    if (mCodecContext->extradata) {
+      mLib->av_freep(&mCodecContext->extradata);
+    }
     mLib->av_freep(&mCodecContext);
-    FFMPEG_LOG("  Couldn't open avcodec");
+    FFMPEG_LOG("  Couldn't open avcodec for %s", codec->name);
     return MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
                        RESULT_DETAIL("Couldn't open avcodec"));
   }
@@ -217,15 +229,27 @@ RefPtr<MediaDataDecoder::DecodePromise> FFmpegDataDecoder<LIBAV_VER>::Drain() {
 RefPtr<MediaDataDecoder::DecodePromise>
 FFmpegDataDecoder<LIBAV_VER>::ProcessDrain() {
   MOZ_ASSERT(mTaskQueue->IsOnCurrentThread());
+  FFMPEG_LOG("FFmpegDataDecoder: draining buffers");
   RefPtr<MediaRawData> empty(new MediaRawData());
   empty->mTimecode = mLastInputDts;
   bool gotFrame = false;
   DecodedData results;
-  // When draining the FFmpeg decoder will return either a single frame at a
-  // time until gotFrame is set to false; or return a block of frames with
-  // NS_ERROR_DOM_MEDIA_END_OF_STREAM
-  while (NS_SUCCEEDED(DoDecode(empty, &gotFrame, results)) && gotFrame) {
-  }
+  // When draining the underlying FFmpeg decoder without encountering any
+  // problems, DoDecode will either return a single frame at a time until
+  // gotFrame is set to false, or it will return a block of frames with
+  // NS_ERROR_DOM_MEDIA_END_OF_STREAM (EOS). However, if any issue arises, such
+  // as pending data in the pipeline being corrupt or invalid, non-EOS errors
+  // like NS_ERROR_DOM_MEDIA_DECODE_ERR will be returned and must be handled
+  // accordingly.
+  do {
+    MediaResult r = DoDecode(empty, &gotFrame, results);
+    if (NS_FAILED(r)) {
+      if (r.Code() == NS_ERROR_DOM_MEDIA_END_OF_STREAM) {
+        break;
+      }
+      return DecodePromise::CreateAndReject(r, __func__);
+    }
+  } while (gotFrame);
   return DecodePromise::CreateAndResolve(std::move(results), __func__);
 }
 
@@ -291,7 +315,6 @@ AVFrame* FFmpegDataDecoder<LIBAV_VER>::PrepareFrame() {
   return aLib->avcodec_find_decoder(aCodec);
 }
 
-#ifdef MOZ_WIDGET_GTK
 /* static */ AVCodec* FFmpegDataDecoder<LIBAV_VER>::FindHardwareAVCodec(
     FFmpegLibWrapper* aLib, AVCodecID aCodec) {
   void* opaque = nullptr;
@@ -303,6 +326,5 @@ AVFrame* FFmpegDataDecoder<LIBAV_VER>::PrepareFrame() {
   }
   return nullptr;
 }
-#endif
 
 }  // namespace mozilla

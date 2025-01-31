@@ -10,8 +10,8 @@ use std::mem;
 use std::os::raw::c_uint;
 use std::ptr::null_mut;
 
-use crate::prtypes::*;
 use crate::nss_prelude::*;
+use crate::prtypes::*;
 
 /// Implement a smart pointer for NSS objects.
 ///
@@ -59,7 +59,7 @@ macro_rules! scoped_ptr {
                 unsafe { $dtor(self.ptr) };
             }
         }
-    }
+    };
 }
 
 macro_rules! impl_clone {
@@ -72,7 +72,7 @@ macro_rules! impl_clone {
                 Self { ptr }
             }
         }
-    }
+    };
 }
 
 impl SECItem {
@@ -95,6 +95,26 @@ impl SECItem {
         } else {
             &[]
         }
+    }
+}
+
+unsafe fn destroy_secitem(item: *mut SECItem) {
+    SECITEM_FreeItem(item, PRBool::from(true));
+}
+scoped_ptr!(ScopedSECItem, SECItem, destroy_secitem);
+
+impl ScopedSECItem {
+    /// This dereferences the pointer held by the item and makes a copy of the
+    /// content that is referenced there.
+    ///
+    /// # Safety
+    /// This dereferences two pointers.  It doesn't get much less safe.
+    pub unsafe fn into_vec(self) -> Vec<u8> {
+        let b = self.ptr.as_ref().unwrap();
+        // Sanity check the type, as some types don't count bytes in `Item::len`.
+        assert_eq!(b.type_, SECItemType::siBuffer);
+        let slc = std::slice::from_raw_parts(b.data, usize::try_from(b.len).unwrap());
+        Vec::from(slc)
     }
 }
 
@@ -145,7 +165,7 @@ impl SECItemMut {
                 type_: SECItemType::siBuffer,
                 data: null_mut(),
                 len: 0,
-            }
+            },
         }
     }
 }

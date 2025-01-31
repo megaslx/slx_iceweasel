@@ -100,7 +100,7 @@ function* testSteps() {
   let request = init(continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode == NS_OK, "Initialization succeeded");
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
   info("Verifying storage");
 
@@ -151,7 +151,7 @@ function* testSteps() {
   request = initTemporaryStorage(continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode == NS_OK, "Initialization succeeded");
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
   info("Initializing origins");
 
@@ -165,12 +165,13 @@ function* testSteps() {
       request = initTemporaryOrigin(
         origin.persistence,
         principal,
+        /* createIfNonExistent */ true,
         continueToNextStepSync
       );
     }
     yield undefined;
 
-    ok(request.resultCode == NS_OK, "Initialization succeeded");
+    Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
     ok(!request.result, "Origin directory wasn't created");
   }

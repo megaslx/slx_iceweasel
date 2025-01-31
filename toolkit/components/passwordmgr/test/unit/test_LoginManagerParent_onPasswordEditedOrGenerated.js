@@ -147,13 +147,10 @@ function checkEditTelemetryRecorded(expectedCount, msg) {
       object: "generatedpassword",
     });
     const results = snapshot.parent.filter(
-      ([time, category, method, object]) => {
-        return (
-          category === telemetryProps.category &&
-          method === telemetryProps.method &&
-          object === telemetryProps.object
-        );
-      }
+      ([_time, category, method, object]) =>
+        category === telemetryProps.category &&
+        method === telemetryProps.method &&
+        object === telemetryProps.object
     );
     resultsCount = results.length;
   }
@@ -211,9 +208,8 @@ add_setup(async () => {
 
 add_task(async function test_onPasswordEditedOrGenerated_generatedPassword() {
   await startTestConditions(99);
-  let { generatedPassword } = await stubGeneratedPasswordForBrowsingContextId(
-    99
-  );
+  let { generatedPassword } =
+    await stubGeneratedPasswordForBrowsingContextId(99);
   let { fakePromptToChangePassword, restorePrompter } = stubPrompter();
   let rootBrowser = LMP.getRootBrowser();
 
@@ -344,9 +340,8 @@ add_task(async function test_onPasswordEditedOrGenerated_generatedPassword() {
 add_task(
   async function test_onPasswordEditedOrGenerated_editToEmpty_generatedPassword() {
     await startTestConditions(99);
-    let { generatedPassword } = await stubGeneratedPasswordForBrowsingContextId(
-      99
-    );
+    let { generatedPassword } =
+      await stubGeneratedPasswordForBrowsingContextId(99);
     let { fakePromptToChangePassword, restorePrompter } = stubPrompter();
     let rootBrowser = LMP.getRootBrowser();
 
@@ -433,9 +428,8 @@ add_task(
 
 add_task(async function test_addUsernameBeforeAutoSaveEdit() {
   await startTestConditions(99);
-  let { generatedPassword } = await stubGeneratedPasswordForBrowsingContextId(
-    99
-  );
+  let { generatedPassword } =
+    await stubGeneratedPasswordForBrowsingContextId(99);
   let { fakePromptToChangePassword, restorePrompter, resetPrompterHistory } =
     stubPrompter();
   let rootBrowser = LMP.getRootBrowser();
@@ -760,9 +754,8 @@ add_task(async function test_editUsernameOfFilledSavedLogin() {
 add_task(
   async function test_onPasswordEditedOrGenerated_generatedPassword_withDisabledLogin() {
     await startTestConditions(99);
-    let { generatedPassword } = await stubGeneratedPasswordForBrowsingContextId(
-      99
-    );
+    let { generatedPassword } =
+      await stubGeneratedPasswordForBrowsingContextId(99);
     let { restorePrompter } = stubPrompter();
     let rootBrowser = LMP.getRootBrowser();
 

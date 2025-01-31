@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -10,30 +10,19 @@ features: [Temporal]
 ---*/
 
 const expected = [
-  // ToTemporalTimeZoneSlotValue
-  "has timeZone.getOffsetNanosecondsFor",
-  "has timeZone.getPossibleInstantsFor",
-  "has timeZone.id",
   // ToTemporalDisambiguation
   "get options.disambiguation",
   "get options.disambiguation.toString",
   "call options.disambiguation.toString",
-  // BuiltinTimeZoneGetInstantFor
-  "get timeZone.getPossibleInstantsFor",
-  "call timeZone.getPossibleInstantsFor",
 ];
 const actual = [];
 
-const calendar = TemporalHelpers.calendarObserver(actual, "this.calendar");
-const instance = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 987, 654, 321, calendar);
-// clear observable operations that occurred during the constructor call
-actual.splice(0);
-
-const timeZone = TemporalHelpers.timeZoneObserver(actual, "timeZone");
+const instance = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 987, 654, 321, "iso8601");
 
 const options = TemporalHelpers.propertyBagObserver(actual, { disambiguation: "compatible" }, "options");
 
-instance.toZonedDateTime(timeZone, options);
+instance.toZonedDateTime("UTC", options);
 assert.compareArray(actual, expected, "order of operations");
+actual.splice(0); // clear
 
 reportCompare(0, 0);

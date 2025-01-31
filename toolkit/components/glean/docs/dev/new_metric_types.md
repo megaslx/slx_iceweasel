@@ -13,10 +13,12 @@ please consult
 [the FOG IPC documentation](ipc.md).
 
 When adding a new metric type, the main IPC considerations are:
-* Which operations are forbidden because they are not commutative?
+* Which operations are forbidden by default because they are not commutative?
     * Most `set`-style operations cannot be reconciled sensibly across multiple processes.
-* If there are non-forbidden operations,
-what partial representation will this metric have in non-main processes?
+    * However, through use of the `permit_non_commutative_operations_over_ipc`
+      metric metadata property, these "forbidden by default"
+      operations can still be used.
+* What partial representation will this metric have in non-main processes?
 Put another way, what shape of storage will this take up in the
 [IPC Payload](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/api/src/ipc.rs)?
     * For example, Counters can aggregate all partial counts together to a single
@@ -29,13 +31,16 @@ Put another way, what shape of storage will this take up in the
     and send a stream of high-precision samples across IPC.
 
 To implement IPC support in a metric type,
-we split the metric into three pieces:
+we split FOG's Rust implementation of the metric into three pieces:
 1. An umbrella `enum` with the name `MetricTypeMetric`.
     * It has a `Child` and a `Parent` variant.
+        * If there are non-commutative operations that need to be supported only occasionally,
+          you will also need an `UnorderedChild` variant.
+          It will be constructed via a `with_unordered_ipc` constructor called by Rust codegen.
     * It is IPC-aware and is responsible for
         * If on a non-parent-process,
-        either storing partial representations in the IPC Payload,
-        or logging errors if forbidden non-test APIs are called.
+        storing partial representations in the IPC Payload,
+        and logging errors if forbidden non-test APIs are called.
         (Or panicking if test APIs are called.)
         * If on the parent process, dispatching API calls on its inner Rust Language Binding metric.
 2. The parent-process implementation is supplied by
@@ -59,6 +64,9 @@ Should it be mirrored?
 If so, add an appropriate Telemetry probe for it to mirror to,
 documenting the compatibility in
 [the GIFFT docs](../user/gifft.md).
+Also inform {searchfox}`toolkit/components/glean/build_scripts/glean_parser_ext/run_glean_parser.py`
+that your new type is mirrorable by placing its name in the part of `GIFFT_TYPES`
+that contains the mirrored probe type (Event, Histogram, Scalar).
 
 ### GIFFT Tests
 
@@ -160,32 +168,35 @@ Each metric type has six pieces you'll need to cover:
 ### 3. IDL
 
 - Duplicate the public API (including its docs) to
-  [`xpcom/nsIGleanMetrics.idl`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/xpcom/nsIGleanMetrics.idl)
-  with the name `nsIGleanX` (e.g. `nsIGleanCounter`).
-    - Inherit from `nsISupports`.
-    - The naming style for members here is `lowerCamelCase`.
-      You'll need a
-      [GUID](https://developer.mozilla.org/en-US/docs/Mozilla/Tech/XPCOM/Generating_GUIDs)
-      because this is XPCOM, but you'll only need the canonical form since we're only exposing to JS.
-    - The `testGetValue` method will return a
-      `jsval` to permit it to return `undefined` when there is no value.
+  {searchfox}`dom/webidl/GleanMetrics.webidl`
+  with the name `GleanX` (e.g. `GleanCounter`).
+    - Inherit from `GleanMetric`.
+    - The naming style for methods here is `lowerCamelCase`.
+    - If the metric method is a reserved word, prepend it with a `_`.
+    - Web IDL bindings use
+      [their own mapping for types](/dom/webIdlBindings/index.md).
+      If you choose ones that most closely resemble the C++ types,
+      you'll make your life easier.
+- Add a new mapping in `dom/bindings/Bindings.conf`:
+  ```idl
+  'GleanX': {
+      'nativeType': 'mozilla::glean::GleanX',
+      'headerFile': 'mozilla/glean/bindings/X.h',
+  },
+  ```
+    - If you don't, you will get a build error complaining `fatal error: 'mozilla/dom/GleanX.h' file not found`.
 
 ### 4. JS Impl
 
-- Add an `nsIGleanX`-deriving, `XMetric`-owning type called
-  `GleanX` (e.g. `GleanCounter`) in the same header and `.cpp` as `XMetric` in
-  [`bindings/private/`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/bindings/private/).
-    - Don't declare any methods beyond a ctor
-      (takes a `uint32_t` metric id, init-constructs a `impl::XMetric` member)
-      and dtor (`default`): the IDL will do the rest so long as you remember to add
-      `NS_DECL_ISUPPORTS` and `NS_DECL_NSIGLEANX`.
+- Implement the `GleanX` (e.g. `GleanCounter`) type
+  in the same header and `.cpp` as `XMetric` in
+  {searchfox}`toolkit/components/glean/bindings/private/`
+    - It should own an instance of and delegate method implementations to `XMetric`.
     - In the definition of `GleanX`, member identifiers are back to
-      `CamelCase` and need macros like `NS_IMETHODIMP`.
-      Delegate operations to the owned `XMetric`, returning
-      `NS_OK` no matter what in non-test methods.
-    - Test-only methods can return `NS_ERROR` codes on failures,
-      but mostly return `NS_OK` and use `undefined` in the
-      `JS::MutableHandleValue` result to signal no value.
+      `CamelCase`.
+    - Test-only methods can throw `DataError` on failure.
+    - Review the [Web IDL Bindings documentation](/dom/webIdlBindings/index.html)
+      for help with optional, nullable, and non-primitive types.
 
 ### 6. Tests
 
@@ -220,7 +231,7 @@ Add a notice at the top of both examples that these APIs are only available in F
 
 > **Note**: C++ APIs are only available in Firefox Desktop.
 
-```c++
+```cpp
 #include "mozilla/glean/GleanMetrics.h"
 
 mozilla::glean::category_name::metric_name.Api(args);
@@ -228,7 +239,7 @@ mozilla::glean::category_name::metric_name.Api(args);
 
 There are test APIs available too:
 
-```c++
+```cpp
 #include "mozilla/glean/GleanMetrics.h"
 
 ASSERT_EQ(value, mozilla::glean::category_name::metric_name.TestGetValue().ref());
@@ -247,26 +258,43 @@ If your new metric type is Labeled, you have more work to do.
 I'm assuming you've already implemented the non-labeled sub metric type following the steps above.
 Now you must add "Labeledness" to it.
 
-There are four pieces to this:
+There are five pieces to this:
+
+#### Rust
+
+- If your new labeled metric type supports IPC, you will need to build a type called `LabeledXMetric`
+  in a file called `labeled_x.rs` (e.g. {searchfox}`toolkit/components/glean/api/src/private/labeled_counter.rs`)
+  that stores the submetric's label between calls so it can supply it to the IPC payload.
+- If your new labeled metric type does not support IPC, you will still need a `LabeledXMetric`
+  type, but this one can be a re-export of the unlabeled type by putting
+  `pub use self::x::XMetric as LabeledXMetric;` in
+  {searchfox}`toolkit/components/glean/api/src/private/mod.rs` (e.g. `LabeledBooleanMetric`).
 
 #### FFI
 
 - To add the writeable storage Rust will use to store the dynamically-generated sub metric instances,
   add your sub metric type's map as a list item in the `submetric_maps` `mod` of
-  [`rust.jinja2`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/build_scripts/glean_parser_ext/templates/rust.jinja2).
+  {searchfox}`toolkit/components/glean/build_scripts/glean_parser_ext/templates/rust.jinja2`.
 - Following the pattern of the others, add a `fog_{your labeled metric name here}_get()` FFI API to
   `api/src/ffi/mod.rs`.
   This is what C++ and JS will use to allocate and retrieve sub metric instances by id.
+- Finally, augment the `with_metric!` macro to recognize that your type is sometimes labeled by using the
+  `maybe_labeled_with_metric!` submacro in
+  {searchfox}`toolkit/components/glean/api/src/ffi/macros.rs`.
 
 #### C++
 
-- Following the pattern of the others, add a template specialiation for `Labeled<YourSubMetric>::Get` to
-  [`bindings/private/Labeled.cpp`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/bindings/private/Labeled.cpp).
+- Following the pattern of the others, add a template specialization for both
+  `Labeled<YourSubMetric, E>::{EnumGet|Get}` and `Labeled<YourSubMetric, DynamicLabel>` to
+  {searchfox}`toolkit/components/glean/bindings/private/Labeled.h`.
   This will ensure C++ consumers can fetch or create sub metric instances.
+- For GIFFT, ensure the submetric type (e.g. `quantity` for `labeled_quantity`)
+  is aware that its mirrors might be submetric mirrors
+  (ie, check `IsSubmetricId(mId)` and, if so, look at the labeled mirror map).
 
 #### JS
 
-- Already handled for you since the JS types all inherit from `nsISupports`
+- Already handled for you since the JS types all inherit from `GleanMetric`
   and the JS template knows to add your new type to `NewSubMetricFromIds(...)`
   (see `GleanLabeled::NamedGetter` if you're curious).
 

@@ -112,6 +112,20 @@ class MOZ_STACK_CLASS CallInfo {
     setCallee(callee);
     setThis(thisVal);
   }
+
+  void initForProxyGet(MDefinition* callee, MDefinition* handler,
+                       MDefinition* target, MDefinition* id,
+                       MDefinition* receiver) {
+    MOZ_ASSERT(args_.empty());
+    setCallee(callee);
+    setThis(handler);
+    static_assert(decltype(args_)::InlineLength >= 3,
+                  "Appending three arguments should be infallible");
+    MOZ_ALWAYS_TRUE(args_.append(target));
+    MOZ_ALWAYS_TRUE(args_.append(id));
+    MOZ_ALWAYS_TRUE(args_.append(receiver));
+  }
+
   void initForSetterCall(MDefinition* callee, MDefinition* thisVal,
                          MDefinition* rhs) {
     MOZ_ASSERT(args_.empty());
@@ -306,12 +320,14 @@ class MOZ_STACK_CLASS CallInfo {
 
 template <typename Undef>
 MCall* MakeCall(TempAllocator& alloc, Undef addUndefined, CallInfo& callInfo,
-                bool needsThisCheck, WrappedFunction* target, bool isDOMCall) {
+                bool needsThisCheck, WrappedFunction* target, bool isDOMCall,
+                gc::Heap initialHeap = gc::Heap::Default) {
   MOZ_ASSERT(callInfo.argFormat() == CallInfo::ArgFormat::Standard);
   MOZ_ASSERT_IF(needsThisCheck, !target);
   MOZ_ASSERT_IF(isDOMCall, target->jitInfo()->type() == JSJitInfo::Method);
 
   mozilla::Maybe<DOMObjectKind> objKind;
+  mozilla::Maybe<gc::Heap> heap;
   if (isDOMCall) {
     const Shape* shape = callInfo.thisArg()->toGuardShape()->shape();
     MOZ_ASSERT(shape->getObjectClass()->isDOMClass());
@@ -321,6 +337,8 @@ MCall* MakeCall(TempAllocator& alloc, Undef addUndefined, CallInfo& callInfo,
       MOZ_ASSERT(shape->isProxy());
       objKind.emplace(DOMObjectKind::Proxy);
     }
+
+    heap.emplace(initialHeap);
   }
 
   uint32_t targetArgs = callInfo.argc();
@@ -334,7 +352,7 @@ MCall* MakeCall(TempAllocator& alloc, Undef addUndefined, CallInfo& callInfo,
   MCall* call =
       MCall::New(alloc, target, targetArgs + 1 + callInfo.constructing(),
                  callInfo.argc(), callInfo.constructing(),
-                 callInfo.ignoresReturnValue(), isDOMCall, objKind);
+                 callInfo.ignoresReturnValue(), isDOMCall, objKind, heap);
   if (!call) {
     return nullptr;
   }
@@ -406,8 +424,16 @@ class WarpBuilderShared {
   MConstant* constant(const JS::Value& v);
   void pushConstant(const JS::Value& v);
 
+  // Note: unboxObjectInfallible defaults to adding a non-movable MUnbox to
+  // ensure we don't hoist the infallible unbox before a branch checking the
+  // value type.
+  enum class IsMovable : bool { No, Yes };
+  MDefinition* unboxObjectInfallible(MDefinition* def,
+                                     IsMovable movable = IsMovable::No);
+
   MCall* makeCall(CallInfo& callInfo, bool needsThisCheck,
-                  WrappedFunction* target = nullptr, bool isDOMCall = false);
+                  WrappedFunction* target = nullptr, bool isDOMCall = false,
+                  gc::Heap initialHeap = gc::Heap::Default);
   MInstruction* makeSpreadCall(CallInfo& callInfo, bool needsThisCheck,
                                bool isSameRealm = false,
                                WrappedFunction* target = nullptr);

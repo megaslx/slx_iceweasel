@@ -63,8 +63,16 @@ impl StringList for StringListMetric {
     /// See [String list metric limits](https://mozilla.github.io/glean/book/user/metrics/string_list.html#limits).
     pub fn add<S: Into<String>>(&self, value: S) {
         match self {
-            StringListMetric::Parent { inner, .. } => {
-                inner.add(value.into());
+            #[allow(unused)]
+            StringListMetric::Parent { id, inner } => {
+                let value = value.into();
+                #[cfg(feature = "with_gecko")]
+                gecko_profiler::lazy_add_marker!(
+                    "StringList::add",
+                    super::profiler_utils::TelemetryProfilerCategory,
+                    super::profiler_utils::StringLikeMetricMarker::new(*id, &value)
+                );
+                inner.add(value);
             }
             StringListMetric::Child(c) => {
                 with_ipc_payload(move |payload| {
@@ -92,14 +100,27 @@ impl StringList for StringListMetric {
     /// Truncates any value in the list if it is longer than `MAX_STRING_LENGTH` and logs an error.
     pub fn set(&self, value: Vec<String>) {
         match self {
-            StringListMetric::Parent { inner, .. } => {
+            #[allow(unused)]
+            StringListMetric::Parent { id, inner } => {
+                #[cfg(feature = "with_gecko")]
+                gecko_profiler::lazy_add_marker!(
+                    "StringList::set",
+                    super::profiler_utils::TelemetryProfilerCategory,
+                    super::profiler_utils::StringLikeMetricMarker::new_owned(
+                        *id,
+                        format!("[{}]", value.clone().join(","))
+                    )
+                );
                 inner.set(value);
             }
             StringListMetric::Child(c) => {
                 log::error!(
-                    "Unable to set string list metric {:?} in non-main process. Ignoring.",
+                    "Unable to set string list metric {:?} in non-main process. This operation will be ignored.",
                     c.0
                 );
+                // If we're in automation we can panic so the instrumentor knows they've gone wrong.
+                // This is a deliberate violation of Glean's "metric APIs must not throw" design.assert!(!crate::ipc::is_in_automation());
+                assert!(!crate::ipc::is_in_automation(), "Attempted to set string list metric in non-main process, which is forbidden. This panics in automation.");
                 // TODO: Record an error.
             }
         }
@@ -170,7 +191,7 @@ mod test {
 
         assert_eq!(
             vec!["test_string_value", "another test value"],
-            metric.test_get_value("store1").unwrap()
+            metric.test_get_value("test-ping").unwrap()
         );
     }
 
@@ -203,7 +224,7 @@ mod test {
         assert!(ipc::replay_from_buf(&ipc::take_buf().unwrap()).is_ok());
         assert_eq!(
             vec!["test_string_value", "another test value"],
-            parent_metric.test_get_value("store1").unwrap()
+            parent_metric.test_get_value("test-ping").unwrap()
         );
     }
 }

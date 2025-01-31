@@ -13,6 +13,7 @@ const SERVER: Token = Token(0);
 // Some data we'll send over the connection.
 const DATA: &[u8] = b"Hello world!\n";
 
+#[cfg(not(target_os = "wasi"))]
 fn main() -> io::Result<()> {
     env_logger::init();
 
@@ -39,7 +40,12 @@ fn main() -> io::Result<()> {
     println!("You'll see our welcome message and anything you type will be printed here.");
 
     loop {
-        poll.poll(&mut events, None)?;
+        if let Err(err) = poll.poll(&mut events, None) {
+            if interrupted(&err) {
+                continue;
+            }
+            return Err(err);
+        }
 
         for event in events.iter() {
             match event.token() {
@@ -180,4 +186,9 @@ fn would_block(err: &io::Error) -> bool {
 
 fn interrupted(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Interrupted
+}
+
+#[cfg(target_os = "wasi")]
+fn main() {
+    panic!("can't bind to an address with wasi")
 }

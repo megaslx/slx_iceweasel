@@ -130,6 +130,12 @@ enum class StyleScrollbarWidth : uint8_t {
   None,
 };
 
+// field-sizing
+enum class StyleFieldSizing : bool {
+  Fixed,
+  Content,
+};
+
 // Shape source type
 enum class StyleShapeSourceType : uint8_t {
   None,
@@ -138,37 +144,6 @@ enum class StyleShapeSourceType : uint8_t {
   Shape,
   Box,
   Path,  // SVG path function
-};
-
-// user-focus
-enum class StyleUserFocus : uint8_t {
-  None,
-  Ignore,
-  Normal,
-  SelectAll,
-  SelectBefore,
-  SelectAfter,
-  SelectSame,
-  SelectMenu,
-};
-
-// user-input
-enum class StyleUserInput : uint8_t {
-  None,
-  Auto,
-};
-
-// user-modify
-enum class StyleUserModify : uint8_t {
-  ReadOnly,
-  ReadWrite,
-  WriteOnly,
-};
-
-// -moz-inert
-enum class StyleInert : uint8_t {
-  None,
-  Inert,
 };
 
 // -moz-window-dragging
@@ -185,16 +160,6 @@ enum class StyleOrient : uint8_t {
   Horizontal,
   Vertical,
 };
-
-// See AnimationEffect.webidl
-// and mozilla/dom/AnimationEffectBinding.h
-namespace dom {
-enum class PlaybackDirection : uint8_t;
-enum class FillMode : uint8_t;
-}  // namespace dom
-
-// Animation play state
-enum class StyleAnimationPlayState : uint8_t { Running, Paused };
 
 // See nsStyleImageLayers
 enum class StyleImageLayerAttachment : uint8_t { Scroll, Fixed, Local };
@@ -214,9 +179,6 @@ enum class StyleMaskMode : uint8_t { Alpha = 0, Luminance, MatchSource };
 
 // See nsStyleTable
 enum class StyleBorderCollapse : uint8_t { Collapse, Separate };
-
-// border-image-repeat
-enum class StyleBorderImageRepeat : uint8_t { Stretch, Repeat, Round, Space };
 
 // See nsStyleVisibility
 enum class StyleDirection : uint8_t { Ltr, Rtl };
@@ -343,20 +305,6 @@ enum class ListStyle : uint8_t {
 // See nsStyleList
 enum class StyleListStylePosition : uint8_t { Inside, Outside };
 
-// See nsStyleVisibility
-enum class StylePointerEvents : uint8_t {
-  None,
-  Visiblepainted,
-  Visiblefill,
-  Visiblestroke,
-  Visible,
-  Painted,
-  Fill,
-  Stroke,
-  All,
-  Auto,
-};
-
 enum class StyleIsolation : uint8_t {
   Auto,
   Isolate,
@@ -393,7 +341,7 @@ enum class StyleTextSecurity : uint8_t {
 // See nsStyleDisplay
 enum class StyleTopLayer : uint8_t {
   None,
-  Top,
+  Auto,
 };
 
 // See nsStyleVisibility
@@ -404,14 +352,30 @@ enum class StyleVisibility : uint8_t {
 };
 
 // See nsStyleText
-enum class StyleWhiteSpace : uint8_t {
-  Normal = 0,
-  Pre,
-  Nowrap,
-  PreWrap,
-  PreLine,
-  PreSpace,
+enum class StyleWhiteSpaceCollapse : uint8_t {
+  Collapse = 0,
+  // TODO: Discard not yet supported
+  Preserve,
+  PreserveBreaks,
+  PreserveSpaces,
   BreakSpaces,
+};
+
+// See nsStyleText
+enum class StyleTextWrapMode : uint8_t {
+  Wrap = 0,
+  Nowrap,
+};
+
+// See nsStyleText
+// TODO: this will become StyleTextWrapStyle when we turn text-wrap
+// (see https://bugzilla.mozilla.org/show_bug.cgi?id=1758391) and
+// white-space (https://bugzilla.mozilla.org/show_bug.cgi?id=1852478)
+// into shorthands.
+enum class StyleTextWrapStyle : uint8_t {
+  Auto = 0,
+  Stable,
+  Balance,
 };
 
 // ruby-align, see nsStyleText
@@ -479,18 +443,10 @@ enum class StyleImeMode : uint8_t {
 
 // See nsStyleSVG
 
-/*
- * -moz-window-shadow
- * Also used in widget code
- */
+// -moz-window-shadow
 enum class StyleWindowShadow : uint8_t {
+  Auto,
   None,
-  Default,
-
-  // These can't be specified in CSS, they get computed from the "default"
-  // value.
-  Menu,
-  Tooltip,
 };
 
 // dominant-baseline
@@ -555,9 +511,6 @@ enum class StyleColorInterpolation : uint8_t {
   Srgb = 1,
   Linearrgb = 2,
 };
-
-// vector-effect
-enum class StyleVectorEffect : uint8_t { None = 0, NonScalingStroke = 1 };
 
 // 3d Transforms - Backface visibility
 enum class StyleBackfaceVisibility : uint8_t { Hidden = 0, Visible = 1 };

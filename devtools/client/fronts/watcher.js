@@ -27,6 +27,12 @@ loader.lazyRequireGetter(
   "resource://devtools/client/fronts/targets/worker.js",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "ContentScriptTargetFront",
+  "resource://devtools/client/fronts/targets/content-script.js",
+  true
+);
 
 class WatcherFront extends FrontClassWithSpec(watcherSpec) {
   constructor(client, targetFront, parentFront) {
@@ -51,6 +57,8 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
       front = new ContentProcessTargetFront(this.conn, null, this);
     } else if (form.actor.includes("/workerTarget")) {
       front = new WorkerTargetFront(this.conn, null, this);
+    } else if (form.actor.includes("/contentScriptTarget")) {
+      front = new ContentScriptTargetFront(this.conn, null, this);
     } else {
       front = new WindowGlobalTargetFront(this.conn, null, this);
     }
@@ -67,7 +75,7 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
     // the watcher may notify us about the top level target destruction a bit late.
     // The descriptor (`this.parentFront`) already switched to the new target.
     // Missing `target-destroyed` isn't critical when target switching is off
-    // as `TargetCommand.switchToTarget` will end calling `TargetCommandonTargetDestroyed` for all
+    // as `TargetCommand.switchToTarget` will end calling `TargetCommand.onTargetDestroyed` for all
     // existing targets.
     // https://searchfox.org/mozilla-central/rev/af8e5d37fd56be90ccddae2203e7b875d3f3ae87/devtools/shared/commands/target/target-command.js#166-173
     if (front) {

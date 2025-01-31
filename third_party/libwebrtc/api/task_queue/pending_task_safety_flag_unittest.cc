@@ -11,11 +11,13 @@
 #include "api/task_queue/pending_task_safety_flag.h"
 
 #include <memory>
+#include <utility>
 
+#include "api/scoped_refptr.h"
+#include "api/task_queue/task_queue_base.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/event.h"
-#include "rtc_base/logging.h"
 #include "rtc_base/task_queue_for_test.h"
-#include "test/gmock.h"
 #include "test/gtest.h"
 
 namespace webrtc {
@@ -165,6 +167,17 @@ TEST(PendingTaskSafetyFlagTest, PendingTaskNotAliveInitialized) {
   tq.WaitForPreviouslyPostedTasks();
   EXPECT_FALSE(task_1_ran);
   EXPECT_TRUE(task_2_ran);
+}
+
+TEST(PendingTaskSafetyFlagTest, PendingTaskInitializedForTaskQueue) {
+  TaskQueueForTest tq("PendingTaskAliveInitializedForTaskQueue");
+
+  // Create a new flag that initially `alive`, attached to a specific TQ.
+  auto flag = PendingTaskSafetyFlag::CreateAttachedToTaskQueue(true, tq.Get());
+  tq.SendTask([&flag]() { EXPECT_TRUE(flag->alive()); });
+  // Repeat the same steps but initialize as inactive.
+  flag = PendingTaskSafetyFlag::CreateAttachedToTaskQueue(false, tq.Get());
+  tq.SendTask([&flag]() { EXPECT_FALSE(flag->alive()); });
 }
 
 TEST(PendingTaskSafetyFlagTest, SafeTask) {

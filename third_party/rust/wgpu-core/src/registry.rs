@@ -1,200 +1,161 @@
-use std::marker::PhantomData;
-
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use wgt::Backend;
+use std::{mem::size_of, sync::Arc};
 
 use crate::{
-    hub::{Access, Token},
-    id,
-    identity::{IdentityHandler, IdentityHandlerFactory},
-    resource::Resource,
-    storage::Storage,
+    id::Id,
+    identity::IdentityManager,
+    lock::{rank, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    storage::{Element, Storage, StorageItem},
 };
 
-#[derive(Debug)]
-pub struct Registry<T: Resource, I: id::TypedId, F: IdentityHandlerFactory<I>> {
-    identity: F::Filter,
-    pub(crate) data: RwLock<Storage<T, I>>,
-    backend: Backend,
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegistryReport {
+    pub num_allocated: usize,
+    pub num_kept_from_user: usize,
+    pub num_released_from_user: usize,
+    pub element_size: usize,
 }
 
-impl<T: Resource, I: id::TypedId, F: IdentityHandlerFactory<I>> Registry<T, I, F> {
-    pub(crate) fn new(backend: Backend, factory: &F) -> Self {
-        Self {
-            identity: factory.spawn(),
-            data: RwLock::new(Storage {
-                map: Vec::new(),
-                kind: T::TYPE,
-                _phantom: PhantomData,
-            }),
-            backend,
-        }
+impl RegistryReport {
+    pub fn is_empty(&self) -> bool {
+        self.num_allocated + self.num_kept_from_user == 0
     }
+}
 
-    pub(crate) fn without_backend(factory: &F, kind: &'static str) -> Self {
+/// Registry is the primary holder of each resource type
+/// Every resource is now arcanized so the last arc released
+/// will in the end free the memory and release the inner raw resource
+///
+/// Registry act as the main entry point to keep resource alive
+/// when created and released from user land code
+///
+/// A resource may still be alive when released from user land code
+/// if it's used in active submission or anyway kept alive from
+/// any other dependent resource
+///
+#[derive(Debug)]
+pub(crate) struct Registry<T: StorageItem> {
+    // Must only contain an id which has either never been used or has been released from `storage`
+    identity: Arc<IdentityManager<T::Marker>>,
+    storage: RwLock<Storage<T>>,
+}
+
+impl<T: StorageItem> Registry<T> {
+    pub(crate) fn new() -> Self {
         Self {
-            identity: factory.spawn(),
-            data: RwLock::new(Storage {
-                map: Vec::new(),
-                kind,
-                _phantom: PhantomData,
-            }),
-            backend: Backend::Empty,
+            identity: Arc::new(IdentityManager::new()),
+            storage: RwLock::new(rank::REGISTRY_STORAGE, Storage::new()),
         }
     }
 }
 
 #[must_use]
-pub(crate) struct FutureId<'a, I: id::TypedId, T> {
-    id: I,
-    data: &'a RwLock<Storage<T, I>>,
+pub(crate) struct FutureId<'a, T: StorageItem> {
+    id: Id<T::Marker>,
+    data: &'a RwLock<Storage<T>>,
 }
 
-impl<I: id::TypedId + Copy, T> FutureId<'_, I, T> {
-    #[cfg(feature = "trace")]
-    pub fn id(&self) -> I {
+impl<T: StorageItem> FutureId<'_, T> {
+    pub fn id(&self) -> Id<T::Marker> {
         self.id
     }
 
-    pub fn into_id(self) -> I {
-        self.id
-    }
-
-    pub fn assign<'a, A: Access<T>>(self, value: T, _: &'a mut Token<A>) -> id::Valid<I> {
-        self.data.write().insert(self.id, value);
-        id::Valid(self.id)
-    }
-
-    pub fn assign_error<'a, A: Access<T>>(self, label: &str, _: &'a mut Token<A>) -> I {
-        self.data.write().insert_error(self.id, label);
+    /// Assign a new resource to this ID.
+    ///
+    /// Registers it with the registry.
+    pub fn assign(self, value: T) -> Id<T::Marker> {
+        let mut data = self.data.write();
+        data.insert(self.id, value);
         self.id
     }
 }
 
-impl<T: Resource, I: id::TypedId + Copy, F: IdentityHandlerFactory<I>> Registry<T, I, F> {
-    pub(crate) fn prepare(
-        &self,
-        id_in: <F::Filter as IdentityHandler<I>>::Input,
-    ) -> FutureId<I, T> {
+impl<T: StorageItem> Registry<T> {
+    pub(crate) fn prepare(&self, id_in: Option<Id<T::Marker>>) -> FutureId<T> {
         FutureId {
-            id: self.identity.process(id_in, self.backend),
-            data: &self.data,
+            id: match id_in {
+                Some(id_in) => {
+                    self.identity.mark_as_used(id_in);
+                    id_in
+                }
+                None => self.identity.process(),
+            },
+            data: &self.storage,
         }
     }
 
-    /// Acquire read access to this `Registry`'s contents.
-    ///
-    /// The caller must present a mutable reference to a `Token<A>`,
-    /// for some type `A` that comes before this `Registry`'s resource
-    /// type `T` in the lock ordering. A `Token<Root>` grants
-    /// permission to lock any field; see [`Token::root`].
-    ///
-    /// Once the read lock is acquired, return a new `Token<T>`, along
-    /// with a read guard for this `Registry`'s [`Storage`], which can
-    /// be indexed by id to get at the actual resources.
-    ///
-    /// The borrow checker ensures that the caller cannot again access
-    /// its `Token<A>` until it has dropped both the guard and the
-    /// `Token<T>`.
-    ///
-    /// See the [`Hub`] type for more details on locking.
-    ///
-    /// [`Hub`]: crate::hub::Hub
-    pub(crate) fn read<'a, A: Access<T>>(
-        &'a self,
-        _token: &'a mut Token<A>,
-    ) -> (RwLockReadGuard<'a, Storage<T, I>>, Token<'a, T>) {
-        (self.data.read(), Token::new())
+    #[track_caller]
+    pub(crate) fn read<'a>(&'a self) -> RwLockReadGuard<'a, Storage<T>> {
+        self.storage.read()
     }
-
-    /// Acquire write access to this `Registry`'s contents.
-    ///
-    /// The caller must present a mutable reference to a `Token<A>`,
-    /// for some type `A` that comes before this `Registry`'s resource
-    /// type `T` in the lock ordering. A `Token<Root>` grants
-    /// permission to lock any field; see [`Token::root`].
-    ///
-    /// Once the lock is acquired, return a new `Token<T>`, along with
-    /// a write guard for this `Registry`'s [`Storage`], which can be
-    /// indexed by id to get at the actual resources.
-    ///
-    /// The borrow checker ensures that the caller cannot again access
-    /// its `Token<A>` until it has dropped both the guard and the
-    /// `Token<T>`.
-    ///
-    /// See the [`Hub`] type for more details on locking.
-    ///
-    /// [`Hub`]: crate::hub::Hub
-    pub(crate) fn write<'a, A: Access<T>>(
-        &'a self,
-        _token: &'a mut Token<A>,
-    ) -> (RwLockWriteGuard<'a, Storage<T, I>>, Token<'a, T>) {
-        (self.data.write(), Token::new())
+    #[track_caller]
+    pub(crate) fn write<'a>(&'a self) -> RwLockWriteGuard<'a, Storage<T>> {
+        self.storage.write()
     }
-
-    /// Unregister the resource at `id`.
-    ///
-    /// The caller must prove that it already holds a write lock for
-    /// this `Registry` by passing a mutable reference to this
-    /// `Registry`'s storage, obtained from the write guard returned
-    /// by a previous call to [`write`], as the `guard` parameter.
-    pub fn unregister_locked(&self, id: I, guard: &mut Storage<T, I>) -> Option<T> {
-        let value = guard.remove(id);
-        //Note: careful about the order here!
+    pub(crate) fn remove(&self, id: Id<T::Marker>) -> T {
+        let value = self.storage.write().remove(id);
+        // This needs to happen *after* removing it from the storage, to maintain the
+        // invariant that `self.identity` only contains ids which are actually available
+        // See https://github.com/gfx-rs/wgpu/issues/5372
         self.identity.free(id);
         //Returning None is legal if it's an error ID
         value
     }
 
-    /// Unregister the resource at `id` and return its value, if any.
-    ///
-    /// The caller must present a mutable reference to a `Token<A>`,
-    /// for some type `A` that comes before this `Registry`'s resource
-    /// type `T` in the lock ordering.
-    ///
-    /// This returns a `Token<T>`, but it's almost useless, because it
-    /// doesn't return a lock guard to go with it: its only effect is
-    /// to make the token you passed to this function inaccessible.
-    /// However, the `Token<T>` can be used to satisfy some functions'
-    /// bureacratic expectations that you will have one available.
-    ///
-    /// The borrow checker ensures that the caller cannot again access
-    /// its `Token<A>` until it has dropped both the guard and the
-    /// `Token<T>`.
-    ///
-    /// See the [`Hub`] type for more details on locking.
-    ///
-    /// [`Hub`]: crate::hub::Hub
-    pub(crate) fn unregister<'a, A: Access<T>>(
-        &self,
-        id: I,
-        _token: &'a mut Token<A>,
-    ) -> (Option<T>, Token<'a, T>) {
-        let value = self.data.write().remove(id);
-        //Note: careful about the order here!
-        self.identity.free(id);
-        //Returning None is legal if it's an error ID
-        (value, Token::new())
+    pub(crate) fn generate_report(&self) -> RegistryReport {
+        let storage = self.storage.read();
+        let mut report = RegistryReport {
+            element_size: size_of::<T>(),
+            ..Default::default()
+        };
+        report.num_allocated = self.identity.values.lock().count();
+        for element in storage.map.iter() {
+            match *element {
+                Element::Occupied(..) => report.num_kept_from_user += 1,
+                Element::Vacant => report.num_released_from_user += 1,
+            }
+        }
+        report
+    }
+}
+
+impl<T: StorageItem + Clone> Registry<T> {
+    pub(crate) fn get(&self, id: Id<T::Marker>) -> T {
+        self.read().get(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::{id::Marker, resource::ResourceType, storage::StorageItem};
+
+    use super::Registry;
+    struct TestData;
+    struct TestDataId;
+    impl Marker for TestDataId {}
+
+    impl ResourceType for TestData {
+        const TYPE: &'static str = "TestData";
+    }
+    impl StorageItem for TestData {
+        type Marker = TestDataId;
     }
 
-    pub fn label_for_resource(&self, id: I) -> String {
-        let guard = self.data.read();
-
-        let type_name = guard.kind;
-        match guard.get(id) {
-            Ok(res) => {
-                let label = res.label();
-                if label.is_empty() {
-                    format!("<{}-{:?}>", type_name, id.unzip())
-                } else {
-                    label.to_string()
-                }
+    #[test]
+    fn simultaneous_registration() {
+        let registry = Registry::new();
+        std::thread::scope(|s| {
+            for _ in 0..5 {
+                s.spawn(|| {
+                    for _ in 0..1000 {
+                        let value = Arc::new(TestData);
+                        let new_id = registry.prepare(None);
+                        let id = new_id.assign(value);
+                        registry.remove(id);
+                    }
+                });
             }
-            Err(_) => format!(
-                "<Invalid-{} label={}>",
-                type_name,
-                guard.label_for_invalid_id(id)
-            ),
-        }
+        })
     }
 }

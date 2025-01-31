@@ -6,26 +6,29 @@
 
 const { Pool } = require("resource://devtools/shared/protocol/Pool.js");
 const { isWindowGlobalPartOfContext } = ChromeUtils.importESModule(
-  "resource://devtools/server/actors/watcher/browsing-context-helpers.sys.mjs"
+  "resource://devtools/server/actors/watcher/browsing-context-helpers.sys.mjs",
+  { global: "contextual" }
 );
-const { WatcherRegistry } = ChromeUtils.importESModule(
-  "resource://devtools/server/actors/watcher/WatcherRegistry.sys.mjs",
-  {
-    // WatcherRegistry needs to be a true singleton and loads ActorManagerParent
-    // which also has to be a true singleton.
-    loadInDevToolsLoader: false,
-  }
+const { ParentProcessWatcherRegistry } = ChromeUtils.importESModule(
+  "resource://devtools/server/actors/watcher/ParentProcessWatcherRegistry.sys.mjs",
+  // ParentProcessWatcherRegistry needs to be a true singleton and loads ActorManagerParent
+  // which also has to be a true singleton.
+  { global: "shared" }
 );
 const Targets = require("resource://devtools/server/actors/targets/index.js");
 
 const lazy = {};
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  NetworkObserver:
-    "resource://devtools/shared/network-observer/NetworkObserver.sys.mjs",
-  NetworkUtils:
-    "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
-});
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    NetworkObserver:
+      "resource://devtools/shared/network-observer/NetworkObserver.sys.mjs",
+    NetworkUtils:
+      "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 loader.lazyRequireGetter(
   this,
@@ -250,7 +253,7 @@ class NetworkEventWatcher {
     // (i.e. the process where this Watcher runs)
     const isParentProcessOnlyBrowserToolbox =
       this.watcherActor.sessionContext.type == "all" &&
-      !WatcherRegistry.isWatchingTargets(
+      !ParentProcessWatcherRegistry.isWatchingTargets(
         this.watcherActor,
         Targets.TYPES.FRAME
       );
@@ -275,7 +278,7 @@ class NetworkEventWatcher {
   }
 
   onNetworkEvent(networkEventOptions, channel) {
-    if (this.networkEvents.has(channel.channelId)) {
+    if (channel.channelId && this.networkEvents.has(channel.channelId)) {
       throw new Error(
         `Got notified about channel ${channel.channelId} more than once.`
       );
@@ -299,7 +302,6 @@ class NetworkEventWatcher {
       browsingContextID: resource.browsingContextID,
       innerWindowId: resource.innerWindowId,
       resourceId: resource.resourceId,
-      resourceType: resource.resourceType,
       isBlocked,
       receivedUpdates: [],
       resourceUpdates: {
@@ -337,10 +339,15 @@ class NetworkEventWatcher {
     const { resourceUpdates, receivedUpdates } = networkEvent;
 
     switch (updateResource.updateType) {
+      case "cacheDetails":
+        resourceUpdates.fromCache = updateResource.fromCache;
+        resourceUpdates.fromServiceWorker = updateResource.fromServiceWorker;
+        break;
       case "responseStart":
         resourceUpdates.httpVersion = updateResource.httpVersion;
         resourceUpdates.status = updateResource.status;
         resourceUpdates.statusText = updateResource.statusText;
+        resourceUpdates.earlyHintsStatus = updateResource.earlyHintsStatus;
         resourceUpdates.remoteAddress = updateResource.remoteAddress;
         resourceUpdates.remotePort = updateResource.remotePort;
         // The mimetype is only set when then the contentType is available
@@ -388,7 +395,6 @@ class NetworkEventWatcher {
   _emitUpdate(networkEvent) {
     this.onNetworkEventUpdated([
       {
-        resourceType: networkEvent.resourceType,
         resourceId: networkEvent.resourceId,
         resourceUpdates: networkEvent.resourceUpdates,
         browsingContextID: networkEvent.browsingContextID,

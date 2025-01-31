@@ -5,8 +5,6 @@
 import os
 import signal
 
-from six.moves import range
-
 # a dict cache of signal number -> signal name
 _SIG_NAME = None
 
@@ -27,7 +25,6 @@ def strsig(n):
                 and k != "SIGCLD"
                 and k != "SIGPOLL"
             ):
-
                 _SIG_NAME[getattr(signal, k)] = k
 
         # Realtime signals mostly have no names
@@ -52,7 +49,7 @@ def strstatus(status):
     if os.name != "posix":
         # Windows error codes are easier to look up if printed in hexadecimal
         if status < 0:
-            status += 2 ** 32
+            status += 2**32
         return "exit %x" % status
     elif status >= 0:
         return "exit %d" % status

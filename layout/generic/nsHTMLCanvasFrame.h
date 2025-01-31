@@ -43,20 +43,21 @@ class nsHTMLCanvasFrame final : public nsContainerFrame {
   virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                 const nsDisplayListSet& aLists) override;
 
-  void DestroyFrom(nsIFrame*, PostDestroyData&) override;
+  void Destroy(DestroyContext&) override;
 
   bool UpdateWebRenderCanvasData(nsDisplayListBuilder* aBuilder,
                                  WebRenderCanvasData* aCanvasData);
 
-  /* get the size of the canvas's image */
-  nsIntSize GetCanvasSize() const;
+  // Get the size of the canvas's image in CSS pixels.
+  mozilla::CSSIntSize GetCanvasSize() const;
 
-  virtual nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetPrefISize(gfxContext* aRenderingContext) override;
+  nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                         mozilla::IntrinsicISizeType aType) override;
+
   virtual mozilla::IntrinsicSize GetIntrinsicSize() override;
   mozilla::AspectRatio GetIntrinsicRatio() const override;
 
-  void UnionChildOverflow(mozilla::OverflowAreas& aOverflowAreas) override;
+  void UnionChildOverflow(mozilla::OverflowAreas&, bool aAsIfScrolled) override;
 
   SizeComputationResult ComputeSize(
       gfxContext* aRenderingContext, mozilla::WritingMode aWM,
@@ -73,11 +74,6 @@ class nsHTMLCanvasFrame final : public nsContainerFrame {
 #ifdef ACCESSIBILITY
   virtual mozilla::a11y::AccType AccessibleType() override;
 #endif
-
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsSplittableFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedSizing));
-  }
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override;

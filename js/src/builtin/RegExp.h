@@ -74,6 +74,9 @@ JSObject* InitRegExpClass(JSContext* cx, HandleObject obj);
                                             MatchPairs* maybeMatches,
                                             int32_t* result);
 
+[[nodiscard]] extern bool RegExpSearcherLastLimit(JSContext* cx, unsigned argc,
+                                                  Value* vp);
+
 [[nodiscard]] extern bool RegExpBuiltinExecMatchFromJit(
     JSContext* cx, Handle<RegExpObject*> regexp, HandleString input,
     MatchPairs* maybeMatches, MutableHandleValue output);
@@ -142,18 +145,24 @@ JSObject* InitRegExpClass(JSContext* cx, HandleObject obj);
     Handle<JSLinearString*> replacement, size_t firstDollarIndex,
     HandleValue namedCaptures, MutableHandleValue rval);
 
+[[nodiscard]] extern bool RegExpHasCaptureGroups(JSContext* cx,
+                                                 Handle<RegExpObject*> obj,
+                                                 Handle<JSString*> input,
+                                                 bool* result);
+
 [[nodiscard]] extern bool GetFirstDollarIndex(JSContext* cx, unsigned argc,
                                               Value* vp);
 
 [[nodiscard]] extern bool GetFirstDollarIndexRaw(JSContext* cx, JSString* str,
                                                  int32_t* index);
 
-extern int32_t GetFirstDollarIndexRawFlat(JSLinearString* text);
+extern int32_t GetFirstDollarIndexRawFlat(const JSLinearString* text);
 
 // RegExp ClassSpec members used in RegExpObject.cpp.
 [[nodiscard]] extern bool regexp_construct(JSContext* cx, unsigned argc,
                                            Value* vp);
 extern const JSPropertySpec regexp_static_props[];
+extern const JSFunctionSpec regexp_static_methods[];
 extern const JSPropertySpec regexp_properties[];
 extern const JSFunctionSpec regexp_methods[];
 
@@ -174,6 +183,11 @@ extern const JSFunctionSpec regexp_methods[];
                                          JS::Value* vp);
 [[nodiscard]] extern bool regexp_unicodeSets(JSContext* cx, unsigned argc,
                                              JS::Value* vp);
+
+#ifdef DEBUG
+// Sentinel value for cx->regExpSearcherLastLimit.
+constexpr uint32_t RegExpSearcherLastLimitSentinel = UINT32_MAX;
+#endif
 
 } /* namespace js */
 

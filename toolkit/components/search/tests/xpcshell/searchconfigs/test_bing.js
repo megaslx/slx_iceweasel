@@ -10,88 +10,8 @@ const test = new SearchConfigTest({
     // Not included anywhere.
   },
   available: {
-    included: [
-      {
-        // regions: [
-        // These arent currently enforced.
-        // "au", "at", "be", "br", "ca", "fi", "fr", "de",
-        // "in", "ie", "it", "jp", "my", "mx", "nl", "nz",
-        // "no", "sg", "es", "se", "ch", "gb", "us",
-        // ],
-        locales: {
-          matches: [
-            "ach",
-            "af",
-            "an",
-            "ar",
-            "ast",
-            "az",
-            "ca",
-            "ca-valencia",
-            "cak",
-            "da",
-            "de",
-            "dsb",
-            "el",
-            "eo",
-            "es-CL",
-            "es-ES",
-            "es-MX",
-            "eu",
-            "fa",
-            "ff",
-            "fi",
-            "fr",
-            "fur",
-            "fy-NL",
-            "gn",
-            "gu-IN",
-            "hi-IN",
-            "hr",
-            "hsb",
-            "ia",
-            "is",
-            "it",
-            "ja-JP-macos",
-            "ja",
-            "ka",
-            "kab",
-            "km",
-            "kn",
-            "lij",
-            "lo",
-            "lt",
-            "mk",
-            "ms",
-            "my",
-            "nb-NO",
-            "ne-NP",
-            "nl",
-            "nn-NO",
-            "oc",
-            "pa-IN",
-            "pt-BR",
-            "rm",
-            "ro",
-            "sc",
-            "sco",
-            "son",
-            "sq",
-            "sr",
-            "sv-SE",
-            "th",
-            "tl",
-            "trs",
-            "uk",
-            "ur",
-            "uz",
-            "wo",
-            "xh",
-            "zh-CN",
-          ],
-          startsWith: ["bn", "en"],
-        },
-      },
+    excluded: [
+      // Should be available everywhere.
     ],
   },
   details: [
@@ -100,20 +20,13 @@ const test = new SearchConfigTest({
       domain: "bing.com",
       telemetryId:
         SearchUtils.MODIFIED_APP_CHANNEL == "esr" ? "bing-esr" : "bing",
-      codes: {
-        searchbar: "form=MOZSBR",
-        keyword: "form=MOZLBR",
-        contextmenu: "form=MOZCON",
-        homepage: "form=MOZSPG",
-        newtab: "form=MOZTSB",
-      },
       searchUrlCode:
         SearchUtils.MODIFIED_APP_CHANNEL == "esr" ? "pc=MOZR" : "pc=MOZI",
     },
   ],
 });
 
-add_task(async function setup() {
+add_setup(async function () {
   await test.setup();
 });
 

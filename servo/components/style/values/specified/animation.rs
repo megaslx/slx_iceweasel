@@ -4,12 +4,11 @@
 
 //! Specified types for properties related to animations and transitions.
 
-use crate::custom_properties::Name as CustomPropertyName;
 use crate::parser::{Parse, ParserContext};
-use crate::properties::{LonghandId, PropertyDeclarationId, PropertyId, ShorthandId};
+use crate::properties::{NonCustomPropertyId, PropertyId, ShorthandId};
 use crate::values::generics::animation as generics;
-use crate::values::specified::{LengthPercentage, NonNegativeNumber};
-use crate::values::{CustomIdent, KeyframesName, TimelineName};
+use crate::values::specified::{LengthPercentage, NonNegativeNumber, Time};
+use crate::values::{CustomIdent, DashedIdent, KeyframesName};
 use crate::Atom;
 use cssparser::Parser;
 use std::fmt::{self, Write};
@@ -22,13 +21,12 @@ use style_traits::{
 #[derive(
     Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToComputedValue, ToResolvedValue, ToShmem,
 )]
+#[repr(u8)]
 pub enum TransitionProperty {
-    /// A shorthand.
-    Shorthand(ShorthandId),
-    /// A longhand transitionable property.
-    Longhand(LonghandId),
+    /// A non-custom property.
+    NonCustom(NonCustomPropertyId),
     /// A custom property.
-    Custom(CustomPropertyName),
+    Custom(Atom),
     /// Unrecognized property which could be any non-transitionable, custom property, or
     /// unknown property.
     Unsupported(CustomIdent),
@@ -39,13 +37,11 @@ impl ToCss for TransitionProperty {
     where
         W: Write,
     {
-        use crate::values::serialize_atom_name;
         match *self {
-            TransitionProperty::Shorthand(ref s) => s.to_css(dest),
-            TransitionProperty::Longhand(ref l) => l.to_css(dest),
+            TransitionProperty::NonCustom(ref id) => id.to_css(dest),
             TransitionProperty::Custom(ref name) => {
                 dest.write_str("--")?;
-                serialize_atom_name(name, dest)
+                crate::values::serialize_atom_name(name, dest)
             },
             TransitionProperty::Unsupported(ref i) => i.to_css(dest),
         }
@@ -63,6 +59,7 @@ impl Parse for TransitionProperty {
         let id = match PropertyId::parse_ignoring_rule_type(&ident, context) {
             Ok(id) => id,
             Err(..) => {
+                // None is not acceptable as a single transition-property.
                 return Ok(TransitionProperty::Unsupported(CustomIdent::from_ident(
                     location,
                     ident,
@@ -71,12 +68,9 @@ impl Parse for TransitionProperty {
             },
         };
 
-        Ok(match id.as_shorthand() {
-            Ok(s) => TransitionProperty::Shorthand(s),
-            Err(longhand_or_custom) => match longhand_or_custom {
-                PropertyDeclarationId::Longhand(id) => TransitionProperty::Longhand(id),
-                PropertyDeclarationId::Custom(custom) => TransitionProperty::Custom(custom.clone()),
-            },
+        Ok(match id {
+            PropertyId::NonCustom(id) => TransitionProperty::NonCustom(id.unaliased()),
+            PropertyId::Custom(name) => TransitionProperty::Custom(name),
         })
     }
 }
@@ -91,30 +85,93 @@ impl SpecifiedValueInfo for TransitionProperty {
 }
 
 impl TransitionProperty {
+    /// Returns the `none` value.
+    #[inline]
+    pub fn none() -> Self {
+        TransitionProperty::Unsupported(CustomIdent(atom!("none")))
+    }
+
+    /// Returns whether we're the `none` value.
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        matches!(*self, TransitionProperty::Unsupported(ref ident) if ident.0 == atom!("none"))
+    }
+
     /// Returns `all`.
     #[inline]
     pub fn all() -> Self {
-        TransitionProperty::Shorthand(ShorthandId::All)
+        TransitionProperty::NonCustom(NonCustomPropertyId::from_shorthand(ShorthandId::All))
     }
 
-    /// Convert TransitionProperty to nsCSSPropertyID.
-    #[cfg(feature = "gecko")]
-    pub fn to_nscsspropertyid(
-        &self,
-    ) -> Result<crate::gecko_bindings::structs::nsCSSPropertyID, ()> {
-        Ok(match *self {
-            TransitionProperty::Shorthand(ShorthandId::All) => {
-                crate::gecko_bindings::structs::nsCSSPropertyID::eCSSPropertyExtra_all_properties
-            },
-            TransitionProperty::Shorthand(ref id) => id.to_nscsspropertyid(),
-            TransitionProperty::Longhand(ref id) => id.to_nscsspropertyid(),
-            TransitionProperty::Custom(..) | TransitionProperty::Unsupported(..) => return Err(()),
-        })
+    /// Returns true if it is `all`.
+    #[inline]
+    pub fn is_all(&self) -> bool {
+        self == &TransitionProperty::NonCustom(NonCustomPropertyId::from_shorthand(
+            ShorthandId::All,
+        ))
+    }
+}
+
+/// A specified value for <transition-behavior-value>.
+///
+/// https://drafts.csswg.org/css-transitions-2/#transition-behavior-property
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+pub enum TransitionBehavior {
+    /// Transitions will not be started for discrete properties, only for interpolable properties.
+    Normal,
+    /// Transitions will be started for discrete properties as well as interpolable properties.
+    AllowDiscrete,
+}
+
+impl TransitionBehavior {
+    /// Return normal, the initial value.
+    #[inline]
+    pub fn normal() -> Self {
+        Self::Normal
+    }
+
+    /// Return true if it is normal.
+    #[inline]
+    pub fn is_normal(&self) -> bool {
+        matches!(*self, Self::Normal)
+    }
+}
+
+/// A specified value for the `animation-duration` property.
+pub type AnimationDuration = generics::GenericAnimationDuration<Time>;
+
+impl Parse for AnimationDuration {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if static_prefs::pref!("layout.css.scroll-driven-animations.enabled")
+            && input.try_parse(|i| i.expect_ident_matching("auto")).is_ok()
+        {
+            return Ok(Self::auto());
+        }
+
+        Time::parse_non_negative(context, input).map(AnimationDuration::Time)
     }
 }
 
 /// https://drafts.csswg.org/css-animations/#animation-iteration-count
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(
+    Copy, Clone, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem,
+)]
 pub enum AnimationIterationCount {
     /// A `<number>` value.
     Number(NonNegativeNumber),
@@ -127,6 +184,12 @@ impl AnimationIterationCount {
     #[inline]
     pub fn one() -> Self {
         Self::Number(NonNegativeNumber::new(1.0))
+    }
+
+    /// Returns true if it's `1.0`.
+    #[inline]
+    pub fn is_one(&self) -> bool {
+        *self == Self::one()
     }
 }
 
@@ -182,10 +245,140 @@ impl Parse for AnimationName {
     }
 }
 
+/// https://drafts.csswg.org/css-animations/#propdef-animation-direction
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+#[allow(missing_docs)]
+pub enum AnimationDirection {
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+impl AnimationDirection {
+    /// Returns true if the name matches any animation-direction keyword.
+    #[inline]
+    pub fn match_keywords(name: &AnimationName) -> bool {
+        if let Some(name) = name.as_atom() {
+            #[cfg(feature = "gecko")]
+            return name.with_str(|n| Self::from_ident(n).is_ok());
+            #[cfg(feature = "servo")]
+            return Self::from_ident(name).is_ok();
+        }
+        false
+    }
+}
+
+/// https://drafts.csswg.org/css-animations/#animation-play-state
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+#[allow(missing_docs)]
+pub enum AnimationPlayState {
+    Running,
+    Paused,
+}
+
+impl AnimationPlayState {
+    /// Returns true if the name matches any animation-play-state keyword.
+    #[inline]
+    pub fn match_keywords(name: &AnimationName) -> bool {
+        if let Some(name) = name.as_atom() {
+            #[cfg(feature = "gecko")]
+            return name.with_str(|n| Self::from_ident(n).is_ok());
+            #[cfg(feature = "servo")]
+            return Self::from_ident(atom).is_ok();
+        }
+        false
+    }
+}
+
+/// https://drafts.csswg.org/css-animations/#propdef-animation-fill-mode
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+#[allow(missing_docs)]
+pub enum AnimationFillMode {
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+impl AnimationFillMode {
+    /// Returns true if the name matches any animation-fill-mode keyword.
+    /// Note: animation-name:none is its initial value, so we don't have to match none here.
+    #[inline]
+    pub fn match_keywords(name: &AnimationName) -> bool {
+        if let Some(atom) = name.as_atom() {
+            return !name.is_none() && atom.with_str(|n| Self::from_ident(n).is_ok());
+        }
+        false
+    }
+}
+
+/// https://drafts.csswg.org/css-animations-2/#animation-composition
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+#[allow(missing_docs)]
+pub enum AnimationComposition {
+    Replace,
+    Add,
+    Accumulate,
+}
+
 /// A value for the <Scroller> used in scroll().
 ///
 /// https://drafts.csswg.org/scroll-animations-1/rewrite#typedef-scroller
 #[derive(
+    Copy,
     Clone,
     Debug,
     Eq,
@@ -230,6 +423,7 @@ impl Default for Scroller {
 /// https://drafts.csswg.org/scroll-animations-1/#scroll-timeline-axis
 /// https://drafts.csswg.org/scroll-animations-1/#view-timeline-axis
 #[derive(
+    Copy,
     Clone,
     Debug,
     Eq,
@@ -249,10 +443,10 @@ pub enum ScrollAxis {
     Block = 0,
     /// The inline axis of the scroll container.
     Inline = 1,
-    /// The vertical block axis of the scroll container.
-    Vertical = 2,
     /// The horizontal axis of the scroll container.
-    Horizontal = 3,
+    X = 2,
+    /// The vertical axis of the scroll container.
+    Y = 3,
 }
 
 impl ScrollAxis {
@@ -272,6 +466,7 @@ impl Default for ScrollAxis {
 /// The scroll() notation.
 /// https://drafts.csswg.org/scroll-animations-1/#scroll-notation
 #[derive(
+    Copy,
     Clone,
     Debug,
     MallocSizeOf,
@@ -354,6 +549,63 @@ impl generics::ViewFunction<LengthPercentage> {
     }
 }
 
+/// The typedef of scroll-timeline-name or view-timeline-name.
+///
+/// https://drafts.csswg.org/scroll-animations-1/#scroll-timeline-name
+/// https://drafts.csswg.org/scroll-animations-1/#view-timeline-name
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C)]
+pub struct TimelineName(DashedIdent);
+
+impl TimelineName {
+    /// Returns the `none` value.
+    pub fn none() -> Self {
+        Self(DashedIdent::empty())
+    }
+
+    /// Check if this is `none` value.
+    pub fn is_none(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Parse for TimelineName {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::none());
+        }
+
+        DashedIdent::parse(context, input).map(TimelineName)
+    }
+}
+
+impl ToCss for TimelineName {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        if self.is_none() {
+            return dest.write_str("none");
+        }
+
+        self.0.to_css(dest)
+    }
+}
+
 /// A specified value for the `animation-timeline` property.
 pub type AnimationTimeline = generics::GenericAnimationTimeline<LengthPercentage>;
 
@@ -364,22 +616,19 @@ impl Parse for AnimationTimeline {
     ) -> Result<Self, ParseError<'i>> {
         use crate::values::generics::animation::ViewFunction;
 
-        // <single-animation-timeline> = auto | none | <custom-ident> | <scroll()> | <view()>
+        // <single-animation-timeline> = auto | none | <dashed-ident> | <scroll()> | <view()>
         // https://drafts.csswg.org/css-animations-2/#typedef-single-animation-timeline
 
         if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
             return Ok(Self::Auto);
         }
 
-        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
-            return Ok(AnimationTimeline::Timeline(TimelineName::none()));
-        }
-
+        // This parses none or <dashed-indent>.
         if let Ok(name) = input.try_parse(|i| TimelineName::parse(context, i)) {
             return Ok(AnimationTimeline::Timeline(name));
         }
 
-        // Parse possible functions
+        // Parse <scroll()> or <view()>.
         let location = input.current_source_location();
         let function = input.expect_function()?.clone();
         input.parse_nested_block(move |i| {
@@ -395,9 +644,6 @@ impl Parse for AnimationTimeline {
         })
     }
 }
-
-/// A value for the scroll-timeline-name or view-timeline-name.
-pub type ScrollTimelineName = AnimationName;
 
 /// A specified value for the `view-timeline-inset` property.
 pub type ViewTimelineInset = generics::GenericViewTimelineInset<LengthPercentage>;
@@ -416,5 +662,69 @@ impl Parse for ViewTimelineInset {
         };
 
         Ok(Self { start, end })
+    }
+}
+
+/// The view-transition-name: `none | <custom-ident>`.
+///
+/// https://drafts.csswg.org/css-view-transitions-1/#view-transition-name-prop
+///
+/// We use a single atom for this. Empty atom represents `none`.
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    MallocSizeOf,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C)]
+pub struct ViewTransitionName(Atom);
+
+impl ViewTransitionName {
+    /// Returns the `none` value.
+    pub fn none() -> Self {
+        Self(atom!(""))
+    }
+
+    /// Returns whether this is the special `none` value.
+    pub fn is_none(&self) -> bool {
+        self.0 == atom!("")
+    }
+}
+
+impl Parse for ViewTransitionName {
+    fn parse<'i, 't>(
+        _: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        let location = input.current_source_location();
+        let ident = input.expect_ident()?;
+        if ident.eq_ignore_ascii_case("none") {
+            return Ok(Self::none());
+        }
+
+        // We check none already, so don't need to exclude none here.
+        // Note: The values none and auto are excluded from <custom-ident> here.
+        Ok(Self(CustomIdent::from_ident(location, ident, &["auto"])?.0))
+    }
+}
+
+impl ToCss for ViewTransitionName {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        use crate::values::serialize_atom_identifier;
+
+        if self.is_none() {
+            return dest.write_str("none");
+        }
+
+        serialize_atom_identifier(&self.0, dest)
     }
 }

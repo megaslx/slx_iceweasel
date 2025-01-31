@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::u32;
+use api::{MinimapData, SnapshotImageKey};
 use time::precise_time_ns;
 use crate::api::channel::{Sender, single_msg_channel, unbounded_channel};
 use crate::api::{BuiltDisplayList, IdNamespace, ExternalScrollId, Parameter, BoolParameter};
@@ -58,6 +59,10 @@ pub enum ResourceUpdate {
     DeleteBlobImage(BlobImageKey),
     /// See `AddBlobImage::visible_area`.
     SetBlobImageVisibleArea(BlobImageKey, DeviceIntRect),
+    /// See `AddSnapshotImage`.
+    AddSnapshotImage(AddSnapshotImage),
+    /// See `AddSnapshotImage`.
+    DeleteSnapshotImage(SnapshotImageKey),
     /// See `AddFont`.
     AddFont(AddFont),
     /// Deletes an already existing font resource.
@@ -98,6 +103,8 @@ impl fmt::Debug for ResourceUpdate {
             ResourceUpdate::DeleteImage(..) => f.write_str("ResourceUpdate::DeleteImage"),
             ResourceUpdate::DeleteBlobImage(..) => f.write_str("ResourceUpdate::DeleteBlobImage"),
             ResourceUpdate::SetBlobImageVisibleArea(..) => f.write_str("ResourceUpdate::SetBlobImageVisibleArea"),
+            ResourceUpdate::AddSnapshotImage(..) => f.write_str("ResourceUpdate::AddSnapshotImage"),
+            ResourceUpdate::DeleteSnapshotImage(..) => f.write_str("ResourceUpdate::DeleteSnapshotImage"),
             ResourceUpdate::AddFont(..) => f.write_str("ResourceUpdate::AddFont"),
             ResourceUpdate::DeleteFont(..) => f.write_str("ResourceUpdate::DeleteFont"),
             ResourceUpdate::AddFontInstance(..) => f.write_str("ResourceUpdate::AddFontInstance"),
@@ -344,6 +351,11 @@ impl Transaction {
         self.frame_ops.push(FrameMsg::SetIsTransformAsyncZooming(is_zooming, animation_id));
     }
 
+    /// Specify data for APZ minimap debug overlay to be composited
+    pub fn set_minimap_data(&mut self, id: ExternalScrollId, minimap_data: MinimapData) {
+      self.frame_ops.push(FrameMsg::SetMinimapData(id, minimap_data));
+    }
+
     /// Generate a new frame. When it's done and a RenderNotifier has been set
     /// in `webrender::Renderer`, [new_frame_ready()][notifier] gets called.
     /// Note that the notifier is called even if the frame generation was a
@@ -497,6 +509,21 @@ impl Transaction {
     /// See `ResourceUpdate::SetBlobImageVisibleArea`.
     pub fn set_blob_image_visible_area(&mut self, key: BlobImageKey, area: DeviceIntRect) {
         self.resource_updates.push(ResourceUpdate::SetBlobImageVisibleArea(key, area));
+    }
+
+    /// See `ResourceUpdate::AddSnapshotImage`.
+    pub fn add_snapshot_image(
+        &mut self,
+        key: SnapshotImageKey,
+    ) {
+        self.resource_updates.push(
+            ResourceUpdate::AddSnapshotImage(AddSnapshotImage { key })
+        );
+    }
+
+    /// See `ResourceUpdate::DeleteSnapshotImage`.
+    pub fn delete_snapshot_image(&mut self, key: SnapshotImageKey) {
+        self.resource_updates.push(ResourceUpdate::DeleteSnapshotImage(key));
     }
 
     /// See `ResourceUpdate::AddFont`.
@@ -718,6 +745,16 @@ pub struct UpdateBlobImage {
     pub dirty_rect: BlobDirtyRect,
 }
 
+/// Creates a snapshot image resource.
+///
+/// Must be matched with a `DeleteSnapshotImage` at some point to prevent memory leaks.
+#[derive(Clone)]
+#[cfg_attr(any(feature = "serde"), derive(Deserialize, Serialize))]
+pub struct AddSnapshotImage {
+    /// The key identfying the snapshot resource.
+    pub key: SnapshotImageKey,
+}
+
 /// Creates a font resource.
 ///
 /// Must be matched with a corresponding `ResourceUpdate::DeleteFont` at some point to prevent
@@ -799,6 +836,8 @@ pub enum FrameMsg {
     AppendDynamicTransformProperties(Vec<PropertyValue<LayoutTransform>>),
     ///
     SetIsTransformAsyncZooming(bool, PropertyBindingId),
+    ///
+    SetMinimapData(ExternalScrollId, MinimapData)
 }
 
 impl fmt::Debug for SceneMsg {
@@ -825,6 +864,7 @@ impl fmt::Debug for FrameMsg {
             FrameMsg::AppendDynamicProperties(..) => "FrameMsg::AppendDynamicProperties",
             FrameMsg::AppendDynamicTransformProperties(..) => "FrameMsg::AppendDynamicTransformProperties",
             FrameMsg::SetIsTransformAsyncZooming(..) => "FrameMsg::SetIsTransformAsyncZooming",
+            FrameMsg::SetMinimapData(..) => "FrameMsg::SetMinimapData",
         })
     }
 }
@@ -832,6 +872,7 @@ impl fmt::Debug for FrameMsg {
 bitflags!{
     /// Bit flags for WR stages to store in a capture.
     // Note: capturing `FRAME` without `SCENE` is not currently supported.
+    #[derive(Debug, Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
     pub struct CaptureBits: u8 {
         ///
         const SCENE = 0x1;
@@ -846,6 +887,7 @@ bitflags!{
 
 bitflags!{
     /// Mask for clearing caches in debug commands.
+    #[derive(Debug, Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
     pub struct ClearCache: u8 {
         ///
         const IMAGES = 0b1;
@@ -1157,6 +1199,8 @@ impl RenderApi {
         self.resources.set_debug_flags(flags);
         let cmd = DebugCommand::SetFlags(flags);
         self.api_sender.send(ApiMsg::DebugCommand(cmd)).unwrap();
+        self.scene_sender.send(SceneBuilderRequest ::SetFlags(flags)).unwrap();
+        self.low_priority_scene_sender.send(SceneBuilderRequest ::SetFlags(flags)).unwrap();
     }
 
     /// Stop RenderBackend's task until shut down
@@ -1386,7 +1430,6 @@ pub struct MemoryReport {
     pub clip_stores: usize,
     pub gpu_cache_metadata: usize,
     pub gpu_cache_cpu_mirror: usize,
-    pub render_tasks: usize,
     pub hit_testers: usize,
     pub fonts: usize,
     pub weak_fonts: usize,
@@ -1397,6 +1440,8 @@ pub struct MemoryReport {
     pub display_list: usize,
     pub upload_staging_memory: usize,
     pub swgl: usize,
+    pub frame_allocator: usize,
+    pub render_tasks: usize,
 
     //
     // GPU memory.

@@ -1,13 +1,15 @@
-use crate::crypto::COSEAlgorithm;
+use super::commands::get_assertion::HmacSecretExtension;
+use crate::crypto::{COSEAlgorithm, CryptoError, PinUvAuthToken, SharedSecret};
 use crate::{errors::AuthenticatorError, AuthenticatorTransports, KeyHandle};
+use base64::Engine;
 use serde::de::MapAccess;
 use serde::{
-    de::{Error as SerdeError, Visitor},
-    ser::SerializeMap,
+    de::{Error as SerdeError, Unexpected, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use serde_bytes::ByteBuf;
+use serde_bytes::{ByteBuf, Bytes};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::convert::{Into, TryFrom};
 use std::fmt;
 
@@ -16,7 +18,7 @@ pub struct RpIdHash(pub [u8; 32]);
 
 impl fmt::Debug for RpIdHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let value = base64::encode_config(self.0, base64::URL_SAFE_NO_PAD);
+        let value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.0);
         write!(f, "RpIdHash({value})")
     }
 }
@@ -39,61 +41,35 @@ impl RpIdHash {
     }
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
-#[cfg_attr(test, derive(Deserialize))]
+// NOTE: WebAuthn requires all fields and CTAP2 does not.
+#[derive(Debug, Serialize, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct RelyingParty {
-    // TODO(baloo): spec is wrong !!!!111
-    //              https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#commands
-    //              in the example "A PublicKeyCredentialRpEntity DOM object defined as follows:"
-    //              inconsistent with https://w3c.github.io/webauthn/#sctn-rp-credential-params
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
 }
 
-// Note: This enum is provided to make old CTAP1/U2F API work. This should be deprecated at some point
-#[derive(Debug, Clone)]
-pub enum RelyingPartyWrapper {
-    Data(RelyingParty),
-    // CTAP1 hash can be derived from full object, see RelyingParty::hash below,
-    // but very old backends might still provide application IDs.
-    Hash(RpIdHash),
-}
+impl RelyingParty {
+    pub fn from<S>(id: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            id: id.into(),
+            name: None,
+        }
+    }
 
-impl RelyingPartyWrapper {
     pub fn hash(&self) -> RpIdHash {
-        match *self {
-            RelyingPartyWrapper::Data(ref d) => {
-                let mut hasher = Sha256::new();
-                hasher.update(&d.id);
-
-                let mut output = [0u8; 32];
-                output.copy_from_slice(hasher.finalize().as_slice());
-
-                RpIdHash(output)
-            }
-            RelyingPartyWrapper::Hash(ref d) => d.clone(),
-        }
-    }
-
-    pub fn id(&self) -> Option<&String> {
-        match self {
-            // CTAP1 case: We only have the hash, not the entire RpID
-            RelyingPartyWrapper::Hash(..) => None,
-            RelyingPartyWrapper::Data(r) => Some(&r.id),
-        }
+        RpIdHash(Sha256::digest(&self.id).into())
     }
 }
 
-// TODO(baloo): should we rename this PublicKeyCredentialUserEntity ?
+// NOTE: WebAuthn requires all fields and CTAP2 does not.
 #[derive(Debug, Serialize, Clone, Eq, PartialEq, Deserialize, Default)]
-pub struct User {
+pub struct PublicKeyCredentialUserEntity {
     #[serde(with = "serde_bytes")]
     pub id: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>, // This has been removed from Webauthn-2
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "displayName")]
     pub display_name: Option<String>,
@@ -117,10 +93,11 @@ impl Serialize for PublicKeyCredentialParameters {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("alg", &self.alg)?;
-        map.serialize_entry("type", "public-key")?;
-        map.end()
+        serialize_map!(
+            serializer,
+            "alg" => &self.alg,
+            "type" => "public-key",
+        )
     }
 }
 
@@ -209,9 +186,11 @@ impl From<AuthenticatorTransports> for Vec<Transport> {
     }
 }
 
+pub type PublicKeyCredentialId = Vec<u8>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKeyCredentialDescriptor {
-    pub id: Vec<u8>,
+    pub id: PublicKeyCredentialId,
     pub transports: Vec<Transport>,
 }
 
@@ -220,15 +199,16 @@ impl Serialize for PublicKeyCredentialDescriptor {
     where
         S: Serializer,
     {
-        // TODO(MS): Transports is OPTIONAL, but some older tokens don't understand it
-        //           and return a CBOR-Parsing error. It is only a hint for the token,
-        //           so we'll leave it out for the moment
-        let mut map = serializer.serialize_map(Some(2))?;
-        // let mut map = serializer.serialize_map(Some(3))?;
-        map.serialize_entry("id", &ByteBuf::from(self.id.clone()))?;
-        map.serialize_entry("type", "public-key")?;
-        // map.serialize_entry("transports", &self.transports)?;
-        map.end()
+        serialize_map!(
+            serializer,
+            "id" => Bytes::new(&self.id),
+            "type" => "public-key",
+
+            // TODO(MS): Transports is OPTIONAL, but some older tokens don't understand it
+            //           and return a CBOR-Parsing error. It is only a hint for the token,
+            //           so we'll leave it out for the moment
+            // "transports" => &self.transports,
+        )
     }
 }
 
@@ -295,7 +275,7 @@ impl<'de> Deserialize<'de> for PublicKeyCredentialDescriptor {
             }
         }
 
-        deserializer.deserialize_bytes(PublicKeyCredentialDescriptorVisitor)
+        deserializer.deserialize_any(PublicKeyCredentialDescriptorVisitor)
     }
 }
 
@@ -322,19 +302,232 @@ pub enum UserVerificationRequirement {
     Required,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CredentialProtectionPolicy {
+    UserVerificationOptional = 1,
+    UserVerificationOptionalWithCredentialIDList = 2,
+    UserVerificationRequired = 3,
+}
+
+impl Serialize for CredentialProtectionPolicy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(*self as u64)
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialProtectionPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CredentialProtectionPolicyVisitor;
+
+        impl<'de> Visitor<'de> for CredentialProtectionPolicyVisitor {
+            type Value = CredentialProtectionPolicy;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an integer")
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: SerdeError,
+            {
+                match v {
+                    1 => Ok(CredentialProtectionPolicy::UserVerificationOptional),
+                    2 => Ok(
+                        CredentialProtectionPolicy::UserVerificationOptionalWithCredentialIDList,
+                    ),
+                    3 => Ok(CredentialProtectionPolicy::UserVerificationRequired),
+                    _ => Err(SerdeError::invalid_value(
+                        Unexpected::Unsigned(v),
+                        &"valid CredentialProtectionPolicy",
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(CredentialProtectionPolicyVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AuthenticationExtensionsClientInputs {
+    pub app_id: Option<String>,
+    pub cred_props: Option<bool>,
+    pub credential_protection_policy: Option<CredentialProtectionPolicy>,
+    pub enforce_credential_protection_policy: Option<bool>,
+    pub hmac_create_secret: Option<bool>,
+    pub hmac_get_secret: Option<HMACGetSecretInput>,
+    pub min_pin_length: Option<bool>,
+    pub prf: Option<AuthenticationExtensionsPRFInputs>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CredentialProperties {
+    pub rk: bool,
+}
+
+/// Salt inputs for the `hmac-secret` extension.
+/// https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#dictdef-hmacgetsecretinput
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HMACGetSecretInput {
+    pub salt1: [u8; 32],
+    pub salt2: Option<[u8; 32]>,
+}
+
+/// Decrypted HMAC outputs from the `hmac-secret` extension.
+/// https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#dictdef-hmacgetsecretoutput
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HMACGetSecretOutput {
+    pub output1: [u8; 32],
+    pub output2: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AuthenticationExtensionsPRFInputs {
+    pub eval: Option<AuthenticationExtensionsPRFValues>,
+    pub eval_by_credential: Option<HashMap<Vec<u8>, AuthenticationExtensionsPRFValues>>,
+}
+
+impl AuthenticationExtensionsPRFInputs {
+    /// Select an `eval` or `evalByCredential` entry and calculate hmac-secret salt inputs from those inputs.
+    ///
+    /// Returns [None] if the `eval` input was not given and no credential in `allow_credentials` matched any `evalByCredential` entry.
+    /// Otherwise returns the initialized [HmacSecretExtension] and, if an `evalByCredential` entry was used to compute the salt inputs,
+    /// the [PublicKeyCredentialDescriptor] matching that `evalByCredential` entry.
+    /// If present, `allowCredentials` SHOULD be set to contain only that [PublicKeyCredentialDescriptor] value.
+    pub fn calculate<'allow_cred>(
+        &self,
+        secret: &SharedSecret,
+        allow_credentials: &'allow_cred [PublicKeyCredentialDescriptor],
+        puat: Option<&PinUvAuthToken>,
+    ) -> Result<
+        Option<(
+            HmacSecretExtension,
+            Option<&'allow_cred PublicKeyCredentialDescriptor>,
+        )>,
+        CryptoError,
+    > {
+        if let Some((selected_credential, ev)) = self.select_eval(allow_credentials) {
+            let mut hmac_secret = HmacSecretExtension::new(
+                Self::eval_to_salt(&ev.first).to_vec(),
+                ev.second
+                    .as_ref()
+                    .map(|second| Self::eval_to_salt(second).to_vec()),
+            );
+            hmac_secret.calculate(secret, puat)?;
+            Ok(Some((hmac_secret, selected_credential)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Select an `evalByCredential` entry matching any element of `allow_credentials`,
+    /// or otherwise fall back to `eval`, if present, if no match is found.
+    fn select_eval<'allow_cred>(
+        &self,
+        allow_credentials: &'allow_cred [PublicKeyCredentialDescriptor],
+    ) -> Option<(
+        Option<&'allow_cred PublicKeyCredentialDescriptor>,
+        &AuthenticationExtensionsPRFValues,
+    )> {
+        self.select_credential(allow_credentials)
+            .map(|(cred, ev)| (Some(cred), ev))
+            .or(self.eval.as_ref().map(|eval| (None, eval)))
+    }
+
+    /// Select an `evalByCredential` entry matching any element of `allow_credentials`.
+    fn select_credential<'allow_cred>(
+        &self,
+        allow_credentials: &'allow_cred [PublicKeyCredentialDescriptor],
+    ) -> Option<(
+        &'allow_cred PublicKeyCredentialDescriptor,
+        &AuthenticationExtensionsPRFValues,
+    )> {
+        self.eval_by_credential
+            .as_ref()
+            .and_then(|eval_by_credential| {
+                allow_credentials
+                    .iter()
+                    .find_map(|pkcd| eval_by_credential.get(&pkcd.id).map(|eval| (pkcd, eval)))
+            })
+    }
+
+    /// Convert a PRF eval input to an hmac-secret salt input.
+    fn eval_to_salt(eval: &[u8]) -> [u8; 32] {
+        Sha256::new_with_prefix(b"WebAuthn PRF")
+            .chain_update([0x00].iter())
+            .chain_update(eval.iter())
+            .finalize()
+            .into()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthenticationExtensionsPRFValues {
+    pub first: Vec<u8>,
+    pub second: Option<Vec<u8>>,
+}
+
+impl From<HMACGetSecretOutput> for AuthenticationExtensionsPRFValues {
+    fn from(hmac_output: HMACGetSecretOutput) -> Self {
+        Self {
+            first: hmac_output.output1.to_vec(),
+            second: hmac_output.output2.map(|o2| o2.to_vec()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthenticationExtensionsPRFOutputs {
+    pub enabled: Option<bool>,
+    pub results: Option<AuthenticationExtensionsPRFValues>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthenticationExtensionsClientOutputs {
+    pub app_id: Option<bool>,
+    pub cred_props: Option<CredentialProperties>,
+    pub hmac_create_secret: Option<bool>,
+    pub hmac_get_secret: Option<HMACGetSecretOutput>,
+    pub prf: Option<AuthenticationExtensionsPRFOutputs>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthenticatorAttachment {
+    CrossPlatform,
+    Platform,
+    Unknown,
+}
+
 #[cfg(test)]
 mod test {
     use super::{
-        COSEAlgorithm, PublicKeyCredentialDescriptor, PublicKeyCredentialParameters, RelyingParty,
-        Transport, User,
+        COSEAlgorithm, PublicKeyCredentialDescriptor, PublicKeyCredentialParameters,
+        PublicKeyCredentialUserEntity, RelyingParty, Transport,
     };
+    use serde_cbor::from_slice;
 
+    fn create_user() -> PublicKeyCredentialUserEntity {
+        PublicKeyCredentialUserEntity {
+            id: vec![
+                0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30,
+                0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82,
+                0x01, 0x93, 0x30, 0x82,
+            ],
+            name: Some(String::from("johnpsmith@example.com")),
+            display_name: Some(String::from("John P. Smith")),
+        }
+    }
     #[test]
     fn serialize_rp() {
         let rp = RelyingParty {
             id: String::from("Acme"),
             name: None,
-            icon: None,
         };
 
         let payload = ser::to_vec(&rp).unwrap();
@@ -351,24 +544,56 @@ mod test {
     }
 
     #[test]
+    fn test_deserialize_user() {
+        // This includes an obsolete "icon" field to test that deserialization
+        // ignores it.
+        let input = vec![
+            0xa4, // map(4)
+            0x62, // text(2)
+            0x69, 0x64, // "id"
+            0x58, 0x20, // bytes(32)
+            0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, // userid
+            0x02, 0x01, 0x02, 0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, // ...
+            0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82, 0x01, 0x93, // ...
+            0x30, 0x82, // ...
+            0x64, // text(4)
+            0x69, 0x63, 0x6f, 0x6e, // "icon"
+            0x78, 0x2b, // text(43)
+            0x68, 0x74, 0x74, 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x70,
+            0x69, // "https://pics.example.com/00/p/aBjjjpqPb.png"
+            0x63, 0x73, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, // ...
+            0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x30, 0x30, 0x2f, 0x70, 0x2f, // ...
+            0x61, 0x42, 0x6a, 0x6a, 0x6a, 0x70, 0x71, 0x50, 0x62, 0x2e, // ...
+            0x70, 0x6e, 0x67, // ...
+            0x64, // text(4)
+            0x6e, 0x61, 0x6d, 0x65, // "name"
+            0x76, // text(22)
+            0x6a, 0x6f, 0x68, 0x6e, 0x70, 0x73, 0x6d, 0x69, 0x74,
+            0x68, // "johnpsmith@example.com"
+            0x40, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, // ...
+            0x6f, 0x6d, // ...
+            0x6b, // text(11)
+            0x64, 0x69, 0x73, 0x70, 0x6c, 0x61, 0x79, 0x4e, 0x61, 0x6d, // "displayName"
+            0x65, // ...
+            0x6d, // text(13)
+            0x4a, 0x6f, 0x68, 0x6e, 0x20, 0x50, 0x2e, 0x20, 0x53, 0x6d, // "John P. Smith"
+            0x69, 0x74, 0x68, // ...
+        ];
+        let expected = create_user();
+        let actual: PublicKeyCredentialUserEntity = from_slice(&input).unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
     fn serialize_user() {
-        let user = User {
-            id: vec![
-                0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30,
-                0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82,
-                0x01, 0x93, 0x30, 0x82,
-            ],
-            icon: Some(String::from("https://pics.example.com/00/p/aBjjjpqPb.png")),
-            name: Some(String::from("johnpsmith@example.com")),
-            display_name: Some(String::from("John P. Smith")),
-        };
+        let user = create_user();
 
         let payload = ser::to_vec(&user).unwrap();
         println!("payload = {payload:?}");
         assert_eq!(
             payload,
             vec![
-                0xa4, // map(4)
+                0xa3, // map(3)
                 0x62, // text(2)
                 0x69, 0x64, // "id"
                 0x58, 0x20, // bytes(32)
@@ -376,15 +601,6 @@ mod test {
                 0x02, 0x01, 0x02, 0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, // ...
                 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82, 0x01, 0x93, // ...
                 0x30, 0x82, // ...
-                0x64, // text(4)
-                0x69, 0x63, 0x6f, 0x6e, // "icon"
-                0x78, 0x2b, // text(43)
-                0x68, 0x74, 0x74, 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x70,
-                0x69, // "https://pics.example.com/00/p/aBjjjpqPb.png"
-                0x63, 0x73, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, // ...
-                0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x30, 0x30, 0x2f, 0x70, 0x2f, // ...
-                0x61, 0x42, 0x6a, 0x6a, 0x6a, 0x70, 0x71, 0x50, 0x62, 0x2e, // ...
-                0x70, 0x6e, 0x67, // ...
                 0x64, // text(4)
                 0x6e, 0x61, 0x6d, 0x65, // "name"
                 0x76, // text(22)
@@ -403,14 +619,13 @@ mod test {
     }
 
     #[test]
-    fn serialize_user_noicon_nodisplayname() {
-        let user = User {
+    fn serialize_user_nodisplayname() {
+        let user = PublicKeyCredentialUserEntity {
             id: vec![
                 0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30,
                 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82,
                 0x01, 0x93, 0x30, 0x82,
             ],
-            icon: None,
             name: Some(String::from("johnpsmith@example.com")),
             display_name: None,
         };

@@ -13,25 +13,25 @@ const {
 const {
   LongStringActor,
 } = require("resource://devtools/server/actors/string.js");
-// Use loadInDevToolsLoader: false for these extension modules, because these
+// Use global: "shared" for these extension modules, because these
 // are singletons with shared state, and we must not create a new instance if a
 // dedicated loader was used to load this module.
 loader.lazyGetter(this, "ExtensionParent", () => {
   return ChromeUtils.importESModule(
     "resource://gre/modules/ExtensionParent.sys.mjs",
-    { loadInDevToolsLoader: false }
+    { global: "shared" }
   ).ExtensionParent;
 });
 loader.lazyGetter(this, "ExtensionProcessScript", () => {
   return ChromeUtils.importESModule(
     "resource://gre/modules/ExtensionProcessScript.sys.mjs",
-    { loadInDevToolsLoader: false }
+    { global: "shared" }
   ).ExtensionProcessScript;
 });
 loader.lazyGetter(this, "ExtensionStorageIDB", () => {
   return ChromeUtils.importESModule(
     "resource://gre/modules/ExtensionStorageIDB.sys.mjs",
-    { loadInDevToolsLoader: false }
+    { global: "shared" }
   ).ExtensionStorageIDB;
 });
 
@@ -161,15 +161,6 @@ class ExtensionStorageActor extends BaseStorageActor {
 
     for (const [key, value] of Object.entries(data)) {
       storeMap.set(key, value);
-    }
-
-    if (this.storageActor.parentActor.fallbackWindow) {
-      // Show the storage actor in the add-on storage inspector even when there
-      // is no extension page currently open
-      // This strategy may need to change depending on the outcome of Bug 1597900
-      const storageData = {};
-      storageData[host] = this.getNamesForHost(host);
-      this.storageActor.update("added", this.typeName, storageData);
     }
   }
   /**
@@ -310,7 +301,7 @@ class ExtensionStorageActor extends BaseStorageActor {
     });
   }
 
-  async editItem({ host, field, items, oldValue }) {
+  async editItem({ host, items }) {
     const db = this.dbConnectionForHost.get(host);
     if (!db) {
       return;

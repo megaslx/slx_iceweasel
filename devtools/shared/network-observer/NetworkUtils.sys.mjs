@@ -4,10 +4,14 @@
 
 const lazy = {};
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  NetworkHelper:
-    "resource://devtools/shared/network-observer/NetworkHelper.sys.mjs",
-});
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    NetworkHelper:
+      "resource://devtools/shared/network-observer/NetworkHelper.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 ChromeUtils.defineLazyGetter(lazy, "tpFlagsMask", () => {
   const trackingProtectionLevel2Enabled = Services.prefs
@@ -69,27 +73,33 @@ function stringToCauseType(value) {
 }
 
 function isChannelFromSystemPrincipal(channel) {
-  let principal = null;
-  let browsingContext = channel.loadInfo.browsingContext;
-  if (!browsingContext) {
-    const topFrame = lazy.NetworkHelper.getTopFrameForRequest(channel);
-    if (topFrame) {
-      browsingContext = topFrame.browsingContext;
-    } else {
-      // Fallback to the triggering principal when browsingContext and topFrame is null
-      // e.g some chrome requests
-      principal = channel.loadInfo.triggeringPrincipal;
-    }
+  let principal;
+
+  if (channel.isDocument) {
+    // The loadingPrincipal is the principal where the request will be used.
+    principal = channel.loadInfo.loadingPrincipal;
+  } else {
+    // The triggeringPrincipal is the principal of the resource which triggered
+    // the request. Except for document loads, this is normally the best way
+    // to know if a request is done on behalf of a chrome resource.
+    // For instance if a chrome stylesheet loads a resource which is used in a
+    // content page, the loadingPrincipal will be a content principal, but the
+    // triggeringPrincipal will be the system principal.
+    principal = channel.loadInfo.triggeringPrincipal;
   }
 
-  // When in the parent process, we can get the documentPrincipal from the
-  // WindowGlobal which is available on the BrowsingContext
-  if (!principal) {
-    principal = CanonicalBrowsingContext.isInstance(browsingContext)
-      ? browsingContext.currentWindowGlobal.documentPrincipal
-      : browsingContext.window.document.nodePrincipal;
+  return !!principal?.isSystemPrincipal;
+}
+
+function isChromeFileChannel(channel) {
+  if (!(channel instanceof Ci.nsIFileChannel)) {
+    return false;
   }
-  return principal.isSystemPrincipal;
+
+  return (
+    channel.originalURI.spec.startsWith("chrome://") ||
+    channel.originalURI.spec.startsWith("resource://")
+  );
 }
 
 /**
@@ -99,6 +109,13 @@ function isChannelFromSystemPrincipal(channel) {
  * @returns {number}
  */
 function getChannelBrowsingContextID(channel) {
+  // `frameBrowsingContextID` is non-0 if the channel is loading an iframe.
+  // If available, use it instead of `browsingContextID` which is exceptionally
+  // set to the parent's BrowsingContext id for such channels.
+  if (channel.loadInfo.frameBrowsingContextID) {
+    return channel.loadInfo.frameBrowsingContextID;
+  }
+
   if (channel.loadInfo.browsingContextID) {
     return channel.loadInfo.browsingContextID;
   }
@@ -147,7 +164,8 @@ function isPreloadRequest(channel) {
     type == Ci.nsIContentPolicy.TYPE_INTERNAL_MODULE_PRELOAD ||
     type == Ci.nsIContentPolicy.TYPE_INTERNAL_IMAGE_PRELOAD ||
     type == Ci.nsIContentPolicy.TYPE_INTERNAL_STYLESHEET_PRELOAD ||
-    type == Ci.nsIContentPolicy.TYPE_INTERNAL_FONT_PRELOAD
+    type == Ci.nsIContentPolicy.TYPE_INTERNAL_FONT_PRELOAD ||
+    type == Ci.nsIContentPolicy.TYPE_INTERNAL_JSON_PRELOAD
   );
 }
 
@@ -207,6 +225,10 @@ function getChannelPriority(channel) {
  * @returns {string}
  */
 function getHttpVersion(channel) {
+  if (!(channel instanceof Ci.nsIHttpChannelInternal)) {
+    return null;
+  }
+
   // Determine the HTTP version.
   const httpVersionMaj = {};
   const httpVersionMin = {};
@@ -459,7 +481,7 @@ function fetchResponseHeadersAndCookies(channel) {
  * Check if a given network request should be logged by a network monitor
  * based on the specified filters.
  *
- * @param nsIHttpChannel channel
+ * @param {(nsIHttpChannel|nsIFileChannel)} channel
  *        Request to check.
  * @param filters
  *        NetworkObserver filters to match against. An object with one of the following attributes:
@@ -486,10 +508,17 @@ function matchRequest(channel, filters) {
     // Ignore requests from chrome or add-on code when we don't monitor the whole browser
     if (
       channel.loadInfo?.loadingDocument === null &&
-      (channel.loadInfo.loadingPrincipal ===
-        Services.scriptSecurityManager.getSystemPrincipal() ||
+      (isChannelFromSystemPrincipal(channel) ||
+        isChromeFileChannel(channel) ||
         channel.loadInfo.isInDevToolsContext)
     ) {
+      return false;
+    }
+
+    // When a page fails loading in top level or in iframe, an error page is shown
+    // which will trigger a request to about:neterror (which is translated into a file:// URI request).
+    // Ignore this request in regular toolbox (but not in the browser toolbox).
+    if (channel.loadInfo?.loadErrorPage) {
       return false;
     }
 
@@ -550,8 +579,7 @@ function legacyMatchRequest(channel, filters) {
   // content.
   if (
     channel.loadInfo?.loadingDocument === null &&
-    (channel.loadInfo.loadingPrincipal ===
-      Services.scriptSecurityManager.getSystemPrincipal() ||
+    (isChannelFromSystemPrincipal(channel) ||
       channel.loadInfo.isInDevToolsContext)
   ) {
     return false;
@@ -655,6 +683,11 @@ function getBlockedReason(channel, fromCache = false) {
   return { blockingExtension, blockedReason };
 }
 
+function getCharset(channel) {
+  const win = lazy.NetworkHelper.getWindowForRequest(channel);
+  return win ? win.document.characterSet : null;
+}
+
 export const NetworkUtils = {
   causeTypeToString,
   fetchRequestHeadersAndCookies,
@@ -677,4 +710,5 @@ export const NetworkUtils = {
   matchRequest,
   stringToCauseType,
   getBlockedReason,
+  getCharset,
 };

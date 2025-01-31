@@ -1,16 +1,16 @@
 /**
 * AUTO-GENERATED - DO NOT EDIT. Source: https://github.com/gpuweb/cts
-**/ /// <reference types="@webgpu/types" />
-import { assert } from './util.js';
+**/import { ErrorWithExtra, assert, objectEquals } from './util.js';
+
 /**
  * Finds and returns the `navigator.gpu` object (or equivalent, for non-browser implementations).
  * Throws an exception if not found.
  */
 function defaultGPUProvider() {
   assert(
-  typeof navigator !== 'undefined' && navigator.gpu !== undefined,
-  'No WebGPU implementation found');
-
+    typeof navigator !== 'undefined' && navigator.gpu !== undefined,
+    'No WebGPU implementation found'
+  );
   return navigator.gpu;
 }
 
@@ -35,17 +35,25 @@ let impl = undefined;
 let defaultRequestAdapterOptions;
 
 export function setDefaultRequestAdapterOptions(options) {
+  // It's okay to call this if you don't change the options
+  if (objectEquals(options, defaultRequestAdapterOptions)) {
+    return;
+  }
   if (impl) {
     throw new Error('must call setDefaultRequestAdapterOptions before getGPU');
   }
   defaultRequestAdapterOptions = { ...options };
 }
 
+export function getDefaultRequestAdapterOptions() {
+  return defaultRequestAdapterOptions;
+}
+
 /**
  * Finds and returns the `navigator.gpu` object (or equivalent, for non-browser implementations).
  * Throws an exception if not found.
  */
-export function getGPU() {
+export function getGPU(recorder) {
   if (impl) {
     return impl;
   }
@@ -58,18 +66,19 @@ export function getGPU() {
     impl.requestAdapter = function (
     options)
     {
-      const promise = oldFn.call(this, { ...defaultRequestAdapterOptions, ...(options || {}) });
-      void promise.then(async (adapter) => {
-        if (adapter) {
-          const info = await adapter.requestAdapterInfo();
-
-          console.log(info);
-        }
-      });
+      const promise = oldFn.call(this, { ...defaultRequestAdapterOptions, ...options });
+      if (recorder) {
+        void promise.then((adapter) => {
+          if (adapter) {
+            const adapterInfo = adapter.info;
+            const infoString = `Adapter: ${adapterInfo.vendor} / ${adapterInfo.architecture} / ${adapterInfo.device}`;
+            recorder.debug(new ErrorWithExtra(infoString, () => ({ adapterInfo })));
+          }
+        });
+      }
       return promise;
     };
   }
 
   return impl;
 }
-//# sourceMappingURL=navigator_gpu.js.map

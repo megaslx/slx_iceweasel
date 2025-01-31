@@ -101,7 +101,13 @@ static bool IsX11EGLEnvvarEnabled() {
 
 gfxPlatformGtk::gfxPlatformGtk() {
   if (!gfxPlatform::IsHeadless()) {
-    gtk_init(nullptr, nullptr);
+    if (!gtk_init_check(nullptr, nullptr)) {
+      gfxCriticalNote << "Failed to init Gtk, missing display? DISPLAY="
+                      << getenv("DISPLAY")
+                      << " WAYLAND_DISPLAY=" << getenv("WAYLAND_DISPLAY")
+                      << "\n";
+      abort();
+    }
   }
 
   mIsX11Display = gfxPlatform::IsHeadless() ? false : GdkIsX11Display();
@@ -136,6 +142,14 @@ gfxPlatformGtk::gfxPlatformGtk() {
 gfxPlatformGtk::~gfxPlatformGtk() {
   Factory::ReleaseFTLibrary(gPlatformFTLibrary);
   gPlatformFTLibrary = nullptr;
+}
+
+void gfxPlatformGtk::InitAcceleration() {
+  gfxPlatform::InitAcceleration();
+
+  if (XRE_IsContentProcess()) {
+    ImportCachedContentDeviceData();
+  }
 }
 
 void gfxPlatformGtk::InitX11EGLConfig() {
@@ -187,10 +201,6 @@ void gfxPlatformGtk::InitDmabufConfig() {
   FeatureState& feature = gfxConfig::GetFeature(Feature::DMABUF);
   feature.EnableByDefault();
 
-  if (StaticPrefs::widget_dmabuf_force_enabled_AtStartup()) {
-    feature.UserForceEnable("Force enabled by pref");
-  }
-
   nsCString failureId;
   int32_t status;
   nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
@@ -203,16 +213,28 @@ void gfxPlatformGtk::InitDmabufConfig() {
                     failureId);
   }
 
+  if (StaticPrefs::widget_dmabuf_force_enabled_AtStartup()) {
+    feature.UserForceEnable("Force enabled by pref");
+  } else if (!StaticPrefs::widget_dmabuf_enabled_AtStartup()) {
+    feature.UserDisable("Force disable by pref",
+                        "FEATURE_FAILURE_USER_FORCE_DISABLED"_ns);
+  }
+
   if (!gfxVars::UseEGL()) {
     feature.ForceDisable(FeatureStatus::Unavailable, "Requires EGL",
                          "FEATURE_FAILURE_REQUIRES_EGL"_ns);
   }
 
-  if (feature.IsEnabled()) {
-    nsAutoCString drmRenderDevice;
-    gfxInfo->GetDrmRenderDevice(drmRenderDevice);
-    gfxVars::SetDrmRenderDevice(drmRenderDevice);
+  if (!gfxVars::WebglUseHardware()) {
+    feature.Disable(FeatureStatus::Blocklisted,
+                    "DMABuf disabled with software rendering", failureId);
+  }
 
+  nsAutoCString drmRenderDevice;
+  gfxInfo->GetDrmRenderDevice(drmRenderDevice);
+  gfxVars::SetDrmRenderDevice(drmRenderDevice);
+
+  if (feature.IsEnabled()) {
     if (!GetDMABufDevice()->IsEnabled(failureId)) {
       feature.ForceDisable(FeatureStatus::Failed, "Failed to configure",
                            failureId);
@@ -229,6 +251,10 @@ bool gfxPlatformGtk::InitVAAPIConfig(bool aForceEnabledByUser) {
   }
   feature.EnableByDefault();
 
+  if (aForceEnabledByUser) {
+    feature.UserForceEnable("Force enabled by pref");
+  }
+
   int32_t status = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
   nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
   nsCString failureId;
@@ -242,9 +268,6 @@ bool gfxPlatformGtk::InitVAAPIConfig(bool aForceEnabledByUser) {
   } else if (status != nsIGfxInfo::FEATURE_STATUS_OK) {
     feature.Disable(FeatureStatus::Blocklisted, "Blocklisted by gfxInfo",
                     failureId);
-  }
-  if (aForceEnabledByUser) {
-    feature.UserForceEnable("Force enabled by pref");
   }
   if (!gfxVars::UseEGL()) {
     feature.ForceDisable(FeatureStatus::Unavailable, "Requires EGL",
@@ -456,28 +479,9 @@ int32_t gfxPlatformGtk::GetFontScaleDPI() {
 }
 
 double gfxPlatformGtk::GetFontScaleFactor() {
-  // Integer scale factors work well with GTK window scaling, image scaling, and
-  // pixel alignment, but there is a range where 1 is too small and 2 is too
-  // big.
-  //
-  // An additional step of 1.5 is added because this is common scale on WINNT
-  // and at this ratio the advantages of larger rendering outweigh the
-  // disadvantages from scaling and pixel mis-alignment.
-  //
-  // A similar step for 1.25 is added as well, because this is the scale that
-  // "Large text" settings use in gnome, and it seems worth to allow, especially
-  // on already-hidpi environments.
-  int32_t dpi = GetFontScaleDPI();
-  if (dpi < 120) {
-    return 1.0;
-  }
-  if (dpi < 132) {
-    return 1.25;
-  }
-  if (dpi < 168) {
-    return 1.5;
-  }
-  return round(dpi / 96.0);
+  // Modern GTK works fine with non-integer scaling, and scaling factors like
+  // 1.25 are common as "Large text" in gnome as well, so no need to round.
+  return GetFontScaleDPI() / 96.0;
 }
 
 gfxImageFormat gfxPlatformGtk::GetOffscreenFormat() {
@@ -542,23 +546,16 @@ nsTArray<uint8_t> gfxPlatformGtk::GetPlatformCMSOutputProfileData() {
   }
 
   if (XRE_IsContentProcess()) {
-    MOZ_ASSERT(NS_IsMainThread());
-    // This will be passed in during InitChild so we can avoid sending a
-    // sync message back to the parent during init.
-    const mozilla::gfx::ContentDeviceData* contentDeviceData =
-        GetInitContentDeviceData();
-    if (contentDeviceData) {
-      // On Windows, we assert that the profile isn't empty, but on
-      // Linux it can legitimately be empty if the display isn't
-      // calibrated.  Thus, no assertion here.
-      return contentDeviceData->cmsOutputProfileData().Clone();
+    auto& cmsOutputProfileData = GetCMSOutputProfileData();
+    // We should have set our profile data when we received our initial
+    // ContentDeviceData.
+    MOZ_ASSERT(cmsOutputProfileData.isSome(),
+               "Should have created output profile data when we received "
+               "initial content device data.");
+    if (cmsOutputProfileData.isSome()) {
+      return cmsOutputProfileData.ref().Clone();
     }
-
-    // Otherwise we need to ask the parent for the updated color profile
-    mozilla::dom::ContentChild* cc = mozilla::dom::ContentChild::GetSingleton();
-    nsTArray<uint8_t> result;
-    Unused << cc->SendGetOutputColorProfileData(&result);
-    return result;
+    return nsTArray<uint8_t>();
   }
 
   if (!mIsX11Display) {
@@ -720,12 +717,11 @@ class GtkVsyncSource final : public VsyncSource {
     Window root = DefaultRootWindow(mXDisplay);
     int screen = DefaultScreen(mXDisplay);
 
-    ScopedXFree<GLXFBConfig> cfgs;
     GLXFBConfig config;
     int visid;
     bool forWebRender = false;
     if (!gl::GLContextGLX::FindFBConfigForWindow(
-            mXDisplay, screen, root, &cfgs, &config, &visid, forWebRender)) {
+            mXDisplay, screen, root, &config, &visid, forWebRender)) {
       lock.NotifyAll();
       return;
     }
@@ -1015,3 +1011,9 @@ void gfxPlatformGtk::BuildContentDeviceData(ContentDeviceData* aOut) {
 
   aOut->cmsOutputProfileData() = GetPlatformCMSOutputProfileData();
 }
+
+// Wrapper for third party code (WebRTC for instance) where
+// gfxVars can't be included.
+namespace mozilla::gfx {
+bool IsDMABufEnabled() { return gfxVars::UseDMABuf(); }
+}  // namespace mozilla::gfx

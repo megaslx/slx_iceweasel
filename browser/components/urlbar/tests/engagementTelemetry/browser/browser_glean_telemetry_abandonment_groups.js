@@ -8,6 +8,9 @@
 // - results
 // - n_results
 
+// This test has many subtests and can time out in verify mode.
+requestLongerTimeout(5);
+
 add_setup(async function () {
   await initGroupTest();
 });
@@ -50,6 +53,20 @@ add_task(async function search_history() {
   });
 });
 
+add_task(async function recent_search() {
+  await doRecentSearchTest({
+    trigger: () => doBlur(),
+    assert: () =>
+      assertAbandonmentTelemetry([
+        {
+          groups: "recent_search",
+          results: "recent_search",
+          n_results: 1,
+        },
+      ]),
+  });
+});
+
 add_task(async function search_suggest() {
   await doSearchSuggestTest({
     trigger: () => doBlur(),
@@ -84,7 +101,7 @@ add_task(async function top_pick() {
         {
           groups: "heuristic,top_pick,search_suggest,search_suggest",
           results:
-            "search_engine,rs_adm_sponsored,search_suggest,search_suggest",
+            "search_engine,merino_top_picks,search_suggest,search_suggest",
           n_results: 4,
         },
       ]),
@@ -97,9 +114,23 @@ add_task(async function top_site() {
     assert: () =>
       assertAbandonmentTelemetry([
         {
-          groups: "top_site,suggested_index",
-          results: "top_site,action",
-          n_results: 2,
+          groups: "top_site",
+          results: "top_site",
+          n_results: 1,
+        },
+      ]),
+  });
+});
+
+add_task(async function clipboard() {
+  await doClipboardTest({
+    trigger: () => doBlur(),
+    assert: () =>
+      assertAbandonmentTelemetry([
+        {
+          groups: "general",
+          results: "clipboard",
+          n_results: 1,
         },
       ]),
   });
@@ -159,6 +190,24 @@ add_task(async function general() {
   });
 });
 
+add_task(async function restrict_keywords() {
+  let telemetry = {
+    groups:
+      "general,general,general,general,general,general,restrict_keyword," +
+      "restrict_keyword,restrict_keyword,restrict_keyword",
+    results:
+      "search_engine,search_engine,search_engine,search_engine,search_engine," +
+      "search_engine,restrict_keyword_bookmarks,restrict_keyword_tabs," +
+      "restrict_keyword_history,restrict_keyword_actions",
+    n_results: 10,
+  };
+  await doRestrictKeywordsTest({
+    trigger: () => doBlur(),
+    assert: () =>
+      assertAbandonmentTelemetry([telemetry, telemetry, telemetry, telemetry]),
+  });
+});
+
 add_task(async function suggest() {
   await doSuggestTest({
     trigger: () => doBlur(),
@@ -166,7 +215,7 @@ add_task(async function suggest() {
       assertAbandonmentTelemetry([
         {
           groups: "heuristic,suggest",
-          results: "search_engine,rs_adm_nonsponsored",
+          results: "search_engine,rust_adm_nonsponsored",
           n_results: 2,
         },
       ]),

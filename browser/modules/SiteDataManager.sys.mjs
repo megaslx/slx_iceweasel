@@ -16,6 +16,10 @@ ChromeUtils.defineLazyGetter(lazy, "gBrandBundle", function () {
   );
 });
 
+ChromeUtils.defineESModuleGetters(lazy, {
+  Sanitizer: "resource:///modules/Sanitizer.sys.mjs",
+});
+
 export var SiteDataManager = {
   // A Map of sites and their disk usage according to Quota Manager.
   // Key is base domain (group sites based on base domain across scheme, port,
@@ -104,6 +108,37 @@ export var SiteDataManager = {
       };
       this._sites.set(baseDomainOrHost, site);
     }
+    return site;
+  },
+
+  /**
+   * Insert site with specific params into the SiteDataManager
+   * Currently used for testing purposes
+   *
+   * @param {String} baseDomainOrHost
+   * @param {Object} Site info params
+   * @returns {Object} site object
+   */
+  _testInsertSite(
+    baseDomainOrHost,
+    {
+      cookies = [],
+      persisted = false,
+      quotaUsage = 0,
+      lastAccessed = 0,
+      principals = [],
+    }
+  ) {
+    let site = {
+      baseDomainOrHost,
+      cookies,
+      persisted,
+      quotaUsage,
+      lastAccessed,
+      principals,
+    };
+    this._sites.set(baseDomainOrHost, site);
+
     return site;
   },
 
@@ -329,6 +364,12 @@ export var SiteDataManager = {
     return false;
   },
 
+  /**
+   * Fetches total quota usage
+   * This method assumes that siteDataManager.updateSites has been called externally
+   *
+   * @returns total quota usage
+   */
   getTotalUsage() {
     return this._getQuotaUsagePromise.then(() => {
       let usage = 0;
@@ -337,6 +378,41 @@ export var SiteDataManager = {
       }
       return usage;
     });
+  },
+
+  /**
+   *
+   * Fetch quota usage for all time ranges to display in the clear data dialog.
+   * This method assumes that SiteDataManager.updateSites has been called externally
+   *
+   * @param {string[]} timeSpanArr - Array of timespan options to get quota usage
+   *              from Sanitizer, e.g. ["TIMESPAN_HOUR", "TIMESPAN_2HOURS"]
+   * @returns {Object} bytes used for each timespan
+   */
+  async getQuotaUsageForTimeRanges(timeSpanArr) {
+    let usage = {};
+    await this._getQuotaUsagePromise;
+
+    for (let timespan of timeSpanArr) {
+      usage[timespan] = 0;
+    }
+
+    let timeNow = Date.now();
+    for (let site of this._sites.values()) {
+      let lastAccessed = new Date(site.lastAccessed / 1000);
+      for (let timeSpan of timeSpanArr) {
+        let compareTime = new Date(
+          timeNow - lazy.Sanitizer.timeSpanMsMap[timeSpan]
+        );
+
+        if (timeSpan === "TIMESPAN_EVERYTHING") {
+          usage[timeSpan] += site.quotaUsage;
+        } else if (lastAccessed >= compareTime) {
+          usage[timeSpan] += site.quotaUsage;
+        }
+      }
+    }
+    return usage;
   },
 
   /**
@@ -416,40 +492,6 @@ export var SiteDataManager = {
     }
   },
 
-  _removeQuotaUsage(site) {
-    let promises = [];
-    let removals = new Set();
-    for (let principal of site.principals) {
-      let { originNoSuffix } = principal;
-      if (removals.has(originNoSuffix)) {
-        // In case of encountering
-        //   - https://www.foo.com
-        //   - https://www.foo.com^userContextId=2
-        // below we have already removed across OAs so skip the same origin without suffix
-        continue;
-      }
-      removals.add(originNoSuffix);
-      promises.push(
-        new Promise(resolve => {
-          // We are clearing *All* across OAs so need to ensure a principal without suffix here,
-          // or the call of `clearStoragesForPrincipal` would fail.
-          principal =
-            Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-              originNoSuffix
-            );
-          let request = this._qms.clearStoragesForPrincipal(
-            principal,
-            null,
-            null,
-            true
-          );
-          request.callback = resolve;
-        })
-      );
-    }
-    return Promise.all(promises);
-  },
-
   _removeCookies(site) {
     for (let cookie of site.cookies) {
       Services.cookies.remove(
@@ -462,27 +504,10 @@ export var SiteDataManager = {
     site.cookies = [];
   },
 
-  // Returns a list of permissions from the permission manager that
-  // we consider part of "site data and cookies".
-  _getDeletablePermissions() {
-    let perms = [];
-
-    for (let permission of Services.perms.all) {
-      if (
-        permission.type == "persistent-storage" ||
-        permission.type == "storage-access"
-      ) {
-        perms.push(permission);
-      }
-    }
-
-    return perms;
-  },
-
   /**
-   * Removes all site data for the specified list of domains and hosts.
-   * This includes site data of subdomains belonging to the domains or hosts and
-   * partitioned storage. Data is cleared per storage jar, which means if we
+   * Removes all site data and caches for the specified list of domains and
+   * hosts. This includes data of subdomains belonging to the domains or hosts
+   * and partitioned storage. Data is cleared per storage jar, which means if we
    * clear "example.com", we will also clear third parties embedded on
    * "example.com". Additionally we will clear all data of "example.com" (as a
    * third party) from other jars.
@@ -500,54 +525,33 @@ export var SiteDataManager = {
     if (!Array.isArray(domainsOrHosts)) {
       domainsOrHosts = [domainsOrHosts];
     }
-    let perms = this._getDeletablePermissions();
+
     let promises = [];
     for (let domainOrHost of domainsOrHosts) {
-      const kFlags =
-        Ci.nsIClearDataService.CLEAR_COOKIES |
-        Ci.nsIClearDataService.CLEAR_DOM_STORAGES |
-        Ci.nsIClearDataService.CLEAR_EME |
-        Ci.nsIClearDataService.CLEAR_ALL_CACHES;
       promises.push(
         new Promise(function (resolve) {
           const { clearData } = Services;
           if (domainOrHost) {
-            // First try to clear by base domain for aDomainOrHost. If we can't
-            // get a base domain, fall back to clearing by just host.
-            try {
-              clearData.deleteDataFromBaseDomain(
-                domainOrHost,
-                true,
-                kFlags,
-                resolve
-              );
-            } catch (e) {
-              if (
-                e.result != Cr.NS_ERROR_HOST_IS_IP_ADDRESS &&
-                e.result != Cr.NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS
-              ) {
-                throw e;
-              }
-              clearData.deleteDataFromHost(domainOrHost, true, kFlags, resolve);
-            }
+            let schemelessSite =
+              Services.eTLD.getSchemelessSiteFromHost(domainOrHost);
+            clearData.deleteDataFromSite(
+              schemelessSite,
+              {},
+              true,
+              Ci.nsIClearDataService.CLEAR_COOKIES_AND_SITE_DATA |
+                Ci.nsIClearDataService.CLEAR_ALL_CACHES,
+              resolve
+            );
           } else {
-            clearData.deleteDataFromLocalFiles(true, kFlags, resolve);
+            clearData.deleteDataFromLocalFiles(
+              true,
+              Ci.nsIClearDataService.CLEAR_COOKIES_AND_SITE_DATA |
+                Ci.nsIClearDataService.CLEAR_ALL_CACHES,
+              resolve
+            );
           }
         })
       );
-
-      for (let perm of perms) {
-        // Specialcase local file permissions.
-        if (!domainOrHost) {
-          if (perm.principal.schemeIs("file")) {
-            Services.perms.removePermission(perm);
-          }
-        } else if (
-          Services.eTLD.hasRootDomain(perm.principal.host, domainOrHost)
-        ) {
-          Services.perms.removePermission(perm);
-        }
-      }
     }
 
     await Promise.all(promises);
@@ -642,17 +646,10 @@ export var SiteDataManager = {
   async removeSiteData() {
     await new Promise(function (resolve) {
       Services.clearData.deleteData(
-        Ci.nsIClearDataService.CLEAR_COOKIES |
-          Ci.nsIClearDataService.CLEAR_DOM_STORAGES |
-          Ci.nsIClearDataService.CLEAR_HSTS |
-          Ci.nsIClearDataService.CLEAR_EME,
+        Ci.nsIClearDataService.CLEAR_COOKIES_AND_SITE_DATA,
         resolve
       );
     });
-
-    for (let permission of this._getDeletablePermissions()) {
-      Services.perms.removePermission(permission);
-    }
 
     return this.updateSites();
   },

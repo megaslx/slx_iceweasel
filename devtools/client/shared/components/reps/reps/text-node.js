@@ -10,21 +10,22 @@ define(function (require, exports, module) {
   const {
     button,
     span,
-  } = require("devtools/client/shared/vendor/react-dom-factories");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
   // Reps
   const {
+    appendRTLClassNameIfNeeded,
     cropString,
     wrapRender,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
   const {
     rep: StringRep,
     isLongString,
-  } = require("devtools/client/shared/components/reps/reps/string");
+  } = require("resource://devtools/client/shared/components/reps/reps/string.js");
 
   /**
    * Renders DOM #text node.
@@ -46,7 +47,7 @@ define(function (require, exports, module) {
     const config = getElementConfig({ ...props, isInTree });
     const inspectIcon = getInspectIcon({ ...props, isInTree });
 
-    if (mode === MODE.TINY) {
+    if (mode === MODE.TINY || mode === MODE.HEADER) {
       return span(config, getTitle(grip), inspectIcon);
     }
 
@@ -71,13 +72,17 @@ define(function (require, exports, module) {
       shouldRenderTooltip,
     } = opts;
 
+    const text = getTextContent(object);
     const config = {
       "data-link-actor-id": object.actor,
       "data-link-content-dom-reference": JSON.stringify(
         object.contentDomReference
       ),
-      className: "objectBox objectBox-textNode",
-      title: shouldRenderTooltip ? `#text "${getTextContent(object)}"` : null,
+      className: appendRTLClassNameIfNeeded(
+        "objectBox objectBox-textNode",
+        text
+      ),
+      title: shouldRenderTooltip ? `#text "${text}"` : null,
     };
 
     if (isInTree) {
@@ -118,13 +123,13 @@ define(function (require, exports, module) {
     });
   }
 
-  function getTitle(grip) {
+  function getTitle() {
     const title = "#text";
     return span({}, title);
   }
 
   // Registration
-  function supportsObject(grip, noGrip = false) {
+  function supportsObject(grip) {
     return grip?.preview && grip?.class == "Text";
   }
 

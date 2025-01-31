@@ -9,19 +9,18 @@
 #include "MediaEventSource.h"
 #include "MediaTimer.h"
 #include "MediaTrackGraph.h"
-#include "MediaTrackGraphImpl.h"
 #include "MediaSegment.h"
+#include "TimeUnits.h"
 #include "mozilla/SPSCQueue.h"
 #include "mozilla/StateMirroring.h"
+#include "mozilla/TimeStamp.h"
 #include "nsISerialEventTarget.h"
-
-namespace soundtouch {
-class MOZ_EXPORT SoundTouch;
-}
 
 namespace mozilla {
 
 class AudioData;
+class AudioInfo;
+class RLBoxSoundTouch;
 
 /**
  * AudioDecoderInputTrack is used as a source for the audio decoder data, which
@@ -72,10 +71,10 @@ class AudioDecoderInputTrack final : public ProcessedMediaTrack {
     };
     struct EOS {};
 
-    SPSCData() : mData(Empty()){};
-    explicit SPSCData(ClearFutureData&& aArg) : mData(std::move(aArg)){};
-    explicit SPSCData(DecodedData&& aArg) : mData(std::move(aArg)){};
-    explicit SPSCData(EOS&& aArg) : mData(std::move(aArg)){};
+    SPSCData() : mData(Empty()) {};
+    explicit SPSCData(ClearFutureData&& aArg) : mData(std::move(aArg)) {};
+    explicit SPSCData(DecodedData&& aArg) : mData(std::move(aArg)) {};
+    explicit SPSCData(EOS&& aArg) : mData(std::move(aArg)) {};
 
     bool HasData() const { return !mData.is<Empty>(); }
     bool IsClearFutureData() const { return mData.is<ClearFutureData>(); }
@@ -174,12 +173,6 @@ class AudioDecoderInputTrack final : public ProcessedMediaTrack {
   inline void AssertOnDecoderThread() const {
     MOZ_ASSERT(mDecoderThread->IsOnCurrentThread());
   }
-  inline void AssertOnGraphThread() const {
-    MOZ_ASSERT(GraphImpl()->OnGraphThread());
-  }
-  inline void AssertOnGraphThreadOrNotRunning() const {
-    MOZ_ASSERT(GraphImpl()->OnGraphThreadOrNotRunning());
-  }
 
   const RefPtr<nsISerialEventTarget> mDecoderThread;
 
@@ -193,7 +186,7 @@ class AudioDecoderInputTrack final : public ProcessedMediaTrack {
   uint32_t mResamplerChannelCount;
   const uint32_t mInitialInputChannels;
   TrackRate mInputSampleRate;
-  DelayedScheduler mDelayedScheduler;
+  DelayedScheduler<TimeStamp> mDelayedScheduler;
   bool mShutdownSPSCQueue = false;
 
   // These attributes are ONLY used in the graph thread.
@@ -231,7 +224,7 @@ class AudioDecoderInputTrack final : public ProcessedMediaTrack {
   bool mSentAllData = false;
 
   // This is used to adjust the playback rate and pitch.
-  soundtouch::SoundTouch* mTimeStretcher = nullptr;
+  RLBoxSoundTouch* mTimeStretcher = nullptr;
 
   // Buffers that would be used for the time stretching.
   AutoTArray<AudioDataValue, 2> mInterleavedBuffer;

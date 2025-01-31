@@ -60,6 +60,12 @@ class BackgroundParent final {
       mozilla::dom::ThreadsafeContentParentHandle;
 
  public:
+  // Get the nsISerialEventTarget used to handle messages from BackgroundParent
+  // actors, if it is running.
+  //
+  // This function may only be called on the background or main thread.
+  static already_AddRefed<nsISerialEventTarget> GetBackgroundThread();
+
   // This function allows the caller to determine if the given parent actor
   // corresponds to a child actor from another process or a child actor from a
   // different thread in the same process.
@@ -76,6 +82,9 @@ class BackgroundParent final {
       PBackgroundParent* aBackgroundActor);
 
   static uint64_t GetChildID(PBackgroundParent* aBackgroundActor);
+
+  static void KillHardAsync(PBackgroundParent* aBackgroundActor,
+                            const nsACString& aReason);
 
  private:
   // Only called by ContentParent for cross-process actors.
@@ -102,10 +111,6 @@ inline void AssertIsOnBackgroundThread() {}
 #endif  // DEBUG
 
 inline void AssertIsInMainProcess() { MOZ_ASSERT(XRE_IsParentProcess()); }
-
-inline void AssertIsInMainOrSocketProcess() {
-  MOZ_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess());
-}
 
 }  // namespace ipc
 }  // namespace mozilla

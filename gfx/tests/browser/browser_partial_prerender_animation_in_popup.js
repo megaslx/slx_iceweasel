@@ -12,6 +12,7 @@ Services.scriptloader.loadSubScript(
 add_task(async () => {
   await SpecialPowers.pushPrefEnv({
     set: [
+      ["apz.popups.enabled", false], // bug 1934722
       ["layout.animation.prerender.partial", true],
       ["layout.animation.prerender.viewport-ratio-limit", 1.125],
     ],
@@ -74,7 +75,7 @@ add_task(async () => {
   );
 
   // Collect restyling markers in 5 frames.
-  const markers = await observeStylingInTargetWindow(panel.ownerGlobal, 5);
+  const restyleCount = await observeStylingInTargetWindow(panel.ownerGlobal, 5);
 
   // On non WebRender we observe two restyling markers because we get the second
   // jank report from the compositor thread before a new pre-rendered result,
@@ -85,6 +86,6 @@ add_task(async () => {
   // KeyframeEffect::OverflowRegionRefreshInterval (200ms) on very slow
   // platforms (e.g. TSAN builds), if it happens we should allow the additional
   // restyling here.
-  Assert.greaterOrEqual(markers.length, 1);
-  Assert.lessOrEqual(markers.length, 2);
+  Assert.greaterOrEqual(restyleCount, 1);
+  Assert.lessOrEqual(restyleCount, 2);
 });

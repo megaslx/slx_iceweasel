@@ -57,6 +57,7 @@ static const ssl3ExtensionHandler clientHelloHandlers[] = {
     { ssl_tls13_cookie_xtn, &tls13_ServerHandleCookieXtn },
     { ssl_tls13_post_handshake_auth_xtn, &tls13_ServerHandlePostHandshakeAuthXtn },
     { ssl_record_size_limit_xtn, &ssl_HandleRecordSizeLimitXtn },
+    { ssl_certificate_compression_xtn, &ssl3_HandleCertificateCompressionXtn },
     { 0, NULL }
 };
 
@@ -110,6 +111,7 @@ static const ssl3ExtensionHandler certificateRequestHandlers[] = {
     { ssl_signature_algorithms_xtn, &ssl3_HandleSigAlgsXtn },
     { ssl_tls13_certificate_authorities_xtn,
       &tls13_ClientHandleCertAuthoritiesXtn },
+    { ssl_certificate_compression_xtn, &ssl3_HandleCertificateCompressionXtn },
     { 0, NULL }
 };
 
@@ -140,15 +142,16 @@ static const sslExtensionBuilder clientHelloSendersTLS[] = {
     { ssl_tls13_key_share_xtn, &tls13_ClientSendKeyShareXtn },
     { ssl_tls13_early_data_xtn, &tls13_ClientSendEarlyDataXtn },
     /* Some servers (e.g. WebSphere Application Server 7.0 and Tomcat) will
-       * time out or terminate the connection if the last extension in the
-       * client hello is empty. They are not intolerant of TLS 1.2, so list
-       * signature_algorithms at the end. See bug 1243641. */
+     * time out or terminate the connection if the last extension in the
+     * client hello is empty. They are not intolerant of TLS 1.2, so list
+     * signature_algorithms at the end. See bug 1243641. */
     { ssl_tls13_supported_versions_xtn, &tls13_ClientSendSupportedVersionsXtn },
     { ssl_signature_algorithms_xtn, &ssl3_SendSigAlgsXtn },
     { ssl_tls13_cookie_xtn, &tls13_ClientSendHrrCookieXtn },
     { ssl_tls13_psk_key_exchange_modes_xtn, &tls13_ClientSendPskModesXtn },
     { ssl_tls13_post_handshake_auth_xtn, &tls13_ClientSendPostHandshakeAuthXtn },
     { ssl_record_size_limit_xtn, &ssl_SendRecordSizeLimitXtn },
+    { ssl_certificate_compression_xtn, &ssl3_SendCertificateCompressionXtn },
     /* TLS 1.3 GREASE extensions - 1 zero byte. */
     { ssl_tls13_grease_xtn, &tls13_SendGreaseXtn },
     /* The pre_shared_key extension MUST be last. */
@@ -166,6 +169,7 @@ static const sslExtensionBuilder tls13_cert_req_senders[] = {
     { ssl_tls13_certificate_authorities_xtn, &tls13_SendCertAuthoritiesXtn },
     /* TLS 1.3 GREASE extension. */
     { ssl_tls13_grease_xtn, &tls13_SendEmptyGreaseXtn },
+    { ssl_certificate_compression_xtn, &ssl3_SendCertificateCompressionXtn },
     { 0, NULL }
 };
 
@@ -203,6 +207,7 @@ static const struct {
     { ssl_tls13_certificate_authorities_xtn, ssl_ext_native },
     { ssl_renegotiation_info_xtn, ssl_ext_native },
     { ssl_tls13_encrypted_client_hello_xtn, ssl_ext_native_only },
+    { ssl_certificate_compression_xtn, ssl_ext_native },
 };
 
 static SSLExtensionSupport
@@ -537,9 +542,9 @@ ssl3_HandleParsedExtensions(sslSocket *ss, SSLHandshakeType message)
                 return SECFailure;
             }
             /* If we offered ECH, we also check whether the extension is compatible with
-            * the Client Hello Inner. We don't yet know whether the server accepted ECH,
-            * so we only store this for now. If we later accept, we check this boolean
-            * and reject with an unsupported_extension alert if it is set. */
+             * the Client Hello Inner. We don't yet know whether the server accepted ECH,
+             * so we only store this for now. If we later accept, we check this boolean
+             * and reject with an unsupported_extension alert if it is set. */
             if (ss->ssl3.hs.echHpkeCtx && !ssl3_ExtensionAdvertisedClientHelloInner(ss, extension->type)) {
                 SSL_TRC(10, ("Server sent xtn type=%d which is invalid for the CHI", extension->type));
                 ss->ssl3.hs.echInvalidExtension = PR_TRUE;

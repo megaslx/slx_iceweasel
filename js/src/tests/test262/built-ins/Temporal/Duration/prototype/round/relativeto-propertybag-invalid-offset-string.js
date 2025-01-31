@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -8,18 +8,25 @@ description: relativeTo property bag with offset property is rejected if offset 
 features: [Temporal]
 ---*/
 
-const timeZone = new Temporal.TimeZone("UTC");
+const timeZone = "UTC";
 const instance = new Temporal.Duration(1, 0, 0, 0, 24);
 
 const badOffsets = [
   "00:00",    // missing sign
   "+0",       // too short
   "-000:00",  // too long
-  0,          // converts to a string that is invalid
+  0,          // must be a string
+  null,       // must be a string
+  true,       // must be a string
+  1000n,      // must be a string
 ];
 badOffsets.forEach((offset) => {
   const relativeTo = { year: 2021, month: 10, day: 28, offset, timeZone };
-  assert.throws(RangeError, () => instance.round({ largestUnit: "years", relativeTo }), `"${offset} is not a valid offset string`);
+  assert.throws(
+    typeof(offset) === 'string' ? RangeError : TypeError,
+    () => instance.round({ largestUnit: "years", relativeTo }),
+    `"${offset} is not a valid offset string`
+  );
 });
 
 reportCompare(0, 0);

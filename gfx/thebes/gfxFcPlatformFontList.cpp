@@ -20,6 +20,9 @@
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
 #include "nsGkAtoms.h"
+#include "nsIConsoleService.h"
+#include "nsIGfxInfo.h"
+#include "mozilla/Components.h"
 #include "nsString.h"
 #include "nsStringFwd.h"
 #include "nsUnicodeProperties.h"
@@ -69,6 +72,9 @@ using namespace mozilla::intl;
 #endif
 #ifndef FC_VARIABLE
 #  define FC_VARIABLE "variable" /* Bool */
+#endif
+#ifndef FC_NAMED_INSTANCE
+#  define FC_NAMED_INSTANCE "namedinstance" /* Bool */
 #endif
 
 #define PRINTING_FC_PROPERTY "gfx.printing"
@@ -448,7 +454,7 @@ nsresult gfxFontconfigFontEntry::ReadCMAP(FontInfoData* aFontInfoData) {
     gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();
     fontlist::FontList* sharedFontList = pfl->SharedFontList();
     if (!IsUserFont() && mShmemFace) {
-      mShmemFace->SetCharacterMap(sharedFontList, charmap);  // async
+      mShmemFace->SetCharacterMap(sharedFontList, charmap, mShmemFamily);
       if (TrySetShmemCharacterMap()) {
         setCharMap = false;
       }
@@ -1355,9 +1361,12 @@ gfxFcPlatformFontList::gfxFcPlatformFontList()
       mFcSubstituteCache(64),
       mLastConfig(nullptr),
       mAlwaysUseFontconfigGenerics(true) {
+  CheckFamilyList(kBaseFonts_Ubuntu_22_04);
+  CheckFamilyList(kLangFonts_Ubuntu_22_04);
   CheckFamilyList(kBaseFonts_Ubuntu_20_04);
   CheckFamilyList(kLangFonts_Ubuntu_20_04);
-  CheckFamilyList(kBaseFonts_Fedora_32);
+  CheckFamilyList(kBaseFonts_Fedora_39);
+  CheckFamilyList(kBaseFonts_Fedora_38);
   mLastConfig = FcConfigGetCurrent();
   if (XRE_IsParentProcess()) {
     // if the rescan interval is set, start the timer
@@ -1433,6 +1442,27 @@ void gfxFcPlatformFontList::AddFontSetFamilies(FcFontSet* aFontSet,
   }
 }
 
+// Check whether a pattern refers to a non-variable font, or a specific named
+// instance of a variable font. Only such patterns are eligible for src:local()
+// name lookups, as local() is defined to reference a specific face.
+static bool IsNonVariableOrNamedInstance(FcPattern* aPattern) {
+  FcBool value;
+  if (FcPatternGetBool(aPattern, FC_VARIABLE, 0, &value) == FcResultMatch &&
+      value) {
+    // It's a variable font resource; check if this is a named instance.
+    if (FcPatternGetBool(aPattern, FC_NAMED_INSTANCE, 0, &value) ==
+            FcResultMatch &&
+        value) {
+      // Yes, named instance: ok to use.
+      return true;
+    }
+    // It's a variable font; we don't want it.
+    return false;
+  }
+  // Non-variable: no problem.
+  return true;
+}
+
 void gfxFcPlatformFontList::AddPatternToFontList(
     FcPattern* aFont, FcChar8*& aLastFamilyName, nsACString& aFamilyName,
     RefPtr<gfxFontconfigFontFamily>& aFontFamily, bool aAppFonts) {
@@ -1496,21 +1526,23 @@ void gfxFcPlatformFontList::AddPatternToFontList(
   MOZ_ASSERT(aFontFamily, "font must belong to a font family");
   aFontFamily->AddFontPattern(aFont, singleName);
 
-  // map the psname, fullname ==> font family for local font lookups
-  nsAutoCString psname, fullname;
-  GetFaceNames(aFont, aFamilyName, psname, fullname);
-  if (!psname.IsEmpty()) {
-    ToLowerCase(psname);
-    mLocalNames.InsertOrUpdate(psname, RefPtr{aFont});
-  }
-  if (!fullname.IsEmpty()) {
-    ToLowerCase(fullname);
-    mLocalNames.WithEntryHandle(fullname, [&](auto&& entry) {
-      if (entry && !singleName) {
-        return;
-      }
-      entry.InsertOrUpdate(RefPtr{aFont});
-    });
+  if (IsNonVariableOrNamedInstance(aFont)) {
+    // map the psname, fullname ==> font family for local font lookups
+    nsAutoCString psname, fullname;
+    GetFaceNames(aFont, aFamilyName, psname, fullname);
+    if (!psname.IsEmpty()) {
+      ToLowerCase(psname);
+      mLocalNames.InsertOrUpdate(psname, RefPtr{aFont});
+    }
+    if (!fullname.IsEmpty()) {
+      ToLowerCase(fullname);
+      mLocalNames.WithEntryHandle(fullname, [&](auto&& entry) {
+        if (entry && !singleName) {
+          return;
+        }
+        entry.InsertOrUpdate(RefPtr{aFont});
+      });
+    }
   }
 }
 
@@ -1667,6 +1699,17 @@ void gfxFcPlatformFontList::ReadSystemFontList(dom::SystemFontList* retValue) {
   }
 }
 
+using Device = nsIGfxInfo::FontVisibilityDeviceDetermination;
+static Device sFontVisibilityDevice = Device::Unassigned;
+
+void AssignFontVisibilityDevice() {
+  if (sFontVisibilityDevice == Device::Unassigned) {
+    nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
+    NS_ENSURE_SUCCESS_VOID(
+        gfxInfo->GetFontVisibilityDetermination(&sFontVisibilityDevice));
+  }
+}
+
 // Per family array of faces.
 class FacesData {
   using FaceInitArray = AutoTArray<fontlist::Face::InitData, 8>;
@@ -1746,15 +1789,17 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
   int fcVersion = FcGetVersion();
   bool fcCharsetParseBug = fcVersion >= 21094 && fcVersion <= 21101;
 
+  // Returns true if the font was added with FontVisibility::Base.
+  // This enables us to count how many known Base fonts are present.
   auto addPattern = [this, fcCharsetParseBug, &families, &faces](
                         FcPattern* aPattern, FcChar8*& aLastFamilyName,
-                        nsCString& aFamilyName, bool aAppFont) -> void {
+                        nsCString& aFamilyName, bool aAppFont) -> bool {
     // get canonical name
     uint32_t cIndex = FindCanonicalNameIndex(aPattern, FC_FAMILYLANG);
     FcChar8* canonical = nullptr;
     FcPatternGetString(aPattern, FC_FAMILY, cIndex, &canonical);
     if (!canonical) {
-      return;
+      return false;
     }
 
     nsAutoCString keyName;
@@ -1764,6 +1809,9 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
     aLastFamilyName = canonical;
     aFamilyName = ToCharPtr(canonical);
 
+    const FontVisibility visibility =
+        aAppFont ? FontVisibility::Base : GetVisibilityForFamily(keyName);
+
     // Same canonical family name as the last one? Definitely no need to add a
     // new family record.
     auto* faceList =
@@ -1771,9 +1819,6 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
             .LookupOrInsertWith(
                 keyName,
                 [&] {
-                  FontVisibility visibility =
-                      aAppFont ? FontVisibility::Base
-                               : GetVisibilityForFamily(keyName);
                   families.AppendElement(fontlist::Family::InitData(
                       keyName, aFamilyName, fontlist::Family::kNoIndex,
                       visibility,
@@ -1806,6 +1851,7 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
 
     // Add entries for any other localized family names. (Most fonts only have
     // a single family name, so the first call to GetString will usually fail).
+    // These get the same visibility level as we looked up for the first name.
     FcChar8* otherName;
     int n = (cIndex == 0 ? 1 : 0);
     while (FcPatternGetString(aPattern, FC_FAMILY, n, &otherName) ==
@@ -1818,9 +1864,6 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
           .LookupOrInsertWith(
               keyName,
               [&] {
-                FontVisibility visibility =
-                    aAppFont ? FontVisibility::Base
-                             : GetVisibilityForFamily(keyName);
                 families.AppendElement(fontlist::Family::InitData(
                     keyName, otherFamilyName, fontlist::Family::kNoIndex,
                     visibility,
@@ -1840,36 +1883,41 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
     const bool singleName = n == 1;
     faceList->Add(std::move(initData), singleName);
 
-    // map the psname, fullname ==> font family for local font lookups
-    nsAutoCString psname, fullname;
-    GetFaceNames(aPattern, aFamilyName, psname, fullname);
-    if (!psname.IsEmpty()) {
-      ToLowerCase(psname);
-      mLocalNameTable.InsertOrUpdate(
-          psname, fontlist::LocalFaceRec::InitData(keyName, descriptor));
-    }
-    if (!fullname.IsEmpty()) {
-      ToLowerCase(fullname);
-      if (fullname != psname) {
-        mLocalNameTable.WithEntryHandle(fullname, [&](auto&& entry) {
-          if (entry && !singleName) {
-            // We only override an existing entry if this is the only way to
-            // name this family. This prevents dubious aliases from clobbering
-            // the local name table.
-            return;
-          }
-          entry.InsertOrUpdate(
-              fontlist::LocalFaceRec::InitData(keyName, descriptor));
-        });
+    if (IsNonVariableOrNamedInstance(aPattern)) {
+      // map the psname, fullname ==> font family for local font lookups
+      nsAutoCString psname, fullname;
+      GetFaceNames(aPattern, aFamilyName, psname, fullname);
+      MOZ_PUSH_IGNORE_THREAD_SAFETY
+      if (!psname.IsEmpty()) {
+        ToLowerCase(psname);
+        MaybeAddToLocalNameTable(
+            psname, fontlist::LocalFaceRec::InitData(keyName, descriptor));
       }
+      if (!fullname.IsEmpty()) {
+        ToLowerCase(fullname);
+        if (fullname != psname) {
+          // We only consider overriding an existing entry if this is the only
+          // way to name this family. This prevents dubious aliases from
+          // clobbering the local name table.
+          if (singleName || !mLocalNameTable.Contains(fullname)) {
+            MaybeAddToLocalNameTable(fullname, fontlist::LocalFaceRec::InitData(
+                                                   keyName, descriptor));
+          }
+        }
+      }
+      MOZ_POP_THREAD_SAFETY
     }
+
+    return visibility == FontVisibility::Base;
   };
 
+  // Returns the number of families with FontVisibility::Base that were found.
   auto addFontSetFamilies = [&addPattern](FcFontSet* aFontSet,
                                           SandboxPolicy* aPolicy,
-                                          bool aAppFonts) -> void {
+                                          bool aAppFonts) -> size_t {
+    size_t count = 0;
     if (NS_WARN_IF(!aFontSet)) {
-      return;
+      return count;
     }
     FcChar8* lastFamilyName = (FcChar8*)"";
     RefPtr<gfxFontconfigFontFamily> fontFamily;
@@ -1917,18 +1965,25 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
       // This substantially reduces the pressure on shared memory (bug 1664151)
       // due to the large font descriptors (serialized patterns).
       FcChar8* fontFormat;
+      MOZ_PUSH_IGNORE_THREAD_SAFETY
       if (FcPatternGetString(clone, FC_FONTFORMAT, 0, &fontFormat) ==
               FcResultMatch &&
           (!FcStrCmp(fontFormat, (const FcChar8*)"TrueType") ||
            !FcStrCmp(fontFormat, (const FcChar8*)"CFF"))) {
         FcPatternDel(clone, FC_CHARSET);
-        addPattern(clone, lastFamilyName, familyName, aAppFonts);
+        if (addPattern(clone, lastFamilyName, familyName, aAppFonts)) {
+          ++count;
+        }
       } else {
-        addPattern(clone, lastFamilyName, familyName, aAppFonts);
+        if (addPattern(clone, lastFamilyName, familyName, aAppFonts)) {
+          ++count;
+        }
       }
+      MOZ_POP_THREAD_SAFETY
 
       FcPatternDestroy(clone);
     }
+    return count;
   };
 
 #ifdef MOZ_BUNDLED_FONTS
@@ -1942,7 +1997,26 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
 
   // iterate over available fonts
   FcFontSet* systemFonts = FcConfigGetFonts(nullptr, FcSetSystem);
-  addFontSetFamilies(systemFonts, policy.get(), /* aAppFonts = */ false);
+  auto numBaseFamilies = addFontSetFamilies(systemFonts, policy.get(),
+                                            /* aAppFonts = */ false);
+  AssignFontVisibilityDevice();
+  if (numBaseFamilies < 3 && sFontVisibilityDevice != Device::Linux_Unknown) {
+    // If we found fewer than 3 known FontVisibility::Base families in the
+    // system (ignoring app-bundled fonts), we must be dealing with a very
+    // non-standard configuration; disable the distro-specific font
+    // fingerprinting protection by marking all fonts as Unknown.
+    for (auto& f : families) {
+      f.mVisibility = FontVisibility::Unknown;
+    }
+    // Issue a warning that we're disabling this protection.
+    nsCOMPtr<nsIConsoleService> console(
+        do_GetService("@mozilla.org/consoleservice;1"));
+    if (console) {
+      console->LogStringMessage(
+          u"Font-fingerprinting protection disabled; not enough standard "
+          u"distro fonts installed.");
+    }
+  }
 
   mozilla::fontlist::FontList* list = SharedFontList();
   list->SetFamilyNames(families);
@@ -1952,66 +2026,26 @@ void gfxFcPlatformFontList::InitSharedFontListForPlatform() {
   }
 }
 
-gfxFcPlatformFontList::DistroID gfxFcPlatformFontList::GetDistroID() const {
-  // Helper called to initialize sResult the first time this is used.
-  auto getDistroID = []() {
-    DistroID result = DistroID::Unknown;
-    int versionMajor = 0;
-    FILE* fp = fopen("/etc/os-release", "r");
-    if (fp) {
-      char buf[512];
-      while (fgets(buf, sizeof(buf), fp)) {
-        if (strncmp(buf, "VERSION_ID=\"", 12) == 0) {
-          versionMajor = strtol(buf + 12, nullptr, 10);
-          if (result != DistroID::Unknown) {
-            break;
-          }
-        }
-        if (strncmp(buf, "ID=", 3) == 0) {
-          if (strncmp(buf + 3, "ubuntu", 6) == 0) {
-            result = DistroID::Ubuntu_any;
-          } else if (strncmp(buf + 3, "fedora", 6) == 0) {
-            result = DistroID::Fedora;
-          }
-          if (versionMajor) {
-            break;
-          }
-        }
-      }
-      fclose(fp);
-    }
-    if (result == DistroID::Ubuntu_any) {
-      if (versionMajor == 20) {
-        result = DistroID::Ubuntu_20;
-      } else if (versionMajor == 22) {
-        result = DistroID::Ubuntu_22;
-      }
-    }
-    return result;
-  };
-  static DistroID sResult = getDistroID();
-  return sResult;
-}
-
 FontVisibility gfxFcPlatformFontList::GetVisibilityForFamily(
     const nsACString& aName) const {
-  auto distro = GetDistroID();
-  switch (distro) {
-    case DistroID::Ubuntu_any:
-    case DistroID::Ubuntu_22:
+  AssignFontVisibilityDevice();
+
+  switch (sFontVisibilityDevice) {
+    case Device::Linux_Ubuntu_any:
+    case Device::Linux_Ubuntu_22:
       if (FamilyInList(aName, kBaseFonts_Ubuntu_22_04)) {
         return FontVisibility::Base;
       }
       if (FamilyInList(aName, kLangFonts_Ubuntu_22_04)) {
         return FontVisibility::LangPack;
       }
-      if (distro == DistroID::Ubuntu_22) {
+      if (sFontVisibilityDevice == Device::Linux_Ubuntu_22) {
         return FontVisibility::User;
       }
       // For Ubuntu_any, we fall through to also check the 20_04 lists.
       [[fallthrough]];
 
-    case DistroID::Ubuntu_20:
+    case Device::Linux_Ubuntu_20:
       if (FamilyInList(aName, kBaseFonts_Ubuntu_20_04)) {
         return FontVisibility::Base;
       }
@@ -2020,8 +2054,19 @@ FontVisibility gfxFcPlatformFontList::GetVisibilityForFamily(
       }
       return FontVisibility::User;
 
-    case DistroID::Fedora:
-      if (FamilyInList(aName, kBaseFonts_Fedora_32)) {
+    case Device::Linux_Fedora_any:
+    case Device::Linux_Fedora_39:
+      if (FamilyInList(aName, kBaseFonts_Fedora_39)) {
+        return FontVisibility::Base;
+      }
+      if (sFontVisibilityDevice == Device::Linux_Fedora_39) {
+        return FontVisibility::User;
+      }
+      // For Fedora_any, fall through to also check Fedora 38 list.
+      [[fallthrough]];
+
+    case Device::Linux_Fedora_38:
+      if (FamilyInList(aName, kBaseFonts_Fedora_38)) {
         return FontVisibility::Base;
       }
       return FontVisibility::User;
@@ -2030,6 +2075,49 @@ FontVisibility gfxFcPlatformFontList::GetVisibilityForFamily(
       // We don't know how to categorize fonts on this system
       return FontVisibility::Unknown;
   }
+}
+
+nsTArray<std::pair<const char**, uint32_t>>
+gfxFcPlatformFontList::GetFilteredPlatformFontLists() {
+  AssignFontVisibilityDevice();
+
+  nsTArray<std::pair<const char**, uint32_t>> fontLists;
+
+  switch (sFontVisibilityDevice) {
+    case Device::Linux_Ubuntu_any:
+    case Device::Linux_Ubuntu_22:
+      fontLists.AppendElement(std::make_pair(
+          kBaseFonts_Ubuntu_22_04, std::size(kBaseFonts_Ubuntu_22_04)));
+      fontLists.AppendElement(std::make_pair(
+          kLangFonts_Ubuntu_22_04, std::size(kLangFonts_Ubuntu_22_04)));
+      // For Ubuntu_any, we fall through to also check the 20_04 lists.
+      [[fallthrough]];
+
+    case Device::Linux_Ubuntu_20:
+      fontLists.AppendElement(std::make_pair(
+          kBaseFonts_Ubuntu_20_04, std::size(kBaseFonts_Ubuntu_20_04)));
+      fontLists.AppendElement(std::make_pair(
+          kLangFonts_Ubuntu_20_04, std::size(kLangFonts_Ubuntu_20_04)));
+      break;
+
+    case Device::Linux_Fedora_any:
+    case Device::Linux_Fedora_39:
+      fontLists.AppendElement(std::make_pair(kBaseFonts_Fedora_39,
+                                             std::size(kBaseFonts_Fedora_39)));
+      // For Fedora_any, fall through to also check Fedora 38 list.
+      [[fallthrough]];
+
+    case Device::Linux_Fedora_38:
+      fontLists.AppendElement(std::make_pair(kBaseFonts_Fedora_38,
+                                             std::size(kBaseFonts_Fedora_38)));
+      break;
+
+    default:
+      // We don't know how to categorize fonts on this system
+      break;
+  }
+
+  return fontLists;
 }
 
 gfxFontEntry* gfxFcPlatformFontList::CreateFontEntry(
@@ -2735,7 +2823,7 @@ void gfxFcPlatformFontList::GetSampleLangForGroup(
   const MozLangGroupData* mozLangGroup = nullptr;
 
   // -- look it up in the list of moz lang groups
-  for (unsigned int i = 0; i < ArrayLength(MozLangGroups); ++i) {
+  for (unsigned int i = 0; i < std::size(MozLangGroups); ++i) {
     if (aLanguage == MozLangGroups[i].mozLangGroup) {
       mozLangGroup = &MozLangGroups[i];
       break;

@@ -1,7 +1,7 @@
-.. _mozilla_projects_nss_nss_3_78_release_notes:
+.. _mozilla_projects_nss_nss_3_78_1_release_notes:
 
-NSS 3.78 release notes
-======================
+NSS 3.78.1 release notes
+========================
 
 `Introduction <#introduction>`__
 --------------------------------
@@ -11,7 +11,7 @@ NSS 3.78 release notes
    Network Security Services (NSS) 3.78.1 was released on **31 May 2022**.
 
 
-.. _distribution_information:
+
 
 `Distribution Information <#distribution_information>`__
 --------------------------------------------------------

@@ -10,7 +10,7 @@ import {
   hasSourceActor,
   getCurrentlyFetchedTopFrame,
   hasFrame,
-} from "../selectors";
+} from "../selectors/index";
 
 // Context encapsulates the main parameters of the current redux state, which
 // impact most other information tracked by the debugger.
@@ -77,7 +77,7 @@ export function validateSelectedFrame(state, selectedFrame) {
     throw new ContextError("Selected thread has changed");
   }
 
-  const newSelectedFrame = getSelectedFrame(state, newThread);
+  const newSelectedFrame = getSelectedFrame(state);
   // Compare frame's IDs as frame objects are cloned during mapping
   if (selectedFrame.id != newSelectedFrame?.id) {
     throw new ContextError("Selected frame changed");

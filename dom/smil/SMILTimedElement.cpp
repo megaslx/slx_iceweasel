@@ -16,7 +16,6 @@
 #include "mozilla/SMILTimeContainer.h"
 #include "mozilla/SMILTimeValue.h"
 #include "mozilla/SMILTimeValueSpec.h"
-#include "mozilla/TaskCategory.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/SVGAnimationElement.h"
 #include "nsAttrValueInlines.h"
@@ -85,6 +84,11 @@ class AsyncTimeEventRunner : public Runnable {
 
   // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230, bug 1535398)
   MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override {
+    nsPIDOMWindowInner* inner = mTarget->OwnerDoc()->GetInnerWindow();
+    if (inner && !inner->HasSMILTimeEventListeners()) {
+      return NS_OK;
+    }
+
     InternalSMILTimeEvent event(true, mMsg);
     event.mDetail = mDetail;
 
@@ -197,9 +201,6 @@ const nsAttrValue::EnumTable SMILTimedElement::sRestartModeTable[] = {
     {"never", RESTART_NEVER},
     {nullptr, 0}};
 
-const SMILMilestone SMILTimedElement::sMaxMilestone(
-    std::numeric_limits<SMILTime>::max(), false);
-
 // The thresholds at which point we start filtering intervals and instance times
 // indiscriminately.
 // See FilterIntervals and FilterInstanceTimes.
@@ -230,18 +231,18 @@ SMILTimedElement::SMILTimedElement()
       mDeleteCount(0),
       mUpdateIntervalRecursionDepth(0) {
   mSimpleDur.SetIndefinite();
-  mMin.SetMillis(0L);
+  mMin = SMILTimeValue::Zero();
   mMax.SetIndefinite();
 }
 
 SMILTimedElement::~SMILTimedElement() {
   // Unlink all instance times from dependent intervals
-  for (uint32_t i = 0; i < mBeginInstances.Length(); ++i) {
-    mBeginInstances[i]->Unlink();
+  for (RefPtr<SMILInstanceTime>& instance : mBeginInstances) {
+    instance->Unlink();
   }
   mBeginInstances.Clear();
-  for (uint32_t i = 0; i < mEndInstances.Length(); ++i) {
-    mEndInstances[i]->Unlink();
+  for (RefPtr<SMILInstanceTime>& instance : mEndInstances) {
+    instance->Unlink();
   }
   mEndInstances.Clear();
 
@@ -298,7 +299,8 @@ nsresult SMILTimedElement::BeginElementAt(double aOffsetSeconds) {
   if (!container) return NS_ERROR_FAILURE;
 
   SMILTime currentTime = container->GetCurrentTimeAsSMILTime();
-  return AddInstanceTimeFromCurrentTime(currentTime, aOffsetSeconds, true);
+  AddInstanceTimeFromCurrentTime(currentTime, aOffsetSeconds, true);
+  return NS_OK;
 }
 
 nsresult SMILTimedElement::EndElementAt(double aOffsetSeconds) {
@@ -306,7 +308,8 @@ nsresult SMILTimedElement::EndElementAt(double aOffsetSeconds) {
   if (!container) return NS_ERROR_FAILURE;
 
   SMILTime currentTime = container->GetCurrentTimeAsSMILTime();
-  return AddInstanceTimeFromCurrentTime(currentTime, aOffsetSeconds, false);
+  AddInstanceTimeFromCurrentTime(currentTime, aOffsetSeconds, false);
+  return NS_OK;
 }
 
 //----------------------------------------------------------------------
@@ -611,8 +614,8 @@ void SMILTimedElement::DoSampleAt(SMILTime aContainerTime, bool aEndOnly) {
           }
           // We are now in a consistent state to dispatch notifications
           if (didApplyEarlyEnd) {
-            NotifyChangedInterval(
-                mOldIntervals[mOldIntervals.Length() - 1].get(), false, true);
+            NotifyChangedInterval(mOldIntervals.LastElement().get(), false,
+                                  true);
           }
           if (mElementState == STATE_WAITING) {
             NotifyNewInterval();
@@ -855,8 +858,9 @@ nsresult SMILTimedElement::SetSimpleDuration(const nsAString& aDurSpec) {
   if (dur.EqualsLiteral("media") || dur.EqualsLiteral("indefinite")) {
     duration.SetIndefinite();
   } else {
-    if (!SMILParserUtils::ParseClockValue(dur, &duration) ||
-        duration.GetMillis() == 0L) {
+    if (!SMILParserUtils::ParseClockValue(
+            dur, SMILTimeValue::Rounding::EnsureNonZero, &duration) ||
+        duration.IsZero()) {
       mSimpleDur.SetIndefinite();
       return NS_ERROR_FAILURE;
     }
@@ -883,10 +887,11 @@ nsresult SMILTimedElement::SetMin(const nsAString& aMinSpec) {
   const nsAString& min = SMILParserUtils::TrimWhitespace(aMinSpec);
 
   if (min.EqualsLiteral("media")) {
-    duration.SetMillis(0L);
+    duration = SMILTimeValue::Zero();
   } else {
-    if (!SMILParserUtils::ParseClockValue(min, &duration)) {
-      mMin.SetMillis(0L);
+    if (!SMILParserUtils::ParseClockValue(min, SMILTimeValue::Rounding::Nearest,
+                                          &duration)) {
+      mMin = SMILTimeValue::Zero();
       return NS_ERROR_FAILURE;
     }
   }
@@ -899,7 +904,7 @@ nsresult SMILTimedElement::SetMin(const nsAString& aMinSpec) {
 }
 
 void SMILTimedElement::UnsetMin() {
-  mMin.SetMillis(0L);
+  mMin = SMILTimeValue::Zero();
   UpdateCurrentInterval();
 }
 
@@ -913,8 +918,9 @@ nsresult SMILTimedElement::SetMax(const nsAString& aMaxSpec) {
   if (max.EqualsLiteral("media") || max.EqualsLiteral("indefinite")) {
     duration.SetIndefinite();
   } else {
-    if (!SMILParserUtils::ParseClockValue(max, &duration) ||
-        duration.GetMillis() == 0L) {
+    if (!SMILParserUtils::ParseClockValue(
+            max, SMILTimeValue::Rounding::EnsureNonZero, &duration) ||
+        duration.IsZero()) {
       mMax.SetIndefinite();
       return NS_ERROR_FAILURE;
     }
@@ -975,7 +981,8 @@ nsresult SMILTimedElement::SetRepeatDur(const nsAString& aRepeatDurSpec) {
   if (repeatDur.EqualsLiteral("indefinite")) {
     duration.SetIndefinite();
   } else {
-    if (!SMILParserUtils::ParseClockValue(repeatDur, &duration)) {
+    if (!SMILParserUtils::ParseClockValue(
+            repeatDur, SMILTimeValue::Rounding::EnsureNonZero, &duration)) {
       mRepeatDur.SetUnresolved();
       return NS_ERROR_FAILURE;
     }
@@ -1064,14 +1071,12 @@ void SMILTimedElement::BindToTree(Element& aContextElement) {
     AutoIntervalUpdateBatcher updateBatcher(*this);
 
     // Resolve references to other parts of the tree
-    uint32_t count = mBeginSpecs.Length();
-    for (uint32_t i = 0; i < count; ++i) {
-      mBeginSpecs[i]->ResolveReferences(aContextElement);
+    for (UniquePtr<SMILTimeValueSpec>& beginSpec : mBeginSpecs) {
+      beginSpec->ResolveReferences(aContextElement);
     }
 
-    count = mEndSpecs.Length();
-    for (uint32_t j = 0; j < count; ++j) {
-      mEndSpecs[j]->ResolveReferences(aContextElement);
+    for (UniquePtr<SMILTimeValueSpec>& endSpec : mEndSpecs) {
+      endSpec->ResolveReferences(aContextElement);
     }
   }
 
@@ -1081,28 +1086,22 @@ void SMILTimedElement::BindToTree(Element& aContextElement) {
 void SMILTimedElement::HandleTargetElementChange(Element* aNewTarget) {
   AutoIntervalUpdateBatcher updateBatcher(*this);
 
-  uint32_t count = mBeginSpecs.Length();
-  for (uint32_t i = 0; i < count; ++i) {
-    mBeginSpecs[i]->HandleTargetElementChange(aNewTarget);
+  for (UniquePtr<SMILTimeValueSpec>& beginSpec : mBeginSpecs) {
+    beginSpec->HandleTargetElementChange(aNewTarget);
   }
 
-  count = mEndSpecs.Length();
-  for (uint32_t j = 0; j < count; ++j) {
-    mEndSpecs[j]->HandleTargetElementChange(aNewTarget);
+  for (UniquePtr<SMILTimeValueSpec>& endSpec : mEndSpecs) {
+    endSpec->HandleTargetElementChange(aNewTarget);
   }
 }
 
 void SMILTimedElement::Traverse(nsCycleCollectionTraversalCallback* aCallback) {
-  uint32_t count = mBeginSpecs.Length();
-  for (uint32_t i = 0; i < count; ++i) {
-    SMILTimeValueSpec* beginSpec = mBeginSpecs[i].get();
+  for (UniquePtr<SMILTimeValueSpec>& beginSpec : mBeginSpecs) {
     MOZ_ASSERT(beginSpec, "null SMILTimeValueSpec in list of begin specs");
     beginSpec->Traverse(aCallback);
   }
 
-  count = mEndSpecs.Length();
-  for (uint32_t j = 0; j < count; ++j) {
-    SMILTimeValueSpec* endSpec = mEndSpecs[j].get();
+  for (UniquePtr<SMILTimeValueSpec>& endSpec : mEndSpecs) {
     MOZ_ASSERT(endSpec, "null SMILTimeValueSpec in list of end specs");
     endSpec->Traverse(aCallback);
   }
@@ -1112,16 +1111,12 @@ void SMILTimedElement::Unlink() {
   AutoIntervalUpdateBatcher updateBatcher(*this);
 
   // Remove dependencies on other elements
-  uint32_t count = mBeginSpecs.Length();
-  for (uint32_t i = 0; i < count; ++i) {
-    SMILTimeValueSpec* beginSpec = mBeginSpecs[i].get();
+  for (UniquePtr<SMILTimeValueSpec>& beginSpec : mBeginSpecs) {
     MOZ_ASSERT(beginSpec, "null SMILTimeValueSpec in list of begin specs");
     beginSpec->Unlink();
   }
 
-  count = mEndSpecs.Length();
-  for (uint32_t j = 0; j < count; ++j) {
-    SMILTimeValueSpec* endSpec = mEndSpecs[j].get();
+  for (UniquePtr<SMILTimeValueSpec>& endSpec : mEndSpecs) {
     MOZ_ASSERT(endSpec, "null SMILTimeValueSpec in list of end specs");
     endSpec->Unlink();
   }
@@ -1192,8 +1187,8 @@ void SMILTimedElement::ClearSpecs(TimeValueSpecList& aSpecs,
                                   RemovalTestFunction aRemove) {
   AutoIntervalUpdateBatcher updateBatcher(*this);
 
-  for (uint32_t i = 0; i < aSpecs.Length(); ++i) {
-    aSpecs[i]->Unlink();
+  for (UniquePtr<SMILTimeValueSpec>& spec : aSpecs) {
+    spec->Unlink();
   }
   aSpecs.Clear();
 
@@ -1357,9 +1352,7 @@ void SMILTimedElement::UnpreserveInstanceTimes(InstanceTimeList& aList) {
   const SMILInstanceTime* cutoff = mCurrentInterval ? mCurrentInterval->Begin()
                                    : prevInterval   ? prevInterval->Begin()
                                                     : nullptr;
-  uint32_t count = aList.Length();
-  for (uint32_t i = 0; i < count; ++i) {
-    SMILInstanceTime* instance = aList[i].get();
+  for (RefPtr<SMILInstanceTime>& instance : aList) {
     if (!cutoff || cutoff->Time().CompareTo(instance->Time()) < 0) {
       instance->UnmarkShouldPreserve();
     }
@@ -1511,7 +1504,7 @@ bool SMILTimedElement::GetNextInterval(const SMILInterval* aPrevInterval,
     prevIntervalWasZeroDur =
         aPrevInterval->End()->Time() == aPrevInterval->Begin()->Time();
   } else {
-    beginAfter.SetMillis(INT64_MIN);
+    beginAfter.SetMillis(std::numeric_limits<SMILTime>::min());
   }
 
   RefPtr<SMILInstanceTime> tempBegin;
@@ -1741,17 +1734,7 @@ SMILTimeValue SMILTimedElement::ApplyMinAndMax(
     return aDuration;
   }
 
-  SMILTimeValue result;
-
-  if (aDuration > mMax) {
-    result = mMax;
-  } else if (aDuration < mMin) {
-    result = mMin;
-  } else {
-    result = aDuration;
-  }
-
-  return result;
+  return std::clamp(aDuration, mMin, mMax);
 }
 
 SMILTime SMILTimedElement::ActiveTimeToSimpleTime(SMILTime aActiveTime,
@@ -1764,7 +1747,7 @@ SMILTime SMILTimedElement::ActiveTimeToSimpleTime(SMILTime aActiveTime,
   // Note that a negative aActiveTime will give us a negative value for
   // aRepeatIteration, which is bad because aRepeatIteration is unsigned
 
-  if (mSimpleDur.IsIndefinite() || mSimpleDur.GetMillis() == 0L) {
+  if (mSimpleDur.IsIndefinite() || mSimpleDur.IsZero()) {
     aRepeatIteration = 0;
     result = aActiveTime;
   } else {
@@ -1967,23 +1950,18 @@ void SMILTimedElement::SampleFillValue() {
   }
 }
 
-nsresult SMILTimedElement::AddInstanceTimeFromCurrentTime(SMILTime aCurrentTime,
-                                                          double aOffsetSeconds,
-                                                          bool aIsBegin) {
+void SMILTimedElement::AddInstanceTimeFromCurrentTime(SMILTime aCurrentTime,
+                                                      double aOffsetSeconds,
+                                                      bool aIsBegin) {
   double offset = NS_round(aOffsetSeconds * PR_MSEC_PER_SEC);
 
-  // Check we won't overflow the range of SMILTime
-  if (aCurrentTime + offset > double(std::numeric_limits<SMILTime>::max()))
-    return NS_ERROR_ILLEGAL_VALUE;
-
-  SMILTimeValue timeVal(aCurrentTime + int64_t(offset));
+  SMILTimeValue timeVal(std::clamp<SMILTime>(
+      aCurrentTime + offset, 0, std::numeric_limits<SMILTime>::max()));
 
   RefPtr<SMILInstanceTime> instanceTime =
       new SMILInstanceTime(timeVal, SMILInstanceTime::SOURCE_DOM);
 
   AddInstanceTime(instanceTime, aIsBegin);
-
-  return NS_OK;
 }
 
 void SMILTimedElement::RegisterMilestone() {
@@ -2114,18 +2092,27 @@ void SMILTimedElement::NotifyChangedInterval(SMILInterval* aInterval,
   InstanceTimeList times;
   aInterval->GetDependentTimes(times);
 
-  for (uint32_t i = 0; i < times.Length(); ++i) {
-    times[i]->HandleChangedInterval(container, aBeginObjectChanged,
-                                    aEndObjectChanged);
+  for (RefPtr<SMILInstanceTime>& time : times) {
+    time->HandleChangedInterval(container, aBeginObjectChanged,
+                                aEndObjectChanged);
   }
 }
 
 void SMILTimedElement::FireTimeEventAsync(EventMessage aMsg, int32_t aDetail) {
   if (!mAnimationElement) return;
 
+  Document* ownerDoc = mAnimationElement->OwnerDoc();
+  if (ownerDoc->IsBeingUsedAsImage() || !ownerDoc->IsScriptEnabled()) {
+    // Without scripting the only listeners would be from SMIL itself
+    // and they would exist for the life of the document.
+    nsPIDOMWindowInner* inner = ownerDoc->GetInnerWindow();
+    if (inner && !inner->HasSMILTimeEventListeners()) {
+      return;
+    }
+  }
   nsCOMPtr<nsIRunnable> event =
       new AsyncTimeEventRunner(mAnimationElement, aMsg, aDetail);
-  mAnimationElement->OwnerDoc()->Dispatch(TaskCategory::Other, event.forget());
+  ownerDoc->Dispatch(event.forget());
 }
 
 const SMILInstanceTime* SMILTimedElement::GetEffectiveBeginInstance() const {
@@ -2146,9 +2133,7 @@ const SMILInstanceTime* SMILTimedElement::GetEffectiveBeginInstance() const {
 }
 
 const SMILInterval* SMILTimedElement::GetPreviousInterval() const {
-  return mOldIntervals.IsEmpty()
-             ? nullptr
-             : mOldIntervals[mOldIntervals.Length() - 1].get();
+  return mOldIntervals.IsEmpty() ? nullptr : mOldIntervals.LastElement().get();
 }
 
 bool SMILTimedElement::HasClientInFillRange() const {
@@ -2158,8 +2143,8 @@ bool SMILTimedElement::HasClientInFillRange() const {
 }
 
 bool SMILTimedElement::EndHasEventConditions() const {
-  for (uint32_t i = 0; i < mEndSpecs.Length(); ++i) {
-    if (mEndSpecs[i]->IsEventBased()) return true;
+  for (const UniquePtr<SMILTimeValueSpec>& endSpec : mEndSpecs) {
+    if (endSpec->IsEventBased()) return true;
   }
   return false;
 }
@@ -2168,8 +2153,8 @@ bool SMILTimedElement::AreEndTimesDependentOn(
     const SMILInstanceTime* aBase) const {
   if (mEndInstances.IsEmpty()) return false;
 
-  for (uint32_t i = 0; i < mEndInstances.Length(); ++i) {
-    if (mEndInstances[i]->GetBaseTime() != aBase) {
+  for (const RefPtr<SMILInstanceTime>& endInstance : mEndInstances) {
+    if (endInstance->GetBaseTime() != aBase) {
       return false;
     }
   }

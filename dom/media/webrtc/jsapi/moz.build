@@ -13,9 +13,9 @@ LOCAL_INCLUDES += [
     "/ipc/chromium/src",
     "/media/webrtc",
     "/netwerk/dns",  # For nsDNSService2.h
+    "/third_party/abseil-cpp",
     "/third_party/libsrtp/src/include",
     "/third_party/libwebrtc",
-    "/third_party/libwebrtc/third_party/abseil-cpp",
 ]
 
 UNIFIED_SOURCES += [
@@ -31,6 +31,7 @@ UNIFIED_SOURCES += [
     "RTCEncodedAudioFrame.cpp",
     "RTCEncodedFrameBase.cpp",
     "RTCEncodedVideoFrame.cpp",
+    "RTCIceTransport.cpp",
     "RTCRtpReceiver.cpp",
     "RTCRtpScriptTransform.cpp",
     "RTCRtpScriptTransformer.cpp",
@@ -50,6 +51,7 @@ EXPORTS.mozilla.dom += [
     "RTCEncodedAudioFrame.h",
     "RTCEncodedFrameBase.h",
     "RTCEncodedVideoFrame.h",
+    "RTCIceTransport.h",
     "RTCRtpReceiver.h",
     "RTCRtpScriptTransform.h",
     "RTCRtpScriptTransformer.h",

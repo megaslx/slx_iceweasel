@@ -30,126 +30,89 @@ class MacAutoreleasePool {
   NSAutoreleasePool* mPool;
 };
 
-#if defined(__x86_64__)
-/*
- * Returns true if the process is running under Rosetta translation. Returns
- * false if running natively or if an error was encountered. We use the
- * `sysctl.proc_translated` sysctl which is documented by Apple to be used
- * for this purpose.
+/**
+ * Helper to launch macOS tasks via NSTask and wait for the launched task to
+ * terminate.
  */
-bool IsProcessRosettaTranslated() {
-  int ret = 0;
-  size_t size = sizeof(ret);
-  if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1) {
-    if (errno != ENOENT) {
-      fprintf(stderr, "Failed to check for translation environment\n");
-    }
-    return false;
+static void LaunchTask(NSString* aPath, NSArray* aArguments) {
+  MacAutoreleasePool pool;
+
+  NSTask* task = [[NSTask alloc] init];
+  [task setExecutableURL:[NSURL fileURLWithPath:aPath]];
+  if (aArguments) {
+    [task setArguments:aArguments];
   }
-  return (ret == 1);
+  [task launchAndReturnError:nil];
+  [task waitUntilExit];
+  [task release];
 }
 
-// Returns true if the binary at |executablePath| can be executed natively
-// on an arm64 Mac. Returns false otherwise or if an error occurred.
-bool IsBinaryArmExecutable(const char* executablePath) {
-  bool isArmExecutable = false;
-
-  CFURLRef url = ::CFURLCreateFromFileSystemRepresentation(
-      kCFAllocatorDefault, (const UInt8*)executablePath, strlen(executablePath), false);
-  if (!url) {
-    return false;
-  }
-
-  CFArrayRef archs = ::CFBundleCopyExecutableArchitecturesForURL(url);
-  if (!archs) {
-    CFRelease(url);
-    return false;
-  }
-
-  CFIndex archCount = ::CFArrayGetCount(archs);
-  for (CFIndex i = 0; i < archCount; i++) {
-    CFNumberRef currentArch = static_cast<CFNumberRef>(::CFArrayGetValueAtIndex(archs, i));
-    int currentArchInt = 0;
-    if (!::CFNumberGetValue(currentArch, kCFNumberIntType, &currentArchInt)) {
-      continue;
-    }
-    if (currentArchInt == kCFBundleExecutableArchitectureARM64) {
-      isArmExecutable = true;
-      break;
-    }
-  }
-
-  CFRelease(url);
-  CFRelease(archs);
-
-  return isArmExecutable;
-}
-
-// Returns true if the executable provided in |executablePath| should be
-// launched with a preference for arm64. After updating from an x64 version
-// running under Rosetta, if the update is to a universal binary with arm64
-// support we want to switch to arm64 execution mode. Returns true if those
-// conditions are met and the arch(1) utility at |archPath| is executable.
-// It should be safe to always launch with arch and fallback to x64, but we
-// limit its use to the only scenario it is necessary to minimize risk.
-bool ShouldPreferArmLaunch(const char* archPath, const char* executablePath) {
-  // If not running under Rosetta, we are not on arm64 hardware.
-  if (!IsProcessRosettaTranslated()) {
-    return false;
-  }
-
-  // Ensure the arch(1) utility is present and executable.
-  NSFileManager* fileMgr = [NSFileManager defaultManager];
-  NSString* archPathString = [NSString stringWithUTF8String:archPath];
-  if (![fileMgr isExecutableFileAtPath:archPathString]) {
-    return false;
-  }
-
-  // Ensure the binary can be run natively on arm64.
-  return IsBinaryArmExecutable(executablePath);
-}
-#endif  // __x86_64__
-
-void LaunchChild(int argc, const char** argv) {
+static void RegisterAppWithLaunchServices(NSString* aBundlePath) {
   MacAutoreleasePool pool;
 
   @try {
-    bool preferArmLaunch = false;
-
-#if defined(__x86_64__)
-    // When running under Rosetta, child processes inherit the architecture
-    // preference of their parent and therefore universal binaries launched
-    // by an emulated x64 process will launch in x64 mode. If we are running
-    // under Rosetta, launch the child process with a preference for arm64 so
-    // that we will switch to arm64 execution if we have just updated from
-    // x64 to a universal build. This includes if we were already a universal
-    // build and the user is intentionally running under Rosetta.
-    preferArmLaunch = ShouldPreferArmLaunch(ARCH_PATH, argv[0]);
-#endif  // __x86_64__
-
-    NSString* launchPath;
-    NSMutableArray* arguments;
-
-    if (preferArmLaunch) {
-      launchPath = [NSString stringWithUTF8String:ARCH_PATH];
-
-      // Size the arguments array to include all the arguments
-      // in |argv| plus two arguments to pass to the arch(1) utility.
-      arguments = [NSMutableArray arrayWithCapacity:argc + 2];
-      [arguments addObject:[NSString stringWithUTF8String:"-arm64"]];
-      [arguments addObject:[NSString stringWithUTF8String:"-x86_64"]];
-
-      // Add the first argument from |argv|. The rest are added below.
-      [arguments addObject:[NSString stringWithUTF8String:argv[0]]];
-    } else {
-      launchPath = [NSString stringWithUTF8String:argv[0]];
-      arguments = [NSMutableArray arrayWithCapacity:argc - 1];
+    OSStatus status =
+        LSRegisterURL((CFURLRef)[NSURL fileURLWithPath:aBundlePath], YES);
+    if (status != noErr) {
+      NSLog(@"We failed to register the app in the Launch Services database, "
+            @"which may lead to a failure to launch the app. Launch path: %@",
+            aBundlePath);
     }
+  } @catch (NSException* e) {
+    NSLog(@"%@: %@", e.name, e.reason);
+  }
+}
 
+static void StripQuarantineBit(NSString* aBundlePath) {
+  MacAutoreleasePool pool;
+
+  NSArray* arguments = @[ @"-dr", @"com.apple.quarantine", aBundlePath ];
+  LaunchTask(@"/usr/bin/xattr", arguments);
+}
+
+void LaunchMacApp(int argc, const char** argv) {
+  MacAutoreleasePool pool;
+
+  @try {
+    NSString* launchPath = [NSString stringWithUTF8String:argv[0]];
+    NSMutableArray* arguments = [NSMutableArray arrayWithCapacity:argc - 1];
     for (int i = 1; i < argc; i++) {
       [arguments addObject:[NSString stringWithUTF8String:argv[i]]];
     }
-    [NSTask launchedTaskWithLaunchPath:launchPath arguments:arguments];
+    if (![launchPath hasSuffix:@".app"]) {
+      // We only support launching applications inside .app bundles.
+      NSLog(@"The updater attempted to launch an app that was not a .app "
+            @"bundle. Please verify launch path: %@",
+            launchPath);
+      return;
+    }
+
+    StripQuarantineBit(launchPath);
+    RegisterAppWithLaunchServices(launchPath);
+
+    // We use NSWorkspace to register the application into the
+    // `TALAppsToRelaunchAtLogin` list and allow for macOS session resume.
+    // This API only works with `.app`s.
+    __block dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    NSWorkspaceOpenConfiguration* config =
+        [NSWorkspaceOpenConfiguration configuration];
+    [config setArguments:arguments];
+    [config setCreatesNewApplicationInstance:YES];
+    [config setEnvironment:[[NSProcessInfo processInfo] environment]];
+
+    [[NSWorkspace sharedWorkspace]
+        openApplicationAtURL:[NSURL fileURLWithPath:launchPath]
+               configuration:config
+           completionHandler:^(NSRunningApplication* aChild, NSError* aError) {
+             if (aError) {
+               NSLog(@"launchchild_osx: Failed to run application. Error: %@",
+                     aError);
+             }
+             dispatch_semaphore_signal(semaphore);
+           }];
+
+    // We use a semaphore to wait for the application to launch.
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
   } @catch (NSException* e) {
     NSLog(@"%@: %@", e.name, e.reason);
   }
@@ -161,7 +124,8 @@ void LaunchMacPostProcess(const char* aAppBundle) {
   // Launch helper to perform post processing for the update; this is the Mac
   // analogue of LaunchWinPostProcess (PostUpdateWin).
   NSString* iniPath = [NSString stringWithUTF8String:aAppBundle];
-  iniPath = [iniPath stringByAppendingPathComponent:@"Contents/Resources/updater.ini"];
+  iniPath = [iniPath
+      stringByAppendingPathComponent:@"Contents/Resources/updater.ini"];
 
   NSFileManager* fileManager = [NSFileManager defaultManager];
   if (![fileManager fileExistsAtPath:iniPath]) {
@@ -171,8 +135,8 @@ void LaunchMacPostProcess(const char* aAppBundle) {
 
   int readResult;
   mozilla::UniquePtr<char[]> values[2];
-  readResult =
-      ReadStrings([iniPath UTF8String], "ExeRelPath\0ExeArg\0", 2, values, "PostUpdateMac");
+  readResult = ReadStrings([iniPath UTF8String], "ExeRelPath\0ExeArg\0", 2,
+                           values, "PostUpdateMac");
   if (readResult) {
     return;
   }
@@ -194,11 +158,19 @@ void LaunchMacPostProcess(const char* aAppBundle) {
   exeFullPath = [exeFullPath stringByAppendingPathComponent:exeRelPath];
 
   mozilla::UniquePtr<char[]> optVal;
-  readResult = ReadStrings([iniPath UTF8String], "ExeAsync\0", 1, &optVal, "PostUpdateMac");
+  readResult = ReadStrings([iniPath UTF8String], "ExeAsync\0", 1, &optVal,
+                           "PostUpdateMac");
 
   NSTask* task = [[NSTask alloc] init];
   [task setLaunchPath:exeFullPath];
   [task setArguments:[NSArray arrayWithObject:exeArg]];
+
+  // Invoke post-update with a minimal environment to avoid environment
+  // variables intended to relaunch Firefox impacting post-update operations, in
+  // particular background tasks.  The updater will invoke the callback
+  // application with the current (non-minimal) environment.
+  [task setEnvironment:@{}];
+
   [task launch];
   if (!readResult) {
     NSString* exeAsync = [NSString stringWithUTF8String:optVal.get()];
@@ -223,8 +195,10 @@ id ConnectToUpdateServer() {
       updateServer = (id)[NSConnection
           rootProxyForConnectionWithRegisteredName:@"org.mozilla.updater.server"
                                               host:nil
-                                   usingNameServer:[NSSocketPortNameServer sharedInstance]];
-      if (!updateServer || ![updateServer respondsToSelector:@selector(abort)] ||
+                                   usingNameServer:[NSSocketPortNameServer
+                                                       sharedInstance]];
+      if (!updateServer ||
+          ![updateServer respondsToSelector:@selector(abort)] ||
           ![updateServer respondsToSelector:@selector(getArguments)] ||
           ![updateServer respondsToSelector:@selector(shutdown)]) {
         NSLog(@"Server doesn't exist or doesn't provide correct selectors.");
@@ -262,16 +236,20 @@ void CleanupElevatedMacUpdate(bool aFailureOccurred) {
   }
 
   NSFileManager* manager = [NSFileManager defaultManager];
-  [manager removeItemAtPath:@"/Library/PrivilegedHelperTools/org.mozilla.updater" error:nil];
-  [manager removeItemAtPath:@"/Library/LaunchDaemons/org.mozilla.updater.plist" error:nil];
-  const char* launchctlArgs[] = {"/bin/launchctl", "remove", "org.mozilla.updater"};
+  [manager
+      removeItemAtPath:@"/Library/PrivilegedHelperTools/org.mozilla.updater"
+                 error:nil];
+  [manager removeItemAtPath:@"/Library/LaunchDaemons/org.mozilla.updater.plist"
+                      error:nil];
+
   // The following call will terminate the current process due to the "remove"
-  // argument in launchctlArgs.
-  LaunchChild(3, launchctlArgs);
+  // argument.
+  LaunchTask(@"/bin/launchctl", @[ @"remove", @"org.mozilla.updater" ]);
 }
 
-// Note: Caller is responsible for freeing argv.
-bool ObtainUpdaterArguments(int* argc, char*** argv) {
+// Note: Caller is responsible for freeing aArgv.
+bool ObtainUpdaterArguments(int* aArgc, char*** aArgv,
+                            MARChannelStringTable* aMARStrings) {
   MacAutoreleasePool pool;
 
   id updateServer = ConnectToUpdateServer();
@@ -282,15 +260,24 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
   }
 
   @try {
-    NSArray* updaterArguments = [updateServer performSelector:@selector(getArguments)];
-    *argc = [updaterArguments count];
-    char** tempArgv = (char**)malloc(sizeof(char*) * (*argc));
-    for (int i = 0; i < *argc; i++) {
+    NSArray* updaterArguments =
+        [updateServer performSelector:@selector(getArguments)];
+    *aArgc = [updaterArguments count];
+    char** tempArgv = (char**)malloc(sizeof(char*) * (*aArgc));
+    for (int i = 0; i < *aArgc; i++) {
       int argLen = [[updaterArguments objectAtIndex:i] length] + 1;
       tempArgv[i] = (char*)malloc(argLen);
-      strncpy(tempArgv[i], [[updaterArguments objectAtIndex:i] UTF8String], argLen);
+      strncpy(tempArgv[i], [[updaterArguments objectAtIndex:i] UTF8String],
+              argLen);
     }
-    *argv = tempArgv;
+    *aArgv = tempArgv;
+
+    NSString* channelID =
+        [updateServer performSelector:@selector(getMARChannelID)];
+    const char* channelIDStr = [channelID UTF8String];
+    aMARStrings->MARChannelID =
+        mozilla::MakeUnique<char[]>(strlen(channelIDStr) + 1);
+    strcpy(aMARStrings->MARChannelID.get(), channelIDStr);
   } @catch (NSException* e) {
     // Let's try our best and clean up.
     CleanupElevatedMacUpdate(true);
@@ -309,10 +296,12 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
   NSArray* mUpdaterArguments;
   BOOL mShouldKeepRunning;
   BOOL mAborted;
+  NSString* mMARChannelID;
 }
-- (id)initWithArgs:(NSArray*)args;
+- (id)initWithArgs:(NSArray*)aArgs marChannelID:(NSString*)aMARChannelID;
 - (BOOL)runServer;
 - (NSArray*)getArguments;
+- (NSString*)getMARChannelID;
 - (void)abort;
 - (BOOL)wasAborted;
 - (void)shutdown;
@@ -321,12 +310,13 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
 
 @implementation ElevatedUpdateServer
 
-- (id)initWithArgs:(NSArray*)args {
+- (id)initWithArgs:(NSArray*)aArgs marChannelID:(NSString*)aMARChannelID {
   self = [super init];
   if (!self) {
     return nil;
   }
-  mUpdaterArguments = args;
+  mUpdaterArguments = aArgs;
+  mMARChannelID = aMARChannelID;
   mShouldKeepRunning = YES;
   mAborted = NO;
   return self;
@@ -334,7 +324,8 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
 
 - (BOOL)runServer {
   NSPort* serverPort = [NSSocketPort port];
-  NSConnection* server = [NSConnection connectionWithReceivePort:serverPort sendPort:serverPort];
+  NSConnection* server = [NSConnection connectionWithReceivePort:serverPort
+                                                        sendPort:serverPort];
   [server setRootObject:self];
   if ([server registerName:@"org.mozilla.updater.server"
             withNameServer:[NSSocketPortNameServer sharedInstance]] == NO) {
@@ -343,14 +334,28 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
     return NO;
   }
 
-  while ([self shouldKeepRunning] && [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                                              beforeDate:[NSDate distantFuture]])
-    ;
+  while ([self shouldKeepRunning] &&
+         [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                  beforeDate:[NSDate distantFuture]]);
   return ![self wasAborted];
 }
 
 - (NSArray*)getArguments {
   return mUpdaterArguments;
+}
+
+/**
+ * The MAR channel ID(s) are stored in the UpdateSettings.framework that ships
+ * with the updater.app bundle. When an elevated update is occurring, the
+ * org.mozilla.updater binary is extracted and installed individually as a
+ * Privileged Helper Tool. This Privileged Helper Tool does not have access to
+ * the UpdateSettings.framework and we therefore rely on the unelevated updater
+ * process to pass this information to the elevated updater process in the same
+ * fashion that the command line arguments are passed to the elevated updater
+ * process by `getArguments`.
+ */
+- (NSString*)getMARChannelID {
+  return mMARChannelID;
 }
 
 - (void)abort {
@@ -372,16 +377,19 @@ bool ObtainUpdaterArguments(int* argc, char*** argv) {
 
 @end
 
-bool ServeElevatedUpdate(int argc, const char** argv) {
+bool ServeElevatedUpdate(int aArgc, const char** aArgv,
+                         const char* aMARChannelID) {
   MacAutoreleasePool pool;
 
-  NSMutableArray* updaterArguments = [NSMutableArray arrayWithCapacity:argc];
-  for (int i = 0; i < argc; i++) {
-    [updaterArguments addObject:[NSString stringWithUTF8String:argv[i]]];
+  NSMutableArray* updaterArguments = [NSMutableArray arrayWithCapacity:aArgc];
+  for (int i = 0; i < aArgc; i++) {
+    [updaterArguments addObject:[NSString stringWithUTF8String:aArgv[i]]];
   }
 
+  NSString* channelID = [NSString stringWithUTF8String:aMARChannelID];
   ElevatedUpdateServer* updater =
-      [[ElevatedUpdateServer alloc] initWithArgs:[updaterArguments copy]];
+      [[ElevatedUpdateServer alloc] initWithArgs:updaterArguments
+                                    marChannelID:channelID];
   bool didSucceed = [updater runServer];
 
   [updater release];
@@ -394,9 +402,11 @@ bool IsOwnedByGroupAdmin(const char* aAppBundle) {
   NSString* appDir = [NSString stringWithUTF8String:aAppBundle];
   NSFileManager* fileManager = [NSFileManager defaultManager];
 
-  NSDictionary* attributes = [fileManager attributesOfItemAtPath:appDir error:nil];
+  NSDictionary* attributes = [fileManager attributesOfItemAtPath:appDir
+                                                           error:nil];
   bool isOwnedByAdmin = false;
-  if (attributes && [[attributes valueForKey:NSFileGroupOwnerAccountID] intValue] == 80) {
+  if (attributes &&
+      [[attributes valueForKey:NSFileGroupOwnerAccountID] intValue] == 80) {
     isOwnedByAdmin = true;
   }
   return isOwnedByAdmin;
@@ -425,13 +435,14 @@ void SetGroupOwnershipAndPermissions(const char* aAppBundle) {
     return;
   }
 
-  NSArray* permKeys =
-      [NSArray arrayWithObjects:NSFileGroupOwnerAccountID, NSFilePosixPermissions, nil];
+  NSArray* permKeys = [NSArray
+      arrayWithObjects:NSFileGroupOwnerAccountID, NSFilePosixPermissions, nil];
   // For all descendants of Firefox.app, set group ownership to 80 ("admin") and
   // ensure write permission for the group.
   for (NSString* currPath in paths) {
     NSString* child = [appDir stringByAppendingPathComponent:currPath];
-    NSDictionary* oldAttributes = [fileManager attributesOfItemAtPath:child error:&error];
+    NSDictionary* oldAttributes = [fileManager attributesOfItemAtPath:child
+                                                                error:&error];
     if (error) {
       return;
     }
@@ -440,48 +451,23 @@ void SetGroupOwnershipAndPermissions(const char* aAppBundle) {
     if ([oldAttributes fileType] == NSFileTypeSymbolicLink) {
       continue;
     }
-    NSNumber* oldPerms = (NSNumber*)[oldAttributes valueForKey:NSFilePosixPermissions];
+    NSNumber* oldPerms =
+        (NSNumber*)[oldAttributes valueForKey:NSFilePosixPermissions];
     NSArray* permObjects = [NSArray
         arrayWithObjects:[NSNumber numberWithUnsignedLong:80],
-                         [NSNumber numberWithUnsignedLong:[oldPerms shortValue] | 020], nil];
-    NSDictionary* attributes = [NSDictionary dictionaryWithObjects:permObjects forKeys:permKeys];
-    if (![fileManager setAttributes:attributes ofItemAtPath:child error:&error] || error) {
+                         [NSNumber
+                             numberWithUnsignedLong:[oldPerms shortValue] |
+                                                    020],
+                         nil];
+    NSDictionary* attributes = [NSDictionary dictionaryWithObjects:permObjects
+                                                           forKeys:permKeys];
+    if (![fileManager setAttributes:attributes
+                       ofItemAtPath:child
+                              error:&error] ||
+        error) {
       return;
     }
   }
-}
-
-/**
- * Helper to launch macOS tasks via NSTask.
- */
-static void LaunchTask(NSString* aPath, NSArray* aArguments) {
-  if (@available(macOS 10.13, *)) {
-    NSTask* task = [[NSTask alloc] init];
-    [task setExecutableURL:[NSURL fileURLWithPath:aPath]];
-    if (aArguments) {
-      [task setArguments:aArguments];
-    }
-    [task launchAndReturnError:nil];
-    [task release];
-  } else {
-    NSArray* arguments = aArguments;
-    if (!arguments) {
-      arguments = @[];
-    }
-    [NSTask launchedTaskWithLaunchPath:aPath arguments:arguments];
-  }
-}
-
-static void RegisterAppWithLaunchServices(NSString* aBundlePath) {
-  NSArray* arguments = @[ @"-f", aBundlePath ];
-  LaunchTask(@"/System/Library/Frameworks/CoreServices.framework/Frameworks/"
-             @"LaunchServices.framework/Support/lsregister",
-             arguments);
-}
-
-static void StripQuarantineBit(NSString* aBundlePath) {
-  NSArray* arguments = @[ @"-d", @"com.apple.quarantine", aBundlePath ];
-  LaunchTask(@"/usr/bin/xattr", arguments);
 }
 
 bool PerformInstallationFromDMG(int argc, char** argv) {
@@ -491,9 +477,11 @@ bool PerformInstallationFromDMG(int argc, char** argv) {
   }
   NSString* bundlePath = [NSString stringWithUTF8String:argv[2]];
   NSString* destPath = [NSString stringWithUTF8String:argv[3]];
-  if ([[NSFileManager defaultManager] copyItemAtPath:bundlePath toPath:destPath error:nil]) {
-    RegisterAppWithLaunchServices(destPath);
+  if ([[NSFileManager defaultManager] copyItemAtPath:bundlePath
+                                              toPath:destPath
+                                               error:nil]) {
     StripQuarantineBit(destPath);
+    RegisterAppWithLaunchServices(destPath);
     return true;
   }
   return false;

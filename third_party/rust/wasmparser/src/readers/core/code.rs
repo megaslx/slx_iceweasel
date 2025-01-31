@@ -14,7 +14,7 @@
  */
 
 use crate::{BinaryReader, FromReader, OperatorsReader, Result, SectionLimited, ValType};
-use std::ops::Range;
+use core::ops::Range;
 
 /// A reader for the code section of a WebAssembly module.
 pub type CodeSectionReader<'a> = SectionLimited<'a, FunctionBody<'a>>;
@@ -27,19 +27,8 @@ pub struct FunctionBody<'a> {
 
 impl<'a> FunctionBody<'a> {
     /// Constructs a new `FunctionBody` for the given data and offset.
-    pub fn new(offset: usize, data: &'a [u8]) -> Self {
-        Self {
-            reader: BinaryReader::new_with_offset(data, offset),
-        }
-    }
-
-    /// Whether or not to allow 64-bit memory arguments in the
-    /// function body.
-    ///
-    /// This is intended to be `true` when support for the memory64
-    /// WebAssembly proposal is also enabled.
-    pub fn allow_memarg64(&mut self, allow: bool) {
-        self.reader.allow_memarg64(allow);
+    pub fn new(reader: BinaryReader<'a>) -> Self {
+        Self { reader }
     }
 
     /// Gets a binary reader for this function body.
@@ -74,11 +63,18 @@ impl<'a> FunctionBody<'a> {
     pub fn range(&self) -> Range<usize> {
         self.reader.range()
     }
+
+    /// Returns the body of this function as a list of bytes.
+    ///
+    /// Note that the returned bytes start with the function locals declaration.
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.reader.remaining_buffer()
+    }
 }
 
 impl<'a> FromReader<'a> for FunctionBody<'a> {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
-        let reader = reader.read_reader("function body extends past end of the code section")?;
+        let reader = reader.read_reader()?;
         Ok(FunctionBody { reader })
     }
 }

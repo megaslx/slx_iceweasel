@@ -432,6 +432,23 @@ static const struct FREEBLVectorStr vector = {
     SHAKE_256_Hash,
 
     /* End of version 3.026 */
+
+    Kyber_NewKey,
+    Kyber_Encapsulate,
+    Kyber_Decapsulate,
+
+    /* End of version 3.027 */
+
+    ED_SignMessage,
+    ED_VerifyMessage,
+    ED_DerivePublicKey,
+    /* End of version 3.028 */
+
+    X25519_DerivePublicKey,
+    /* End of version 3.029 */
+
+    EC_DerivePublicKey,
+    /* End of version 3.030 */
 };
 
 const FREEBLVector*

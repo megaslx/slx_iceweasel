@@ -4,7 +4,6 @@ function handleRequest(request, response) {
   response.setHeader("Content-Type", "html", false);
 
   // Check the params and set the cross-origin-opener policy headers if needed
-  Cu.importGlobalProperties(["URLSearchParams"]);
   const query = new URLSearchParams(request.queryString);
   if (query.get("crossOriginIsolated") === "true") {
     response.setHeader("Cross-Origin-Opener-Policy", "same-origin", false);
@@ -92,8 +91,8 @@ function handleRequest(request, response) {
       <h1>Test color-scheme simulation</h1>
       <button>Target</button>
       <iframe src='${iframeOrigin}/document-builder.sjs?html=${encodeURI(
-    IFRAME_HTML
-  )}'></iframe>
+        IFRAME_HTML
+      )}'></iframe>
     </body>
   </html>`;
 

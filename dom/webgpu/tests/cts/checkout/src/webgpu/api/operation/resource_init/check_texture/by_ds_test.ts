@@ -1,8 +1,9 @@
 import { assert } from '../../../../../common/util/util.js';
-import { kTextureFormatInfo } from '../../../../capability_info.js';
+import { kTextureFormatInfo } from '../../../../format_info.js';
 import { GPUTest } from '../../../../gpu_test.js';
 import { virtualMipSize } from '../../../../util/texture/base.js';
-import { CheckContents } from '../texture_zero.spec.js';
+
+import { CheckContents } from './texture_zero_init_test.js';
 
 function makeFullscreenVertexModule(device: GPUDevice) {
   return device.createShaderModule({
@@ -55,6 +56,7 @@ function getDepthTestEqualPipeline(
     depthStencil: {
       format,
       depthCompare: 'equal',
+      depthWriteEnabled: false,
     },
     primitive: { topology: 'triangle-list' },
     multisample: { count: sampleCount },
@@ -85,6 +87,8 @@ function getStencilTestEqualPipeline(
       targets: [{ format: 'r8unorm' }],
     },
     depthStencil: {
+      depthWriteEnabled: false,
+      depthCompare: 'always',
       format,
       stencilFront: { compare: 'equal' },
       stencilBack: { compare: 'equal' },
@@ -116,7 +120,7 @@ const checkContents: (type: 'depth' | 'stencil', ...args: Parameters<CheckConten
       viewDescriptor.baseMipLevel
     );
 
-    const renderTexture = t.device.createTexture({
+    const renderTexture = t.createTextureTracked({
       size: [width, height, 1],
       format: 'r8unorm',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
@@ -126,7 +130,7 @@ const checkContents: (type: 'depth' | 'stencil', ...args: Parameters<CheckConten
     let resolveTexture = undefined;
     let resolveTarget = undefined;
     if (params.sampleCount > 1) {
-      resolveTexture = t.device.createTexture({
+      resolveTexture = t.createTextureTracked({
         size: [width, height, 1],
         format: 'r8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
@@ -149,10 +153,10 @@ const checkContents: (type: 'depth' | 'stencil', ...args: Parameters<CheckConten
       ],
       depthStencilAttachment: {
         view: texture.createView(viewDescriptor),
-        depthStoreOp: formatInfo.depth ? 'store' : undefined,
         depthLoadOp: formatInfo.depth ? 'load' : undefined,
-        stencilStoreOp: formatInfo.stencil ? 'store' : undefined,
+        depthStoreOp: formatInfo.depth ? 'store' : undefined,
         stencilLoadOp: formatInfo.stencil ? 'load' : undefined,
+        stencilStoreOp: formatInfo.stencil ? 'store' : undefined,
       },
     });
 

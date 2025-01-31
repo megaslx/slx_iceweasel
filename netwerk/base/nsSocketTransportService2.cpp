@@ -5,9 +5,9 @@
 
 #include "nsSocketTransportService2.h"
 
-#include "IOActivityMonitor.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/ChaosMode.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Likely.h"
 #include "mozilla/PodOperations.h"
@@ -35,6 +35,8 @@
 
 namespace mozilla {
 namespace net {
+
+#define SOCKET_THREAD_LONGTASK_MS 3
 
 LazyLogModule gSocketTransportLog("nsSocketTransport");
 LazyLogModule gUDPSocketLog("UDPSocket");
@@ -406,6 +408,18 @@ bool nsSocketTransportService::CanAttachSocket() {
   uint32_t total = mActiveList.Length() + mIdleList.Length();
   bool rv = total < gMaxCount;
 
+  if (!rv) {
+    static bool reported_socket_limit_reached = false;
+    if (!reported_socket_limit_reached) {
+      mozilla::glean::networking::os_socket_limit_reached.Add(1);
+      reported_socket_limit_reached = true;
+    }
+    SOCKET_LOG(
+        ("nsSocketTransportService::CanAttachSocket failed -  total: %d, "
+         "maxCount: %d\n",
+         total, gMaxCount));
+  }
+
   MOZ_ASSERT(mInitialized);
   return rv;
 }
@@ -637,7 +651,7 @@ int32_t nsSocketTransportService::Poll(TimeDuration* pollDuration,
   SOCKET_LOG(("    timeout = %i milliseconds\n",
               PR_IntervalToMilliseconds(pollTimeout)));
 
-  int32_t rv;
+  int32_t n;
   {
 #ifdef MOZ_GECKO_PROFILER
     TimeStamp startTime = TimeStamp::Now();
@@ -648,7 +662,7 @@ int32_t nsSocketTransportService::Poll(TimeDuration* pollDuration,
     }
 #endif
 
-    rv = PR_Poll(firstPollEntry, pollCount, pollTimeout);
+    n = PR_Poll(firstPollEntry, pollCount, pollTimeout);
 
 #ifdef MOZ_GECKO_PROFILER
     if (pollTimeout != PR_INTERVAL_NO_WAIT) {
@@ -677,7 +691,7 @@ int32_t nsSocketTransportService::Poll(TimeDuration* pollDuration,
   SOCKET_LOG(("    ...returned after %i milliseconds\n",
               PR_IntervalToMilliseconds(PR_IntervalNow() - ts)));
 
-  return rv;
+  return n;
 }
 
 //-----------------------------------------------------------------------------
@@ -742,15 +756,19 @@ nsSocketTransportService::Init() {
 
   if (!XRE_IsContentProcess() ||
       StaticPrefs::network_allow_raw_sockets_in_content_processes_AtStartup()) {
-    nsresult rv = NS_NewNamedThread("Socket Thread", getter_AddRefs(thread),
-                                    this, {.stackSize = GetThreadStackSize()});
+    // Since we Poll, we can't use normal LongTask support in Main Process
+    nsresult rv = NS_NewNamedThread(
+        "Socket Thread", getter_AddRefs(thread), this,
+        {GetThreadStackSize(), false, false, Some(SOCKET_THREAD_LONGTASK_MS)});
     NS_ENSURE_SUCCESS(rv, rv);
   } else {
     // In the child process, we just want a regular nsThread with no socket
     // polling. So we don't want to run the nsSocketTransportService runnable on
     // it.
     nsresult rv =
-        NS_NewNamedThread("Socket Thread", getter_AddRefs(thread), nullptr);
+        NS_NewNamedThread("Socket Thread", getter_AddRefs(thread), nullptr,
+                          {nsIThreadManager::DEFAULT_STACK_SIZE, false, false,
+                           Some(SOCKET_THREAD_LONGTASK_MS)});
     NS_ENSURE_SUCCESS(rv, rv);
 
     // Set up some of the state that nsSocketTransportService::Run would set.
@@ -778,7 +796,6 @@ nsSocketTransportService::Init() {
   // socket process. We have to make sure the topics registered below are also
   // registered in nsIObserver::Init().
   if (obsSvc) {
-    obsSvc->AddObserver(this, "profile-initial-state", false);
     obsSvc->AddObserver(this, "last-pb-context-exited", false);
     obsSvc->AddObserver(this, NS_WIDGET_SLEEP_OBSERVER_TOPIC, true);
     obsSvc->AddObserver(this, NS_WIDGET_WAKE_OBSERVER_TOPIC, true);
@@ -854,7 +871,6 @@ nsresult nsSocketTransportService::ShutdownThread() {
 
   nsCOMPtr<nsIObserverService> obsSvc = services::GetObserverService();
   if (obsSvc) {
-    obsSvc->RemoveObserver(this, "profile-initial-state");
     obsSvc->RemoveObserver(this, "last-pb-context-exited");
     obsSvc->RemoveObserver(this, NS_WIDGET_SLEEP_OBSERVER_TOPIC);
     obsSvc->RemoveObserver(this, NS_WIDGET_WAKE_OBSERVER_TOPIC);
@@ -866,8 +882,6 @@ nsresult nsSocketTransportService::ShutdownThread() {
     mAfterWakeUpTimer->Cancel();
     mAfterWakeUpTimer = nullptr;
   }
-
-  IOActivityMonitor::Shutdown();
 
   mInitialized = false;
   mShuttingDown = false;
@@ -1075,8 +1089,14 @@ nsSocketTransportService::Run() {
   gSocketThread = PR_GetCurrentThread();
 
   {
+    // See bug 1843384:
+    // Avoid blocking the main thread by allocating the PollableEvent outside
+    // the mutex. Still has the potential to hang the socket thread, but the
+    // main thread remains responsive.
+    PollableEvent* pollable = new PollableEvent();
     MutexAutoLock lock(mLock);
-    mPollableEvent.reset(new PollableEvent());
+    mPollableEvent.reset(pollable);
+
     //
     // NOTE: per bug 190000, this failure could be caused by Zone-Alarm
     // or similar software.
@@ -1361,6 +1381,13 @@ nsresult nsSocketTransportService::DoPollIteration(TimeDuration* pollDuration) {
   }
 
   now = PR_IntervalNow();
+#ifdef MOZ_GECKO_PROFILER
+  TimeStamp startTime;
+  bool profiling = profiler_thread_is_being_profiled_for_markers();
+  if (profiling) {
+    startTime = TimeStamp::Now();
+  }
+#endif
 
   if (n < 0) {
     SOCKET_LOG(("  PR_Poll error [%d] os error [%d]\n", PR_GetError(),
@@ -1417,6 +1444,36 @@ nsresult nsSocketTransportService::DoPollIteration(TimeDuration* pollDuration) {
       }
     }
   }
+#ifdef MOZ_GECKO_PROFILER
+  if (profiling) {
+    TimeStamp endTime = TimeStamp::Now();
+    if ((endTime - startTime).ToMilliseconds() >= SOCKET_THREAD_LONGTASK_MS) {
+      struct LongTaskMarker {
+        static constexpr Span<const char> MarkerTypeName() {
+          return MakeStringSpan("SocketThreadLongTask");
+        }
+        static void StreamJSONMarkerData(
+            baseprofiler::SpliceableJSONWriter& aWriter) {
+          aWriter.StringProperty("category", "LongTask");
+        }
+        static MarkerSchema MarkerTypeDisplay() {
+          using MS = MarkerSchema;
+          MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
+          schema.AddKeyLabelFormatSearchable("category", "Type",
+                                             MS::Format::String,
+                                             MS::Searchable::Searchable);
+          return schema;
+        }
+      };
+
+      profiler_add_marker(ProfilerString8View("LongTaskSocketProcessing"),
+                          geckoprofiler::category::OTHER,
+                          MarkerTiming::Interval(startTime, endTime),
+                          LongTaskMarker{});
+    }
+  }
+
+#endif
 
   return NS_OK;
 }
@@ -1446,7 +1503,7 @@ nsresult nsSocketTransportService::UpdatePrefs() {
   nsresult rv =
       Preferences::GetInt(KEEPALIVE_IDLE_TIME_PREF, &keepaliveIdleTimeS);
   if (NS_SUCCEEDED(rv)) {
-    mKeepaliveIdleTimeS = clamped(keepaliveIdleTimeS, 1, kMaxTCPKeepIdle);
+    mKeepaliveIdleTimeS = std::clamp(keepaliveIdleTimeS, 1, kMaxTCPKeepIdle);
   }
 
   int32_t keepaliveRetryIntervalS;
@@ -1454,13 +1511,13 @@ nsresult nsSocketTransportService::UpdatePrefs() {
                            &keepaliveRetryIntervalS);
   if (NS_SUCCEEDED(rv)) {
     mKeepaliveRetryIntervalS =
-        clamped(keepaliveRetryIntervalS, 1, kMaxTCPKeepIntvl);
+        std::clamp(keepaliveRetryIntervalS, 1, kMaxTCPKeepIntvl);
   }
 
   int32_t keepaliveProbeCount;
   rv = Preferences::GetInt(KEEPALIVE_PROBE_COUNT_PREF, &keepaliveProbeCount);
   if (NS_SUCCEEDED(rv)) {
-    mKeepaliveProbeCount = clamped(keepaliveProbeCount, 1, kMaxTCPKeepCount);
+    mKeepaliveProbeCount = std::clamp(keepaliveProbeCount, 1, kMaxTCPKeepCount);
   }
   bool keepaliveEnabled = false;
   rv = Preferences::GetBool(KEEPALIVE_ENABLED_PREF, &keepaliveEnabled);
@@ -1563,13 +1620,6 @@ nsSocketTransportService::Observe(nsISupports* subject, const char* topic,
                                   const char16_t* data) {
   SOCKET_LOG(("nsSocketTransportService::Observe topic=%s", topic));
 
-  if (!strcmp(topic, "profile-initial-state")) {
-    if (!Preferences::GetBool(IO_ACTIVITY_ENABLED_PREF, false)) {
-      return NS_OK;
-    }
-    return net::IOActivityMonitor::Init();
-  }
-
   if (!strcmp(topic, "last-pb-context-exited")) {
     nsCOMPtr<nsIRunnable> ev = NewRunnableMethod(
         "net::nsSocketTransportService::ClosePrivateConnections", this,
@@ -1624,8 +1674,6 @@ void nsSocketTransportService::ClosePrivateConnections() {
       DetachSocket(mIdleList, &mIdleList[i]);
     }
   }
-
-  ClearPrivateSSLState();
 }
 
 NS_IMETHODIMP
@@ -1782,8 +1830,8 @@ void nsSocketTransportService::StartPollWatchdog() {
         // Poll can hang sometimes. If we are in shutdown, we are going to start
         // a watchdog. If we do not exit poll within REPAIR_POLLABLE_EVENT_TIME
         // signal a pollable event again.
-        MOZ_ASSERT(gIOService->IsNetTearingDown());
-        if (self->mPolling && !self->mPollRepairTimer) {
+        if (gIOService->IsNetTearingDown() && self->mPolling &&
+            !self->mPollRepairTimer) {
           NS_NewTimerWithObserver(getter_AddRefs(self->mPollRepairTimer), self,
                                   REPAIR_POLLABLE_EVENT_TIME,
                                   nsITimer::TYPE_REPEATING_SLACK);
@@ -1815,11 +1863,20 @@ void nsSocketTransportService::EndPolling() {
 
 #endif
 
-void nsSocketTransportService::TryRepairPollableEvent() {
+void nsSocketTransportService::TryRepairPollableEvent() MOZ_REQUIRES(mLock) {
   mLock.AssertCurrentThreadOwns();
 
+  PollableEvent* pollable = nullptr;
+  {
+    // Bug 1719046: In certain cases PollableEvent constructor can hang
+    // when callign PR_NewTCPSocketPair.
+    // We unlock the mutex to prevent main thread hangs acquiring the lock.
+    MutexAutoUnlock unlock(mLock);
+    pollable = new PollableEvent();
+  }
+
   NS_WARNING("Trying to repair mPollableEvent");
-  mPollableEvent.reset(new PollableEvent());
+  mPollableEvent.reset(pollable);
   if (!mPollableEvent->Valid()) {
     mPollableEvent = nullptr;
   }

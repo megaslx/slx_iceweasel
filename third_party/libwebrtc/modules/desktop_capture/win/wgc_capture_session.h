@@ -44,17 +44,20 @@ class WgcCaptureSession final {
   HRESULT StartCapture(const DesktopCaptureOptions& options);
 
   // Returns a frame from the local frame queue, if any are present.
-  bool GetFrame(std::unique_ptr<DesktopFrame>* output_frame);
+  bool GetFrame(std::unique_ptr<DesktopFrame>* output_frame,
+                bool source_should_be_capturable);
 
   bool IsCaptureStarted() const {
     RTC_DCHECK_RUN_ON(&sequence_checker_);
     return is_capture_started_;
   }
 
-  // We only keep 1 buffer in the internal frame pool to reduce the latency as
-  // much as possible.
+  // We keep 2 buffers in the frame pool since it results in a good compromise
+  // between latency/capture-rate and the rate at which
+  // Direct3D11CaptureFramePool.TryGetNextFrame returns NULL and we have to fall
+  // back to providing a copy from our external queue instead.
   // We make this public for tests.
-  static constexpr int kNumBuffers = 1;
+  static constexpr int kNumBuffers = 2;
 
  private:
   // Initializes `mapped_texture_` with the properties of the `src_texture`,
@@ -72,19 +75,19 @@ class WgcCaptureSession final {
       ABI::Windows::Graphics::Capture::IGraphicsCaptureItem* sender,
       IInspectable* event_args);
 
-  // Event handler for `frame_pool_`'s FrameArrived event.
-  HRESULT OnFrameArrived(
-      ABI::Windows::Graphics::Capture::IDirect3D11CaptureFramePool* sender,
-      IInspectable* event_args);
+  // Wraps calls to ProcessFrame and deals with the uniqe start-up phase
+  // ensuring that we always have one captured frame available.
+  void EnsureFrame();
 
   // Process the captured frame and copy it to the `queue_`.
   HRESULT ProcessFrame();
 
-  void RemoveEventHandlers();
+  void RemoveEventHandler();
+
+  bool FrameContentCanBeCompared();
 
   bool allow_zero_hertz() const { return allow_zero_hertz_; }
 
-  std::unique_ptr<EventRegistrationToken> frame_arrived_token_;
   std::unique_ptr<EventRegistrationToken> item_closed_token_;
 
   // A Direct3D11 Device provided by the caller. We use this to create an
@@ -131,16 +134,6 @@ class WgcCaptureSession final {
 
   bool item_closed_ = false;
   bool is_capture_started_ = false;
-
-  // Counts number of "empty frame credits" which have built up in GetFrame()
-  // when a sequence of calls to ProcessFrame() was called with 20ms sleep calls
-  // between each. The counter is reduced by one (to a minimum of zero) when
-  // ProcessFrame() succeeds. As long as the counter is larger than zero, calls
-  // to RecordGetFrameResult(kTryGetNextFrameFailed) are disabled.
-  // The reason for adding this scheme is to prevent logs of
-  // kTryGetNextFrameFailed in the startup phase when some empty frames is
-  // expected and should not be seen as an error.
-  int empty_frame_credit_count_ = 0;
 
   // Caches the value of DesktopCaptureOptions.allow_wgc_zero_hertz() in
   // StartCapture(). Adds 0Hz detection in ProcessFrame() when enabled which

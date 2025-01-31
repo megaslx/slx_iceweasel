@@ -29,7 +29,7 @@ const BackgroundFileSaverStreamListener = Components.Constructor(
 const StringInputStream = Components.Constructor(
   "@mozilla.org/io/string-input-stream;1",
   "nsIStringInputStream",
-  "setData"
+  "setByteStringData"
 );
 
 const REQUEST_SUSPEND_AT = 1024 * 1024 * 4;
@@ -134,12 +134,12 @@ function promiseVerifyContents(aFile, aExpectedContents) {
 function promiseSaverComplete(aSaver, aOnTargetChangeFn) {
   return new Promise((resolve, reject) => {
     aSaver.observer = {
-      onTargetChange: function BFSO_onSaveComplete(aSaver, aTarget) {
+      onTargetChange: function BFSO_onSaveComplete(saver, aTarget) {
         if (aOnTargetChangeFn) {
           aOnTargetChangeFn(aTarget);
         }
       },
-      onSaveComplete: function BFSO_onSaveComplete(aSaver, aStatus) {
+      onSaveComplete: function BFSO_onSaveComplete(saver, aStatus) {
         if (Components.isSuccessCode(aStatus)) {
           resolve();
         } else {
@@ -166,10 +166,7 @@ function promiseSaverComplete(aSaver, aOnTargetChangeFn) {
  */
 function promiseCopyToSaver(aSourceString, aSaverOutputStream, aCloseWhenDone) {
   return new Promise((resolve, reject) => {
-    let inputStream = new StringInputStream(
-      aSourceString,
-      aSourceString.length
-    );
+    let inputStream = new StringInputStream(aSourceString);
     let copier = Cc[
       "@mozilla.org/network/async-stream-copier;1"
     ].createInstance(Ci.nsIAsyncStreamCopier);
@@ -213,17 +210,10 @@ function promiseCopyToSaver(aSourceString, aSaverOutputStream, aCloseWhenDone) {
  * @resolves When the operation completes with a success code.
  * @rejects With an exception, if the operation fails.
  */
-function promisePumpToSaver(
-  aSourceString,
-  aSaverStreamListener,
-  aCloseWhenDone
-) {
+function promisePumpToSaver(aSourceString, aSaverStreamListener) {
   return new Promise((resolve, reject) => {
     aSaverStreamListener.QueryInterface(Ci.nsIStreamListener);
-    let inputStream = new StringInputStream(
-      aSourceString,
-      aSourceString.length
-    );
+    let inputStream = new StringInputStream(aSourceString);
     let pump = Cc["@mozilla.org/network/input-stream-pump;1"].createInstance(
       Ci.nsIInputStreamPump
     );
@@ -603,7 +593,7 @@ add_task(async function test_enableAppend_hash() {
 add_task(async function test_finish_only() {
   // This test checks creating the object and doing nothing.
   let saver = new BackgroundFileSaverOutputStream();
-  function onTargetChange(aTarget) {
+  function onTargetChange() {
     do_throw("Should not receive the onTargetChange notification.");
   }
   let completionPromise = promiseSaverComplete(saver, onTargetChange);

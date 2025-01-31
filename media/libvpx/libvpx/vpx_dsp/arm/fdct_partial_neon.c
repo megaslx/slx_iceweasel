@@ -37,6 +37,17 @@ void vpx_fdct4x4_1_neon(const int16_t *input, tran_low_t *output, int stride) {
   output[1] = 0;
 }
 
+// Visual Studio 2022 (cl.exe) < 17.7 targeting AArch64 with optimizations
+// enabled will fail with an internal compiler error. See:
+// https://developercommunity.visualstudio.com/t/Compiler-crash-C1001-when-building-a-for/10346110
+#if defined(_MSC_VER) && _MSC_VER < 1937 && defined(_M_ARM64) && \
+    !defined(__clang__)
+#define AOM_WORK_AROUND_MSVC_BUG_10346110
+#endif
+
+#ifdef AOM_WORK_AROUND_MSVC_BUG_10346110
+#pragma optimize("", off)
+#endif
 void vpx_fdct8x8_1_neon(const int16_t *input, tran_low_t *output, int stride) {
   int r;
   int16x8_t sum = vld1q_s16(&input[0]);
@@ -49,6 +60,10 @@ void vpx_fdct8x8_1_neon(const int16_t *input, tran_low_t *output, int stride) {
   output[0] = (tran_low_t)horizontal_add_int16x8(sum);
   output[1] = 0;
 }
+#ifdef AOM_WORK_AROUND_MSVC_BUG_10346110
+#pragma optimize("", on)
+#endif
+#undef AOM_WORK_AROUND_MSVC_BUG_10346110
 
 void vpx_fdct16x16_1_neon(const int16_t *input, tran_low_t *output,
                           int stride) {

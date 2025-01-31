@@ -38,12 +38,15 @@ let dialog = {
     }
 
     let changeAppLink = document.getElementById("change-app");
-    if (this._preferredHandlerName) {
+
+    // allow the user to choose another application if they wish,
+    // but don't offer this if the protocol was opened via
+    // system principal (URLbar) and there's a preferred handler
+    if (this._preferredHandlerName && !this._principal?.isSystemPrincipal) {
       changeAppLink.hidden = false;
 
       changeAppLink.addEventListener("click", () => this.onChangeApp());
     }
-
     document.addEventListener("dialogaccept", () => this.onAccept());
     this.initL10n();
 
@@ -59,22 +62,26 @@ let dialog = {
   },
 
   /**
-   * Checks whether the principal that triggered this dialog is top level
-   * (not embedded in a frame).
-   * @returns {boolean} - true if principal is top level, false otherwise.
+   * We only show the website address if the origin is not user-readable
+   * in the address bar.
+   * @returns {boolean} - true if principal is top level and user-readable,
+   *                      false otherwise.
    * If the triggering principal is null this method always returns false.
    */
-  triggeringPrincipalIsTop() {
+  shouldShowPrincipal() {
     if (!this._principal) {
       return false;
     }
 
     let topContentPrincipal =
       this._browsingContext?.top.embedderElement?.contentPrincipal;
-    if (!topContentPrincipal) {
-      return false;
-    }
-    return this._principal.equals(topContentPrincipal);
+
+    let shownScheme = this._browsingContext.currentURI.scheme;
+    return (
+      !topContentPrincipal ||
+      !topContentPrincipal.equals(this._principal) ||
+      !["http", "https", "file"].includes(shownScheme)
+    );
   },
 
   /**
@@ -89,17 +96,22 @@ let dialog = {
       return "permission-dialog-description-extension";
     }
 
-    if (this._principal?.schemeIs("file")) {
+    if (this._principal?.schemeIs("file") && !this.shouldShowPrincipal()) {
       if (this._preferredHandlerName) {
         return "permission-dialog-description-file-app";
       }
       return "permission-dialog-description-file";
     }
 
-    // We only show the website address if the request didn't come from the top
-    // level frame. If we can't get a host to display, fall back to the copy
-    // without host.
-    if (!this.triggeringPrincipalIsTop() && this.displayPrePath) {
+    if (this._principal?.isSystemPrincipal && this._preferredHandlerName) {
+      return "permission-dialog-description-system-app";
+    }
+
+    if (this._principal?.isSystemPrincipal && !this._preferredHandlerName) {
+      return "permission-dialog-description-system-noapp";
+    }
+
+    if (this.shouldShowPrincipal() && this.userReadablePrincipal) {
       if (this._preferredHandlerName) {
         return "permission-dialog-description-host-app";
       }
@@ -133,23 +145,35 @@ let dialog = {
   },
 
   /**
-   * Computes the prePath to show in the prompt. It's the prePath of the site
-   * that wants to navigate to the external protocol.
-   * @returns {string|null} - prePath to show, or null if we can't derive an
-   * exposable prePath from the triggering principal.
+   * Computes text to show in the prompt that is a user-understandable
+   * version of what is asking to open the external protocol.
+   * It's usually the prePath of the site that wants to navigate to
+   * the external protocol, though we use the OS syntax for paths if
+   * the request comes from `file://`.
+   * @returns {string|null} - text to show, or null if we can't derive an
+   * readable string from the triggering principal.
    */
-  get displayPrePath() {
+  get userReadablePrincipal() {
     if (!this._principal) {
       return null;
     }
 
     // NullPrincipals don't expose a meaningful prePath. Instead use the
     // precursorPrincipal, which the NullPrincipal was derived from.
-    if (this._principal.isNullPrincipal) {
-      return this._principal.precursorPrincipal?.exposablePrePath;
+    let p = this._principal.isNullPrincipal
+      ? this._principal.precursorPrincipal
+      : this._principal;
+    // Files have `file://` and nothing else as the prepath. Showing the
+    // full path seems more useful for users:
+    if (p?.schemeIs("file")) {
+      try {
+        let { file } = p.URI.QueryInterface(Ci.nsIFileURL);
+        return file.path;
+      } catch (_ex) {
+        return p.spec;
+      }
     }
-
-    return this._principal?.exposablePrePath;
+    return p?.exposablePrePath;
   },
 
   initL10n() {
@@ -158,6 +182,8 @@ let dialog = {
 
     // Fluent id for dialog accept button
     let idAcceptButton;
+    let acceptButton = this._dialog.getButton("accept");
+
     if (this._preferredHandlerName) {
       idAcceptButton = "permission-dialog-btn-open-link";
     } else {
@@ -165,13 +191,13 @@ let dialog = {
 
       let descriptionExtra = document.getElementById("description-extra");
       descriptionExtra.hidden = false;
+      acceptButton.addEventListener("click", () => this.onChangeApp());
     }
-    let acceptButton = this._dialog.getButton("accept");
     document.l10n.setAttributes(acceptButton, idAcceptButton);
 
     let description = document.getElementById("description");
 
-    let host = this.displayPrePath;
+    let host = this.userReadablePrincipal;
     let scheme = this._handlerInfo.type;
 
     document.l10n.setAttributes(description, this.l10nDescriptionId, {

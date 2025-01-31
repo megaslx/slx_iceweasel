@@ -7,14 +7,21 @@
 // allow for the page to get access to additional privileged features.
 
 /* global AT_getSupportedLanguages, AT_log, AT_getScriptDirection,
-   AT_logError, AT_destroyTranslationsEngine, AT_createTranslationsEngine,
-   AT_isTranslationEngineSupported, AT_createLanguageIdEngine, AT_translate, AT_identifyLanguage */
+   AT_logError, AT_createTranslationsPort, AT_isHtmlTranslation,
+   AT_isTranslationEngineSupported, AT_identifyLanguage, AT_telemetry */
+
+import { Translator } from "chrome://global/content/translations/Translator.mjs";
 
 // Allow tests to override this value so that they can run faster.
 // This is the delay in milliseconds.
 window.DEBOUNCE_DELAY = 200;
 // Allow tests to test the debounce behavior by counting debounce runs.
 window.DEBOUNCE_RUN_COUNT = 0;
+
+const l10nIds = {
+  resultsPlaceholder: "about-translations-results-placeholder",
+  translatingMessage: "about-translations-translating-message",
+};
 
 /**
  * @typedef {import("../translations").SupportedLanguages} SupportedLanguages
@@ -57,17 +64,18 @@ class TranslationsState {
 
   /**
    * Only send one translation in at a time to the worker.
+   *
    * @type {Promise<string[]>}
    */
   translationRequest = Promise.resolve([]);
 
   /**
-   * The translations engine is only valid for a single language pair, and needs
+   * The translator is only valid for a single language pair, and needs
    * to be recreated if the language pair changes.
    *
-   * @type {null | Promise<TranslationsEngine>}
+   * @type {null | Translator}
    */
-  translationsEngine = null;
+  translator = null;
 
   /**
    * @param {boolean} isSupported
@@ -75,17 +83,10 @@ class TranslationsState {
   constructor(isSupported) {
     /**
      * Is the engine supported by the device?
+     *
      * @type {boolean}
      */
     this.isTranslationEngineSupported = isSupported;
-
-    /**
-     * Allow code to wait for the engine to be created.
-     * @type {Promise<void>}
-     */
-    this.languageIdEngineCreated = isSupported
-      ? AT_createLanguageIdEngine()
-      : Promise.resolve();
 
     /**
      * @type {SupportedLanguages}
@@ -98,12 +99,13 @@ class TranslationsState {
     this.ui.setup();
 
     // Set the UI as ready after all of the state promises have settled.
-    Promise.allSettled([
-      this.languageIdEngineCreated,
-      this.supportedLanguages,
-    ]).then(() => {
-      this.ui.setAsReady();
-    });
+    this.supportedLanguages
+      .then(() => {
+        this.ui.setAsReady();
+      })
+      .catch(error => {
+        AT_logError("Failed to load the supported languages", error);
+      });
   }
 
   /**
@@ -115,7 +117,6 @@ class TranslationsState {
    * @param {string} message
    */
   async identifyLanguage(message) {
-    await this.languageIdEngineCreated;
     const start = performance.now();
     const { langTag, confidence } = await AT_identifyLanguage(message);
     const duration = performance.now() - start;
@@ -139,42 +140,28 @@ class TranslationsState {
     onDebounce: async () => {
       // The contents of "this" can change between async steps, store a local variable
       // binding of these values.
-      const {
-        fromLanguage,
-        toLanguage,
-        messageToTranslate,
-        translationsEngine,
-      } = this;
+      const { fromLanguage, toLanguage, messageToTranslate, translator } = this;
 
       if (!this.isTranslationEngineSupported) {
         // Never translate when the engine isn't supported.
         return;
       }
 
-      if (
-        !fromLanguage ||
-        !toLanguage ||
-        !messageToTranslate ||
-        !translationsEngine
-      ) {
+      if (!fromLanguage || !toLanguage || !messageToTranslate || !translator) {
         // Not everything is set for translation.
         this.ui.updateTranslation("");
         return;
       }
 
-      await Promise.all([
-        // Ensure the engine is ready to go.
-        translationsEngine,
-        // Ensure the previous translation has finished so that only the latest
-        // translation goes through.
-        this.translationRequest,
-      ]);
+      // Ensure the previous translation has finished so that only the latest
+      // translation goes through.
+      await this.translationRequest;
 
       if (
         // Check if the current configuration has changed and if this is stale. If so
         // then skip this request, as there is already a newer request with more up to
         // date information.
-        this.translationsEngine !== translationsEngine ||
+        this.translator !== translator ||
         this.fromLanguage !== fromLanguage ||
         this.toLanguage !== toLanguage ||
         this.messageToTranslate !== messageToTranslate
@@ -183,9 +170,13 @@ class TranslationsState {
       }
 
       const start = performance.now();
-
-      this.translationRequest = AT_translate([messageToTranslate]);
-      const [translation] = await this.translationRequest;
+      this.translationRequest = this.translator.translate(
+        messageToTranslate,
+        AT_isHtmlTranslation()
+      );
+      this.ui.setResultPlaceholderTextContent(l10nIds.translatingMessage);
+      const translation = await this.translationRequest;
+      this.ui.setResultPlaceholderTextContent(l10nIds.resultsPlaceholder);
 
       // The measure events will show up in the Firefox Profiler.
       performance.measure(
@@ -211,9 +202,9 @@ class TranslationsState {
   });
 
   /**
-   * Any time a language pair is changed, the TranslationsEngine needs to be rebuilt.
+   * Any time a language pair is changed, a new Translator needs to be created.
    */
-  async maybeRebuildWorker() {
+  async maybeCreateNewTranslator() {
     // If we may need to re-building the worker, the old translation is no longer valid.
     this.ui.updateTranslation("");
 
@@ -229,31 +220,59 @@ class TranslationsState {
       // is the same as the toLanguage, and we do not want to translate from one language to itself.
       this.fromLanguage === this.toLanguage
     ) {
-      if (this.translationsEngine) {
+      if (this.translator) {
         // The engine is no longer needed.
-        AT_destroyTranslationsEngine();
-        this.translationsEngine = null;
+        this.translator.destroy();
+        this.translator = null;
       }
       return;
     }
 
     const start = performance.now();
     AT_log(
-      `Rebuilding the translations worker for "${this.fromLanguage}" to "${this.toLanguage}"`
+      `Creating a new translator for "${this.fromLanguage}" to "${this.toLanguage}"`
     );
 
-    this.translationsEngine = AT_createTranslationsEngine(
-      this.fromLanguage,
-      this.toLanguage
-    );
-    this.maybeRequestTranslation();
+    const translationPortPromise = (fromLanguage, toLanguage) => {
+      const { promise, resolve } = Promise.withResolvers();
+
+      const getResponse = ({ data }) => {
+        if (
+          data.type == "GetTranslationsPort" &&
+          data.fromLanguage === fromLanguage &&
+          data.toLanguage === toLanguage
+        ) {
+          window.removeEventListener("message", getResponse);
+          resolve(data.port);
+        }
+      };
+
+      window.addEventListener("message", getResponse);
+      AT_createTranslationsPort(fromLanguage, toLanguage);
+
+      return promise;
+    };
 
     try {
-      await this.translationsEngine;
+      const translatorPromise = Translator.create(
+        this.fromLanguage,
+        this.toLanguage,
+        {
+          allowSameLanguage: false,
+          requestTranslationsPort: translationPortPromise,
+        }
+      );
       const duration = performance.now() - start;
-      AT_log(`Rebuilt the TranslationsEngine in ${duration / 1000} seconds`);
+
+      // Signal to tests that the translator was created so they can exit.
+      window.postMessage("translator-ready");
+      AT_log(`Created a new Translator in ${duration / 1000} seconds`);
+
+      this.translator = await translatorPromise;
+      this.maybeRequestTranslation();
     } catch (error) {
       this.ui.showInfo("about-translations-engine-error");
+      this.ui.setResultPlaceholderTextContent(l10nIds.resultsPlaceholder);
       AT_logError("Failed to get the Translations worker", error);
     }
   }
@@ -298,7 +317,7 @@ class TranslationsState {
   async setFromLanguage(lang) {
     if (lang !== this.fromLanguage) {
       this.fromLanguage = lang;
-      await this.maybeRebuildWorker();
+      await this.maybeCreateNewTranslator();
     }
   }
 
@@ -308,7 +327,7 @@ class TranslationsState {
   setToLanguage(lang) {
     if (lang !== this.toLanguage) {
       this.toLanguage = lang;
-      this.maybeRebuildWorker();
+      this.maybeCreateNewTranslator();
     }
   }
 
@@ -332,6 +351,8 @@ class TranslationsUI {
   languageFrom = document.getElementById("language-from");
   /** @type {HTMLSelectElement} */
   languageTo = document.getElementById("language-to");
+  /** @type {HTMLButtonElement} */
+  languageSwap = document.getElementById("language-swap");
   /** @type {HTMLTextAreaElement} */
   translationFrom = document.getElementById("translation-from");
   /** @type {HTMLDivElement} */
@@ -342,6 +363,10 @@ class TranslationsUI {
   translationInfo = document.getElementById("translation-info");
   /** @type {HTMLDivElement} */
   translationInfoMessage = document.getElementById("translation-info-message");
+  /** @type {HTMLDivElement} */
+  translationResultsPlaceholder = document.getElementById(
+    "translation-results-placeholder"
+  );
   /** @type {TranslationsState} */
   state;
 
@@ -360,6 +385,9 @@ class TranslationsUI {
     this.state = state;
     this.translationTo.style.visibility = "visible";
     this.#detectOption = document.querySelector('option[value="detect"]');
+    AT_telemetry("onOpen", {
+      maintainFlow: false,
+    });
   }
 
   /**
@@ -373,6 +401,7 @@ class TranslationsUI {
     }
     this.setupDropdowns();
     this.setupTextarea();
+    this.setupLanguageSwapButton();
   }
 
   /**
@@ -417,18 +446,73 @@ class TranslationsUI {
 
     this.state.setFromLanguage(this.languageFrom.value);
     this.state.setToLanguage(this.languageTo.value);
-    this.updateOnLanguageChange();
 
-    this.languageFrom.addEventListener("input", () => {
+    await this.updateOnLanguageChange();
+
+    this.languageFrom.addEventListener("input", async () => {
       this.state.setFromLanguage(this.languageFrom.value);
-      this.updateOnLanguageChange();
+      await this.updateOnLanguageChange();
     });
 
-    this.languageTo.addEventListener("input", () => {
+    this.languageTo.addEventListener("input", async () => {
       this.state.setToLanguage(this.languageTo.value);
-      this.updateOnLanguageChange();
+      await this.updateOnLanguageChange();
       this.translationTo.setAttribute("lang", this.languageTo.value);
     });
+  }
+
+  /**
+   * Sets up the language swap button, so that when it's clicked, it:
+   * - swaps the selected source adn target lanauges
+   * - replaces the text to translate with the previous translation result
+   */
+  setupLanguageSwapButton() {
+    this.languageSwap.addEventListener("click", async () => {
+      const translationToValue = this.translationTo.innerText;
+
+      const newFromLanguage = this.sanitizeTargetLangTagAsSourceLangTag(
+        this.state.toLanguage
+      );
+      const newToLanguage = this.sanitizeSourceLangTagAsTargetLangTag(
+        this.state.fromLanguage
+      );
+      this.state.setFromLanguage(newFromLanguage);
+      this.state.setToLanguage(newToLanguage);
+
+      this.languageFrom.value = newFromLanguage;
+      this.languageTo.value = newToLanguage;
+      await this.updateOnLanguageChange();
+      this.translationTo.setAttribute("lang", this.languageTo.value);
+
+      this.translationFrom.value = translationToValue;
+      this.state.setMessageToTranslate(translationToValue);
+    });
+  }
+
+  /**
+   * Get the target language dropdown option equivalent to the given source language dropdown option.
+   * `detect` will be converted to `` as `detect` is not a valid option in the target language dropdown
+   *
+   * @param {string} sourceLangTag
+   */
+  sanitizeSourceLangTagAsTargetLangTag(sourceLangTag) {
+    if (sourceLangTag === "detect") {
+      return "";
+    }
+    return sourceLangTag;
+  }
+
+  /**
+   * Get the source language dropdown option equivalent to the given target language dropdown option.
+   * `` will be converted to `detect` as `` is not a valid option in the source language dropdown
+   *
+   * @param {string} targetLangTag
+   */
+  sanitizeTargetLangTagAsSourceLangTag(targetLangTag) {
+    if (targetLangTag === "") {
+      return "detect";
+    }
+    return targetLangTag;
   }
 
   /**
@@ -482,11 +566,21 @@ class TranslationsUI {
   }
 
   /**
+   * Sets the translation result placeholder text based on the l10n id provided
+   *
+   * @param {string} l10nId
+   */
+  setResultPlaceholderTextContent(l10nId) {
+    document.l10n.setAttributes(this.translationResultsPlaceholder, l10nId);
+  }
+
+  /**
    * React to language changes.
    */
-  updateOnLanguageChange() {
+  async updateOnLanguageChange() {
     this.#updateDropdownLanguages();
     this.#updateMessageDirections();
+    await this.#updateLanguageSwapButton();
   }
 
   /**
@@ -560,10 +654,49 @@ class TranslationsUI {
     }
   }
 
+  /**
+   * Disable the language swap button if fromLanguage is equivalent to toLanguage, or if the languages are not a valid option in the opposite direction
+   */
+  async #updateLanguageSwapButton() {
+    const sourceLanguage = this.state.fromLanguage;
+    const targetLanguage = this.state.toLanguage;
+
+    if (
+      sourceLanguage ===
+      this.sanitizeTargetLangTagAsSourceLangTag(targetLanguage)
+    ) {
+      this.languageSwap.disabled = true;
+      return;
+    }
+
+    if (this.translationFrom.value && !this.translationTo.innerText) {
+      this.languageSwap.disabled = true;
+      return;
+    }
+
+    const supportedLanguages = await this.state.supportedLanguages;
+
+    const isSourceLanguageValidAsTargetLanguage =
+      sourceLanguage === "detect" ||
+      supportedLanguages.languagePairs.some(
+        ({ toLang }) => toLang === sourceLanguage
+      );
+    const isTargetLanguageValidAsSourceLanguage =
+      targetLanguage === "" ||
+      supportedLanguages.languagePairs.some(
+        ({ fromLang }) => fromLang === targetLanguage
+      );
+
+    this.languageSwap.disabled =
+      !isSourceLanguageValidAsTargetLanguage ||
+      !isTargetLanguageValidAsSourceLanguage;
+  }
+
   setupTextarea() {
     this.state.setMessageToTranslate(this.translationFrom.value);
-    this.translationFrom.addEventListener("input", () => {
-      this.state.setMessageToTranslate(this.translationFrom.value);
+    this.translationFrom.addEventListener("input", async () => {
+      await this.state.setMessageToTranslate(this.translationFrom.value);
+      this.#updateLanguageSwapButton();
     });
   }
 
@@ -571,6 +704,7 @@ class TranslationsUI {
     this.translationFrom.disabled = true;
     this.languageFrom.disabled = true;
     this.languageTo.disabled = true;
+    this.languageSwap.disabled = true;
   }
 
   /**
@@ -586,6 +720,7 @@ class TranslationsUI {
       this.translationTo.style.visibility = "hidden";
       this.translationToBlank.style.visibility = "visible";
     }
+    this.#updateLanguageSwapButton();
   }
 }
 
@@ -607,6 +742,10 @@ window.addEventListener("AboutTranslationsChromeToContent", ({ detail }) => {
       document.body.style.visibility = "visible";
       break;
     }
+    case "rebuild-translator": {
+      window.translationsState.maybeCreateNewTranslator();
+      break;
+    }
     default:
       throw new Error("Unknown AboutTranslationsChromeToContent event.");
   }
@@ -616,7 +755,7 @@ window.addEventListener("AboutTranslationsChromeToContent", ({ detail }) => {
  * Debounce a function so that it is only called after some wait time with no activity.
  * This is good for grouping text entry via keyboard.
  *
- * @param {Object} settings
+ * @param {object} settings
  * @param {Function} settings.onDebounce
  * @param {Function} settings.doEveryTime
  * @returns {Function}

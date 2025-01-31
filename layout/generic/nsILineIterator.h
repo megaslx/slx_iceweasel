@@ -55,6 +55,13 @@ class nsILineIterator {
     nsRect mLineBounds;
     /** Whether the line is wrapped at the end */
     bool mIsWrapped = false;
+
+    /**
+     * Return last frame of the line if there is no enough siblings of
+     * mFirstFrameOnLine.
+     * Otherwise, nullptr including in the unexpected error cases.
+     */
+    nsIFrame* GetLastFrameOnLine() const;
   };
 
   // Return miscellaneous information about a line.
@@ -122,7 +129,7 @@ struct LineFrameFinder {
  * and want to verify that no DOM mutations (which would invalidate the
  * iterator) occur while we're using it.
  */
-class MOZ_STACK_CLASS AutoAssertNoDomMutations final {
+class MOZ_RAII AutoAssertNoDomMutations final {
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
   nsMutationGuard mGuard;
 #endif

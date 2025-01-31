@@ -7,21 +7,23 @@
 // Make this available to both AMD and CJS environments
 define(function (require, exports, module) {
   // Dependencies
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const {
+    span,
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
   const {
     lengthBubble,
-  } = require("devtools/client/shared/components/reps/shared/grip-length-bubble");
+  } = require("resource://devtools/client/shared/components/reps/shared/grip-length-bubble.js");
   const {
     interleave,
     getGripType,
     wrapRender,
     ellipsisElement,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
 
   const DEFAULT_TITLE = "Array";
 
@@ -82,6 +84,10 @@ define(function (require, exports, module) {
           brackets.right
         )
       );
+    }
+
+    if (mode === MODE.HEADER) {
+      return span(config, title);
     }
 
     const max = maxLengthMap.get(mode);
@@ -150,6 +156,10 @@ define(function (require, exports, module) {
       return span({ className: "objectTitle" }, title, length, trailingSpace);
     }
 
+    if (props.mode === MODE.HEADER) {
+      return span({ className: "objectTitle" }, title, length);
+    }
+
     return span({ className: "objectTitle" }, title, length, " ");
   }
 
@@ -162,7 +172,9 @@ define(function (require, exports, module) {
   }
 
   function arrayIterator(props, grip, max) {
-    const { Rep } = require("devtools/client/shared/components/reps/reps/rep");
+    const {
+      Rep,
+    } = require("resource://devtools/client/shared/components/reps/reps/rep.js");
 
     let items = [];
     const gripLength = getLength(grip);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -24,7 +24,7 @@ extern "C" {
 #define SEG_TEMPORAL_PRED_CTXS 3
 #define SPATIAL_PREDICTION_PROBS 3
 
-typedef enum {
+enum {
   SEG_LVL_ALT_Q,       // Use alternate Quantizer ....
   SEG_LVL_ALT_LF_Y_V,  // Use alternate loop filter value on y plane vertical
   SEG_LVL_ALT_LF_Y_H,  // Use alternate loop filter value on y plane horizontal
@@ -34,7 +34,7 @@ typedef enum {
   SEG_LVL_SKIP,        // Optional Segment (0,0) + skip mode
   SEG_LVL_GLOBALMV,
   SEG_LVL_MAX
-} SEG_LVL_FEATURES;
+} UENUM1BYTE(SEG_LVL_FEATURES);
 
 struct segmentation {
   uint8_t enabled;
@@ -53,19 +53,18 @@ struct segmentation {
 };
 
 struct segmentation_probs {
-  aom_cdf_prob tree_cdf[CDF_SIZE(MAX_SEGMENTS)];
   aom_cdf_prob pred_cdf[SEG_TEMPORAL_PRED_CTXS][CDF_SIZE(2)];
   aom_cdf_prob spatial_pred_seg_cdf[SPATIAL_PREDICTION_PROBS]
                                    [CDF_SIZE(MAX_SEGMENTS)];
 };
 
-static INLINE int segfeature_active(const struct segmentation *seg,
-                                    int segment_id,
+static inline int segfeature_active(const struct segmentation *seg,
+                                    uint8_t segment_id,
                                     SEG_LVL_FEATURES feature_id) {
   return seg->enabled && (seg->feature_mask[segment_id] & (1 << feature_id));
 }
 
-static INLINE void segfeatures_copy(struct segmentation *dst,
+static inline void segfeatures_copy(struct segmentation *dst,
                                     const struct segmentation *src) {
   int i, j;
   for (i = 0; i < MAX_SEGMENTS; i++) {
@@ -83,7 +82,7 @@ void av1_clearall_segfeatures(struct segmentation *seg);
 void av1_enable_segfeature(struct segmentation *seg, int segment_id,
                            SEG_LVL_FEATURES feature_id);
 
-void calculate_segdata(struct segmentation *seg);
+void av1_calculate_segdata(struct segmentation *seg);
 
 int av1_seg_feature_data_max(SEG_LVL_FEATURES feature_id);
 
@@ -92,9 +91,19 @@ int av1_is_segfeature_signed(SEG_LVL_FEATURES feature_id);
 void av1_set_segdata(struct segmentation *seg, int segment_id,
                      SEG_LVL_FEATURES feature_id, int seg_data);
 
-static INLINE int get_segdata(const struct segmentation *seg, int segment_id,
+static inline int get_segdata(const struct segmentation *seg, int segment_id,
                               SEG_LVL_FEATURES feature_id) {
   return seg->feature_data[segment_id][feature_id];
+}
+
+static inline void set_segment_id(uint8_t *segment_ids, int mi_offset,
+                                  int x_mis, int y_mis, int mi_stride,
+                                  uint8_t segment_id) {
+  segment_ids += mi_offset;
+  for (int y = 0; y < y_mis; ++y) {
+    memset(&segment_ids[y * mi_stride], segment_id,
+           x_mis * sizeof(segment_ids[0]));
+  }
 }
 
 #ifdef __cplusplus

@@ -53,6 +53,8 @@ def old_configure(old_configure, build_project):
 @imports(_from="__builtin__", _import="print")
 @imports(_from="mozbuild.shellutil", _import="quote")
 def prepare_configure(mozconfig, old_configure_assignments):
+    assignments = {}
+
     with open("old-configure.vars", "w") as out:
         log.debug("Injecting the following to old-configure:")
 
@@ -67,11 +69,15 @@ def prepare_configure(mozconfig, old_configure_assignments):
                     inject("unset %s # from %s" % (key, action[len("removed ") :]))
                 else:
                     inject("%s=%s # %s" % (key, quote(value), action))
+                    assignments[key] = value
 
             inject("# end of mozconfig values")
 
         for k, v in old_configure_assignments:
             inject("%s=%s" % (k, quote(v)))
+            assignments[k] = v
+
+    return namespace(assignments=assignments)
 
 
 @template
@@ -83,25 +89,17 @@ def old_configure_options(*options):
     def all_options():
         return list(options)
 
-    return depends(
-        host_for_sub_configure, target_for_sub_configure, all_options, *options
-    )
+    return depends(all_options, *options)
 
 
 @old_configure_options(
     "--cache-file",
-    "--datadir",
     "--enable-official-branding",
-    "--includedir",
-    "--libdir",
-    "--prefix",
     "--with-branding",
-    "--with-distribution-id",
-    "--with-macbundlename-prefix",
     "--x-includes",
     "--x-libraries",
 )
-def prepare_configure_options(host, target, all_options, *options):
+def prepare_configure_options(all_options, *options):
     # old-configure only supports the options listed in @old_configure_options
     # so we don't need to pass it every single option we've been passed. Only
     # the ones that are not supported by python configure need to.
@@ -109,7 +107,7 @@ def prepare_configure_options(host, target, all_options, *options):
         value.format(name)
         for name, value in zip(all_options, options)
         if value.origin != "default"
-    ] + [host, target]
+    ]
 
     return namespace(options=options, all_options=all_options)
 
@@ -122,6 +120,9 @@ def old_configure_for(old_configure_path, extra_env=None):
     @depends(
         prepare_configure,
         prepare_configure_options,
+        "--prefix",
+        "--includedir",
+        "--libdir",
         prefer_mozillabuild_path,
         altered_path,
         extra_env,
@@ -130,6 +131,7 @@ def old_configure_for(old_configure_path, extra_env=None):
         awk,
         m4,
         shell,
+        "--cache-file",
     )
     @imports(_from="__builtin__", _import="compile")
     @imports(_from="__builtin__", _import="open")
@@ -138,6 +140,7 @@ def old_configure_for(old_configure_path, extra_env=None):
     @imports("itertools")
     @imports("logging")
     @imports("os")
+    @imports("re")
     @imports("subprocess")
     @imports("sys")
     @imports(_from="mozbuild.shellutil", _import="quote")
@@ -148,6 +151,9 @@ def old_configure_for(old_configure_path, extra_env=None):
     def old_configure(
         prepare_configure,
         prepare_configure_options,
+        prefix,
+        includedir,
+        libdir,
         prefer_mozillabuild_path,
         altered_path,
         extra_env,
@@ -156,14 +162,42 @@ def old_configure_for(old_configure_path, extra_env=None):
         awk,
         m4,
         shell,
+        cache_file_option,
     ):
-        # Use prepare_configure to make lint happy
-        prepare_configure
-
         if altered_path:
             path = altered_path
         else:
             path = os.pathsep.join(prefer_mozillabuild_path)
+
+        cxx = prepare_configure.assignments.get("CXX")
+        cc = prepare_configure.assignments.get("CC")
+
+        if cc and cxx:
+            if cache_file_option:
+                config_cache = cache_file_option[0]
+            else:
+                config_cache = "config.cache"
+
+            if os.path.exists(config_cache):
+                remove = False
+                with open(config_cache, "r") as cfg_cache:
+                    cxx_pattern = re.compile(
+                        r"^ac_cv_prog_CXX=\${ac_cv_prog_CXX='(.*)'}$"
+                    )
+                    cc_pattern = re.compile(r"^ac_cv_prog_CC=\${ac_cv_prog_CC='(.*)'}$")
+                    for line in cfg_cache:
+                        m = cc_pattern.match(line)
+                        if m and m.group(1) != cc:
+                            remove = True
+                            break
+                        m = cxx_pattern.match(line)
+                        if m and m.group(1) != cxx:
+                            remove = True
+                            break
+
+                if remove:
+                    log.info("invalidating config.cache")
+                    os.remove(config_cache)
 
         refresh = True
         if os.path.exists(old_configure):
@@ -236,7 +270,16 @@ def old_configure_for(old_configure_path, extra_env=None):
                 except OSError as e:
                     die("Failed re-creating old-configure: %s" % e.message)
 
-        cmd = [shell, old_configure] + prepare_configure_options.options
+        old_configure_options = {
+            "prefix": prefix[0],
+            "includedir": includedir[0],
+            "libdir": libdir[0],
+        }
+        cmd = (
+            [shell, old_configure]
+            + prepare_configure_options.options
+            + [f"--{k}={v}" for k, v in old_configure_options.items()]
+        )
 
         env = dict(os.environ)
 
@@ -318,6 +361,10 @@ def old_configure_for(old_configure_path, extra_env=None):
                 c: [
                     (k[1:-1], v[1:-1] if isinstance(v, str) else v)
                     for k, v in raw_config[c]
+                    # Eventually we'll want to filter out all lowercase keys. (bug 1869127)
+                    # For now, we only filter out the most problematic one that
+                    # we know is unused.
+                    if k != " target_cpu "
                 ]
                 for c in ("substs", "defines")
             }

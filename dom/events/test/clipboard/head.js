@@ -70,8 +70,9 @@ function promisePasteButtonIsHidden() {
 
 function promiseClickPasteButton() {
   const pasteButton = document.getElementById(kPasteMenuItemId);
-  let promise = BrowserTestUtils.waitForEvent(pasteButton, "click");
-  EventUtils.synthesizeMouseAtCenter(pasteButton, {});
+  const popup = document.getElementById(kPasteMenuPopupId);
+  let promise = BrowserTestUtils.waitForEvent(pasteButton, "command");
+  popup.activateItem(pasteButton);
   return promise;
 }
 
@@ -95,21 +96,37 @@ function getMouseCoordsRelativeToScreenInDevicePixels() {
 
 function isCloselyLeftOnTopOf(aCoordsP1, aCoordsP2, aDelta = 10) {
   return (
-    Math.abs(aCoordsP2.x - aCoordsP1.x) < aDelta &&
-    Math.abs(aCoordsP2.y - aCoordsP1.y) < aDelta
+    Math.abs(aCoordsP2.x - aCoordsP1.x) <= aDelta &&
+    Math.abs(aCoordsP2.y - aCoordsP1.y) <= aDelta
   );
 }
 
-function promiseDismissPasteButton() {
+async function promiseDismissPasteButton() {
+  // We intentionally turn off this a11y check, because the following click
+  // is send on the <body> to dismiss the pending popup using an alternative way
+  // of the popup dismissal, where the other way like `Esc` key is available,
+  // therefore this test can be ignored.
+  AccessibilityUtils.setEnv({
+    mustHaveAccessibleRule: false,
+  });
   // nsXULPopupManager rollup is handled in widget code, so we have to
   // synthesize native mouse events.
-  return EventUtils.promiseNativeMouseEvent({
+  await EventUtils.promiseNativeMouseEvent({
     type: "click",
     target: document.body,
     // Relies on the assumption that the center of chrome document doesn't
     // overlay with the paste button showed for clipboard readText request.
     atCenter: true,
   });
+  // Move mouse away to avoid subsequence tests showing paste button in
+  // thie dismissing location.
+  await EventUtils.promiseNativeMouseEvent({
+    type: "mousemove",
+    target: document.body,
+    offsetX: 100,
+    offsetY: 100,
+  });
+  AccessibilityUtils.resetEnv();
 }
 
 // @param aBrowser browser object of the content tab.

@@ -6,20 +6,22 @@
 
 use crate::error_reporting::ContextualParseError;
 use crate::parser::ParserContext;
-use crate::properties::longhands::animation_composition::single_value::SpecifiedValue as SpecifiedComposition;
-use crate::properties::longhands::transition_timing_function::single_value::SpecifiedValue as SpecifiedTimingFunction;
-use crate::properties::LonghandIdSet;
-use crate::properties::{Importance, PropertyDeclaration};
-use crate::properties::{LonghandId, PropertyDeclarationBlock, PropertyId};
-use crate::properties::{PropertyDeclarationId, SourcePropertyDeclaration};
-use crate::shared_lock::{DeepCloneParams, DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard};
+use crate::properties::{
+    longhands::{
+        animation_composition::single_value::SpecifiedValue as SpecifiedComposition,
+        transition_timing_function::single_value::SpecifiedValue as SpecifiedTimingFunction,
+    },
+    parse_property_declaration_list, LonghandId, PropertyDeclaration, PropertyDeclarationBlock,
+    PropertyDeclarationId, PropertyDeclarationIdSet,
+};
+use crate::shared_lock::{DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard};
 use crate::shared_lock::{Locked, ToCssWithGuard};
 use crate::str::CssStringWriter;
 use crate::stylesheets::rule_parser::VendorPrefix;
 use crate::stylesheets::{CssRuleType, StylesheetContents};
 use crate::values::{serialize_percentage, KeyframesName};
 use cssparser::{
-    parse_one_rule, AtRuleParser, CowRcStr, DeclarationParser, Parser, ParserInput, ParserState,
+    parse_one_rule, AtRuleParser, DeclarationParser, Parser, ParserInput, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation, Token,
 };
 use servo_arc::Arc;
@@ -82,7 +84,6 @@ impl DeepCloneWithLock for KeyframesRule {
         &self,
         lock: &SharedRwLock,
         guard: &SharedRwLockReadGuard,
-        params: &DeepCloneParams,
     ) -> Self {
         KeyframesRule {
             name: self.name.clone(),
@@ -91,7 +92,7 @@ impl DeepCloneWithLock for KeyframesRule {
                 .iter()
                 .map(|x| {
                     Arc::new(
-                        lock.wrap(x.read_with(guard).deep_clone_with_lock(lock, guard, params)),
+                        lock.wrap(x.read_with(guard).deep_clone_with_lock(lock, guard)),
                     )
                 })
                 .collect(),
@@ -225,11 +226,9 @@ impl Keyframe {
         let mut input = ParserInput::new(css);
         let mut input = Parser::new(&mut input);
 
-        let mut declarations = SourcePropertyDeclaration::default();
         let mut rule_parser = KeyframeListParser {
             context: &mut context,
             shared_lock: &lock,
-            declarations: &mut declarations,
         };
         parse_one_rule(&mut input, &mut rule_parser)
     }
@@ -241,7 +240,6 @@ impl DeepCloneWithLock for Keyframe {
         &self,
         lock: &SharedRwLock,
         guard: &SharedRwLockReadGuard,
-        _params: &DeepCloneParams,
     ) -> Keyframe {
         Keyframe {
             selector: self.selector.clone(),
@@ -407,7 +405,7 @@ pub struct KeyframesAnimation {
     /// The difference steps of the animation.
     pub steps: Vec<KeyframesStep>,
     /// The properties that change in this animation.
-    pub properties_changed: LonghandIdSet,
+    pub properties_changed: PropertyDeclarationIdSet,
     /// Vendor prefix type the @keyframes has.
     pub vendor_prefix: Option<VendorPrefix>,
 }
@@ -416,8 +414,8 @@ pub struct KeyframesAnimation {
 fn get_animated_properties(
     keyframes: &[Arc<Locked<Keyframe>>],
     guard: &SharedRwLockReadGuard,
-) -> LonghandIdSet {
-    let mut ret = LonghandIdSet::new();
+) -> PropertyDeclarationIdSet {
+    let mut ret = PropertyDeclarationIdSet::default();
     // NB: declarations are already deduplicated, so we don't have to check for
     // it here.
     for keyframe in keyframes {
@@ -430,20 +428,17 @@ fn get_animated_properties(
         // be properties with !important in keyframe rules here.
         // See the spec issue https://github.com/w3c/csswg-drafts/issues/1824
         for declaration in block.normal_declaration_iter() {
-            let longhand_id = match declaration.id() {
-                PropertyDeclarationId::Longhand(id) => id,
-                _ => continue,
-            };
+            let declaration_id = declaration.id();
 
-            if longhand_id == LonghandId::Display {
+            if declaration_id == PropertyDeclarationId::Longhand(LonghandId::Display) {
                 continue;
             }
 
-            if !longhand_id.is_animatable() {
+            if !declaration_id.is_animatable() {
                 continue;
             }
 
-            ret.insert(longhand_id);
+            ret.insert(declaration_id);
         }
     }
 
@@ -466,7 +461,7 @@ impl KeyframesAnimation {
     ) -> Self {
         let mut result = KeyframesAnimation {
             steps: vec![],
-            properties_changed: LonghandIdSet::new(),
+            properties_changed: PropertyDeclarationIdSet::default(),
             vendor_prefix,
         };
 
@@ -530,7 +525,6 @@ impl KeyframesAnimation {
 struct KeyframeListParser<'a, 'b> {
     context: &'a mut ParserContext<'b>,
     shared_lock: &'a SharedRwLock,
-    declarations: &'a mut SourcePropertyDeclaration,
 }
 
 /// Parses a keyframe list from CSS input.
@@ -539,11 +533,9 @@ pub fn parse_keyframe_list<'a>(
     input: &mut Parser,
     shared_lock: &SharedRwLock,
 ) -> Vec<Arc<Locked<Keyframe>>> {
-    let mut declarations = SourcePropertyDeclaration::default();
     let mut parser = KeyframeListParser {
         context,
         shared_lock,
-        declarations: &mut declarations,
     };
     RuleBodyParser::new(input, &mut parser)
         .filter_map(Result::ok)
@@ -588,33 +580,9 @@ impl<'a, 'b, 'i> QualifiedRuleParser<'i> for KeyframeListParser<'a, 'b> {
         start: &ParserState,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self::QualifiedRule, ParseError<'i>> {
-        let mut block = PropertyDeclarationBlock::new();
-        let declarations = &mut self.declarations;
-        self.context
-            .nest_for_rule(CssRuleType::Keyframe, |context| {
-                let mut parser = KeyframeDeclarationParser {
-                    context: &context,
-                    declarations,
-                };
-                let mut iter = RuleBodyParser::new(input, &mut parser);
-                while let Some(declaration) = iter.next() {
-                    match declaration {
-                        Ok(()) => {
-                            block.extend(iter.parser.declarations.drain(), Importance::Normal);
-                        },
-                        Err((error, slice)) => {
-                            iter.parser.declarations.clear();
-                            let location = error.location;
-                            let error =
-                                ContextualParseError::UnsupportedKeyframePropertyDeclaration(
-                                    slice, error,
-                                );
-                            context.log_css_error(location, error);
-                        },
-                    }
-                    // `parse_important` is not called here, `!important` is not allowed in keyframe blocks.
-                }
-            });
+        let block = self.context.nest_for_rule(CssRuleType::Keyframe, |p| {
+            parse_property_declaration_list(&p, input, &[])
+        });
         Ok(Arc::new(self.shared_lock.wrap(Keyframe {
             selector,
             block: Arc::new(self.shared_lock.wrap(block)),
@@ -631,61 +599,5 @@ impl<'a, 'b, 'i> RuleBodyItemParser<'i, Arc<Locked<Keyframe>>, StyleParseErrorKi
     }
     fn parse_declarations(&self) -> bool {
         false
-    }
-}
-
-struct KeyframeDeclarationParser<'a, 'b: 'a> {
-    context: &'a ParserContext<'b>,
-    declarations: &'a mut SourcePropertyDeclaration,
-}
-
-/// Default methods reject all at rules.
-impl<'a, 'b, 'i> AtRuleParser<'i> for KeyframeDeclarationParser<'a, 'b> {
-    type Prelude = ();
-    type AtRule = ();
-    type Error = StyleParseErrorKind<'i>;
-}
-
-impl<'a, 'b, 'i> QualifiedRuleParser<'i> for KeyframeDeclarationParser<'a, 'b> {
-    type Prelude = ();
-    type QualifiedRule = ();
-    type Error = StyleParseErrorKind<'i>;
-}
-
-impl<'a, 'b, 'i> DeclarationParser<'i> for KeyframeDeclarationParser<'a, 'b> {
-    type Declaration = ();
-    type Error = StyleParseErrorKind<'i>;
-
-    fn parse_value<'t>(
-        &mut self,
-        name: CowRcStr<'i>,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<(), ParseError<'i>> {
-        let id = match PropertyId::parse(&name, self.context) {
-            Ok(id) => id,
-            Err(()) => {
-                return Err(input.new_custom_error(StyleParseErrorKind::UnknownProperty(name)));
-            },
-        };
-
-        // TODO(emilio): Shouldn't this use parse_entirely?
-        PropertyDeclaration::parse_into(self.declarations, id, self.context, input)?;
-
-        // In case there is still unparsed text in the declaration, we should
-        // roll back.
-        input.expect_exhausted()?;
-
-        Ok(())
-    }
-}
-
-impl<'a, 'b, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind<'i>>
-    for KeyframeDeclarationParser<'a, 'b>
-{
-    fn parse_qualified(&self) -> bool {
-        false
-    }
-    fn parse_declarations(&self) -> bool {
-        true
     }
 }

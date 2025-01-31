@@ -29,7 +29,7 @@ const ACTION_ADD = 1;
 const TYPE_FOLDER = 0;
 const TYPE_BOOKMARK = 1;
 
-const TEST_URL = "http://www.example.com/";
+const TEST_URL = "https://www.example.com/";
 
 const DIALOG_URL = "chrome://browser/content/places/bookmarkProperties.xhtml";
 
@@ -88,7 +88,7 @@ gTests.push({
     let unloadPromise = new Promise(resolve => {
       this.window.addEventListener(
         "unload",
-        function (event) {
+        function () {
           tagsField.popup.removeEventListener(
             "popuphidden",
             popupListener,
@@ -156,7 +156,7 @@ gTests.push({
   },
 
   finish() {
-    SidebarUI.hide();
+    SidebarController.hide();
   },
 
   async cleanup() {
@@ -216,7 +216,7 @@ gTests.push({
     let hiddenPromise = new Promise(resolve => {
       this.window.addEventListener(
         "unload",
-        function (event) {
+        function () {
           tagsField.popup.removeEventListener(
             "popuphidden",
             popupListener,
@@ -282,7 +282,7 @@ gTests.push({
   },
 
   finish() {
-    SidebarUI.hide();
+    SidebarController.hide();
   },
 
   async cleanup() {
@@ -340,7 +340,7 @@ gTests.push({
     let unloadPromise = new Promise(resolve => {
       this.window.addEventListener(
         "unload",
-        event => {
+        () => {
           Assert.ok(
             self._cleanShutdown,
             "Dialog window should not be closed by pressing ESC in folder name textbox"
@@ -399,7 +399,7 @@ gTests.push({
   },
 
   finish() {
-    SidebarUI.hide();
+    SidebarController.hide();
   },
 
   async cleanup() {
@@ -450,7 +450,7 @@ function execute_test_in_sidebar(test) {
       },
       { capture: true, once: true }
     );
-    SidebarUI.show(test.sidebar);
+    SidebarController.show(test.sidebar);
   });
 }
 

@@ -526,6 +526,38 @@ const SNAPSHOT_SCHEMA = {
           required: false,
           type: "boolean",
         },
+        "media.utility-process.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-ffmpeg.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-ffvpx.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-wmf.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-applemedia.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-vorbis.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-wav.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-opus.enabled": {
+          required: false,
+          type: "boolean",
+        },
       },
     },
     places: {
@@ -751,6 +783,9 @@ const SNAPSHOT_SCHEMA = {
           type: "string",
         },
         desktopEnvironment: {
+          type: "string",
+        },
+        supportFontDetermination: {
           type: "string",
         },
       },
@@ -1240,6 +1275,41 @@ const SNAPSHOT_SCHEMA = {
         },
       },
     },
+    remoteSettings: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        isSynchronizationBroken: {
+          required: true,
+          type: "boolean",
+        },
+        lastCheck: {
+          required: true,
+          type: "string",
+        },
+        localTimestamp: {
+          required: false,
+          type: ["number", "null"],
+        },
+        history: {
+          required: true,
+          type: "object",
+          properties: {
+            "settings-sync": {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  status: { type: "string", required: true },
+                  datetime: { type: "string", required: true },
+                  infos: { type: "object", required: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     legacyUserStylesheets: {
       type: "object",
       properties: {
@@ -1250,6 +1320,27 @@ const SNAPSHOT_SCHEMA = {
         types: {
           required: true,
           type: "array",
+        },
+      },
+    },
+    contentAnalysis: {
+      type: "object",
+      properties: {
+        active: {
+          required: true,
+          type: "boolean",
+        },
+        connected: {
+          type: "boolean",
+        },
+        agentPath: {
+          type: "string",
+        },
+        failedSignatureVerification: {
+          type: "boolean",
+        },
+        requestCount: {
+          type: "number",
         },
       },
     },
@@ -1269,17 +1360,27 @@ function validateObject(obj, schema) {
   if (obj === undefined && !schema.required) {
     return;
   }
-  if (typeof schema.type != "string") {
-    throw schemaErr("'type' must be a string", schema);
+  let types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (!types.every(elt => typeof elt == "string")) {
+    throw schemaErr("'type' must be a string or array of strings", schema);
   }
-  if (objType(obj) != schema.type) {
+  if (!types.includes(objType(obj))) {
     throw validationErr("Object is not of the expected type", obj, schema);
   }
-  let validatorFnName = "validateObject_" + schema.type;
-  if (!(validatorFnName in this)) {
-    throw schemaErr("Validator function not defined for type", schema);
+  let lastError;
+  for (let type of types) {
+    let validatorFnName = "validateObject_" + type;
+    if (!(validatorFnName in this)) {
+      throw schemaErr("Validator function not defined for type", schema);
+    }
+    try {
+      this[validatorFnName](obj, schema);
+      return;
+    } catch (e) {
+      lastError = e;
+    }
   }
-  this[validatorFnName](obj, schema);
+  throw lastError;
 }
 
 function validateObject_object(obj, schema) {
@@ -1292,13 +1393,15 @@ function validateObject_object(obj, schema) {
     validateObject(obj[prop], schema.properties[prop]);
   }
   // Now check that the object doesn't have any properties not in the schema.
-  for (let prop in obj) {
-    if (!(prop in schema.properties)) {
-      throw validationErr(
-        "Object has property " + prop + " not in schema",
-        obj,
-        schema
-      );
+  if (!schema.additionalProperties) {
+    for (let prop in obj) {
+      if (!(prop in schema.properties)) {
+        throw validationErr(
+          "Object has property " + prop + " not in schema",
+          obj,
+          schema
+        );
+      }
     }
   }
 }
@@ -1311,9 +1414,9 @@ function validateObject_array(array, schema) {
   array.forEach(elt => validateObject(elt, schema.items));
 }
 
-function validateObject_string(str, schema) {}
-function validateObject_boolean(bool, schema) {}
-function validateObject_number(num, schema) {}
+function validateObject_string() {}
+function validateObject_boolean() {}
+function validateObject_number() {}
 
 function validationErr(msg, obj, schema) {
   return new Error(

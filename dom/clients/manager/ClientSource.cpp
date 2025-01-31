@@ -12,6 +12,7 @@
 #include "ClientSourceChild.h"
 #include "ClientState.h"
 #include "ClientValidation.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/DOMMozPromiseRequestHolder.h"
@@ -162,8 +163,9 @@ ClientSource::ClientSource(ClientManager* aManager,
     : mManager(aManager),
       mEventTarget(aEventTarget),
       mOwner(AsVariant(Nothing())),
-      mClientInfo(aArgs.id(), aArgs.type(), aArgs.principalInfo(),
-                  aArgs.creationTime()) {
+      mClientInfo(aArgs.id(), aArgs.agentClusterId(), aArgs.type(),
+                  aArgs.principalInfo(), aArgs.creationTime(), aArgs.url(),
+                  aArgs.frameType()) {
   MOZ_ASSERT(mManager);
   MOZ_ASSERT(mEventTarget);
 }
@@ -185,16 +187,17 @@ void ClientSource::Activate(PClientManagerChild* aActor) {
     return;
   }
 
-  ClientSourceConstructorArgs args(mClientInfo.Id(), mClientInfo.Type(),
-                                   mClientInfo.PrincipalInfo(),
-                                   mClientInfo.CreationTime());
-  PClientSourceChild* actor = aActor->SendPClientSourceConstructor(args);
-  if (!actor) {
+  ClientSourceConstructorArgs args(
+      mClientInfo.Id(), Nothing(), mClientInfo.Type(),
+      mClientInfo.PrincipalInfo(), mClientInfo.CreationTime(), VoidCString(),
+      FrameType::None);
+  RefPtr<ClientSourceChild> actor = new ClientSourceChild(args);
+  if (!aActor->SendPClientSourceConstructor(actor, args)) {
     Shutdown();
     return;
   }
 
-  ActivateThing(static_cast<ClientSourceChild*>(actor));
+  ActivateThing(actor);
 }
 
 ClientSource::~ClientSource() { Shutdown(); }
@@ -574,12 +577,12 @@ RefPtr<ClientOpPromise> ClientSource::PostMessage(
     const ClientPostMessageArgs& aArgs) {
   NS_ASSERT_OWNINGTHREAD(ClientSource);
 
-  // TODO: Currently this function only supports clients whose global
-  // object is a Window; it should also support those whose global
-  // object is a WorkerGlobalScope.
-  if (nsPIDOMWindowInner* const window = GetInnerWindow()) {
+  // (This only returns a global for windows or workers.)
+  nsIGlobalObject* global = GetGlobal();
+  if (global) {
     const RefPtr<ServiceWorkerContainer> container =
-        window->Navigator()->ServiceWorker();
+        global->GetServiceWorkerContainer();
+    MOZ_ASSERT_DEBUG_OR_FUZZING(container);
 
     // Note, EvictFromBFCache() may delete the ClientSource object
     // when bfcache lives in the child process.
@@ -589,8 +592,7 @@ RefPtr<ClientOpPromise> ClientSource::PostMessage(
   }
 
   CopyableErrorResult rv;
-  rv.ThrowNotSupportedError(
-      "postMessage to non-Window clients is not supported yet");
+  rv.ThrowInvalidStateError("Global discarded");
   return ClientOpPromise::CreateAndReject(rv, __func__);
 }
 

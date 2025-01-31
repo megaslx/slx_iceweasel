@@ -5,11 +5,12 @@
 //! Computed time values.
 
 use crate::values::CSSFloat;
+use crate::Zero;
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ToCss};
 
 /// A computed `<time>` value.
-#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, PartialOrd, ToResolvedValue)]
+#[derive(Animate, Clone, Copy, Debug, MallocSizeOf, PartialEq, PartialOrd, ToResolvedValue)]
 #[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[repr(C)]
 pub struct Time {
@@ -20,11 +21,6 @@ impl Time {
     /// Creates a time value from a seconds amount.
     pub fn from_seconds(seconds: CSSFloat) -> Self {
         Time { seconds }
-    }
-
-    /// Returns `0s`.
-    pub fn zero() -> Self {
-        Self::from_seconds(0.0)
     }
 
     /// Returns the amount of seconds this time represents.
@@ -41,5 +37,15 @@ impl ToCss for Time {
     {
         self.seconds().to_css(dest)?;
         dest.write_char('s')
+    }
+}
+
+impl Zero for Time {
+    fn zero() -> Self {
+        Self::from_seconds(0.0)
+    }
+
+    fn is_zero(&self) -> bool {
+        self.seconds == 0.
     }
 }

@@ -11,13 +11,22 @@
 #include "DrawEventRecorder.h"
 
 namespace mozilla {
+namespace layers {
+class CanvasDrawEventRecorder;
+class RecordedTextureData;
+struct RemoteTextureOwnerId;
+}  // namespace layers
+
 namespace gfx {
 
-class DrawTargetRecording : public DrawTarget {
+class DrawTargetRecording final : public DrawTarget {
  public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DrawTargetRecording, override)
   DrawTargetRecording(DrawEventRecorder* aRecorder, DrawTarget* aDT,
                       IntRect aRect, bool aHasData = false);
+  DrawTargetRecording(layers::CanvasDrawEventRecorder* aRecorder,
+                      const layers::RemoteTextureOwnerId& aTextureOwnerId,
+                      DrawTarget* aDT, const IntSize& aSize);
 
   ~DrawTargetRecording();
 
@@ -29,7 +38,8 @@ class DrawTargetRecording : public DrawTarget {
   }
   virtual bool IsRecording() const override { return true; }
 
-  virtual void Link(const char* aDestination, const Rect& aRect) override;
+  virtual void Link(const char* aLocalDest, const char* aURI,
+                    const Rect& aRect) override;
   virtual void Destination(const char* aDestination,
                            const Point& aPoint) override;
 
@@ -62,6 +72,13 @@ class DrawTargetRecording : public DrawTarget {
       const DrawSurfaceOptions& aSurfOptions = DrawSurfaceOptions(),
       const DrawOptions& aOptions = DrawOptions()) override;
 
+  virtual void DrawSurfaceDescriptor(
+      const layers::SurfaceDescriptor& aDesc,
+      const RefPtr<layers::Image>& aImageOfSurfaceDescriptor, const Rect& aDest,
+      const Rect& aSource,
+      const DrawSurfaceOptions& aSurfOptions = DrawSurfaceOptions(),
+      const DrawOptions& aOptions = DrawOptions()) override;
+
   virtual void DrawDependentSurface(uint64_t aId, const Rect& aDest) override;
 
   virtual void DrawFilter(FilterNode* aNode, const Rect& aSourceRect,
@@ -72,6 +89,11 @@ class DrawTargetRecording : public DrawTarget {
                                      const Point& aDest,
                                      const ShadowOptions& aShadow,
                                      CompositionOp aOperator) override;
+
+  virtual void DrawShadow(const Path* aPath, const Pattern& aPattern,
+                          const ShadowOptions& aShadow,
+                          const DrawOptions& aOptions,
+                          const StrokeOptions* aStrokeOptions) override;
 
   /*
    * Clear a rectangle on the draw target to transparent black. This will
@@ -150,11 +172,19 @@ class DrawTargetRecording : public DrawTarget {
                     const DrawOptions& aOptions = DrawOptions()) override;
 
   /*
-   * Fill a series of clyphs on the draw target with a certain source pattern.
+   * Fill a series of glyphs on the draw target with a certain source pattern.
    */
   virtual void FillGlyphs(ScaledFont* aFont, const GlyphBuffer& aBuffer,
                           const Pattern& aPattern,
                           const DrawOptions& aOptions = DrawOptions()) override;
+
+  /**
+   * Stroke a series of glyphs on the draw target with a certain source pattern.
+   */
+  virtual void StrokeGlyphs(
+      ScaledFont* aFont, const GlyphBuffer& aBuffer, const Pattern& aPattern,
+      const StrokeOptions& aStrokeOptions = StrokeOptions(),
+      const DrawOptions& aOptions = DrawOptions()) override;
 
   /*
    * This takes a source pattern and a mask, and composites the source pattern
@@ -191,6 +221,9 @@ class DrawTargetRecording : public DrawTarget {
    * be ignored.
    */
   virtual void PopClip() override;
+
+  /* Remove all applied clips. */
+  virtual bool RemoveAllClips() override;
 
   /**
    * Push a 'layer' to the DrawTarget, a layer is a temporary surface that all
@@ -330,6 +363,8 @@ class DrawTargetRecording : public DrawTarget {
    */
   virtual void SetTransform(const Matrix& aTransform) override;
 
+  virtual void SetPermitSubpixelAA(bool aPermitSubpixelAA) override;
+
   /* Tries to get a native surface for a DrawTarget, this may fail if the
    * draw target cannot convert to this surface type.
    */
@@ -340,6 +375,22 @@ class DrawTargetRecording : public DrawTarget {
   virtual bool IsCurrentGroupOpaque() override {
     return mFinalDT->IsCurrentGroupOpaque();
   }
+
+  void SetOptimizeTransform(bool aOptimizeTransform) {
+    mOptimizeTransform = aOptimizeTransform;
+  }
+
+ protected:
+  friend class layers::RecordedTextureData;
+
+  void AttachTextureData(layers::RecordedTextureData* aTextureData) {
+    mTextureData = aTextureData;
+  }
+  void DetachTextureData(layers::RecordedTextureData*) {
+    mTextureData = nullptr;
+  }
+
+  layers::RecordedTextureData* mTextureData = nullptr;
 
  private:
   /**
@@ -352,13 +403,61 @@ class DrawTargetRecording : public DrawTarget {
   DrawTargetRecording(const DrawTargetRecording* aDT, IntRect aRect,
                       SurfaceFormat aFormat);
 
+  void RecordTransform(const Matrix& aTransform) const;
+
+  void FlushTransform() const {
+    if (mTransformDirty) {
+      if (!mRecordedTransform.ExactlyEquals(mTransform)) {
+        RecordTransform(mTransform);
+      }
+      mTransformDirty = false;
+    }
+  }
+
+  void RecordEvent(const RecordedEvent& aEvent) const {
+    FlushTransform();
+    mRecorder->RecordEvent(aEvent);
+  }
+
+  void RecordEventSelf(const RecordedEvent& aEvent) const {
+    FlushTransform();
+    mRecorder->RecordEvent(this, aEvent);
+  }
+
+  void RecordEventSkipFlushTransform(const RecordedEvent& aEvent) const {
+    mRecorder->RecordEvent(aEvent);
+  }
+
+  void RecordEventSelfSkipFlushTransform(const RecordedEvent& aEvent) const {
+    mRecorder->RecordEvent(this, aEvent);
+  }
+
   Path* GetPathForPathRecording(const Path* aPath) const;
   already_AddRefed<PathRecording> EnsurePathStored(const Path* aPath);
   void EnsurePatternDependenciesStored(const Pattern& aPattern);
 
+  void DrawGlyphs(ScaledFont* aFont, const GlyphBuffer& aBuffer,
+                  const Pattern& aPattern,
+                  const DrawOptions& aOptions = DrawOptions(),
+                  const StrokeOptions* aStrokeOptions = nullptr);
+
+  void MarkChanged();
+
   RefPtr<DrawEventRecorderPrivate> mRecorder;
   RefPtr<DrawTarget> mFinalDT;
   IntRect mRect;
+
+  struct PushedLayer {
+    explicit PushedLayer(bool aOldPermitSubpixelAA)
+        : mOldPermitSubpixelAA(aOldPermitSubpixelAA) {}
+    bool mOldPermitSubpixelAA;
+  };
+  std::vector<PushedLayer> mPushedLayers;
+
+  bool mOptimizeTransform = false;
+
+  // Last transform that was used in the recording.
+  mutable Matrix mRecordedTransform;
 };
 
 }  // namespace gfx

@@ -17,6 +17,7 @@
 #include "jstypes.h"  // JS_PUBLIC_API
 
 #include "jit/JSJitFrameIter.h"  // js::jit::{InlineFrameIterator,JSJitFrameIter}
+#include "js/ColumnNumber.h"     // JS::TaggedColumnNumberOneOrigin
 #include "js/RootingAPI.h"       // JS::Handle, JS::Rooted
 #include "js/TypeDecls.h"  // jsbytecode, JSContext, JSAtom, JSFunction, JSObject, JSScript
 #include "js/Value.h"       // JS::Value
@@ -244,7 +245,6 @@ class FrameIter {
   FrameIter(JSContext* cx, DebuggerEvalOption, JSPrincipals*);
   FrameIter(const FrameIter& iter);
   MOZ_IMPLICIT FrameIter(const Data& data);
-  MOZ_IMPLICIT FrameIter(AbstractFramePtr frame);
 
   bool done() const { return data_.state_ == DONE; }
 
@@ -283,7 +283,7 @@ class FrameIter {
   ScriptSource* scriptSource() const;
   const char* filename() const;
   const char16_t* displayURL() const;
-  unsigned computeLine(uint32_t* column = nullptr) const;
+  unsigned computeLine(JS::TaggedColumnNumberOneOrigin* column = nullptr) const;
   JSAtom* maybeFunctionDisplayAtom() const;
   bool mutedErrors() const;
 
@@ -382,6 +382,11 @@ class FrameIter {
 
   bool inPrologue() const;
 
+  const wasm::WasmFrameIter& wasmFrame() const {
+    return data_.jitFrames_.asWasm();
+  }
+  wasm::WasmFrameIter& wasmFrame() { return data_.jitFrames_.asWasm(); }
+
  private:
   Data data_;
   jit::InlineFrameIterator ionInlineFrames_;
@@ -389,12 +394,8 @@ class FrameIter {
   const jit::JSJitFrameIter& jsJitFrame() const {
     return data_.jitFrames_.asJSJit();
   }
-  const wasm::WasmFrameIter& wasmFrame() const {
-    return data_.jitFrames_.asWasm();
-  }
 
   jit::JSJitFrameIter& jsJitFrame() { return data_.jitFrames_.asJSJit(); }
-  wasm::WasmFrameIter& wasmFrame() { return data_.jitFrames_.asWasm(); }
 
   bool isIonScripted() const {
     return isJSJit() && jsJitFrame().isIonScripted();

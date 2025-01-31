@@ -24,8 +24,8 @@ class nsIContent;
 
 @class MOZMenuItemRepresentedObject;
 
-// Fixed command IDs that work even without a JS listener, for our fallback menu bar.
-// Dynamic command IDs start counting from eCommand_ID_Last.
+// Fixed command IDs that work even without a JS listener, for our fallback menu
+// bar. Dynamic command IDs start counting from eCommand_ID_Last.
 enum {
   eCommand_ID_About = 1,
   eCommand_ID_Prefs = 2,
@@ -39,15 +39,17 @@ enum {
   eCommand_ID_Last = 10
 };
 
-// The menu group owner observes DOM mutations, notifies registered nsChangeObservers, and manages
-// command registration.
-// There is one owner per menubar, and one per standalone native menu.
+// The menu group owner observes DOM mutations, notifies registered
+// nsChangeObservers, and manages command registration. There is one owner per
+// menubar, and one per standalone native menu.
 class nsMenuGroupOwnerX : public nsMultiMutationObserver, public nsIObserver {
  public:
   // Both parameters can be null.
-  nsMenuGroupOwnerX(mozilla::dom::Element* aElement, nsMenuBarX* aMenuBarIfMenuBar);
+  nsMenuGroupOwnerX(mozilla::dom::Element* aElement,
+                    nsMenuBarX* aMenuBarIfMenuBar);
 
-  void RegisterForContentChanges(nsIContent* aContent, nsChangeObserver* aMenuObject);
+  void RegisterForContentChanges(nsIContent* aContent,
+                                 nsChangeObserver* aMenuObject);
   void UnregisterForContentChanges(nsIContent* aContent);
   uint32_t RegisterForCommand(nsMenuItemX* aMenuItem);
   void UnregisterCommand(uint32_t aCommandID);
@@ -56,10 +58,14 @@ class nsMenuGroupOwnerX : public nsMultiMutationObserver, public nsIObserver {
   void RegisterForLocaleChanges();
   void UnregisterForLocaleChanges();
 
-  // The representedObject that's used for all menu items under this menu group owner.
-  MOZMenuItemRepresentedObject* GetRepresentedObject() { return mRepresentedObject; }
+  // The representedObject that's used for all menu items under this menu group
+  // owner.
+  MOZMenuItemRepresentedObject* GetRepresentedObject() {
+    return mRepresentedObject;
+  }
 
-  // If this is the group owner for a menubar, return the menubar, otherwise nullptr.
+  // If this is the group owner for a menubar, return the menubar, otherwise
+  // nullptr.
   nsMenuBarX* GetMenuBar() { return mMenuBar.get(); }
 
   NS_DECL_ISUPPORTS
@@ -71,19 +77,24 @@ class nsMenuGroupOwnerX : public nsMultiMutationObserver, public nsIObserver {
 
   nsChangeObserver* LookupContentChangeObserver(nsIContent* aContent);
 
-  RefPtr<nsIContent> mContent;
+  void InstallOrUninstallRootMutationObserver();
+
+  const RefPtr<nsIContent> mContent;
 
   // Unique command id (per menu-bar) to give to next item that asks.
   uint32_t mCurrentCommandID = eCommand_ID_Last;
 
   // stores observers for content change notification
-  nsTHashMap<nsPtrHashKey<nsIContent>, nsChangeObserver*> mContentToObserverTable;
+  nsTHashMap<nsPtrHashKey<nsIContent>, nsChangeObserver*>
+      mContentToObserverTable;
 
   // stores mapping of command IDs to menu objects
   nsTHashMap<nsUint32HashKey, nsMenuItemX*> mCommandToMenuObjectTable;
 
   MOZMenuItemRepresentedObject* mRepresentedObject = nil;  // [strong]
   mozilla::WeakPtr<nsMenuBarX> mMenuBar;
+
+  bool mObservingMutationsOnRoot = false;
 };
 
 @interface MOZMenuItemRepresentedObject : NSObject

@@ -19,8 +19,8 @@
  * const { Integration } = ChromeUtils.importESModule(
  *   "resource://gre/modules/Integration.sys.mjs"
  * );
- * const { PermissionUI } = ChromeUtils.import(
- *   "resource:///modules/PermissionUI.jsm"
+ * const { PermissionUI } = ChromeUtils.importESModule(
+ *   "resource:///modules/PermissionUI.sys.mjs"
  * );
  *
  * const SoundCardIntegration = base => {
@@ -86,6 +86,13 @@ XPCOMUtils.defineLazyServiceGetter(
   "@mozilla.org/content-pref/service;1",
   "nsIContentPrefService2"
 );
+
+ChromeUtils.defineLazyGetter(lazy, "gBrandBundle", function () {
+  return Services.strings.createBundle(
+    "chrome://branding/locale/brand.properties"
+  );
+});
+
 ChromeUtils.defineLazyGetter(lazy, "gBrowserBundle", function () {
   return Services.strings.createBundle(
     "chrome://browser/locale/browser.properties"
@@ -252,6 +259,17 @@ class PermissionPrompt {
   }
 
   /**
+   * The hint text to show to the user in the PopupNotification, see
+   * `PopupNotifications_show` in PopupNotifications.sys.mjs.
+   * By default, no hint is shown.
+   *
+   * @return {string}
+   */
+  get hintText() {
+    return undefined;
+  }
+
+  /**
    * Provides the preferred name to use in the permission popups,
    * based on the principal URI (the URI.hostPort for any URI scheme
    * besides the moz-extension one which should default to the
@@ -390,16 +408,6 @@ class PermissionPrompt {
       );
 
       if (state == lazy.SitePermissions.BLOCK) {
-        // If this block was done based on a global user setting, we want to show
-        // a post prompt to give the user some more granular control without
-        // annoying them too much.
-        if (
-          this.postPromptEnabled &&
-          lazy.SitePermissions.getDefault(this.permissionKey) ==
-            lazy.SitePermissions.BLOCK
-        ) {
-          this.postPrompt();
-        }
         this.cancel();
         return;
       }
@@ -472,10 +480,7 @@ class PermissionPrompt {
                 promptAction.action,
                 scope
               );
-            } else if (promptAction.action == lazy.SitePermissions.BLOCK) {
-              // Temporarily store BLOCK permissions only
-              // SitePermissions does not consider subframes when storing temporary
-              // permissions on a tab, thus storing ALLOW could be exploited.
+            } else {
               lazy.SitePermissions.setForPrincipal(
                 this.principal,
                 this.permissionKey,
@@ -492,19 +497,13 @@ class PermissionPrompt {
               this.cancel();
             }
           } else if (this.permissionKey) {
-            // TODO: Add support for permitTemporaryAllow
-            if (promptAction.action == lazy.SitePermissions.BLOCK) {
-              // Temporarily store BLOCK permissions.
-              // We don't consider subframes when storing temporary
-              // permissions on a tab, thus storing ALLOW could be exploited.
-              lazy.SitePermissions.setForPrincipal(
-                null,
-                this.permissionKey,
-                promptAction.action,
-                lazy.SitePermissions.SCOPE_TEMPORARY,
-                this.browser
-              );
-            }
+            lazy.SitePermissions.setForPrincipal(
+              null,
+              this.permissionKey,
+              promptAction.action,
+              lazy.SitePermissions.SCOPE_TEMPORARY,
+              this.browser
+            );
           }
         },
       };
@@ -540,7 +539,7 @@ class PermissionPrompt {
       let action = {
         label: promptAction.label,
         accessKey: promptAction.accessKey,
-        callback: state => {
+        callback: () => {
           if (promptAction.callback) {
             promptAction.callback();
           }
@@ -626,6 +625,7 @@ class PermissionPrompt {
       return false;
     };
 
+    options.hintText = this.hintText;
     // Post-prompts show up as dismissed.
     options.dismissed = postPrompt;
 
@@ -716,7 +716,6 @@ class SitePermsAddonInstallRequest extends PermissionPromptForRequest {
         scriptError.initWithWindowID(
           errorMessage,
           null,
-          null,
           0,
           0,
           0,
@@ -735,7 +734,7 @@ class SitePermsAddonInstallRequest extends PermissionPromptForRequest {
    * @param {Components.Exception} err
    * @returns {String} The error message
    */
-  getInstallErrorMessage(err) {
+  getInstallErrorMessage() {
     return null;
   }
 }
@@ -751,6 +750,14 @@ class GeolocationPermissionPrompt extends PermissionPromptForRequest {
   constructor(request) {
     super();
     this.request = request;
+    let types = request.types.QueryInterface(Ci.nsIArray);
+    let perm = types.queryElementAt(0, Ci.nsIContentPermissionType);
+    if (perm.options.length) {
+      this.systemPermissionMsg = perm.options.queryElementAt(
+        0,
+        Ci.nsISupportsString
+      );
+    }
   }
 
   get type() {
@@ -817,6 +824,26 @@ class GeolocationPermissionPrompt extends PermissionPromptForRequest {
       "geolocation.shareWithSite4",
       ["<>"]
     );
+  }
+
+  get hintText() {
+    let productName = lazy.gBrandBundle.GetStringFromName("brandShortName");
+
+    if (this.systemPermissionMsg == "sysdlg") {
+      return lazy.gBrowserBundle.formatStringFromName(
+        "geolocation.systemWillRequestPermission",
+        [productName]
+      );
+    }
+
+    if (this.systemPermissionMsg == "syssetting") {
+      return lazy.gBrowserBundle.formatStringFromName(
+        "geolocation.needsSystemSetting",
+        [productName]
+      );
+    }
+
+    return undefined;
   }
 
   get promptActions() {
@@ -1350,7 +1377,7 @@ class StorageAccessPermissionPrompt extends PermissionPromptForRequest {
 
   prettifyHostPort(hostport) {
     let [host, port] = hostport.split(":");
-    host = lazy.IDNService.convertToDisplayIDN(host, {});
+    host = lazy.IDNService.convertToDisplayIDN(host);
     if (port) {
       return `${host}:${port}`;
     }
@@ -1407,7 +1434,7 @@ class StorageAccessPermissionPrompt extends PermissionPromptForRequest {
           "storageAccess1.Allow.accesskey"
         ),
         action: Ci.nsIPermissionManager.ALLOW_ACTION,
-        callback(state) {
+        callback() {
           self.allow({ "storage-access": "allow" });
         },
       },
@@ -1419,7 +1446,7 @@ class StorageAccessPermissionPrompt extends PermissionPromptForRequest {
           "storageAccess1.DontAllow.accesskey"
         ),
         action: Ci.nsIPermissionManager.DENY_ACTION,
-        callback(state) {
+        callback() {
           self.cancel();
         },
       },

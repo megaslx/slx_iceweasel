@@ -49,6 +49,9 @@ Var ExtensionRecommender
 Var PageName
 Var PreventRebootRequired
 Var RegisterDefaultAgent
+; Will be the registry hive that we are going to write things like class keys
+; into. This will generally be HKLM if running with elevation, otherwise HKCU.
+Var RegHive
 
 ; Telemetry ping fields
 Var SetAsDefault
@@ -110,7 +113,6 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 !insertmacro CleanMaintenanceServiceLogs
 !insertmacro CopyFilesFromDir
 !insertmacro CopyPostSigningData
-!insertmacro CopyProvenanceData
 !insertmacro CreateRegKey
 !insertmacro GetFirstInstallPath
 !insertmacro GetLongPath
@@ -336,7 +338,7 @@ Section "-InstallStartCleanup"
     Delete "$INSTDIR\installation_telemetry.json"
   ${EndIf}
 
-  ; Explictly remove empty webapprt dir in case it exists (bug 757978).
+  ; Explicitly remove empty webapprt dir in case it exists (bug 757978).
   RmDir "$INSTDIR\webapprt\components"
   RmDir "$INSTDIR\webapprt"
 
@@ -414,7 +416,7 @@ Section "-Application" APP_IDX
 
   ; Default for adding a Taskbar pin (1 = pin, 0 = don't pin)
   ${If} $AddTaskbarSC == ""
-    StrCpy $AddTaskbarSC "1"
+    ${GetPinningSupportedByWindowsVersionWithoutSystemPopup} $AddTaskbarSC
   ${EndIf}
 
   ${LogHeader} "Adding Registry Entries"
@@ -426,11 +428,11 @@ Section "-Application" APP_IDX
   ClearErrors
   WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
   ${If} ${Errors}
-    StrCpy $TmpVal "HKCU" ; used primarily for logging
+    StrCpy $RegHive "HKCU"
   ${Else}
     SetShellVarContext all  ; Set SHCTX to HKLM
     DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
-    StrCpy $TmpVal "HKLM" ; used primarily for logging
+    StrCpy $RegHive "HKLM"
     ${RegCleanMain} "Software\Mozilla"
     ${RegCleanUninstall}
     ${UpdateProtocolHandlers}
@@ -476,7 +478,7 @@ Section "-Application" APP_IDX
                                  "${AppRegName} URL" "true"
 
   ; The keys below can be set in HKCU if needed.
-  ${If} $TmpVal == "HKLM"
+  ${If} $RegHive == "HKLM"
     ; Set the Start Menu Internet and Registered App HKLM registry keys.
     ${SetStartMenuInternet} "HKLM"
     ${FixShellIconHandler} "HKLM"
@@ -497,7 +499,7 @@ Section "-Application" APP_IDX
     Pop $R0
     ${If} $R0 == "true"
     ; Only proceed if we have HKLM write access
-    ${AndIf} $TmpVal == "HKLM"
+    ${AndIf} $RegHive == "HKLM"
       ; The user is an admin, so we should default to installing the service.
       StrCpy $InstallMaintenanceService "1"
     ${Else}
@@ -518,15 +520,15 @@ Section "-Application" APP_IDX
   ; These need special handling on uninstall since they may be overwritten by
   ; an install into a different location.
   StrCpy $0 "Software\Microsoft\Windows\CurrentVersion\App Paths\${FileMainEXE}"
-  ${WriteRegStr2} $TmpVal "$0" "" "$INSTDIR\${FileMainEXE}" 0
-  ${WriteRegStr2} $TmpVal "$0" "Path" "$INSTDIR" 0
+  ${WriteRegStr2} $RegHive "$0" "" "$INSTDIR\${FileMainEXE}" 0
+  ${WriteRegStr2} $RegHive "$0" "Path" "$INSTDIR" 0
 
   StrCpy $0 "Software\Microsoft\MediaPlayer\ShimInclusionList\$R9"
-  ${CreateRegKey} "$TmpVal" "$0" 0
+  ${CreateRegKey} "$RegHive" "$0" 0
   StrCpy $0 "Software\Microsoft\MediaPlayer\ShimInclusionList\plugin-container.exe"
-  ${CreateRegKey} "$TmpVal" "$0" 0
+  ${CreateRegKey} "$RegHive" "$0" 0
 
-  ${If} $TmpVal == "HKLM"
+  ${If} $RegHive == "HKLM"
     ; Set the permitted LSP Categories
     ${SetAppLSPCategories} ${LSP_CATEGORIES}
   ${EndIf}
@@ -541,7 +543,7 @@ Section "-Application" APP_IDX
   WriteRegDWORD HKCU ${MOZ_LAUNCHER_SUBKEY} "$INSTDIR\${FileMainEXE}|Telemetry" 1
 !endif
 
-  ${WriteToastNotificationRegistration} $TmpVal
+  ${WriteToastNotificationRegistration} $RegHive
 
   ; Create shortcuts
   ${LogHeader} "Adding Shortcuts"
@@ -565,7 +567,7 @@ Section "-Application" APP_IDX
   Call FixShortcutAppModelIDs
   ; If the current context is all also perform Win7 taskbar and start menu link
   ; maintenance for the current user context.
-  ${If} $TmpVal == "HKLM"
+  ${If} $RegHive == "HKLM"
     SetShellVarContext current  ; Set SHCTX to HKCU
     Call FixShortcutAppModelIDs
     SetShellVarContext all  ; Set SHCTX to HKLM
@@ -606,6 +608,7 @@ Section "-Application" APP_IDX
     ${Else}
       CreateShortCut "$SMPROGRAMS\${BrandShortName}.lnk" "$INSTDIR\${FileMainEXE}"
       ${If} ${FileExists} "$SMPROGRAMS\${BrandShortName}.lnk"
+        ShellLink::SetShortCutDescription "$SMPROGRAMS\${BrandShortName}.lnk" "$(BRIEF_APP_DESC)"
         ShellLink::SetShortCutWorkingDirectory "$SMPROGRAMS\${BrandShortName}.lnk" \
                                                "$INSTDIR"
         ${If} "$AppUserModelID" != ""
@@ -634,9 +637,9 @@ Section "-Application" APP_IDX
   ${TouchStartMenuShortcut}
   SetShellVarContext current
   ${TouchStartMenuShortcut}
-  ${If} $TmpVal == "HKLM"
+  ${If} $RegHive == "HKLM"
     SetShellVarContext all
-  ${ElseIf} $TmpVal == "HKCU"
+  ${ElseIf} $RegHive == "HKCU"
     SetShellVarContext current
   ${EndIf}
 
@@ -653,6 +656,7 @@ Section "-Application" APP_IDX
     ${Else}
       CreateShortCut "$DESKTOP\${BrandShortName}.lnk" "$INSTDIR\${FileMainEXE}"
       ${If} ${FileExists} "$DESKTOP\${BrandShortName}.lnk"
+        ShellLink::SetShortCutDescription "$DESKTOP\${BrandShortName}.lnk" "$(BRIEF_APP_DESC)"
         ShellLink::SetShortCutWorkingDirectory "$DESKTOP\${BrandShortName}.lnk" \
                                                "$INSTDIR"
         ${If} "$AppUserModelID" != ""
@@ -703,7 +707,7 @@ Section "-Application" APP_IDX
 !endif
 
 !ifdef MOZ_MAINTENANCE_SERVICE
-  ${If} $TmpVal == "HKLM"
+  ${If} $RegHive == "HKLM"
     ; Add the registry keys for allowed certificates.
     ${AddMaintCertKeys}
   ${EndIf}
@@ -750,7 +754,7 @@ Section "-InstallEndCleanup"
   DetailPrint "$(STATUS_CLEANUP)"
   SetDetailsPrint none
 
-  ; Maybe copy the post-signing data and provenance data
+  ; Maybe copy the post-signing data?
   StrCpy $PostSigningData ""
   ${GetParameters} $0
   ClearErrors
@@ -764,63 +768,8 @@ Section "-InstallEndCleanup"
       ; We're being run standalone, copy the data.
       ${CopyPostSigningData}
       Pop $PostSigningData
-      ${CopyProvenanceData}
     ${EndIf}
   ${EndIf}
-
-  ${Unless} ${Silent}
-    ClearErrors
-    ${MUI_INSTALLOPTIONS_READ} $0 "summary.ini" "Field 4" "State"
-    ${If} "$0" == "1"
-      StrCpy $SetAsDefault true
-      ; For data migration in the app, we want to know what the default browser
-      ; value was before we changed it. To do so, we read it here and store it
-      ; in our own registry key.
-      StrCpy $0 ""
-      AppAssocReg::QueryCurrentDefault "http" "protocol" "effective"
-      Pop $1
-      ; If the method hasn't failed, $1 will contain the progid. Check:
-      ${If} "$1" != "method failed"
-      ${AndIf} "$1" != "method not available"
-        ; Read the actual command from the progid
-        ReadRegStr $0 HKCR "$1\shell\open\command" ""
-      ${EndIf}
-      ; If using the App Association Registry didn't happen or failed, fall back
-      ; to the effective http default:
-      ${If} "$0" == ""
-        ReadRegStr $0 HKCR "http\shell\open\command" ""
-      ${EndIf}
-      ; If we have something other than empty string now, write the value.
-      ${If} "$0" != ""
-        ClearErrors
-        WriteRegStr HKCU "Software\Mozilla\Firefox" "OldDefaultBrowserCommand" "$0"
-      ${EndIf}
-
-      ${LogHeader} "Setting as the default browser"
-      ; AddTaskbarSC is needed by MigrateTaskBarShortcut, which is called by
-      ; SetAsDefaultAppUserHKCU. If this is called via ExecCodeSegment,
-      ; MigrateTaskBarShortcut will not see the value of AddTaskbarSC, so we
-      ; send it via a register instead.
-      StrCpy $R0 $AddTaskbarSC
-      ClearErrors
-      ${GetParameters} $0
-      ${GetOptions} "$0" "/UAC:" $0
-      ${If} ${Errors}
-        Call SetAsDefaultAppUserHKCU
-      ${Else}
-        GetFunctionAddress $0 SetAsDefaultAppUserHKCU
-        UAC::ExecCodeSegment $0
-      ${EndIf}
-    ${ElseIfNot} ${Errors}
-      StrCpy $SetAsDefault false
-      ${LogHeader} "Writing default-browser opt-out"
-      ClearErrors
-      WriteRegStr HKCU "Software\Mozilla\Firefox" "DefaultBrowserOptOut" "True"
-      ${If} ${Errors}
-        ${LogMsg} "Error writing default-browser opt-out"
-      ${EndIf}
-    ${EndIf}
-  ${EndUnless}
 
   ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
   ${MigrateTaskBarShortcut} "$AddTaskbarSC"
@@ -830,6 +779,15 @@ Section "-InstallEndCleanup"
 
   ; Refresh desktop icons
   ${RefreshShellIcons}
+
+  ; Remove old unsupported firefox and firefox-private extension protocol
+  ; handlers which were added in FX122 for the dual browser extension, since
+  ; renamed to FirefoxBridge
+  Push $1
+  ${GetLongPath} "$INSTDIR\${FileMainEXE}" $1
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox"
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox-private"
+  Pop $1
 
   ${InstallEndCleanupCommon}
 
@@ -1065,6 +1023,22 @@ Function SendPing
   nsJSON::Set /tree ping "Data" "version" /value '"$0"'
   ReadINIStr $0 "$INSTDIR\application.ini" "App" "BuildID"
   nsJSON::Set /tree ping "Data" "build_id" /value '"$0"'
+
+  ; Capture the distribution ID and version if they exist.
+  StrCpy $1 "$INSTDIR\distribution\distribution.ini"
+  ${If} ${FileExists} "$1"
+    ReadINIStr $0 "$1" "Global" "id"
+    nsJSON::Set /tree ping "Data" "distribution_id" /value '"$0"'
+    ReadINIStr $0 "$1" "Global" "version"
+    nsJSON::Set /tree ping "Data" "distribution_version" /value '"$0"'
+  ${EndIf}
+
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" "UBR"
+  ${If} ${Errors}
+    StrCpy $0 "-1" ; Assign -1 if an error occured during registry read
+  ${EndIf}
+  
+  nsJSON::Set /tree ping "Data" "windows_ubr" /value '$0'
 
   ${GetParameters} $0
   ${GetOptions} $0 "/LaunchedFromMSI" $0
@@ -1442,7 +1416,11 @@ Function leaveShortcuts
   ${EndIf}
   ${MUI_INSTALLOPTIONS_READ} $AddDesktopSC "shortcuts.ini" "Field 2" "State"
   ${MUI_INSTALLOPTIONS_READ} $AddStartMenuSC "shortcuts.ini" "Field 3" "State"
-  ${MUI_INSTALLOPTIONS_READ} $AddTaskbarSC "shortcuts.ini" "Field 4" "State"
+
+
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
+    ${MUI_INSTALLOPTIONS_READ} $AddTaskbarSC "shortcuts.ini" "Field 4" "State"
+  ${EndIf}
 
   ${If} $InstallType == ${INSTALLTYPE_CUSTOM}
     Call CheckExistingInstall
@@ -1849,7 +1827,11 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Top    "67"
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Bottom "87"
 
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "4"
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "4"
+  ${Else}
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "3"
+  ${EndIf}
 
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 1" Type   "label"
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 1" Text   "$(CREATE_ICONS_DESC)"
@@ -1875,13 +1857,15 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" Bottom "50"
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" State  "1"
 
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Type   "checkbox"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_TASKBAR)"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Left   "0"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Right  "-1"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Top    "60"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Bottom "70"
-  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" State  "1"
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Type   "checkbox"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_TASKBAR)"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Left   "0"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Right  "-1"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Top    "60"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Bottom "70"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" State  "1"
+  ${EndIf}
 
   ; Setup the components.ini file for the Components Page
   WriteINIStr "$PLUGINSDIR\components.ini" "Settings" NumFields "2"

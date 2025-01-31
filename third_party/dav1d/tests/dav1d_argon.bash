@@ -4,8 +4,11 @@ DAV1D="tools/dav1d"
 ARGON_DIR='.'
 FILMGRAIN=1
 CPUMASK=-1
-THREADS=0
-JOBS=1
+THREADS=1
+JOBS=0
+WRAP=""
+FAIL_FAST=0
+
 
 usage() {
     NAME=$(basename "$0")
@@ -15,12 +18,14 @@ usage() {
         printf "Used to verify that dav1d can decode the Argon AV1 test vectors correctly.\n\n"
         printf " DIRECTORY one or more dirs in the argon folder to check against\n"
         printf "             (default: everything except large scale tiles and stress files)\n"
+        printf " -f        fail fast\n"
         printf " -d dav1d  path to dav1d executable (default: tools/dav1d)\n"
         printf " -a dir    path to argon dir (default: 'tests/argon' if found; '.' otherwise)\n"
         printf " -g \$num   enable filmgrain (default: 1)\n"
         printf " -c \$mask  use restricted cpumask (default: -1)\n"
-        printf " -t \$num   number of threads per dav1d (default: 0)\n"
-        printf " -j \$num   number of parallel dav1d processes (default: 1)\n\n"
+        printf " -t \$num   number of threads per dav1d (default: 1)\n"
+        printf " -j \$num   number of parallel dav1d processes (default: 0)\n"
+        printf " -w tool   execute dav1d with a wrapper tool\n\n"
     } >&2
     exit 1
 }
@@ -32,6 +37,7 @@ error() {
 
 fail() {
     printf "\033[1K\rMismatch in %s\n" "$1"
+    [[ $FAIL_FAST = 1 ]] && exit 1
     (( failed++ ))
 }
 
@@ -79,8 +85,11 @@ if [ -d "$tests_dir/argon" ]; then
     ARGON_DIR="$tests_dir/argon"
 fi
 
-while getopts ":d:a:g:c:t:j:" opt; do
+while getopts ":d:a:g:c:t:j:w:f" opt; do
     case "$opt" in
+        f)
+            FAIL_FAST=1
+            ;;
         d)
             DAV1D="$OPTARG"
             ;;
@@ -99,6 +108,9 @@ while getopts ":d:a:g:c:t:j:" opt; do
         j)
             JOBS="$OPTARG"
             ;;
+        w)
+            WRAP="$OPTARG"
+            ;;
         \?)
             printf "Error! Invalid option: -%s\n" "$OPTARG" >&2
             usage
@@ -109,6 +121,14 @@ while getopts ":d:a:g:c:t:j:" opt; do
     esac
 done
 shift $((OPTIND-1))
+
+if [ "$JOBS" -eq 0 ]; then
+    if [ "$THREADS" -gt 0 ]; then
+        JOBS="$((($( (nproc || sysctl -n hw.logicalcpu || getconf _NPROCESSORS_ONLN || echo 1) 2>/dev/null)+THREADS-1)/THREADS))"
+    else
+        JOBS=1
+    fi
+fi
 
 if [ "$#" -eq 0 ]; then
     # Everything except large scale tiles and stress files.
@@ -123,7 +143,7 @@ else
     mapfile -t dirs < <(printf "${ARGON_DIR}/%s\n" "$@" | sort -u)
 fi
 
-ver_info="dav1d $("$DAV1D" -v 2>&1) filmgrain=$FILMGRAIN cpumask=$CPUMASK" || error "Error! Can't run $DAV1D"
+ver_info="dav1d $("$DAV1D" --filmgrain "$FILMGRAIN" --cpumask "$CPUMASK" --threads "$THREADS" -v 2>&1) filmgrain=$FILMGRAIN cpumask=$CPUMASK" || error "Error! Can't run $DAV1D"
 files=()
 
 for d in "${dirs[@]}"; do
@@ -132,7 +152,8 @@ for d in "${dirs[@]}"; do
     fi
 done
 
-if [ ${#files[@]} -eq 0 ]; then
+num_files="${#files[@]}"
+if [ "$num_files" -eq 0 ]; then
     error "Error! No files found at ${dirs[*]}"
 fi
 
@@ -148,17 +169,17 @@ for i in "${!files[@]}"; do
     md5=$(<"${md5/%obu/md5}") || error "Error! Can't read md5 ${md5} for file ${f}"
     md5=${md5/ */}
 
-    printf "\033[1K\r[%3d%% %d/%d] Verifying %s" "$(((i+1)*100/${#files[@]}))" "$((i+1))" "${#files[@]}" "$f"
-    cmd=("$DAV1D" -i "$f" --filmgrain "$FILMGRAIN" --verify "$md5" --cpumask "$CPUMASK" --threads "$THREADS" -q)
+    printf '\033[1K\r[%3d%% %*d/%d] Verifying %s' "$(((i+1)*100/num_files))" "${#num_files}" "$((i+1))" "$num_files" "${f#"$ARGON_DIR"/}"
+    cmd=($WRAP "$DAV1D" -i "$f" --filmgrain "$FILMGRAIN" --verify "$md5" --cpumask "$CPUMASK" --threads "$THREADS" -q)
     if [ "$JOBS" -gt 1 ]; then
         "${cmd[@]}" 2>/dev/null &
         p=$!
         pids+=("$p")
-        declare "file$p=$f"
+        declare "file$p=${f#"$ARGON_DIR"/}"
         block_pids
     else
         if ! "${cmd[@]}" 2>/dev/null; then
-            fail "$f"
+            fail "${f#"$ARGON_DIR"/}"
         fi
     fi
 done
@@ -166,9 +187,9 @@ done
 wait_all_pids
 
 if [ "$failed" -ne 0 ]; then
-    printf "\033[1K\r%d/%d files \033[1;91mfailed\033[0m to verify" "$failed" "${#files[@]}"
+    printf "\033[1K\r%d/%d files \033[1;91mfailed\033[0m to verify" "$failed" "$num_files"
 else
-    printf "\033[1K\r%d files \033[1;92msuccessfully\033[0m verified" "${#files[@]}"
+    printf "\033[1K\r%d files \033[1;92msuccessfully\033[0m verified" "$num_files"
 fi
 printf " in %dm%ds (%s)\n" "$((SECONDS/60))" "$((SECONDS%60))" "$ver_info"
 

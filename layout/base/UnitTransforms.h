@@ -44,9 +44,6 @@ enum class PixelCastJustification : uint8_t {
   // reference point as a screen point. The reverse is useful when synthetically
   // created WidgetEvents need to be converted back to InputData.
   LayoutDeviceIsScreenForUntransformedEvent,
-  // Similar to LayoutDeviceIsScreenForUntransformedEvent, PBrowser handles
-  // some widget/tab dimension information as the OS does -- in screen units.
-  LayoutDeviceIsScreenForTabDims,
   // A combination of LayoutDeviceIsScreenForBounds and
   // ScreenIsParentLayerForRoot, which is how we're using it.
   LayoutDeviceIsParentLayerForRCDRSF,
@@ -174,7 +171,7 @@ template <class TargetMatrix, class SourceMatrixSourceUnits,
 TargetMatrix ViewAs(const gfx::Matrix4x4Typed<SourceMatrixSourceUnits,
                                               SourceMatrixTargetUnits>& aMatrix,
                     PixelCastJustification) {
-  return TargetMatrix::FromUnknownMatrix(aMatrix.ToUnknownMatrix());
+  return aMatrix.template Cast<TargetMatrix>();
 }
 template <class TargetMatrix, class SourceMatrixSourceUnits,
           class SourceMatrixTargetUnits>
@@ -183,7 +180,7 @@ Maybe<TargetMatrix> ViewAs(
                                     SourceMatrixTargetUnits>>& aMatrix,
     PixelCastJustification) {
   if (aMatrix.isSome()) {
-    return Some(TargetMatrix::FromUnknownMatrix(aMatrix->ToUnknownMatrix()));
+    return Some(aMatrix->template Cast<TargetMatrix>());
   }
   return Nothing();
 }

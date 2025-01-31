@@ -113,11 +113,8 @@ TEST(CommandLineParserWin, HandleCommandLine)
   }
 }
 
-TEST(WinRemoteMessage, SendReceive)
+TEST(WinRemoteMessage, SendReceiveV2)
 {
-  const char kCommandline[] =
-      "dummy.exe /arg1 --arg2 \"3rd arg\" "
-      "4th=\"" UPPER_CYRILLIC_P_IN_UTF8 " " LOWER_CYRILLIC_P_IN_UTF8 "\"";
   const wchar_t kCommandlineW[] =
       L"dummy.exe /arg1 --arg2 \"3rd arg\" "
       L"4th=\"" UPPER_CYRILLIC_P_IN_UTF16 L" " LOWER_CYRILLIC_P_IN_UTF16 L"\"";
@@ -125,36 +122,29 @@ TEST(WinRemoteMessage, SendReceive)
       L"-arg1", L"-arg2", L"3rd arg",
       L"4th=" UPPER_CYRILLIC_P_IN_UTF16 L" " LOWER_CYRILLIC_P_IN_UTF16};
 
-  char workingDirA[MAX_PATH];
   wchar_t workingDirW[MAX_PATH];
-  EXPECT_NE(getcwd(workingDirA, MAX_PATH), nullptr);
   EXPECT_NE(_wgetcwd(workingDirW, MAX_PATH), nullptr);
 
-  WinRemoteMessageSender v0(kCommandline);
-  WinRemoteMessageSender v1(kCommandline, workingDirA);
-  WinRemoteMessageSender v2(kCommandlineW, workingDirW);
+  COPYDATASTRUCT data = {static_cast<DWORD>(
+      WinRemoteMessageVersion::CommandLineAndWorkingDirInUtf16)};
+  nsString utf16Buffer(kCommandlineW);
+  utf16Buffer.Append(u'\0');
+  utf16Buffer.Append(workingDirW);
+  utf16Buffer.Append(u'\0');
+
+  char16_t* mutableBuffer;
+  data.cbData = utf16Buffer.GetMutableData(&mutableBuffer) * sizeof(char16_t);
+  data.lpData = mutableBuffer;
 
   WinRemoteMessageReceiver receiver;
   int32_t len;
   nsAutoString arg;
   nsCOMPtr<nsIFile> workingDir;
 
-  receiver.Parse(v0.CopyData());
+  EXPECT_NS_SUCCEEDED(receiver.Parse(&data));
   EXPECT_NS_SUCCEEDED(receiver.CommandLineRunner()->GetLength(&len));
-  EXPECT_EQ(static_cast<size_t>(len), ArrayLength(kExpectedArgsW));
-  for (size_t i = 0; i < ArrayLength(kExpectedArgsW); ++i) {
-    EXPECT_TRUE(
-        NS_SUCCEEDED(receiver.CommandLineRunner()->GetArgument(i, arg)));
-    EXPECT_STREQ(arg.get(), kExpectedArgsW[i]);
-  }
-  EXPECT_EQ(receiver.CommandLineRunner()->GetWorkingDirectory(
-                getter_AddRefs(workingDir)),
-            NS_ERROR_NOT_INITIALIZED);
-
-  receiver.Parse(v1.CopyData());
-  EXPECT_NS_SUCCEEDED(receiver.CommandLineRunner()->GetLength(&len));
-  EXPECT_EQ(static_cast<size_t>(len), ArrayLength(kExpectedArgsW));
-  for (size_t i = 0; i < ArrayLength(kExpectedArgsW); ++i) {
+  EXPECT_EQ(static_cast<size_t>(len), std::size(kExpectedArgsW));
+  for (size_t i = 0; i < std::size(kExpectedArgsW); ++i) {
     EXPECT_TRUE(
         NS_SUCCEEDED(receiver.CommandLineRunner()->GetArgument(i, arg)));
     EXPECT_STREQ(arg.get(), kExpectedArgsW[i]);
@@ -163,11 +153,32 @@ TEST(WinRemoteMessage, SendReceive)
       getter_AddRefs(workingDir))));
   EXPECT_NS_SUCCEEDED(workingDir->GetPath(arg));
   EXPECT_STREQ(arg.get(), workingDirW);
+}
 
-  receiver.Parse(v2.CopyData());
+TEST(WinRemoteMessage, SendReceiveV3)
+{
+  const char* kCommandline[] = {"dummy.exe", "/arg1", "--arg2", "3rd arg",
+                                "4th=" UPPER_CYRILLIC_P_IN_UTF8
+                                " " LOWER_CYRILLIC_P_IN_UTF8};
+  const wchar_t* kExpectedArgsW[] = {
+      L"-arg1", L"-arg2", L"3rd arg",
+      L"4th=" UPPER_CYRILLIC_P_IN_UTF16 L" " LOWER_CYRILLIC_P_IN_UTF16};
+
+  wchar_t workingDirW[MAX_PATH];
+  EXPECT_NE(_wgetcwd(workingDirW, MAX_PATH), nullptr);
+
+  WinRemoteMessageSender v3(std::size(kCommandline), kCommandline,
+                            nsDependentString(workingDirW));
+
+  WinRemoteMessageReceiver receiver;
+  int32_t len;
+  nsAutoString arg;
+  nsCOMPtr<nsIFile> workingDir;
+
+  EXPECT_NS_SUCCEEDED(receiver.Parse(v3.CopyData()));
   EXPECT_NS_SUCCEEDED(receiver.CommandLineRunner()->GetLength(&len));
-  EXPECT_EQ(static_cast<size_t>(len), ArrayLength(kExpectedArgsW));
-  for (size_t i = 0; i < ArrayLength(kExpectedArgsW); ++i) {
+  EXPECT_EQ(static_cast<size_t>(len), std::size(kExpectedArgsW));
+  for (size_t i = 0; i < std::size(kExpectedArgsW); ++i) {
     EXPECT_TRUE(
         NS_SUCCEEDED(receiver.CommandLineRunner()->GetArgument(i, arg)));
     EXPECT_STREQ(arg.get(), kExpectedArgsW[i]);
@@ -202,20 +213,6 @@ TEST(WinRemoteMessage, NonNullTerminatedBuffer)
 
     copyData.cbData = i;
     copyData.lpData = bufferEnd - i;
-
-    copyData.dwData =
-        static_cast<ULONG_PTR>(WinRemoteMessageVersion::CommandLineOnly);
-    EXPECT_NS_SUCCEEDED(receiver.Parse(&copyData));
-    EXPECT_EQ(receiver.CommandLineRunner()->GetWorkingDirectory(
-                  getter_AddRefs(workingDir)),
-              NS_ERROR_NOT_INITIALIZED);
-
-    copyData.dwData = static_cast<ULONG_PTR>(
-        WinRemoteMessageVersion::CommandLineAndWorkingDir);
-    EXPECT_NS_SUCCEEDED(receiver.Parse(&copyData));
-    EXPECT_EQ(receiver.CommandLineRunner()->GetWorkingDirectory(
-                  getter_AddRefs(workingDir)),
-              NS_ERROR_NOT_INITIALIZED);
 
     copyData.dwData = static_cast<ULONG_PTR>(
         WinRemoteMessageVersion::CommandLineAndWorkingDirInUtf16);

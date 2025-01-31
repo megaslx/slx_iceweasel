@@ -7,18 +7,20 @@
 // Make this available to both AMD and CJS environments
 define(function (require, exports, module) {
   // ReactJS
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const {
+    span,
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
   // Dependencies
   const {
     interleave,
     wrapRender,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
-  const PropRep = require("devtools/client/shared/components/reps/reps/prop-rep");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
+  const PropRep = require("resource://devtools/client/shared/components/reps/reps/prop-rep.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
 
   /**
    * Renders generic grip. Grip is client representation
@@ -83,6 +85,11 @@ define(function (require, exports, module) {
       config.title = shouldRenderTooltip ? getTitle(props, object) : null;
 
       return span(config, ...tinyModeItems);
+    }
+
+    if (mode === MODE.HEADER) {
+      config.title = shouldRenderTooltip ? getTitle(props, object) : null;
+      return span(config, getTitleElement(props, object));
     }
 
     const propsArray = safePropIterator(props, object, maxLengthMap.get(mode));
@@ -159,7 +166,7 @@ define(function (require, exports, module) {
     ) {
       const {
         Rep,
-      } = require("devtools/client/shared/components/reps/reps/rep");
+      } = require("resource://devtools/client/shared/components/reps/reps/rep.js");
 
       return [
         Rep({
@@ -370,7 +377,7 @@ define(function (require, exports, module) {
   }
 
   // Registration
-  function supportsObject(object, noGrip = false) {
+  function supportsObject(object) {
     if (object?.class === "DeadObject") {
       return true;
     }

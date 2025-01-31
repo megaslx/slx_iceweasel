@@ -485,6 +485,21 @@ extern "C" fn C_SetAttributeValue(
     CKR_FUNCTION_NOT_SUPPORTED
 }
 
+const RELEVANT_ATTRIBUTES: &[CK_ATTRIBUTE_TYPE] = &[
+    CKA_CLASS,
+    CKA_EC_PARAMS,
+    CKA_ID,
+    CKA_ISSUER,
+    CKA_KEY_TYPE,
+    CKA_LABEL,
+    CKA_MODULUS,
+    CKA_PRIVATE,
+    CKA_SERIAL_NUMBER,
+    CKA_SUBJECT,
+    CKA_TOKEN,
+    CKA_VALUE,
+];
+
 /// This gets called to initialize a search for objects matching a given list of attributes. This
 /// module implements this by gathering the attributes and passing them to the `ManagerProxy` to
 /// start the search.
@@ -499,10 +514,15 @@ extern "C" fn C_FindObjectsInit(
     let mut attrs = Vec::new();
     for i in 0..ulCount {
         let attr = unsafe { &*pTemplate.offset(i as isize) };
+        // Copy out the attribute type to avoid making a reference to an unaligned field.
+        let attr_type = attr.type_;
+        if !RELEVANT_ATTRIBUTES.contains(&attr_type) {
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        }
         let slice = unsafe {
             std::slice::from_raw_parts(attr.pValue as *const u8, attr.ulValueLen as usize)
         };
-        attrs.push((attr.type_, slice.to_owned()));
+        attrs.push((attr_type, slice.to_owned()));
     }
     let mut manager_guard = try_to_get_manager_guard!();
     let manager = manager_guard_to_manager!(manager_guard);
@@ -957,7 +977,7 @@ extern "C" fn C_WaitForSlotEvent(
 
 /// To be a valid PKCS #11 module, this list of functions must be supported. At least cryptoki 2.2
 /// must be supported for this module to work in NSS.
-static mut FUNCTION_LIST: CK_FUNCTION_LIST = CK_FUNCTION_LIST {
+static FUNCTION_LIST: CK_FUNCTION_LIST = CK_FUNCTION_LIST {
     version: CK_VERSION { major: 2, minor: 2 },
     C_Initialize: Some(C_Initialize),
     C_Finalize: Some(C_Finalize),
@@ -1038,10 +1058,15 @@ pub extern "C" fn IPCCC_GetFunctionList(ppFunctionList: CK_FUNCTION_LIST_PTR_PTR
         return CKR_ARGUMENTS_BAD;
     }
     unsafe {
-        *ppFunctionList = &mut FUNCTION_LIST;
+        // CK_FUNCTION_LIST_PTR is a *mut CK_FUNCTION_LIST, but as per the
+        // specification, the caller must treat it as *const CK_FUNCTION_LIST.
+        *ppFunctionList = std::ptr::addr_of!(FUNCTION_LIST) as CK_FUNCTION_LIST_PTR;
     }
     CKR_OK
 }
 
-#[cfg_attr(target_os = "macos", link(name = "Security", kind = "framework"))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios"),
+    link(name = "Security", kind = "framework")
+)]
 extern "C" {}

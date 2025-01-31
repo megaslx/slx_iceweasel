@@ -13,12 +13,30 @@
 #include <errno.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/ssl.h>
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/string_view.h"
+#include "api/task_queue/pending_task_safety_flag.h"
+#include "rtc_base/async_socket.h"
+#include "rtc_base/openssl_session_cache.h"
+#include "rtc_base/socket.h"
+#include "rtc_base/socket_address.h"
+#include "rtc_base/ssl_adapter.h"
+#include "rtc_base/ssl_certificate.h"
+#include "rtc_base/ssl_identity.h"
+#include "rtc_base/ssl_stream_adapter.h"
+#include "rtc_base/strings/string_builder.h"
 #ifdef OPENSSL_IS_BORINGSSL
+#include <openssl/base.h>
 #include <openssl/pool.h>
+
+#include "rtc_base/boringssl_certificate.h"
 #endif
-#include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <string.h>
 #include <time.h>
@@ -37,15 +55,15 @@
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
-#include "rtc_base/openssl.h"
 #ifdef OPENSSL_IS_BORINGSSL
 #include "rtc_base/boringssl_identity.h"
 #else
 #include "rtc_base/openssl_identity.h"
 #endif
 #include "rtc_base/openssl_utility.h"
-#include "rtc_base/strings/string_builder.h"
+#include "rtc_base/strings/str_join.h"
 #include "rtc_base/thread.h"
+#include "system_wrappers/include/field_trial.h"
 
 //////////////////////////////////////////////////////////////////////
 // SocketBIO
@@ -168,34 +186,13 @@ namespace rtc {
 
 using ::webrtc::TimeDelta;
 
-namespace webrtc_openssl_adapter_internal {
-
-// Simple O(n^2) implementation is sufficient for current use case.
-std::string StrJoin(const std::vector<std::string>& list, char delimiter) {
-  RTC_CHECK(!list.empty());
-  StringBuilder sb;
-  sb << list[0];
-  for (size_t i = 1; i < list.size(); i++) {
-    sb.AppendFormat("%c", delimiter);
-    sb << list[i];
-  }
-  return sb.Release();
-}
-}  // namespace webrtc_openssl_adapter_internal
-
-using webrtc_openssl_adapter_internal::StrJoin;
-
 bool OpenSSLAdapter::InitializeSSL() {
-  if (!SSL_library_init())
-    return false;
-#if !defined(ADDRESS_SANITIZER) || !defined(WEBRTC_MAC) || defined(WEBRTC_IOS)
-  // Loading the error strings crashes mac_asan.  Omit this debugging aid there.
-  SSL_load_error_strings();
-#endif
-  ERR_load_BIO_strings();
-  OpenSSL_add_all_algorithms();
-  RAND_poll();
-  return true;
+  // TODO: https://issues.webrtc.org/issues/339300437 - remove once
+  // BoringSSL no longer requires this after
+  // https://bugs.chromium.org/p/boringssl/issues/detail?id=35
+  // In OpenSSL it is supposed to be a no-op as of 1.1:
+  // https://www.openssl.org/docs/man1.1.1/man3/OPENSSL_init_ssl.html
+  return OPENSSL_init_ssl(0, nullptr);
 }
 
 bool OpenSSLAdapter::CleanupSSL() {
@@ -216,6 +213,10 @@ OpenSSLAdapter::OpenSSLAdapter(Socket* socket,
       ssl_ctx_(nullptr),
       ssl_mode_(SSL_MODE_TLS),
       ignore_bad_cert_(false),
+#ifdef OPENSSL_IS_BORINGSSL
+      permute_extension_(
+          !webrtc::field_trial::IsDisabled("WebRTC-PermuteTlsClientHello")),
+#endif
       custom_cert_verifier_status_(false) {
   // If a factory is used, take a reference on the factory's SSL_CTX.
   // Otherwise, we'll create our own later.
@@ -303,7 +304,13 @@ int OpenSSLAdapter::BeginSSL() {
   // need to create one, and specify `false` to disable session caching.
   if (ssl_session_cache_ == nullptr) {
     RTC_DCHECK(!ssl_ctx_);
-    ssl_ctx_ = CreateContext(ssl_mode_, false);
+#ifdef OPENSSL_IS_BORINGSSL
+    ssl_ctx_ =
+        CreateContext(ssl_mode_, /* enable_cache= */ false, permute_extension_);
+#else
+    ssl_ctx_ = CreateContext(ssl_mode_, /* enable_cache= */ false,
+                             /* permute_extension= */ false);
+#endif
   }
 
   if (!ssl_ctx_) {
@@ -373,7 +380,7 @@ int OpenSSLAdapter::BeginSSL() {
   }
 
   if (!elliptic_curves_.empty()) {
-    SSL_set1_curves_list(ssl_, StrJoin(elliptic_curves_, ':').c_str());
+    SSL_set1_curves_list(ssl_, webrtc::StrJoin(elliptic_curves_, ":").c_str());
   }
 
   // Now that the initial config is done, transfer ownership of `bio` to the
@@ -777,35 +784,36 @@ bool OpenSSLAdapter::SSLPostConnectionCheck(SSL* ssl, absl::string_view host) {
   return is_valid_cert_name;
 }
 
-#if !defined(NDEBUG)
-
-// We only use this for tracing and so it is only needed in debug mode
-
-void OpenSSLAdapter::SSLInfoCallback(const SSL* s, int where, int ret) {
-  const char* str = "undefined";
-  int w = where & ~SSL_ST_MASK;
-  if (w & SSL_ST_CONNECT) {
-    str = "SSL_connect";
-  } else if (w & SSL_ST_ACCEPT) {
-    str = "SSL_accept";
+void OpenSSLAdapter::SSLInfoCallback(const SSL* ssl, int where, int ret) {
+  switch (where) {
+    case SSL_CB_LOOP:
+    case SSL_CB_READ:
+    case SSL_CB_WRITE:
+      return;
+    default:
+      break;
   }
-  if (where & SSL_CB_LOOP) {
-    RTC_DLOG(LS_VERBOSE) << str << ":" << SSL_state_string_long(s);
-  } else if (where & SSL_CB_ALERT) {
-    str = (where & SSL_CB_READ) ? "read" : "write";
-    RTC_DLOG(LS_INFO) << "SSL3 alert " << str << ":"
-                      << SSL_alert_type_string_long(ret) << ":"
-                      << SSL_alert_desc_string_long(ret);
-  } else if (where & SSL_CB_EXIT) {
-    if (ret == 0) {
-      RTC_DLOG(LS_INFO) << str << ":failed in " << SSL_state_string_long(s);
-    } else if (ret < 0) {
-      RTC_DLOG(LS_INFO) << str << ":error in " << SSL_state_string_long(s);
-    }
+  char buf[1024];
+  rtc::SimpleStringBuilder ss(buf);
+  ss << SSL_state_string_long(ssl);
+  if (ret == 0) {
+    RTC_LOG(LS_ERROR) << "Error during " << ss.str() << "\n";
+    return;
+  }
+  // See SSL_alert_type_string_long.
+  int severity_class = where >> 8;
+  switch (severity_class) {
+    case SSL3_AL_WARNING:
+    case SSL3_AL_FATAL:
+      ss << " " << SSL_alert_type_string_long(ret);
+      ss << " " << SSL_alert_desc_string_long(ret);
+      RTC_LOG(LS_WARNING) << ss.str();
+      break;
+    default:
+      RTC_LOG(LS_INFO) << ss.str();
+      break;
   }
 }
-
-#endif
 
 #ifdef WEBRTC_USE_CRYPTO_BUFFER_CALLBACK
 // static
@@ -937,7 +945,9 @@ int OpenSSLAdapter::NewSSLSessionCallback(SSL* ssl, SSL_SESSION* session) {
   return 1;  // We've taken ownership of the session; OpenSSL shouldn't free it.
 }
 
-SSL_CTX* OpenSSLAdapter::CreateContext(SSLMode mode, bool enable_cache) {
+SSL_CTX* OpenSSLAdapter::CreateContext(SSLMode mode,
+                                       bool enable_cache,
+                                       bool permute_extension) {
 #ifdef WEBRTC_USE_CRYPTO_BUFFER_CALLBACK
   // If X509 objects aren't used, we can use these methods to avoid
   // linking the sizable crypto/x509 code.
@@ -990,15 +1000,14 @@ SSL_CTX* OpenSSLAdapter::CreateContext(SSLMode mode, bool enable_cache) {
   SSL_CTX_set_cipher_list(
       ctx, "ALL:!SHA256:!SHA384:!aPSK:!ECDSA+SHA1:!ADH:!LOW:!EXP:!MD5:!3DES");
 
-  if (mode == SSL_MODE_DTLS) {
-    SSL_CTX_set_read_ahead(ctx, 1);
-  }
-
   if (enable_cache) {
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT);
     SSL_CTX_sess_set_new_cb(ctx, &OpenSSLAdapter::NewSSLSessionCallback);
   }
 
+#ifdef OPENSSL_IS_BORINGSSL
+  SSL_CTX_set_permute_extensions(ctx, permute_extension);
+#endif
   return ctx;
 }
 
@@ -1057,9 +1066,11 @@ void OpenSSLAdapterFactory::SetIgnoreBadCert(bool ignore) {
   ignore_bad_cert_ = ignore;
 }
 
-OpenSSLAdapter* OpenSSLAdapterFactory::CreateAdapter(Socket* socket) {
+OpenSSLAdapter* OpenSSLAdapterFactory::CreateAdapter(Socket* socket,
+                                                     bool permute_extension) {
   if (ssl_session_cache_ == nullptr) {
-    SSL_CTX* ssl_ctx = OpenSSLAdapter::CreateContext(ssl_mode_, true);
+    SSL_CTX* ssl_ctx =
+        OpenSSLAdapter::CreateContext(ssl_mode_, true, permute_extension);
     if (ssl_ctx == nullptr) {
       return nullptr;
     }

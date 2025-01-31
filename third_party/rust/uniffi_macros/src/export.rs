@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{visit_mut::VisitMut, Item, Type};
 
@@ -10,39 +10,70 @@ mod attributes;
 mod callback_interface;
 mod item;
 mod scaffolding;
+mod trait_interface;
+mod utrait;
 
 use self::{
-    attributes::ExportAttributeArguments,
     item::{ExportItem, ImplItem},
-    scaffolding::{gen_constructor_scaffolding, gen_fn_scaffolding, gen_method_scaffolding},
+    scaffolding::{
+        gen_constructor_scaffolding, gen_ffi_function, gen_fn_scaffolding, gen_method_scaffolding,
+    },
 };
-use crate::{object::interface_meta_static_var, util::ident_to_string};
-use uniffi_meta::free_fn_symbol_name;
+use crate::util::{ident_to_string, mod_path};
+pub use attributes::{AsyncRuntime, DefaultMap, ExportFnArgs};
+pub use callback_interface::ffi_converter_callback_interface_impl;
 
 // TODO(jplatte): Ensure no generics, …
 // TODO(jplatte): Aggregate errors instead of short-circuiting, wherever possible
 
 pub(crate) fn expand_export(
     mut item: Item,
-    args: ExportAttributeArguments,
-    mod_path: String,
+    all_args: proc_macro::TokenStream,
+    udl_mode: bool,
 ) -> syn::Result<TokenStream> {
+    let mod_path = mod_path()?;
     // If the input is an `impl` block, rewrite any uses of the `Self` type
     // alias to the actual type, so we don't have to special-case it in the
     // metadata collection or scaffolding code generation (which generates
     // new functions outside of the `impl`).
     rewrite_self_type(&mut item);
 
-    let metadata = ExportItem::new(item, &args)?;
+    let metadata = ExportItem::new(item, all_args)?;
 
     match metadata {
-        ExportItem::Function { sig } => gen_fn_scaffolding(sig, &args),
-        ExportItem::Impl { items, self_ident } => {
+        ExportItem::Function { sig, args } => {
+            gen_fn_scaffolding(sig, args.async_runtime.as_ref(), udl_mode)
+        }
+        ExportItem::Impl {
+            items,
+            self_ident,
+            args,
+        } => {
+            if let Some(rt) = &args.async_runtime {
+                if items
+                    .iter()
+                    .all(|item| !matches!(item, ImplItem::Method(sig) if sig.is_async))
+                {
+                    return Err(syn::Error::new_spanned(
+                        rt,
+                        "no async methods in this impl block",
+                    ));
+                }
+            }
+
             let item_tokens: TokenStream = items
                 .into_iter()
-                .map(|item| match item? {
-                    ImplItem::Constructor(sig) => gen_constructor_scaffolding(sig, &args),
-                    ImplItem::Method(sig) => gen_method_scaffolding(sig, &args),
+                .map(|item| match item {
+                    ImplItem::Constructor(sig) => {
+                        let async_runtime =
+                            sig.async_runtime.clone().or(args.async_runtime.clone());
+                        gen_constructor_scaffolding(sig, async_runtime.as_ref(), udl_mode)
+                    }
+                    ImplItem::Method(sig) => {
+                        let async_runtime =
+                            sig.async_runtime.clone().or(args.async_runtime.clone());
+                        gen_method_scaffolding(sig, async_runtime.as_ref(), udl_mode)
+                    }
                 })
                 .collect::<syn::Result<_>>()?;
             Ok(quote_spanned! { self_ident.span() => #item_tokens })
@@ -50,106 +81,54 @@ pub(crate) fn expand_export(
         ExportItem::Trait {
             items,
             self_ident,
-            callback_interface: false,
-        } => {
-            let name = ident_to_string(&self_ident);
-            let free_fn_ident =
-                Ident::new(&free_fn_symbol_name(&mod_path, &name), Span::call_site());
-
-            let free_tokens = quote! {
-                #[doc(hidden)]
-                #[no_mangle]
-                pub extern "C" fn #free_fn_ident(
-                    ptr: *const ::std::ffi::c_void,
-                    call_status: &mut ::uniffi::RustCallStatus
-                ) {
-                    uniffi::rust_call(call_status, || {
-                        assert!(!ptr.is_null());
-                        drop(unsafe { ::std::boxed::Box::from_raw(ptr as *mut std::sync::Arc<dyn #self_ident>) });
-                        Ok(())
-                    });
-                }
-            };
-
-            let impl_tokens: TokenStream = items
-                .into_iter()
-                .map(|item| match item? {
-                    ImplItem::Method(sig) => gen_method_scaffolding(sig, &args),
-                    _ => unreachable!("traits have no constructors"),
-                })
-                .collect::<syn::Result<_>>()?;
-
-            let meta_static_var = interface_meta_static_var(&self_ident, true, &mod_path)
-                .unwrap_or_else(syn::Error::into_compile_error);
-            let macro_tokens = quote! {
-                ::uniffi::ffi_converter_trait_decl!(dyn #self_ident, stringify!(#self_ident), crate::UniFfiTag);
-            };
-
-            Ok(quote_spanned! { self_ident.span() =>
-                #meta_static_var
-                #free_tokens
-                #macro_tokens
-                #impl_tokens
-            })
-        }
+            with_foreign,
+            callback_interface_only: false,
+            docstring,
+            args,
+        } => trait_interface::gen_trait_scaffolding(
+            &mod_path,
+            args,
+            self_ident,
+            items,
+            udl_mode,
+            with_foreign,
+            docstring,
+        ),
         ExportItem::Trait {
             items,
             self_ident,
-            callback_interface: true,
+            callback_interface_only: true,
+            docstring,
+            ..
         } => {
             let trait_name = ident_to_string(&self_ident);
-            let trait_impl_ident = Ident::new(
-                &format!("UniFFICallbackHandler{trait_name}"),
-                Span::call_site(),
-            );
-            let internals_ident = Ident::new(
-                &format!(
-                    "UNIFFI_FOREIGN_CALLBACK_INTERNALS_{}",
-                    trait_name.to_ascii_uppercase()
-                ),
-                Span::call_site(),
-            );
-
-            let items = items.into_iter().collect::<syn::Result<Vec<_>>>();
-            let trait_impl_and_metadata_tokens = match items {
-                Ok(items) => {
-                    let trait_impl = callback_interface::trait_impl(
-                        &trait_impl_ident,
-                        &self_ident,
-                        &internals_ident,
-                        &items,
-                    )
-                    .unwrap_or_else(|e| e.into_compile_error());
-                    let metadata_items =
-                        callback_interface::metadata_items(&self_ident, &items, &mod_path)
-                            .unwrap_or_else(|e| vec![e.into_compile_error()]);
-
-                    quote! {
-                        #trait_impl
-
-                        #(#metadata_items)*
-                    }
-                }
-                Err(e) => e.into_compile_error(),
-            };
-
-            let init_ident = Ident::new(
-                &uniffi_meta::init_callback_fn_symbol_name(&mod_path, &trait_name),
-                Span::call_site(),
-            );
+            let trait_impl_ident = callback_interface::trait_impl_ident(&trait_name);
+            let trait_impl = callback_interface::trait_impl(&mod_path, &self_ident, &items)
+                .unwrap_or_else(|e| e.into_compile_error());
+            let metadata_items = (!udl_mode).then(|| {
+                let items =
+                    callback_interface::metadata_items(&self_ident, &items, &mod_path, docstring)
+                        .unwrap_or_else(|e| vec![e.into_compile_error()]);
+                quote! { #(#items)* }
+            });
+            let ffi_converter_tokens =
+                ffi_converter_callback_interface_impl(&self_ident, &trait_impl_ident, udl_mode);
 
             Ok(quote! {
-                #[doc(hidden)]
-                static #internals_ident: ::uniffi::ForeignCallbackInternals = ::uniffi::ForeignCallbackInternals::new();
+                #trait_impl
 
-                #[doc(hidden)]
-                #[no_mangle]
-                pub extern "C" fn #init_ident(callback: ::uniffi::ForeignCallback, _: &mut ::uniffi::RustCallStatus) {
-                    #internals_ident.set_callback(callback);
-                }
+                #ffi_converter_tokens
 
-                #trait_impl_and_metadata_tokens
+                #metadata_items
             })
+        }
+        ExportItem::Struct {
+            self_ident,
+            uniffi_traits,
+            ..
+        } => {
+            assert!(!udl_mode);
+            utrait::expand_uniffi_trait_export(self_ident, uniffi_traits)
         }
     }
 }

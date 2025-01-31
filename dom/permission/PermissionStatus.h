@@ -11,26 +11,24 @@
 #include "mozilla/dom/PermissionStatusBinding.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/MozPromise.h"
-#include "nsIPermission.h"
 
 namespace mozilla::dom {
 
-class PermissionObserver;
+class PermissionStatusSink;
 
 class PermissionStatus : public DOMEventTargetHelper {
-  friend class PermissionObserver;
+  friend class PermissionStatusSink;
 
  public:
-  using CreatePromise = MozPromise<RefPtr<PermissionStatus>, nsresult, true>;
   using SimplePromise = MozPromise<nsresult, nsresult, true>;
 
-  static RefPtr<CreatePromise> Create(nsPIDOMWindowInner* aWindow,
-                                      PermissionName aName);
+  PermissionStatus(nsIGlobalObject* aGlobal, PermissionName aName);
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
   PermissionState State() const { return mState; }
+  void SetState(PermissionState aState) { mState = aState; }
 
   IMPL_EVENT_HANDLER(change)
 
@@ -38,12 +36,12 @@ class PermissionStatus : public DOMEventTargetHelper {
 
   PermissionName Name() const { return mName; }
 
+  void GetType(nsACString& aName) const;
+
   RefPtr<SimplePromise> Init();
 
  protected:
   ~PermissionStatus();
-
-  PermissionStatus(nsPIDOMWindowInner* aWindow, PermissionName aName);
 
   /**
    * This method returns the internal permission type, which should be equal to
@@ -55,26 +53,17 @@ class PermissionStatus : public DOMEventTargetHelper {
    * boolean, which is used to determine whether to return "midi" or
    * "midi-sysex" for the MIDI permission.
    */
-  virtual nsLiteralCString GetPermissionType();
+  virtual nsLiteralCString GetPermissionType() const;
 
  private:
-  virtual RefPtr<SimplePromise> UpdateState();
+  virtual already_AddRefed<PermissionStatusSink> CreateSink();
 
-  // These functions should be called when an permission is updated which may
-  // change the state of this PermissionStatus. MaybeUpdatedBy accepts the
-  // permission object itself that is update. When the permission's key is not
-  // same-origin with this object's owner window, such as for secondary-keyed
-  // permissions like `3rdPartyFrameStorage^...`, MaybeUpdatedByNotifyOnly will
-  // be called with the updated window as an argument. MaybeUpdatedByNotifyOnly
-  // must be defined by PermissionStatus inheritors that are double-keyed.
-  virtual bool MaybeUpdatedBy(nsIPermission* aPermission) const;
-  virtual bool MaybeUpdatedByNotifyOnly(nsPIDOMWindowInner* aInnerWindow) const;
+  void PermissionChanged(uint32_t aAction);
 
-  void PermissionChanged();
+  PermissionState ComputeStateFromAction(uint32_t aAction);
 
   PermissionName mName;
-
-  RefPtr<PermissionObserver> mObserver;
+  RefPtr<PermissionStatusSink> mSink;
 
  protected:
   PermissionState mState;

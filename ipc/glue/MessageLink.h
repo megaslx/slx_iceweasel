@@ -36,12 +36,13 @@ struct HasResultCodes {
     MsgNotAllowed,
     MsgPayloadError,
     MsgProcessingError,
-    MsgRouteError,
     MsgValueError
   };
 };
 
 enum Side : uint8_t { ParentSide, ChildSide, UnknownSide };
+
+const char* StringFromIPCSide(Side side);
 
 class MessageLink {
  public:

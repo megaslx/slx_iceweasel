@@ -24,19 +24,13 @@
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Logging.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/dom/AudioContextBinding.h"
 #include "mozilla/dom/BaseAudioContextBinding.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
-#include "nsIScriptError.h"
-#include "nsIScriptObjectPrincipal.h"
+#include "nsGlobalWindowInner.h"
 #include "nsMimeTypes.h"
-#include "nsPrintfCString.h"
-#include "nsXPCOMCIDInternal.h"
 
 namespace mozilla {
 
@@ -204,8 +198,7 @@ bool MediaDecodeTask::Init() {
   RefPtr<BufferMediaResource> resource =
       new BufferMediaResource(static_cast<uint8_t*>(mBuffer), mLength);
 
-  mMainThread = mDecodeJob.mContext->GetOwnerGlobal()->AbstractMainThreadFor(
-      TaskCategory::Other);
+  mMainThread = AbstractThread::MainThread();
 
   mPSupervisorTaskQueue =
       TaskQueue::Create(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
@@ -265,8 +258,7 @@ void MediaDecodeTask::OnInitDemuxerCompleted() {
     UniquePtr<TrackInfo> audioInfo = mTrackDemuxer->GetInfo();
     // We actively ignore audio tracks that we know we can't play.
     if (audioInfo && audioInfo->IsValid() &&
-        platform->SupportsMimeType(audioInfo->mMimeType) !=
-            media::DecodeSupport::Unsupported) {
+        !platform->SupportsMimeType(audioInfo->mMimeType).isEmpty()) {
       mMediaInfo.mAudio = *audioInfo->GetAsAudioInfo();
     }
   }
@@ -539,6 +531,11 @@ void MediaDecodeTask::FinishDecode() {
     const AudioDataValue* bufferData =
         static_cast<AudioDataValue*>(audioData->mAudioBuffer->Data());
 
+    // Channel count check for 1905287
+    MOZ_DIAGNOSTIC_ASSERT(audioData->mChannels <= channelCount,
+                          "MediaDecodeTask: "
+                          "AudioData has more channels than AudioInfo!");
+
     if (sampleRate != destSampleRate) {
       const uint32_t maxOutSamples = resampledFrames - writeIndex;
 
@@ -628,8 +625,8 @@ bool WebAudioDecodeJob::AllocateBuffer() {
   MOZ_ASSERT(NS_IsMainThread());
 
   // Now create the AudioBuffer
-  mOutput = AudioBuffer::Create(mContext->GetOwner(), mContext->SampleRate(),
-                                std::move(mBuffer));
+  mOutput = AudioBuffer::Create(mContext->GetOwnerWindow(),
+                                mContext->SampleRate(), std::move(mBuffer));
   return mOutput != nullptr;
 }
 

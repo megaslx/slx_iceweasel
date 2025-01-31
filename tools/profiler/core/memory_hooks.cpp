@@ -17,6 +17,7 @@
 #include "mozilla/PlatformMutex.h"
 #include "mozilla/ProfilerCounts.h"
 #include "mozilla/ThreadLocal.h"
+#include "mozilla/ThreadSafety.h"
 
 #include "GeckoProfiler.h"
 #include "prenv.h"
@@ -207,23 +208,28 @@ class InfallibleAllocWithoutHooksPolicy {
 
 // We can't use mozilla::Mutex because it causes re-entry into the memory hooks.
 // Define a custom implementation here.
-class Mutex : private ::mozilla::detail::MutexImpl {
+class MOZ_CAPABILITY("mutex") Mutex : private ::mozilla::detail::MutexImpl {
  public:
-  Mutex() : ::mozilla::detail::MutexImpl() {}
+  Mutex() = default;
 
-  void Lock() { ::mozilla::detail::MutexImpl::lock(); }
-  void Unlock() { ::mozilla::detail::MutexImpl::unlock(); }
+  void Lock() MOZ_CAPABILITY_ACQUIRE() { ::mozilla::detail::MutexImpl::lock(); }
+  void Unlock() MOZ_CAPABILITY_RELEASE() {
+    ::mozilla::detail::MutexImpl::unlock();
+  }
 };
 
-class MutexAutoLock {
+class MOZ_SCOPED_CAPABILITY MutexAutoLock {
   MutexAutoLock(const MutexAutoLock&) = delete;
   void operator=(const MutexAutoLock&) = delete;
 
   Mutex& mMutex;
 
  public:
-  explicit MutexAutoLock(Mutex& aMutex) : mMutex(aMutex) { mMutex.Lock(); }
-  ~MutexAutoLock() { mMutex.Unlock(); }
+  explicit MutexAutoLock(Mutex& aMutex) MOZ_CAPABILITY_ACQUIRE(aMutex)
+      : mMutex(aMutex) {
+    mMutex.Lock();
+  }
+  ~MutexAutoLock() MOZ_CAPABILITY_RELEASE() { mMutex.Unlock(); }
 };
 
 //---------------------------------------------------------------------------
@@ -247,7 +253,7 @@ class AllocationTracker {
       AllocationSet;
 
  public:
-  AllocationTracker() : mAllocations(), mMutex() {}
+  AllocationTracker() = default;
 
   void AddMemoryAddress(const void* memoryAddress) {
     MutexAutoLock lock(mMutex);
@@ -296,7 +302,11 @@ static void EnsureAllocationTrackerIsInstalled() {
 
 // On MacOS, and Linux the first __thread/thread_local access calls malloc,
 // which leads to an infinite loop. So we use pthread-based TLS instead, which
-// somehow doesn't have this problem.
+// doesn't have this problem as long as the TLS key is registered early.
+//
+// This is a little different from the TLS storage used with mozjemalloc which
+// uses native TLS on Linux possibly because it is not only initialised but
+// **used** early.
 #if !defined(XP_DARWIN) && !defined(XP_LINUX)
 #  define PROFILER_THREAD_LOCAL(T) MOZ_THREAD_LOCAL(T)
 #else
@@ -573,11 +583,9 @@ BaseProfilerCount* install_memory_hooks() {
   if (!sCounter) {
     sCounter = new ProfilerCounterTotal("malloc", "Memory",
                                         "Amount of allocated memory");
-    // Also initialize the ThreadIntercept, even if native allocation tracking
-    // won't be turned on. This way the TLS will be initialized.
-    ThreadIntercept::Init();
   } else {
     sCounter->Clear();
+    sCounter->Register();
   }
   jemalloc_replace_dynamic(replace_init);
   return sCounter;
@@ -627,6 +635,18 @@ void disable_native_allocations() {
   if (gAllocationTracker) {
     gAllocationTracker->Reset();
   }
+}
+
+void unregister_memory_counter() {
+  if (sCounter) {
+    sCounter->Unregister();
+  }
+}
+
+void memory_hooks_tls_init() {
+  // Initialise the TLS early so that it is allocated with a lower key and on an
+  // earlier page in order to avoid allocation when setting the variable.
+  ThreadIntercept::Init();
 }
 
 }  // namespace mozilla::profiler

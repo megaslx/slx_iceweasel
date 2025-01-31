@@ -19,7 +19,7 @@
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPrefs_threads.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Unused.h"
 #include "mozilla/Logging.h"
 #include "nsPrintfCString.h"
@@ -202,8 +202,6 @@ class ProcessPriorityManagerImpl final : public nsIObserver,
 
   void BrowserPriorityChanged(CanonicalBrowsingContext* aBC, bool aPriority);
   void BrowserPriorityChanged(BrowserParent* aBrowserParent, bool aPriority);
-
-  void ResetPriority(ContentParent* aContentParent);
 
  private:
   static bool sPrefListenersRegistered;
@@ -527,8 +525,7 @@ void ProcessPriorityManagerImpl::BrowserPriorityChanged(
     return;
   }
 
-  Telemetry::ScalarAdd(
-      Telemetry::ScalarID::DOM_CONTENTPROCESS_OS_PRIORITY_CHANGE_CONSIDERED, 1);
+  glean::dom_contentprocess::os_priority_change_considered.Add(1);
 
   aBC->SetPriorityActive(aPriority);
 
@@ -552,16 +549,8 @@ void ProcessPriorityManagerImpl::BrowserPriorityChanged(
 
   if (RefPtr pppm =
           GetParticularProcessPriorityManager(aBrowserParent->Manager())) {
-    Telemetry::ScalarAdd(
-        Telemetry::ScalarID::DOM_CONTENTPROCESS_OS_PRIORITY_CHANGE_CONSIDERED,
-        1);
+    glean::dom_contentprocess::os_priority_change_considered.Add(1);
     pppm->BrowserPriorityChanged(aBrowserParent, aPriority);
-  }
-}
-
-void ProcessPriorityManagerImpl::ResetPriority(ContentParent* aContentParent) {
-  if (RefPtr pppm = GetParticularProcessPriorityManager(aContentParent)) {
-    pppm->ResetPriority();
   }
 }
 
@@ -819,11 +808,9 @@ void ParticularProcessPriorityManager::SetPriorityNow(
   // transitioning from the PROCESS_PRIORITY_UNKNOWN level, which is where
   // we initialize at.
   if (oldPriority < mPriority && oldPriority != PROCESS_PRIORITY_UNKNOWN) {
-    Telemetry::ScalarAdd(
-        Telemetry::ScalarID::DOM_CONTENTPROCESS_OS_PRIORITY_RAISED, 1);
+    glean::dom_contentprocess::os_priority_raised.Add(1);
   } else if (oldPriority > mPriority) {
-    Telemetry::ScalarAdd(
-        Telemetry::ScalarID::DOM_CONTENTPROCESS_OS_PRIORITY_LOWERED, 1);
+    glean::dom_contentprocess::os_priority_lowered.Add(1);
   }
 
   ProcessPriorityManagerImpl::SetProcessPriorityIfEnabled(Pid(), mPriority);
@@ -839,11 +826,14 @@ void ParticularProcessPriorityManager::SetPriorityNow(
     // thread on low-power cores. Alternately, if we are changing from the
     // background to a higher priority, we change the main thread back to its
     // normal state.
+    // During shutdown, we will manually set the priority to the highest
+    // possible and disallow any additional priority changes.
     //
     // The messages for this will be relayed using the ProcessHangMonitor such
     // that the priority can be raised even if the main thread is unresponsive.
-    if (PriorityUsesLowPowerMainThread(mPriority) !=
-        (PriorityUsesLowPowerMainThread(oldPriority))) {
+    if (!mContentParent->IsShuttingDown() &&
+        PriorityUsesLowPowerMainThread(mPriority) !=
+            PriorityUsesLowPowerMainThread(oldPriority)) {
       if (PriorityUsesLowPowerMainThread(mPriority) &&
           PrefsUseLowPriorityThreads()) {
         mContentParent->SetMainThreadQoSPriority(nsIThread::QOS_PRIORITY_LOW);
@@ -1040,28 +1030,6 @@ void ProcessPriorityManager::BrowserPriorityChanged(
     return;
   }
   singleton->BrowserPriorityChanged(aBrowserParent, aPriority);
-}
-
-/* static */
-void ProcessPriorityManager::RemoteBrowserFrameShown(
-    nsFrameLoader* aFrameLoader) {
-  ProcessPriorityManagerImpl* singleton =
-      ProcessPriorityManagerImpl::GetSingleton();
-  if (!singleton) {
-    return;
-  }
-
-  BrowserParent* bp = BrowserParent::GetFrom(aFrameLoader);
-  NS_ENSURE_TRUE_VOID(bp);
-
-  MOZ_ASSERT(XRE_IsParentProcess());
-
-  // Ignore calls that aren't from a Browser.
-  if (!aFrameLoader->OwnerIsMozBrowserFrame()) {
-    return;
-  }
-
-  singleton->ResetPriority(bp->Manager());
 }
 
 }  // namespace mozilla

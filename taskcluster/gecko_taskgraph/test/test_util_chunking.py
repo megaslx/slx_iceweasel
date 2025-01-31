@@ -143,6 +143,11 @@ def mock_mozinfo():
         fission=False,
         headless=False,
         tsan=False,
+        tag="[]",
+        mingwclang=False,
+        nightly_build=False,
+        repo="try",
+        crashreporter=False,
     ):
         return {
             "os": os,
@@ -158,6 +163,12 @@ def mock_mozinfo():
             "tsan": tsan,
             "appname": "firefox",
             "condprof": False,
+            "canvas": False,
+            "webgpu": False,
+            "webcodecs": False,
+            "eme": False,
+            "privatebrowsing": False,
+            "tag": tag,
         }
 
     return inner
@@ -354,9 +365,14 @@ def test_get_manifests(suite, platform, mock_mozinfo):
 
     items = manifests["active"]
     if suite == "xpcshell":
-        assert all([re.search(r"xpcshell(.*)?.ini", m) for m in items])
+        assert all([re.search(r"xpcshell(.*)?(.ini|.toml)", m) for m in items])
     if "mochitest" in suite:
-        assert all([re.search(r"(mochitest|chrome|browser).*.ini", m) for m in items])
+        assert all(
+            [
+                re.search(r"(perftest|mochitest|chrome|browser).*(.ini|.toml)", m)
+                for m in items
+            ]
+        )
     if "web-platform" in suite:
         assert all([m.startswith("/") and m.count("/") <= 4 for m in items])
 

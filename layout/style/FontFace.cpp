@@ -32,16 +32,16 @@ template <typename T>
 static void GetDataFrom(const T& aObject, uint8_t*& aBuffer,
                         uint32_t& aLength) {
   MOZ_ASSERT(!aBuffer);
-  aObject.ComputeState();
-  // We use malloc here rather than a FallibleTArray or fallible
-  // operator new[] since the gfxUserFontEntry will be calling free
-  // on it.
-  aBuffer = (uint8_t*)malloc(aObject.Length());
-  if (!aBuffer) {
+  // We need to use malloc here because the gfxUserFontEntry will be calling
+  // free on it, so the Vector's default AllocPolicy (MallocAllocPolicy) is
+  // fine.
+  Maybe<Vector<uint8_t>> buffer =
+      aObject.template CreateFromData<Vector<uint8_t>>();
+  if (buffer.isNothing()) {
     return;
   }
-  memcpy((void*)aBuffer, aObject.Data(), aObject.Length());
-  aLength = aObject.Length();
+  aLength = buffer->length();
+  aBuffer = buffer->extractOrCopyRawBuffer();
 }
 
 // -- FontFace ---------------------------------------------------------------
@@ -49,12 +49,10 @@ static void GetDataFrom(const T& aObject, uint8_t*& aBuffer,
 NS_IMPL_CYCLE_COLLECTION_CLASS(FontFace)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(FontFace)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mParent)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mLoaded)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(FontFace)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mParent)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mLoaded)
   tmp->Destroy();
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
@@ -72,8 +70,9 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(FontFace)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(FontFace)
 
-FontFace::FontFace(nsIGlobalObject* aParent)
-    : mParent(aParent), mLoadedRejection(NS_OK) {}
+FontFace::FontFace(nsIGlobalObject* aParent) : mLoadedRejection(NS_OK) {
+  BindToOwner(aParent);
+}
 
 FontFace::~FontFace() {
   // Assert that we don't drop any FontFace objects during a Servo traversal,
@@ -83,6 +82,13 @@ FontFace::~FontFace() {
 }
 
 void FontFace::Destroy() { mImpl->Destroy(); }
+
+void FontFace::DisconnectFromOwner() {
+  GlobalTeardownObserver::DisconnectFromOwner();
+  if (mImpl) {
+    mImpl->StopKeepingOwnerAlive();
+  }
+}
 
 JSObject* FontFace::WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) {
@@ -296,22 +302,17 @@ void FontFace::MaybeReject(nsresult aResult) {
 }
 
 void FontFace::EnsurePromise() {
-  if (mLoaded || !mImpl || !mParent) {
+  if (mLoaded || !mImpl || !GetOwnerGlobal()) {
     return;
   }
 
-  // If the pref is not set, don't create the Promise (which the page wouldn't
-  // be able to get to anyway) as it causes the window.FontFace constructor
-  // to be created.
-  if (FontFaceSet::IsEnabled()) {
-    ErrorResult rv;
-    mLoaded = Promise::Create(mParent, rv);
+  ErrorResult rv;
+  mLoaded = Promise::Create(GetOwnerGlobal(), rv);
 
-    if (mImpl->Status() == FontFaceLoadStatus::Loaded) {
-      mLoaded->MaybeResolve(this);
-    } else if (mLoadedRejection != NS_OK) {
-      mLoaded->MaybeReject(mLoadedRejection);
-    }
+  if (mImpl->Status() == FontFaceLoadStatus::Loaded) {
+    mLoaded->MaybeResolve(this);
+  } else if (mLoadedRejection != NS_OK) {
+    mLoaded->MaybeReject(mLoadedRejection);
   }
 }
 

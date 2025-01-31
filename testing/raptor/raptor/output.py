@@ -114,7 +114,6 @@ class PerftestOutput(object):
         support_data_by_type = {}
 
         for data_set in self.supporting_data:
-
             data_type = data_set["type"]
             LOG.info("summarizing %s data" % data_type)
 
@@ -572,6 +571,7 @@ class PerftestOutput(object):
                         "alertThreshold": float(test["alert_threshold"]),
                         "lowerIsBetter": test["subtest_lower_is_better"],
                         "name": sub,
+                        "shouldAlert": True,
                         "replicates": [],
                     }
                 # pylint: disable=W1633
@@ -730,7 +730,15 @@ class PerftestOutput(object):
                 try:
                     # pylint: disable=W1633
                     replicate = round(
-                        float(page_cycle_results[suite][sub]["frameLength"]["average"]),
+                        float(
+                            page_cycle_results[suite][sub]["complexity"]["bootstrap"][
+                                "median"
+                            ]
+                            if "ramp" in test["name"]
+                            else page_cycle_results[suite][sub]["frameLength"][
+                                "average"
+                            ]
+                        ),
                         3,
                     )
                 except TypeError as e:
@@ -1353,7 +1361,6 @@ class RaptorOutput(PerftestOutput):
                     subtests.append(new_subtest)
 
             elif test["type"] == "benchmark":
-
                 if any(
                     [
                         "youtube-playback" in measurement
@@ -1735,9 +1742,9 @@ class BrowsertimeOutput(PerftestOutput):
                     try:
                         for alternative_method in self.extra_summary_methods:
                             new_subtest = copy.deepcopy(subtest)
-                            new_subtest[
-                                "name"
-                            ] = f"{new_subtest['name']} ({alternative_method})"
+                            new_subtest["name"] = (
+                                f"{new_subtest['name']} ({alternative_method})"
+                            )
                             _process(new_subtest, alternative_method)
                             new_subtests.append(new_subtest)
                     except Exception as e:
@@ -1817,6 +1824,7 @@ class BrowsertimeOutput(PerftestOutput):
                     "subtests": {},
                 },
             )
+
             # Add the alert window settings if needed
             for alert_option, schema_name in (
                 ("min_back_window", "minBackWindow"),
@@ -1826,11 +1834,19 @@ class BrowsertimeOutput(PerftestOutput):
                 if test.get(alert_option, None) is not None:
                     suite[schema_name] = int(test[alert_option])
 
-            # Setting shouldAlert to False whenever self.app is either chrome, chrome-m, chromium, chromium-as-release
-            if self.app in ("chrome", "chrome-m", "chromium", "custom-car"):
+            # Setting shouldAlert to False whenever self.app is any of the chrom* applications
+            if self.app in (
+                "chrome",
+                "chrome-m",
+                "custom-car",
+                "cstm-car-m",
+            ):
                 suite["shouldAlert"] = False
             # Check if the test has set optional properties
-            if "alert_change_type" in test and "alertChangeType" not in suite:
+            if (
+                test.get("alert_change_type", None) is not None
+                and "alertChangeType" not in suite
+            ):
                 suite["alertChangeType"] = test["alert_change_type"]
 
             def _process_measurements(measurement_name, replicates):
@@ -1838,9 +1854,12 @@ class BrowsertimeOutput(PerftestOutput):
                 subtest["name"] = measurement_name
                 subtest["lowerIsBetter"] = test["subtest_lower_is_better"]
                 subtest["alertThreshold"] = float(test["alert_threshold"])
-                subtest["unit"] = (
-                    "ms" if measurement_name == "cpuTime" else test["subtest_unit"]
-                )
+                if measurement_name == "cpuTime":
+                    subtest["unit"] = "ms"
+                elif measurement_name == "powerUsage":
+                    subtest["unit"] = "uWh"
+                else:
+                    subtest["unit"] = test["subtest_unit"]
 
                 # Add the alert window settings if needed here too in case
                 # there is no summary value in the test
@@ -1861,7 +1880,12 @@ class BrowsertimeOutput(PerftestOutput):
                             % measurement_name
                         )
                         subtest["shouldAlert"] = True
-                        if self.app in ("chrome", "chrome-m", "chromium", "custom-car"):
+                        if self.app in (
+                            "chrome",
+                            "chrome-m",
+                            "custom-car",
+                            "cstm-car-m",
+                        ):
                             subtest["shouldAlert"] = False
                     else:
                         # Explicitly set `shouldAlert` to False so that the measurement
@@ -1874,7 +1898,16 @@ class BrowsertimeOutput(PerftestOutput):
                 subtest["replicates"] = replicates
                 return subtest
 
-            if test["type"] in ["pageload", "scenario", "power"]:
+            if test.get("support_class"):
+                test.get("support_class").summarize_test(test, suite)
+
+            elif test["type"] in ["pageload", "scenario", "power"]:
+                LOG.warning(
+                    "This test is using a soon-to-be deprecated method for summarizing "
+                    "output. A subclass of browsertime_pageload.py should be built for "
+                    "this instead. Output handling is already built there, and the results "
+                    "parsing will need to be added for this specific test."
+                )
                 for measurement_name, replicates in test["measurements"].items():
                     new_subtest = _process_measurements(measurement_name, replicates)
                     if measurement_name not in suite["subtests"]:
@@ -1935,6 +1968,12 @@ class BrowsertimeOutput(PerftestOutput):
                     _process(cpu_subtest)
                     suite["subtests"].append(cpu_subtest)
 
+                if "powerUsage" in test["measurements"]:
+                    replicates = test["measurements"]["powerUsage"]
+                    power_subtest = _process_measurements("powerUsage", replicates)
+                    power_subtest["value"] = round(filters.mean(replicates), 2)
+                    suite["subtests"].append(power_subtest)
+
                 # summarize results for both benchmark type tests
                 if len(subtests) > 1:
                     suite["value"] = self.construct_summary(vals, testname=test["name"])
@@ -1942,9 +1981,18 @@ class BrowsertimeOutput(PerftestOutput):
 
         # convert suites to list
         suites = [
-            s if "benchmark" in s["type"] else _process_suite(s)
+            (
+                s
+                if ("benchmark" in s["type"] or test.get("support_class"))
+                else _process_suite(s)
+            )
             for s in suites.values()
         ]
+
+        if test.get("support_class"):
+            # Bug 1874690 - Add a verification step to prevent the suites
+            # from conflicting during Perfherder ingestion.
+            test.get("support_class").summarize_suites(suites)
 
         suites.sort(key=lambda suite: suite["name"])
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -13,8 +13,10 @@
 #include <stdio.h>
 
 #include "av1/common/common.h"
+#include "config/av1_rtcd.h"
 
-int64_t av1_highbd_block_error_sse2(tran_low_t *coeff, tran_low_t *dqcoeff,
+int64_t av1_highbd_block_error_sse2(const tran_low_t *coeff,
+                                    const tran_low_t *dqcoeff,
                                     intptr_t block_size, int64_t *ssz,
                                     int bps) {
   int i, j, test;
@@ -22,7 +24,7 @@ int64_t av1_highbd_block_error_sse2(tran_low_t *coeff, tran_low_t *dqcoeff,
   __m128i max, min, cmp0, cmp1, cmp2, cmp3;
   int64_t error = 0, sqcoeff = 0;
   const int shift = 2 * (bps - 8);
-  const int rounding = shift > 0 ? 1 << (shift - 1) : 0;
+  const int rounding = (1 << shift) >> 1;
 
   for (i = 0; i < block_size; i += 8) {
     // Load the data into xmm registers
@@ -32,7 +34,7 @@ int64_t av1_highbd_block_error_sse2(tran_low_t *coeff, tran_low_t *dqcoeff,
     __m128i mm_dqcoeff2 = _mm_load_si128((__m128i *)(dqcoeff + i + 4));
     // Check if any values require more than 15 bit
     max = _mm_set1_epi32(0x3fff);
-    min = _mm_set1_epi32(0xffffc000);
+    min = _mm_set1_epi32((int)0xffffc000);
     cmp0 = _mm_xor_si128(_mm_cmpgt_epi32(mm_coeff, max),
                          _mm_cmplt_epi32(mm_coeff, min));
     cmp1 = _mm_xor_si128(_mm_cmpgt_epi32(mm_coeff2, max),
@@ -63,7 +65,6 @@ int64_t av1_highbd_block_error_sse2(tran_low_t *coeff, tran_low_t *dqcoeff,
       }
     }
   }
-  assert(error >= 0 && sqcoeff >= 0);
   error = (error + rounding) >> shift;
   sqcoeff = (sqcoeff + rounding) >> shift;
 

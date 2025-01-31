@@ -4,15 +4,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::cell::RefCell;
-use std::convert::TryFrom;
-use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 #[cfg(windows)]
-use winapi::shared::minwindef::UINT;
-#[cfg(windows)]
-use winapi::um::timeapi::{timeBeginPeriod, timeEndPeriod};
+use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 
 /// A quantized `Duration`.  This currently just produces 16 discrete values
 /// corresponding to whole milliseconds.  Future implementations might choose
@@ -21,16 +20,16 @@ use winapi::um::timeapi::{timeBeginPeriod, timeEndPeriod};
 struct Period(u8);
 
 impl Period {
-    const MAX: Period = Period(16);
-    const MIN: Period = Period(1);
+    const MAX: Self = Self(16);
+    const MIN: Self = Self(1);
 
     #[cfg(windows)]
-    fn as_uint(&self) -> UINT {
-        UINT::from(self.0)
+    fn as_u32(self) -> u32 {
+        u32::from(self.0)
     }
 
     #[cfg(target_os = "macos")]
-    fn scaled(&self, scale: f64) -> f64 {
+    fn scaled(self, scale: f64) -> f64 {
         scale * f64::from(self.0)
     }
 }
@@ -62,8 +61,9 @@ impl PeriodSet {
 
     fn remove(&mut self, p: Period) {
         if p != Period::MAX {
-            debug_assert_ne!(*self.idx(p), 0);
-            *self.idx(p) -= 1;
+            let p = self.idx(p);
+            debug_assert_ne!(*p, 0);
+            *p -= 1;
         }
     }
 
@@ -80,8 +80,7 @@ impl PeriodSet {
 #[cfg(target_os = "macos")]
 #[allow(non_camel_case_types)]
 mod mac {
-    use std::mem::size_of;
-    use std::ptr::addr_of_mut;
+    use std::{mem::size_of, ptr::addr_of_mut};
 
     // These are manually extracted from the many bindings generated
     // by bindgen when provided with the simple header:
@@ -125,6 +124,7 @@ mod mac {
     }
 
     const THREAD_TIME_CONSTRAINT_POLICY: thread_policy_flavor_t = 2;
+    #[allow(clippy::cast_possible_truncation)]
     const THREAD_TIME_CONSTRAINT_POLICY_COUNT: mach_msg_type_number_t =
         (size_of::<thread_time_constraint_policy>() / size_of::<integer_t>())
             as mach_msg_type_number_t;
@@ -158,11 +158,11 @@ mod mac {
 
     /// Set a thread time policy.
     pub fn set_thread_policy(mut policy: thread_time_constraint_policy) {
-        let _ = unsafe {
+        _ = unsafe {
             thread_policy_set(
                 pthread_mach_thread_np(pthread_self()),
                 THREAD_TIME_CONSTRAINT_POLICY,
-                addr_of_mut!(policy) as _, // horror!
+                addr_of_mut!(policy).cast(), // horror!
                 THREAD_TIME_CONSTRAINT_POLICY_COUNT,
             )
         };
@@ -179,6 +179,7 @@ mod mac {
 
     /// Create a realtime policy and set it.
     pub fn set_realtime(base: f64) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let policy = thread_time_constraint_policy {
             period: base as u32, // Base interval
             computation: (base * 0.5) as u32,
@@ -193,11 +194,11 @@ mod mac {
         let mut policy = thread_time_constraint_policy::default();
         let mut count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
         let mut get_default = 0;
-        let _ = unsafe {
+        _ = unsafe {
             thread_policy_get(
                 pthread_mach_thread_np(pthread_self()),
                 THREAD_TIME_CONSTRAINT_POLICY,
-                addr_of_mut!(policy) as _, // horror!
+                addr_of_mut!(policy).cast(), // horror!
                 &mut count,
                 &mut get_default,
             )
@@ -217,7 +218,7 @@ pub struct Handle {
 impl Handle {
     const HISTORY: usize = 8;
 
-    fn new(hrt: Rc<RefCell<Time>>, active: Period) -> Self {
+    const fn new(hrt: Rc<RefCell<Time>>, active: Period) -> Self {
         Self {
             hrt,
             active,
@@ -284,34 +285,36 @@ impl Time {
         }
     }
 
-    #[allow(clippy::unused_self)] // Only on some platforms is it unused.
+    #[cfg(target_os = "macos")]
     fn start(&self) {
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(p) = self.active {
-                mac::set_realtime(p.scaled(self.scale));
-            } else {
-                mac::set_thread_policy(self.deflt.clone());
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            if let Some(p) = self.active {
-                assert_eq!(0, unsafe { timeBeginPeriod(p.as_uint()) });
-            }
+        if let Some(p) = self.active {
+            mac::set_realtime(p.scaled(self.scale));
+        } else {
+            mac::set_thread_policy(self.deflt);
         }
     }
 
-    #[allow(clippy::unused_self)] // Only on some platforms is it unused.
+    #[cfg(target_os = "windows")]
+    fn start(&self) {
+        if let Some(p) = self.active {
+            _ = unsafe { timeBeginPeriod(p.as_u32()) };
+        }
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    #[allow(clippy::unused_self)]
+    const fn start(&self) {}
+
+    #[cfg(windows)]
     fn stop(&self) {
-        #[cfg(windows)]
-        {
-            if let Some(p) = self.active {
-                assert_eq!(0, unsafe { timeEndPeriod(p.as_uint()) });
-            }
+        if let Some(p) = self.active {
+            _ = unsafe { timeEndPeriod(p.as_u32()) };
         }
     }
+
+    #[cfg(not(target_os = "windows"))]
+    #[allow(clippy::unused_self)]
+    const fn stop(&self) {}
 
     fn update(&mut self) {
         let next = self.periods.min();
@@ -337,14 +340,12 @@ impl Time {
     /// The handle can also be used to update the resolution.
     #[must_use]
     pub fn get(period: Duration) -> Handle {
-        thread_local! {
-            static HR_TIME: RefCell<Weak<RefCell<Time>>> = RefCell::default();
-        }
+        thread_local!(static HR_TIME: RefCell<Weak<RefCell<Time>>> = RefCell::default());
 
         HR_TIME.with(|r| {
             let mut b = r.borrow_mut();
             let hrt = b.upgrade().unwrap_or_else(|| {
-                let hrt = Rc::new(RefCell::new(Time::new()));
+                let hrt = Rc::new(RefCell::new(Self::new()));
                 *b = Rc::downgrade(&hrt);
                 hrt
             });
@@ -369,11 +370,21 @@ impl Drop for Time {
     }
 }
 
-#[cfg(test)]
+// Only run these tests in CI on platforms other than MacOS and Windows, where the timer
+// inaccuracies are too high to pass the tests.
+#[cfg(all(
+    test,
+    not(all(any(target_os = "macos", target_os = "windows"), feature = "ci")),
+    // Sanitizers are too slow to uphold timing assumptions.
+    not(neqo_sanitize),
+))]
 mod test {
+    use std::{
+        thread::{sleep, spawn},
+        time::{Duration, Instant},
+    };
+
     use super::Time;
-    use std::thread::{sleep, spawn};
-    use std::time::{Duration, Instant};
 
     const ONE: Duration = Duration::from_millis(1);
     const ONE_AND_A_BIT: Duration = Duration::from_micros(1500);
@@ -390,7 +401,7 @@ mod test {
             let e = Instant::now();
             let actual = e - s;
             let lag = actual - d;
-            println!("sleep({:?}) \u{2192} {:?} \u{394}{:?}", d, actual, lag);
+            println!("sleep({d:?}) \u{2192} {actual:?} \u{394}{lag:?}");
             if lag > max_lag {
                 return Err(());
             }

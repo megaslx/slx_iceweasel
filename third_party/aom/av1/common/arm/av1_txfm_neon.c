@@ -1,6 +1,6 @@
 /*
  *
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -12,8 +12,10 @@
 #include <arm_neon.h>
 #include <assert.h>
 
+#include "config/av1_rtcd.h"
+
+#include "aom_dsp/arm/mem_neon.h"
 #include "aom_ports/mem.h"
-#include "av1/common/arm/mem_neon.h"
 
 void av1_round_shift_array_neon(int32_t *arr, int size, int bit) {
   assert(!(size % 4));

@@ -5,13 +5,13 @@
 //! [`Timeout`]: struct@Timeout
 
 use crate::{
-    coop,
+    runtime::coop,
     time::{error::Elapsed, sleep_until, Duration, Instant, Sleep},
     util::trace,
 };
 
 use pin_project_lite::pin_project;
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::task::{self, Poll};
 
@@ -21,7 +21,22 @@ use std::task::{self, Poll};
 /// value is returned. Otherwise, an error is returned and the future is
 /// canceled.
 ///
-/// # Cancelation
+/// Note that the timeout is checked before polling the future, so if the future
+/// does not yield during execution then it is possible for the future to complete
+/// and exceed the timeout _without_ returning an error.
+///
+/// This function returns a future whose return type is [`Result`]`<T,`[`Elapsed`]`>`, where `T` is the
+/// return type of the provided future.
+///
+/// If the provided future completes immediately, then the future returned from
+/// this function is guaranteed to complete immediately with an [`Ok`] variant
+/// no matter the provided duration.
+///
+/// [`Ok`]: std::result::Result::Ok
+/// [`Result`]: std::result::Result
+/// [`Elapsed`]: crate::time::error::Elapsed
+///
+/// # Cancellation
 ///
 /// Cancelling a timeout is done by dropping the future. No additional cleanup
 /// or other work is required.
@@ -68,9 +83,9 @@ use std::task::{self, Poll};
 /// [`Builder::enable_time`]: crate::runtime::Builder::enable_time
 /// [`Builder::enable_all`]: crate::runtime::Builder::enable_all
 #[track_caller]
-pub fn timeout<T>(duration: Duration, future: T) -> Timeout<T>
+pub fn timeout<F>(duration: Duration, future: F) -> Timeout<F::IntoFuture>
 where
-    T: Future,
+    F: IntoFuture,
 {
     let location = trace::caller_location();
 
@@ -79,7 +94,7 @@ where
         Some(deadline) => Sleep::new_timeout(deadline, location),
         None => Sleep::far_future(location),
     };
-    Timeout::new_with_delay(future, delay)
+    Timeout::new_with_delay(future.into_future(), delay)
 }
 
 /// Requires a `Future` to complete before the specified instant in time.
@@ -87,7 +102,18 @@ where
 /// If the future completes before the instant is reached, then the completed
 /// value is returned. Otherwise, an error is returned.
 ///
-/// # Cancelation
+/// This function returns a future whose return type is [`Result`]`<T,`[`Elapsed`]`>`, where `T` is the
+/// return type of the provided future.
+///
+/// If the provided future completes immediately, then the future returned from
+/// this function is guaranteed to complete immediately with an [`Ok`] variant
+/// no matter the provided deadline.
+///
+/// [`Ok`]: std::result::Result::Ok
+/// [`Result`]: std::result::Result
+/// [`Elapsed`]: crate::time::error::Elapsed
+///
+/// # Cancellation
 ///
 /// Cancelling a timeout is done by dropping the future. No additional cleanup
 /// or other work is required.
@@ -116,14 +142,14 @@ where
 /// }
 /// # }
 /// ```
-pub fn timeout_at<T>(deadline: Instant, future: T) -> Timeout<T>
+pub fn timeout_at<F>(deadline: Instant, future: F) -> Timeout<F::IntoFuture>
 where
-    T: Future,
+    F: IntoFuture,
 {
     let delay = sleep_until(deadline);
 
     Timeout {
-        value: future,
+        value: future.into_future(),
         delay,
     }
 }

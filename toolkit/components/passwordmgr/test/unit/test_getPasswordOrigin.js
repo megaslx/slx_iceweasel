@@ -24,9 +24,16 @@ const TESTCASES = [
   ["https://[::1]:8443/foo", "https://[::1]:8443"],
   ["ftp://username:password@[::1]:2121/foo", "ftp://[::1]:2121"],
   [
-    "moz-proxy://username:password@123.456.789.123:12345/foo",
-    "moz-proxy://123.456.789.123:12345",
+    "moz-proxy://username:password@123.123.123.123:12345/foo",
+    "moz-proxy://123.123.123.123:12345",
   ],
+  [
+    "moz-proxy://username:password@123.123.123.123/foo",
+    "moz-proxy://123.123.123.123",
+  ],
+  ["file:///foo/bar", "file://"],
+  ["file://foo/bar", "file://"],
+  ["randomprotocol://example.com", "randomprotocol://example.com"],
 ];
 
 for (let [input, expected, allowJS] of TESTCASES) {

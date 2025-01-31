@@ -17,15 +17,15 @@ DESKTOP_VISUALFX_THEME = {
     "Custom": 3,
 }.get("Best appearance")
 TASKBAR_AUTOHIDE_REG_PATH = {
-    "Windows 7": "HKCU:SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects2",
-    "Windows 10": "HKCU:SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects3",
+    "Windows 7": r"HKCU:SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects2",
+    "Windows 10": r"HKCU:SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects3",
 }.get("{} {}".format(platform.system(), platform.release()))
 
 #####
 config = {
     # marionette options
     "marionette_address": "localhost:2828",
-    "test_manifest": "unit-tests.ini",
+    "test_manifest": "unit-tests.toml",
     "virtualenv_path": "venv",
     "exes": {
         "python": sys.executable,
@@ -40,6 +40,18 @@ config = {
     ],
     "suite_definitions": {
         "marionette_desktop": {
+            "options": [
+                "-vv",
+                "--log-errorsummary=%(error_summary_file)s",
+                "--log-html=%(html_report_file)s",
+                "--binary=%(binary)s",
+                "--address=%(address)s",
+                "--symbols-path=%(symbols_path)s",
+            ],
+            "run_filename": "",
+            "testsdir": "marionette",
+        },
+        "unittest_desktop": {
             "options": [
                 "-vv",
                 "--log-errorsummary=%(error_summary_file)s",
@@ -99,7 +111,7 @@ config = {
             "cmd": [
                 "powershell",
                 "-command",
-                "\"&{{&Set-ItemProperty -Path 'HKCU:Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name VisualFXSetting -Value {}}}\"".format(
+                "\"&{{&Set-ItemProperty -Path 'HKCU:Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting -Value {}}}\"".format(
                     DESKTOP_VISUALFX_THEME
                 ),
             ],
@@ -112,7 +124,7 @@ config = {
             "cmd": [
                 "powershell",
                 "-command",
-                "New-ItemProperty -Path 'HKCU:\Control Panel\Accessibility' -Name 'DynamicScrollbars' -Value 0",
+                r"New-ItemProperty -Path 'HKCU:\Control Panel\Accessibility' -Name 'DynamicScrollbars' -Value 0",
             ],
             "architectures": ["32bit", "64bit"],
             "halt_on_failure": False,

@@ -13,6 +13,7 @@
 #include "ExtendedValidation.h"
 #include "MultiLogCTVerifier.h"
 #include "NSSErrorsService.h"
+#include "PKCS11ModuleDB.h"
 #include "PublicKeyPinningService.h"
 #include "cert.h"
 #include "cert_storage/src/cert_storage.h"
@@ -28,18 +29,19 @@
 #include "mozilla/SyncRunnable.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Unused.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozpkix/Result.h"
 #include "mozpkix/pkix.h"
+#include "mozpkix/pkixcheck.h"
 #include "mozpkix/pkixnss.h"
 #include "mozpkix/pkixutil.h"
 #include "nsCRTGlue.h"
 #include "nsIObserverService.h"
-#include "nsNetCID.h"
 #include "nsNSSCallbacks.h"
-#include "nsNSSCertHelper.h"
 #include "nsNSSCertificate.h"
 #include "nsNSSCertificateDB.h"
 #include "nsNSSIOLayer.h"
+#include "nsNetCID.h"
 #include "nsPrintfCString.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
@@ -48,10 +50,6 @@
 #include "prerror.h"
 #include "secder.h"
 #include "secerr.h"
-
-#ifdef MOZ_WIDGET_COCOA
-#  include "nsCocoaFeatures.h"
-#endif
 
 #include "TrustOverrideUtils.h"
 #include "TrustOverride-AppleGoogleDigiCertData.inc"
@@ -70,14 +68,15 @@ namespace psm {
 
 NSSCertDBTrustDomain::NSSCertDBTrustDomain(
     SECTrustType certDBTrustType, OCSPFetching ocspFetching,
-    OCSPCache& ocspCache,
+    OCSPCache& ocspCache, SignatureCache* signatureCache,
+    TrustCache* trustCache,
     /*optional but shouldn't be*/ void* pinArg, TimeDuration ocspTimeoutSoft,
     TimeDuration ocspTimeoutHard, uint32_t certShortLifetimeInDays,
     unsigned int minRSABits, ValidityCheckingMode validityCheckingMode,
     NetscapeStepUpPolicy netscapeStepUpPolicy, CRLiteMode crliteMode,
     const OriginAttributes& originAttributes,
-    const Vector<Input>& thirdPartyRootInputs,
-    const Vector<Input>& thirdPartyIntermediateInputs,
+    const nsTArray<Input>& thirdPartyRootInputs,
+    const nsTArray<Input>& thirdPartyIntermediateInputs,
     const Maybe<nsTArray<nsTArray<uint8_t>>>& extraCertificates,
     /*out*/ nsTArray<nsTArray<uint8_t>>& builtChain,
     /*optional*/ PinningTelemetryInfo* pinningTelemetryInfo,
@@ -85,6 +84,8 @@ NSSCertDBTrustDomain::NSSCertDBTrustDomain(
     : mCertDBTrustType(certDBTrustType),
       mOCSPFetching(ocspFetching),
       mOCSPCache(ocspCache),
+      mSignatureCache(signatureCache),
+      mTrustCache(trustCache),
       mPinArg(pinArg),
       mOCSPTimeoutSoft(ocspTimeoutSoft),
       mOCSPTimeoutHard(ocspTimeoutHard),
@@ -104,9 +105,7 @@ NSSCertDBTrustDomain::NSSCertDBTrustDomain(
       mHostname(hostname),
       mCertStorage(do_GetService(NS_CERT_STORAGE_CID)),
       mOCSPStaplingStatus(CertVerifier::OCSP_STAPLING_NEVER_CHECKED),
-      mSCTListFromCertificate(),
-      mSCTListFromOCSPStapling(),
-      mBuiltInRootsModule(SECMOD_FindModule(kRootModuleName)),
+      mBuiltInRootsModule(SECMOD_FindModule(kRootModuleName.get())),
       mOCSPFetchStatus(OCSPFetchStatus::NotFetched) {}
 
 static void FindRootsWithSubject(UniqueSECMODModule& rootsModule,
@@ -143,8 +142,7 @@ static void FindRootsWithSubject(UniqueSECMODModule& rootsModule,
 // certificate extensions we support are restrictive rather than additive in
 // terms of the rest of the chain (for example, we don't support policy mapping
 // and we ignore any SCT information in intermediates).
-static bool ShouldSkipSelfSignedNonTrustAnchor(TrustDomain& trustDomain,
-                                               Input certDER) {
+bool NSSCertDBTrustDomain::ShouldSkipSelfSignedNonTrustAnchor(Input certDER) {
   BackCert cert(certDER, EndEntityOrCA::MustBeCA, nullptr);
   if (cert.Init() != Success) {
     return false;  // turn any failures into "don't skip trying this cert"
@@ -154,8 +152,8 @@ static bool ShouldSkipSelfSignedNonTrustAnchor(TrustDomain& trustDomain,
     return false;
   }
   TrustLevel trust;
-  if (trustDomain.GetCertTrust(EndEntityOrCA::MustBeCA, CertPolicyId::anyPolicy,
-                               certDER, trust) != Success) {
+  if (GetCertTrust(EndEntityOrCA::MustBeCA, CertPolicyId::anyPolicy, certDER,
+                   trust) != Success) {
     return false;
   }
   // If the trust for this certificate is anything other than "inherit", we want
@@ -163,7 +161,7 @@ static bool ShouldSkipSelfSignedNonTrustAnchor(TrustDomain& trustDomain,
   if (trust != TrustLevel::InheritsTrust) {
     return false;
   }
-  if (VerifySignedData(trustDomain, cert.GetSignedData(),
+  if (VerifySignedData(*this, cert.GetSignedData(),
                        cert.GetSubjectPublicKeyInfo()) != Success) {
     return false;
   }
@@ -172,24 +170,25 @@ static bool ShouldSkipSelfSignedNonTrustAnchor(TrustDomain& trustDomain,
   return true;
 }
 
-static Result CheckCandidates(TrustDomain& trustDomain,
-                              TrustDomain::IssuerChecker& checker,
-                              nsTArray<Input>& candidates,
-                              Input* nameConstraintsInputPtr, bool& keepGoing) {
-  for (Input candidate : candidates) {
+Result NSSCertDBTrustDomain::CheckCandidates(
+    IssuerChecker& checker, nsTArray<IssuerCandidateWithSource>& candidates,
+    Input* nameConstraintsInputPtr, bool& keepGoing) {
+  for (const auto& candidate : candidates) {
     // Stop path building if the program is shutting down.
     if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
       keepGoing = false;
       return Success;
     }
-    if (ShouldSkipSelfSignedNonTrustAnchor(trustDomain, candidate)) {
+    if (ShouldSkipSelfSignedNonTrustAnchor(candidate.mDER)) {
       continue;
     }
-    Result rv = checker.Check(candidate, nameConstraintsInputPtr, keepGoing);
+    Result rv =
+        checker.Check(candidate.mDER, nameConstraintsInputPtr, keepGoing);
     if (rv != Success) {
       return rv;
     }
     if (!keepGoing) {
+      mIssuerSources += candidate.mIssuerSource;
       return Success;
     }
   }
@@ -218,29 +217,8 @@ Result NSSCertDBTrustDomain::FindIssuer(Input encodedIssuerName,
 
   // First try all relevant certificates known to Gecko, which avoids calling
   // CERT_CreateSubjectCertList, because that can be expensive.
-  nsTArray<Input> geckoRootCandidates;
-  nsTArray<Input> geckoIntermediateCandidates;
-
-  if (!mCertStorage) {
-    return Result::FATAL_ERROR_LIBRARY_FAILURE;
-  }
-  nsTArray<uint8_t> subject;
-  subject.AppendElements(encodedIssuerName.UnsafeGetData(),
-                         encodedIssuerName.GetLength());
-  nsTArray<nsTArray<uint8_t>> certs;
-  nsresult rv = mCertStorage->FindCertsBySubject(subject, certs);
-  if (NS_FAILED(rv)) {
-    return Result::FATAL_ERROR_LIBRARY_FAILURE;
-  }
-  for (auto& cert : certs) {
-    Input certDER;
-    Result rv = certDER.Init(cert.Elements(), cert.Length());
-    if (rv != Success) {
-      continue;  // probably too big
-    }
-    // Currently we're only expecting intermediate certificates in cert storage.
-    geckoIntermediateCandidates.AppendElement(std::move(certDER));
-  }
+  nsTArray<IssuerCandidateWithSource> geckoRootCandidates;
+  nsTArray<IssuerCandidateWithSource> geckoIntermediateCandidates;
 
   // We might not have this module if e.g. we're on a Linux distribution that
   // does something unexpected.
@@ -254,43 +232,12 @@ Result NSSCertDBTrustDomain::FindIssuer(Input encodedIssuerName,
       if (rv != Success) {
         continue;  // probably too big
       }
-      geckoRootCandidates.AppendElement(rootInput);
+      geckoRootCandidates.AppendElement(IssuerCandidateWithSource{
+          rootInput, IssuerSource::BuiltInRootsModule});
     }
   } else {
     MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
             ("NSSCertDBTrustDomain::FindIssuer: no built-in roots module"));
-  }
-
-  for (const auto& thirdPartyRootInput : mThirdPartyRootInputs) {
-    BackCert root(thirdPartyRootInput, EndEntityOrCA::MustBeCA, nullptr);
-    Result rv = root.Init();
-    if (rv != Success) {
-      continue;
-    }
-    // Filter out 3rd party roots that can't be issuers we're looking for
-    // because the subject distinguished name doesn't match. This prevents
-    // mozilla::pkix from accumulating spurious errors during path building.
-    if (!InputsAreEqual(encodedIssuerName, root.GetSubject())) {
-      continue;
-    }
-    geckoRootCandidates.AppendElement(thirdPartyRootInput);
-  }
-
-  for (const auto& thirdPartyIntermediateInput :
-       mThirdPartyIntermediateInputs) {
-    BackCert intermediate(thirdPartyIntermediateInput, EndEntityOrCA::MustBeCA,
-                          nullptr);
-    Result rv = intermediate.Init();
-    if (rv != Success) {
-      continue;
-    }
-    // Filter out 3rd party intermediates that can't be issuers we're looking
-    // for because the subject distinguished name doesn't match. This prevents
-    // mozilla::pkix from accumulating spurious errors during path building.
-    if (!InputsAreEqual(encodedIssuerName, intermediate.GetSubject())) {
-      continue;
-    }
-    geckoIntermediateCandidates.AppendElement(thirdPartyIntermediateInput);
   }
 
   if (mExtraCertificates.isSome()) {
@@ -313,15 +260,72 @@ Result NSSCertDBTrustDomain::FindIssuer(Input encodedIssuerName,
       }
       // We assume that extra certificates (presumably from the TLS handshake)
       // are intermediates, since sending trust anchors would be superfluous.
-      geckoIntermediateCandidates.AppendElement(certInput);
+      geckoIntermediateCandidates.AppendElement(
+          IssuerCandidateWithSource{certInput, IssuerSource::TLSHandshake});
     }
+  }
+
+  for (const auto& thirdPartyRootInput : mThirdPartyRootInputs) {
+    BackCert root(thirdPartyRootInput, EndEntityOrCA::MustBeCA, nullptr);
+    Result rv = root.Init();
+    if (rv != Success) {
+      continue;
+    }
+    // Filter out 3rd party roots that can't be issuers we're looking for
+    // because the subject distinguished name doesn't match. This prevents
+    // mozilla::pkix from accumulating spurious errors during path building.
+    if (!InputsAreEqual(encodedIssuerName, root.GetSubject())) {
+      continue;
+    }
+    geckoRootCandidates.AppendElement(IssuerCandidateWithSource{
+        thirdPartyRootInput, IssuerSource::ThirdPartyCertificates});
+  }
+
+  for (const auto& thirdPartyIntermediateInput :
+       mThirdPartyIntermediateInputs) {
+    BackCert intermediate(thirdPartyIntermediateInput, EndEntityOrCA::MustBeCA,
+                          nullptr);
+    Result rv = intermediate.Init();
+    if (rv != Success) {
+      continue;
+    }
+    // Filter out 3rd party intermediates that can't be issuers we're looking
+    // for because the subject distinguished name doesn't match. This prevents
+    // mozilla::pkix from accumulating spurious errors during path building.
+    if (!InputsAreEqual(encodedIssuerName, intermediate.GetSubject())) {
+      continue;
+    }
+    geckoIntermediateCandidates.AppendElement(IssuerCandidateWithSource{
+        thirdPartyIntermediateInput, IssuerSource::ThirdPartyCertificates});
+  }
+
+  if (!mCertStorage) {
+    return Result::FATAL_ERROR_LIBRARY_FAILURE;
+  }
+  nsTArray<uint8_t> subject;
+  subject.AppendElements(encodedIssuerName.UnsafeGetData(),
+                         encodedIssuerName.GetLength());
+  nsTArray<nsTArray<uint8_t>> certs;
+  nsresult rv = mCertStorage->FindCertsBySubject(subject, certs);
+  if (NS_FAILED(rv)) {
+    return Result::FATAL_ERROR_LIBRARY_FAILURE;
+  }
+  for (auto& cert : certs) {
+    Input certDER;
+    Result rv = certDER.Init(cert.Elements(), cert.Length());
+    if (rv != Success) {
+      continue;  // probably too big
+    }
+    // Currently we're only expecting intermediate certificates in cert storage.
+    geckoIntermediateCandidates.AppendElement(IssuerCandidateWithSource{
+        std::move(certDER), IssuerSource::PreloadedIntermediates});
   }
 
   // Try all root certs first and then all (presumably) intermediates.
   geckoRootCandidates.AppendElements(std::move(geckoIntermediateCandidates));
 
   bool keepGoing = true;
-  Result result = CheckCandidates(*this, checker, geckoRootCandidates,
+  Result result = CheckCandidates(checker, geckoRootCandidates,
                                   nameConstraintsInputPtr, keepGoing);
   if (result != Success) {
     return result;
@@ -371,14 +375,15 @@ Result NSSCertDBTrustDomain::FindIssuer(Input encodedIssuerName,
     return Result::FATAL_ERROR_LIBRARY_FAILURE;
   }
 
-  nsTArray<Input> nssCandidates;
+  nsTArray<IssuerCandidateWithSource> nssCandidates;
   for (const auto& rootCandidate : nssRootCandidates) {
     Input certDER;
     Result rv = certDER.Init(rootCandidate.Elements(), rootCandidate.Length());
     if (rv != Success) {
       continue;  // probably too big
     }
-    nssCandidates.AppendElement(std::move(certDER));
+    nssCandidates.AppendElement(
+        IssuerCandidateWithSource{std::move(certDER), IssuerSource::NSSCertDB});
   }
   for (const auto& intermediateCandidate : nssIntermediateCandidates) {
     Input certDER;
@@ -387,11 +392,46 @@ Result NSSCertDBTrustDomain::FindIssuer(Input encodedIssuerName,
     if (rv != Success) {
       continue;  // probably too big
     }
-    nssCandidates.AppendElement(std::move(certDER));
+    nssCandidates.AppendElement(
+        IssuerCandidateWithSource{std::move(certDER), IssuerSource::NSSCertDB});
   }
 
-  return CheckCandidates(*this, checker, nssCandidates, nameConstraintsInputPtr,
+  return CheckCandidates(checker, nssCandidates, nameConstraintsInputPtr,
                          keepGoing);
+}
+
+void HashTrustParams(EndEntityOrCA endEntityOrCA, const CertPolicyId& policy,
+                     Input certDER, SECTrustType trustType,
+                     /*out*/ Maybe<nsTArray<uint8_t>>& sha512Hash) {
+  sha512Hash.reset();
+  Digest digest;
+  if (NS_FAILED(digest.Begin(SEC_OID_SHA512))) {
+    return;
+  }
+  if (NS_FAILED(digest.Update(reinterpret_cast<const uint8_t*>(&endEntityOrCA),
+                              sizeof(endEntityOrCA)))) {
+    return;
+  }
+  if (NS_FAILED(
+          digest.Update(reinterpret_cast<const uint8_t*>(&policy.numBytes),
+                        sizeof(policy.numBytes)))) {
+    return;
+  }
+  if (NS_FAILED(digest.Update(policy.bytes, policy.numBytes))) {
+    return;
+  }
+  if (NS_FAILED(digest.Update(certDER.UnsafeGetData(), certDER.GetLength()))) {
+    return;
+  }
+  if (NS_FAILED(digest.Update(reinterpret_cast<const uint8_t*>(&trustType),
+                              sizeof(trustType)))) {
+    return;
+  }
+  nsTArray<uint8_t> result;
+  if (NS_FAILED(digest.End(result))) {
+    return;
+  }
+  sha512Hash.emplace(std::move(result));
 }
 
 Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
@@ -429,8 +469,8 @@ Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
     if (revocationState == nsICertStorage::STATE_ENFORCE) {
       MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
               ("NSSCertDBTrustDomain: certificate is in blocklist"));
-      Telemetry::AccumulateCategorical(
-          Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::OneCRL);
+      mozilla::glean::cert_verifier::cert_revocation_mechanisms.Get("OneCRL"_ns)
+          .Add(1);
       return Result::ERROR_REVOKED_CERTIFICATE;
     }
   }
@@ -450,6 +490,18 @@ Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
       trustLevel = TrustLevel::InheritsTrust;
       return Success;
     }
+  }
+
+  mozilla::glean::cert_trust_cache::total.Add(1);
+  Maybe<nsTArray<uint8_t>> sha512Hash;
+  HashTrustParams(endEntityOrCA, policy, candidateCertDER, mCertDBTrustType,
+                  sha512Hash);
+  uint8_t cachedTrust = 0;
+  if (sha512Hash.isSome() &&
+      trust_cache_get(mTrustCache, sha512Hash.ref().Elements(), &cachedTrust)) {
+    mozilla::glean::cert_trust_cache::hits.AddToNumerator(1);
+    trustLevel = static_cast<TrustLevel>(cachedTrust);
+    return Success;
   }
 
   // Synchronously dispatch a task to the socket thread to construct a
@@ -474,6 +526,7 @@ Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
         // candidate certificate is a third-party certificate, above.
         SECItem candidateCertDERSECItem =
             UnsafeMapInputToSECItem(candidateCertDER);
+
         UniqueCERTCertificate candidateCert(CERT_NewTempCertificate(
             CERT_GetDefaultCertDB(), &candidateCertDERSECItem, nullptr, false,
             true));
@@ -486,6 +539,7 @@ Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
         // means there is not a trust record. I looked at NSS's internal uses of
         // CERT_GetCertTrust, and all that code uses the result as a boolean
         // meaning "We have a trust record."
+
         CERTCertTrust trust;
         if (CERT_GetCertTrust(candidateCert.get(), &trust) == SECSuccess) {
           uint32_t flags = SEC_GET_TRUST_FLAGS(&trust, mCertDBTrustType);
@@ -533,6 +587,10 @@ Result NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
   nsresult rv = SyncRunnable::DispatchToThread(socketThread, getTrustTask);
   if (NS_FAILED(rv)) {
     return Result::FATAL_ERROR_LIBRARY_FAILURE;
+  }
+  if (result == Success && sha512Hash.isSome()) {
+    uint8_t trust = static_cast<uint8_t>(trustLevel);
+    trust_cache_insert(mTrustCache, sha512Hash.ref().Elements(), trust);
   }
   return result;
 }
@@ -663,6 +721,8 @@ Result NSSCertDBTrustDomain::CheckCRLiteStash(
     MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
             ("NSSCertDBTrustDomain::CheckCRLiteStash: IsCertRevokedByStash "
              "returned true"));
+    mozilla::glean::cert_verifier::crlite_status.Get("revoked_in_stash"_ns)
+        .Add(1);
     return Result::ERROR_REVOKED_CERTIFICATE;
   }
   return Success;
@@ -692,18 +752,25 @@ Result NSSCertDBTrustDomain::CheckCRLite(
   switch (crliteRevocationState) {
     case nsICertStorage::STATE_ENFORCE:
       filterCoversCertificate = true;
+      mozilla::glean::cert_verifier::crlite_status.Get("revoked_in_filter"_ns)
+          .Add(1);
       return Result::ERROR_REVOKED_CERTIFICATE;
     case nsICertStorage::STATE_UNSET:
       filterCoversCertificate = true;
+      mozilla::glean::cert_verifier::crlite_status.Get("not_revoked"_ns).Add(1);
       return Success;
     case nsICertStorage::STATE_NOT_ENROLLED:
       filterCoversCertificate = false;
+      mozilla::glean::cert_verifier::crlite_status.Get("not_enrolled"_ns)
+          .Add(1);
       return Success;
     case nsICertStorage::STATE_NOT_COVERED:
       filterCoversCertificate = false;
+      mozilla::glean::cert_verifier::crlite_status.Get("not_covered"_ns).Add(1);
       return Success;
     case nsICertStorage::STATE_NO_FILTER:
       filterCoversCertificate = false;
+      mozilla::glean::cert_verifier::crlite_status.Get("no_filter"_ns).Add(1);
       return Success;
     default:
       MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
@@ -761,8 +828,8 @@ Result NSSCertDBTrustDomain::CheckRevocation(
     }
 
     if (crliteCoversCertificate) {
-      Telemetry::AccumulateCategorical(
-          Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::CRLite);
+      mozilla::glean::cert_verifier::cert_revocation_mechanisms.Get("CRLite"_ns)
+          .Add(1);
       // If we don't return here we will consult OCSP.
       // In Enforce CRLite mode we can return "Revoked" or "Not Revoked"
       // without consulting OCSP.
@@ -860,12 +927,12 @@ Result NSSCertDBTrustDomain::CheckRevocationByOCSP(
   Result stapledOCSPResponseResult = Success;
   if (stapledOCSPResponse) {
     bool expired;
-    uint32_t ageInHours;
     stapledOCSPResponseResult = VerifyAndMaybeCacheEncodedOCSPResponse(
         certID, time, maxOCSPLifetimeInDays, *stapledOCSPResponse,
-        ResponseWasStapled, expired, ageInHours);
-    Telemetry::AccumulateCategorical(
-        Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::StapledOCSP);
+        ResponseWasStapled, expired);
+    mozilla::glean::cert_verifier::cert_revocation_mechanisms
+        .Get("StapledOCSP"_ns)
+        .Add(1);
     if (stapledOCSPResponseResult == Success) {
       // stapled OCSP response present and good
       mOCSPStaplingStatus = CertVerifier::OCSP_STAPLING_GOOD;
@@ -910,8 +977,9 @@ Result NSSCertDBTrustDomain::CheckRevocationByOCSP(
       mOCSPCache.Get(certID, mOriginAttributes, cachedResponseResult,
                      cachedResponseValidThrough);
   if (cachedResponsePresent) {
-    Telemetry::AccumulateCategorical(
-        Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::CachedOCSP);
+    mozilla::glean::cert_verifier::cert_revocation_mechanisms
+        .Get("CachedOCSP"_ns)
+        .Add(1);
     if (cachedResponseResult == Success && cachedResponseValidThrough >= time) {
       MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
               ("NSSCertDBTrustDomain: cached OCSP response: good"));
@@ -961,8 +1029,9 @@ Result NSSCertDBTrustDomain::CheckRevocationByOCSP(
   // fetching is disabled.
   Duration shortLifetime(mCertShortLifetimeInDays * Time::ONE_DAY_IN_SECONDS);
   if (validityDuration < shortLifetime) {
-    Telemetry::AccumulateCategorical(
-        Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::ShortValidity);
+    mozilla::glean::cert_verifier::cert_revocation_mechanisms
+        .Get("ShortValidity"_ns)
+        .Add(1);
   }
   if ((mOCSPFetching == NeverFetchOCSP) || (validityDuration < shortLifetime)) {
     // We're not going to be doing any fetching, so if there was a cached
@@ -1047,8 +1116,8 @@ Result NSSCertDBTrustDomain::SynchronousCheckRevocationWithServer(
   mOCSPFetchStatus = OCSPFetchStatus::Fetched;
   rv = DoOCSPRequest(aiaLocation, mOriginAttributes, ocspRequestBytes,
                      ocspRequestLength, GetOCSPTimeout(), ocspResponse);
-  Telemetry::AccumulateCategorical(
-      Telemetry::LABELS_CERT_REVOCATION_MECHANISMS::OCSP);
+  mozilla::glean::cert_verifier::cert_revocation_mechanisms.Get("OCSP"_ns).Add(
+      1);
   if (rv == Success &&
       response.Init(ocspResponse.begin(), ocspResponse.length()) != Success) {
     rv = Result::ERROR_OCSP_MALFORMED_RESPONSE;  // too big
@@ -1066,16 +1135,12 @@ Result NSSCertDBTrustDomain::SynchronousCheckRevocationWithServer(
       return cacheRV;
     }
 
-    if (crliteCoversCertificate) {
-      if (crliteResult == Success) {
-        // CRLite says the certificate is OK, but OCSP fetching failed.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteOkOCSPFail);
-      } else {
-        // CRLite says the certificate is revoked, but OCSP fetching failed.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteRevOCSPFail);
-      }
+    if (crliteCoversCertificate &&
+        crliteResult == Result::ERROR_REVOKED_CERTIFICATE) {
+      // CRLite says the certificate is revoked, but OCSP fetching failed.
+      mozilla::glean::cert_verifier::crlite_vs_ocsp_result
+          .Get("CRLiteRevOCSPFail"_ns)
+          .Add(1);
     }
 
     return HandleOCSPFailure(cachedResponseResult, stapledOCSPResponseResult,
@@ -1086,67 +1151,34 @@ Result NSSCertDBTrustDomain::SynchronousCheckRevocationWithServer(
   // or unknown certificate, PR_GetError() will return the appropriate error.
   // We actually ignore expired here.
   bool expired;
-  uint32_t ageInHours;
-  rv = VerifyAndMaybeCacheEncodedOCSPResponse(
-      certID, time, maxOCSPLifetimeInDays, response, ResponseIsFromNetwork,
-      expired, ageInHours);
+  rv = VerifyAndMaybeCacheEncodedOCSPResponse(certID, time,
+                                              maxOCSPLifetimeInDays, response,
+                                              ResponseIsFromNetwork, expired);
 
-  // If the CRLite filter covers the certificate, compare the CRLite result
-  // with the OCSP fetching result. OCSP may have succeeded, said the
-  // certificate is revoked, said the certificate doesn't exist, or it may have
-  // failed for a reason that results in a "soft fail" (i.e. there is no
-  // indication that the certificate is either definitely revoked or definitely
-  // not revoked, so for usability, revocation checking says the certificate is
-  // valid by default).
-  if (crliteCoversCertificate) {
+  // If CRLite said that this certificate is revoked, report the OCSP
+  // status. OCSP may have succeeded, said the certificate is revoked, said the
+  // certificate doesn't exist, or it may have failed for a reason that results
+  // in a "soft fail" (i.e. there is no indication that the certificate is
+  // either definitely revoked or definitely not revoked, so for usability,
+  // revocation checking says the certificate is valid by default).
+  if (crliteCoversCertificate &&
+      crliteResult == Result::ERROR_REVOKED_CERTIFICATE) {
     if (rv == Success) {
-      if (crliteResult == Success) {
-        // CRLite and OCSP fetching agree the certificate is OK.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteOkOCSPOk);
-      } else {
-        // CRLite says the certificate is revoked, but OCSP says it is OK.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteRevOCSPOk);
-
-        if (mCRLiteMode == CRLiteMode::ConfirmRevocations) {
-          Telemetry::Accumulate(Telemetry::OCSP_AGE_AT_CRLITE_OVERRIDE,
-                                ageInHours);
-        }
-      }
+      mozilla::glean::cert_verifier::crlite_vs_ocsp_result
+          .Get("CRLiteRevOCSPOk"_ns)
+          .Add(1);
     } else if (rv == Result::ERROR_REVOKED_CERTIFICATE) {
-      if (crliteResult == Success) {
-        // CRLite says the certificate is OK, but OCSP says it is revoked.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteOkOCSPRev);
-      } else {
-        // CRLite and OCSP fetching agree the certificate is revoked.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteRevOCSPRev);
-      }
+      mozilla::glean::cert_verifier::crlite_vs_ocsp_result
+          .Get("CRLiteRevOCSPRev"_ns)
+          .Add(1);
     } else if (rv == Result::ERROR_OCSP_UNKNOWN_CERT) {
-      if (crliteResult == Success) {
-        // CRLite says the certificate is OK, but OCSP says it doesn't exist.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteOkOCSPUnk);
-      } else {
-        // CRLite says the certificate is revoked, but OCSP says it doesn't
-        // exist.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteRevOCSPUnk);
-      }
+      mozilla::glean::cert_verifier::crlite_vs_ocsp_result
+          .Get("CRLiteRevOCSPUnk"_ns)
+          .Add(1);
     } else {
-      if (crliteResult == Success) {
-        // CRLite says the certificate is OK, but OCSP encountered a soft-fail
-        // error.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteOkOCSPSoft);
-      } else {
-        // CRLite says the certificate is revoked, but OCSP encountered a
-        // soft-fail error.
-        Telemetry::AccumulateCategorical(
-            Telemetry::LABELS_CRLITE_VS_OCSP_RESULT::CRLiteRevOCSPSoft);
-      }
+      mozilla::glean::cert_verifier::crlite_vs_ocsp_result
+          .Get("CRLiteRevOCSPSoft"_ns)
+          .Add(1);
     }
   }
 
@@ -1208,8 +1240,7 @@ Result NSSCertDBTrustDomain::HandleOCSPFailure(
 Result NSSCertDBTrustDomain::VerifyAndMaybeCacheEncodedOCSPResponse(
     const CertID& certID, Time time, uint16_t maxLifetimeInDays,
     Input encodedResponse, EncodedResponseSource responseSource,
-    /*out*/ bool& expired,
-    /*out*/ uint32_t& ageInHours) {
+    /*out*/ bool& expired) {
   Time thisUpdate(Time::uninitialized);
   Time validThrough(Time::uninitialized);
 
@@ -1233,30 +1264,6 @@ Result NSSCertDBTrustDomain::VerifyAndMaybeCacheEncodedOCSPResponse(
       return Result::FATAL_ERROR_LIBRARY_FAILURE;  // integer overflow
     }
   }
-  // The `thisUpdate` field holds the latest time at which the server knew the
-  // response was correct. The age of the response is the time that has elapsed
-  // since. We only use this for the telemetry defined in Bug 1794479.
-  uint64_t timeInSeconds;
-  uint64_t thisUpdateInSeconds;
-  uint64_t ageInSeconds;
-  SecondsSinceEpochFromTime(time, &timeInSeconds);
-  SecondsSinceEpochFromTime(thisUpdate, &thisUpdateInSeconds);
-  if (timeInSeconds >= thisUpdateInSeconds) {
-    ageInSeconds = timeInSeconds - thisUpdateInSeconds;
-    // ageInHours is 32 bits because of the telemetry api.
-    if (ageInSeconds > UINT32_MAX) {
-      // We could divide by 3600 before checking the UINT32_MAX bound, but if
-      // ageInSeconds is more than UINT32_MAX then there's been some sort of
-      // error.
-      ageInHours = UINT32_MAX;
-    } else {
-      // We start at 1 and divide with truncation to reserve ageInHours=0 for
-      // the case where `thisUpdate` is in the future.
-      ageInHours = 1 + ageInSeconds / (60 * 60);
-    }
-  } else {
-    ageInHours = 0;
-  }
   if (responseSource == ResponseIsFromNetwork || rv == Success ||
       rv == Result::ERROR_REVOKED_CERTIFICATE ||
       rv == Result::ERROR_OCSP_UNKNOWN_CERT) {
@@ -1272,20 +1279,6 @@ Result NSSCertDBTrustDomain::VerifyAndMaybeCacheEncodedOCSPResponse(
   return rv;
 }
 
-SECStatus GetCertDistrustAfterValue(const SECItem* distrustItem,
-                                    PRTime& distrustTime) {
-  if (!distrustItem || !distrustItem->data || distrustItem->len != 13) {
-    PR_SetError(SEC_ERROR_INVALID_ARGS, 0);
-    return SECFailure;
-  }
-  return DER_DecodeTimeChoice(&distrustTime, distrustItem);
-}
-
-SECStatus GetCertNotBeforeValue(const CERTCertificate* cert,
-                                PRTime& distrustTime) {
-  return DER_DecodeTimeChoice(&distrustTime, &cert->validity.notBefore);
-}
-
 nsresult isDistrustedCertificateChain(
     const nsTArray<nsTArray<uint8_t>>& certArray,
     const SECTrustType certDBTrustType, bool& isDistrusted) {
@@ -1296,93 +1289,94 @@ nsresult isDistrustedCertificateChain(
   // Set the default result to be distrusted.
   isDistrusted = true;
 
-  // There is no distrust to set if the certDBTrustType is not SSL or Email.
-  if (certDBTrustType != trustSSL && certDBTrustType != trustEmail) {
+  CK_ATTRIBUTE_TYPE attrType;
+  switch (certDBTrustType) {
+    case trustSSL:
+      attrType = CKA_NSS_SERVER_DISTRUST_AFTER;
+      break;
+    case trustEmail:
+      attrType = CKA_NSS_EMAIL_DISTRUST_AFTER;
+      break;
+    default:
+      // There is no distrust to set if the certDBTrustType is not SSL or Email.
+      isDistrusted = false;
+      return NS_OK;
+  }
+
+  Input endEntityDER;
+  mozilla::pkix::Result rv = endEntityDER.Init(
+      certArray.ElementAt(0).Elements(), certArray.ElementAt(0).Length());
+  if (rv != Success) {
+    return NS_ERROR_FAILURE;
+  }
+
+  BackCert endEntityBackCert(endEntityDER, EndEntityOrCA::MustBeEndEntity,
+                             nullptr);
+  rv = endEntityBackCert.Init();
+  if (rv != Success) {
+    return NS_ERROR_FAILURE;
+  }
+
+  Time endEntityNotBefore(Time::uninitialized);
+  rv = ParseValidity(endEntityBackCert.GetValidity(), &endEntityNotBefore,
+                     nullptr);
+  if (rv != Success) {
+    return NS_ERROR_FAILURE;
+  }
+
+  Input rootDER;
+  rv = rootDER.Init(certArray.LastElement().Elements(),
+                    certArray.LastElement().Length());
+  if (rv != Success) {
+    return NS_ERROR_FAILURE;
+  }
+  SECItem rootDERItem(UnsafeMapInputToSECItem(rootDER));
+
+  PRBool distrusted;
+  PRTime distrustAfter;  // time since epoch in microseconds
+  bool foundDistrust = false;
+
+  // This strategy for searching for the builtins module is borrowed
+  // from CertVerifier::IsCertBuiltInRoot. See the comment on that
+  // function for more information.
+  AutoSECMODListReadLock lock;
+  for (SECMODModuleList* list = SECMOD_GetDefaultModuleList();
+       list && !foundDistrust; list = list->next) {
+    for (int i = 0; i < list->module->slotCount; i++) {
+      PK11SlotInfo* slot = list->module->slots[i];
+      if (!PK11_IsPresent(slot) || !PK11_HasRootCerts(slot)) {
+        continue;
+      }
+      CK_OBJECT_HANDLE handle =
+          PK11_FindEncodedCertInSlot(slot, &rootDERItem, nullptr);
+      if (handle == CK_INVALID_HANDLE) {
+        continue;
+      }
+      // Distrust attributes are only set on builtin roots, so ensure this
+      // certificate has the CKA_NSS_MOZILLA_CA_POLICY attribute.
+      if (!PK11_HasAttributeSet(slot, handle, CKA_NSS_MOZILLA_CA_POLICY,
+                                false)) {
+        continue;
+      }
+      SECStatus srv = PK11_ReadDistrustAfterAttribute(
+          slot, handle, attrType, &distrusted, &distrustAfter);
+      if (srv == SECSuccess) {
+        foundDistrust = true;
+      }
+    }
+  }
+
+  if (!foundDistrust || distrusted == PR_FALSE) {
     isDistrusted = false;
     return NS_OK;
   }
 
-  SECStatus runnableRV = SECFailure;
-
-  RefPtr<Runnable> isDistrustedChainTask =
-      NS_NewRunnableFunction("isDistrustedCertificateChain", [&]() {
-        if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
-          runnableRV = SECFailure;
-          return;
-        }
-        // Allocate objects and retreive the root and end-entity certificates.
-        CERTCertDBHandle* certDB(CERT_GetDefaultCertDB());
-        const nsTArray<uint8_t>& certRootDER = certArray.LastElement();
-        SECItem certRootDERItem = {
-            siBuffer, const_cast<unsigned char*>(certRootDER.Elements()),
-            AssertedCast<unsigned int>(certRootDER.Length())};
-        UniqueCERTCertificate certRoot(CERT_NewTempCertificate(
-            certDB, &certRootDERItem, nullptr, false, true));
-        if (!certRoot) {
-          runnableRV = SECFailure;
-          return;
-        }
-        const nsTArray<uint8_t>& certLeafDER = certArray.ElementAt(0);
-        SECItem certLeafDERItem = {
-            siBuffer, const_cast<unsigned char*>(certLeafDER.Elements()),
-            AssertedCast<unsigned int>(certLeafDER.Length())};
-        UniqueCERTCertificate certLeaf(CERT_NewTempCertificate(
-            certDB, &certLeafDERItem, nullptr, false, true));
-        if (!certLeaf) {
-          runnableRV = SECFailure;
-          return;
-        }
-
-        // Set isDistrusted to false if there is no distrust for the root.
-        if (!certRoot->distrust) {
-          isDistrusted = false;
-          runnableRV = SECSuccess;
-          return;
-        }
-
-        // Create a pointer to refer to the selected distrust struct.
-        SECItem* distrustPtr = nullptr;
-        if (certDBTrustType == trustSSL) {
-          distrustPtr = &certRoot->distrust->serverDistrustAfter;
-        }
-        if (certDBTrustType == trustEmail) {
-          distrustPtr = &certRoot->distrust->emailDistrustAfter;
-        }
-
-        // Get validity for the current end-entity certificate
-        // and get the distrust field for the root certificate.
-        PRTime certRootDistrustAfter;
-        PRTime certLeafNotBefore;
-
-        runnableRV =
-            GetCertDistrustAfterValue(distrustPtr, certRootDistrustAfter);
-        if (runnableRV != SECSuccess) {
-          return;
-        }
-
-        runnableRV = GetCertNotBeforeValue(certLeaf.get(), certLeafNotBefore);
-        if (runnableRV != SECSuccess) {
-          return;
-        }
-
-        // Compare the validity of the end-entity certificate with
-        // the distrust value of the root.
-        if (certLeafNotBefore <= certRootDistrustAfter) {
-          isDistrusted = false;
-        }
-
-        runnableRV = SECSuccess;
-      });
-  nsCOMPtr<nsIEventTarget> socketThread(
-      do_GetService(NS_SOCKETTRANSPORTSERVICE_CONTRACTID));
-  if (!socketThread) {
-    return NS_ERROR_FAILURE;
+  Time distrustAfterTime =
+      mozilla::pkix::TimeFromEpochInSeconds(distrustAfter / PR_USEC_PER_SEC);
+  if (endEntityNotBefore <= distrustAfterTime) {
+    isDistrusted = false;
   }
-  nsresult rv =
-      SyncRunnable::DispatchToThread(socketThread, isDistrustedChainTask);
-  if (NS_FAILED(rv) || runnableRV != SECSuccess) {
-    return NS_ERROR_FAILURE;
-  }
+
   return NS_OK;
 }
 
@@ -1443,7 +1437,23 @@ Result NSSCertDBTrustDomain::IsChainValid(const DERArray& reversedDERArray,
       return Result::FATAL_ERROR_LIBRARY_FAILURE;
     }
     if (isDistrusted) {
-      return Result::ERROR_UNTRUSTED_ISSUER;
+      // Check if this root is also a third-party root. If so, distrust after
+      // doesn't apply to it.
+      bool isThirdPartyRoot = false;
+      for (const auto& thirdPartyRoot : mThirdPartyRootInputs) {
+        if (InputsAreEqual(rootInput, thirdPartyRoot)) {
+          isThirdPartyRoot = true;
+          break;
+        }
+      }
+      if (!isThirdPartyRoot) {
+        MOZ_LOG(
+            gCertVerifierLog, LogLevel::Debug,
+            ("certificate has notBefore after distrust after value for root"));
+        return Result::ERROR_ISSUER_NO_LONGER_TRUSTED;
+      }
+      MOZ_LOG(gCertVerifierLog, LogLevel::Debug,
+              ("ignoring built-in distrust after for third-party root"));
     }
   }
 
@@ -1454,8 +1464,7 @@ Result NSSCertDBTrustDomain::IsChainValid(const DERArray& reversedDERArray,
   // This algorithm only applies if we are verifying in the context of a TLS
   // handshake. To determine this, we check mHostname: If it isn't set, this is
   // not TLS, so don't run the algorithm.
-  const nsTArray<uint8_t>& rootCertDER = certArray.LastElement();
-  if (mHostname && CertDNIsInList(rootCertDER, RootSymantecDNs)) {
+  if (mHostname && CertDNIsInList(rootBytes, RootSymantecDNs)) {
     if (numCerts <= 1) {
       // This chain is supposed to be complete, so this is an error.
       return Result::ERROR_ADDITIONAL_POLICY_CONSTRAINT_FAILED;
@@ -1514,15 +1523,21 @@ Result NSSCertDBTrustDomain::CheckRSAPublicKeyModulusSizeInBits(
 Result NSSCertDBTrustDomain::VerifyRSAPKCS1SignedData(
     Input data, DigestAlgorithm digestAlgorithm, Input signature,
     Input subjectPublicKeyInfo) {
-  return VerifyRSAPKCS1SignedDataNSS(data, digestAlgorithm, signature,
-                                     subjectPublicKeyInfo, mPinArg);
+  return VerifySignedDataWithCache(
+      der::PublicKeyAlgorithm::RSA_PKCS1,
+      mozilla::glean::cert_signature_cache::total,
+      mozilla::glean::cert_signature_cache::hits, data, digestAlgorithm,
+      signature, subjectPublicKeyInfo, mSignatureCache, mPinArg);
 }
 
 Result NSSCertDBTrustDomain::VerifyRSAPSSSignedData(
     Input data, DigestAlgorithm digestAlgorithm, Input signature,
     Input subjectPublicKeyInfo) {
-  return VerifyRSAPSSSignedDataNSS(data, digestAlgorithm, signature,
-                                   subjectPublicKeyInfo, mPinArg);
+  return VerifySignedDataWithCache(
+      der::PublicKeyAlgorithm::RSA_PSS,
+      mozilla::glean::cert_signature_cache::total,
+      mozilla::glean::cert_signature_cache::hits, data, digestAlgorithm,
+      signature, subjectPublicKeyInfo, mSignatureCache, mPinArg);
 }
 
 Result NSSCertDBTrustDomain::CheckECDSACurveIsAcceptable(
@@ -1540,8 +1555,11 @@ Result NSSCertDBTrustDomain::CheckECDSACurveIsAcceptable(
 Result NSSCertDBTrustDomain::VerifyECDSASignedData(
     Input data, DigestAlgorithm digestAlgorithm, Input signature,
     Input subjectPublicKeyInfo) {
-  return VerifyECDSASignedDataNSS(data, digestAlgorithm, signature,
-                                  subjectPublicKeyInfo, mPinArg);
+  return VerifySignedDataWithCache(
+      der::PublicKeyAlgorithm::ECDSA,
+      mozilla::glean::cert_signature_cache::total,
+      mozilla::glean::cert_signature_cache::hits, data, digestAlgorithm,
+      signature, subjectPublicKeyInfo, mSignatureCache, mPinArg);
 }
 
 Result NSSCertDBTrustDomain::CheckValidityIsAcceptable(
@@ -1612,6 +1630,7 @@ void NSSCertDBTrustDomain::ResetAccumulatedState() {
   mSCTListFromCertificate = nullptr;
   mSawDistrustedCAByPolicyError = false;
   mIsBuiltChainRootBuiltInRoot = false;
+  mIssuerSources.clear();
 }
 
 static Input SECItemToInput(const UniqueSECItem& item) {
@@ -1704,6 +1723,8 @@ SECStatus InitializeNSS(const nsACString& dir, NSSDBConfig nssDbConfig,
     }
   }
 
+  CollectThirdPartyPKCS11ModuleTelemetry();
+
   return SECSuccess;
 }
 
@@ -1768,8 +1789,6 @@ bool LoadUserModuleAt(const char* moduleName, const char* libraryName,
   return true;
 }
 
-const char* kIPCClientCertsModuleName = "IPC Client Cert Module";
-
 bool LoadIPCClientCertsModule(const nsCString& dir) {
   // The IPC client certs module needs to be able to call back into gecko to be
   // able to communicate with the parent process over IPC. This is achieved by
@@ -1777,14 +1796,14 @@ bool LoadIPCClientCertsModule(const nsCString& dir) {
   // extra string parameter that will be available when C_Initialize is called
   // on IPC client certs.
   nsPrintfCString addrs("%p,%p", DoFindObjects, DoSign);
-  if (!LoadUserModuleAt(kIPCClientCertsModuleName, "ipcclientcerts", dir,
+  if (!LoadUserModuleAt(kIPCClientCertsModuleName.get(), "ipcclientcerts", dir,
                         addrs.get())) {
     return false;
   }
   RunOnShutdown(
       []() {
         UniqueSECMODModule ipcClientCertsModule(
-            SECMOD_FindModule(kIPCClientCertsModuleName));
+            SECMOD_FindModule(kIPCClientCertsModuleName.get()));
         if (ipcClientCertsModule) {
           SECMOD_UnloadUserModule(ipcClientCertsModule.get());
         }
@@ -1793,20 +1812,12 @@ bool LoadIPCClientCertsModule(const nsCString& dir) {
   return true;
 }
 
-const char* kOSClientCertsModuleName = "OS Client Cert Module";
-
 bool LoadOSClientCertsModule(const nsCString& dir) {
-#ifdef MOZ_WIDGET_COCOA
-  // osclientcerts requires macOS 10.14 or later
-  if (!nsCocoaFeatures::OnMojaveOrLater()) {
-    return false;
-  }
-#endif
   nsLiteralCString params =
       StaticPrefs::security_osclientcerts_assume_rsa_pss_support()
           ? "RSA-PSS"_ns
           : ""_ns;
-  return LoadUserModuleAt(kOSClientCertsModuleName, "osclientcerts", dir,
+  return LoadUserModuleAt(kOSClientCertsModuleName.get(), "osclientcerts", dir,
                           params.get());
 }
 
@@ -1818,7 +1829,7 @@ bool LoadLoadableRoots(const nsCString& dir) {
   // "Root Certs" module allows us to load the correct one. See bug 1406396.
   int unusedModType;
   Unused << SECMOD_DeleteModule("Root Certs", &unusedModType);
-  return LoadUserModuleAt(kRootModuleName, "nssckbi", dir, nullptr);
+  return LoadUserModuleAt(kRootModuleName.get(), "nssckbi", dir, nullptr);
 }
 
 nsresult DefaultServerNicknameForCert(const CERTCertificate* cert,
@@ -1894,135 +1905,6 @@ Result BuildRevocationCheckArrays(Input certDER, EndEntityOrCA endEntityOrCA,
   pubKeyBytes.AppendElements(pubKey.UnsafeGetData(), pubKey.GetLength());
 
   return Success;
-}
-
-bool CertIsInCertStorage(const nsTArray<uint8_t>& certDER,
-                         nsICertStorage* certStorage) {
-  MOZ_ASSERT(certStorage);
-  if (!certStorage) {
-    return false;
-  }
-  Input certInput;
-  Result rv = certInput.Init(certDER.Elements(), certDER.Length());
-  if (rv != Success) {
-    return false;
-  }
-  BackCert cert(certInput, EndEntityOrCA::MustBeCA, nullptr);
-  rv = cert.Init();
-  if (rv != Success) {
-    return false;
-  }
-  nsTArray<uint8_t> subject;
-  subject.AppendElements(cert.GetSubject().UnsafeGetData(),
-                         cert.GetSubject().GetLength());
-  nsTArray<nsTArray<uint8_t>> certStorageCerts;
-  if (NS_FAILED(certStorage->FindCertsBySubject(subject, certStorageCerts))) {
-    return false;
-  }
-  for (const auto& certStorageCert : certStorageCerts) {
-    if (certStorageCert.Length() != certDER.Length()) {
-      continue;
-    }
-    if (memcmp(certStorageCert.Elements(), certDER.Elements(),
-               certStorageCert.Length()) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Given a list of certificates representing a verified certificate path from an
- * end-entity certificate to a trust anchor, imports the intermediate
- * certificates into the permanent certificate database. This is an attempt to
- * cope with misconfigured servers that don't include the appropriate
- * intermediate certificates in the TLS handshake.
- *
- * @param certList the verified certificate list
- */
-void SaveIntermediateCerts(const nsTArray<nsTArray<uint8_t>>& certList) {
-  if (certList.IsEmpty()) {
-    return;
-  }
-  nsTArray<nsTArray<uint8_t>> intermediates;
-  // Skip the end-entity; we only want to store intermediates. Similarly,
-  // there's no need to save the trust anchor - it's either already a permanent
-  // certificate or it's the Microsoft Family Safety root or an enterprise root
-  // temporarily imported via the child mode or enterprise root features. We
-  // don't want to import these because they're intended to be temporary (and
-  // because importing them happens to reset their trust settings, which breaks
-  // these features).
-  for (size_t index = 1; index < certList.Length() - 1; index++) {
-    intermediates.AppendElement(certList.ElementAt(index).Clone());
-  }
-  nsCOMPtr<nsIRunnable> importCertsRunnable(NS_NewRunnableFunction(
-      "IdleSaveIntermediateCerts",
-      [intermediates = std::move(intermediates)]() -> void {
-        if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
-          return;
-        }
-        UniquePK11SlotInfo slot(PK11_GetInternalKeySlot());
-        if (!slot) {
-          return;
-        }
-        size_t numCertsImported = 0;
-        nsCOMPtr<nsICertStorage> certStorage(
-            do_GetService(NS_CERT_STORAGE_CID));
-        for (const auto& certDER : intermediates) {
-          if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
-            return;
-          }
-          if (CertIsInCertStorage(certDER, certStorage)) {
-            continue;
-          }
-          SECItem certDERItem = {siBuffer,
-                                 const_cast<unsigned char*>(certDER.Elements()),
-                                 AssertedCast<unsigned int>(certDER.Length())};
-          UniqueCERTCertificate cert(CERT_NewTempCertificate(
-              CERT_GetDefaultCertDB(), &certDERItem, nullptr, false, true));
-          if (!cert) {
-            continue;
-          }
-          if (cert->slot) {
-            // This cert was found on a token; no need to remember it in the
-            // permanent database.
-            continue;
-          }
-          PRBool isperm;
-          if (CERT_GetCertIsPerm(cert.get(), &isperm) != SECSuccess) {
-            continue;
-          }
-          if (isperm) {
-            // We don't need to remember certs already stored in perm db.
-            continue;
-          }
-          // This is a best-effort attempt at avoiding unknown issuer errors
-          // in the future, so ignore failures here.
-          nsAutoCString nickname;
-          if (NS_FAILED(DefaultServerNicknameForCert(cert.get(), nickname))) {
-            continue;
-          }
-          Unused << PK11_ImportCert(slot.get(), cert.get(), CK_INVALID_HANDLE,
-                                    nickname.get(), false);
-          numCertsImported++;
-        }
-
-        nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-            "IdleSaveIntermediateCertsDone", [numCertsImported]() -> void {
-              nsCOMPtr<nsIObserverService> observerService =
-                  mozilla::services::GetObserverService();
-              if (observerService) {
-                NS_ConvertUTF8toUTF16 numCertsImportedString(
-                    nsPrintfCString("%zu", numCertsImported));
-                observerService->NotifyObservers(
-                    nullptr, "psm:intermediate-certs-cached",
-                    numCertsImportedString.get());
-              }
-            }));
-        Unused << NS_DispatchToMainThread(runnable.forget());
-      }));
-  Unused << NS_DispatchToCurrentThreadQueue(importCertsRunnable.forget(),
-                                            EventQueuePriority::Idle);
 }
 
 }  // namespace psm

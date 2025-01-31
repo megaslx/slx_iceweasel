@@ -21,11 +21,10 @@ const ISSUE_OUTLINE_RADIUS = {
   experimental: false,
 };
 
-const ISSUE_HYPHENS = {
-  type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY_ALIASES,
-  aliases: ["hyphens"],
-  property: "hyphens",
-  url: "https://developer.mozilla.org/docs/Web/CSS/hyphens",
+const ISSUE_SCROLLBAR_COLOR = {
+  type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY,
+  property: "scrollbar-color",
+  url: "https://developer.mozilla.org/docs/Web/CSS/scrollbar-color",
   deprecated: false,
   experimental: false,
 };
@@ -63,12 +62,12 @@ add_task(async function () {
   ]);
 
   await addNewRule(
-    "hyphens",
-    "none",
+    "scrollbar-color",
+    "auto",
     inspector,
     selectedElementPane,
     allElementsPane,
-    [ISSUE_OUTLINE_RADIUS, ISSUE_HYPHENS]
+    [ISSUE_OUTLINE_RADIUS, ISSUE_SCROLLBAR_COLOR]
   );
 
   info("Toggle the inline issue rendering it disable");

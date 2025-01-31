@@ -9,9 +9,9 @@
 const fs = require("fs");
 const path = require("path");
 
-function readFile(path) {
+function readFile(filePath) {
   return fs
-    .readFileSync(path, { encoding: "utf-8" })
+    .readFileSync(filePath, { encoding: "utf-8" })
     .split("\n")
     .filter(p => p && !p.startsWith("#"));
 }
@@ -25,6 +25,10 @@ const ignoreFiles = [
 
 module.exports = {
   extends: ["stylelint-config-recommended"],
+  plugins: [
+    "./tools/lint/stylelint/stylelint-plugin-mozilla/index.mjs",
+    "@stylistic/stylelint-plugin",
+  ],
   ignoreFiles,
   rules: {
     /* Disabled because of `-moz-element(#foo)` which gets misparsed. */
@@ -46,9 +50,23 @@ module.exports = {
       true,
       {
         ignoreFunctions: [
-          "-moz-image-rect" /* Used for cropping images */,
+          "light-dark" /* Used for color-scheme dependent colors */,
           "add" /* Used in mathml.css */,
         ],
+      },
+    ],
+
+    "length-zero-no-unit": [
+      true,
+      {
+        ignore: ["custom-properties"],
+      },
+    ],
+
+    "max-nesting-depth": [
+      3,
+      {
+        ignore: ["blockless-at-rules"],
       },
     ],
 
@@ -58,7 +76,14 @@ module.exports = {
     "property-no-unknown": [
       true,
       {
-        ignoreProperties: ["overflow-clip-box"],
+        ignoreProperties: [
+          // overflow-clip-box is Gecko-specific and not exposed to web
+          // content. Might be replaced with overflow-clip-margin, see:
+          // https://github.com/w3c/csswg-drafts/issues/10745
+          "overflow-clip-box",
+          "overflow-clip-box-block",
+          "overflow-clip-box-inline",
+        ],
       },
     ],
 
@@ -236,6 +261,13 @@ module.exports = {
         ignorePseudoClasses: ["popover-open"],
       },
     ],
+    "selector-pseudo-element-no-unknown": [
+      true,
+      {
+        ignorePseudoElements: ["slider-track", "slider-fill", "slider-thumb"],
+      },
+    ],
+    "stylelint-plugin-mozilla/no-base-design-tokens": true,
   },
 
   overrides: [
@@ -245,10 +277,26 @@ module.exports = {
       extends: "stylelint-config-recommended-scss",
     },
     {
-      files: "browser/components/newtab/**",
+      files: [
+        "browser/components/aboutwelcome/**",
+        "browser/components/asrouter/**",
+        "browser/components/newtab/**",
+      ],
       customSyntax: "postcss-scss",
       extends: "stylelint-config-standard-scss",
       rules: {
+        "@stylistic/color-hex-case": "upper",
+        "@stylistic/indentation": 2,
+        "@stylistic/no-eol-whitespace": true,
+        "@stylistic/no-missing-end-of-source-newline": true,
+        "@stylistic/number-leading-zero": "always",
+        "@stylistic/number-no-trailing-zeros": true,
+        "@stylistic/string-quotes": [
+          "single",
+          {
+            avoidEscape: true,
+          },
+        ],
         "at-rule-disallowed-list": [
           ["debug", "warn", "error"],
           {
@@ -257,7 +305,6 @@ module.exports = {
         ],
         "at-rule-no-vendor-prefix": null,
         "color-function-notation": null,
-        "color-hex-case": "upper",
         "comment-empty-line-before": [
           "always",
           {
@@ -277,20 +324,9 @@ module.exports = {
           },
         ],
         "function-url-no-scheme-relative": true,
-        indentation: 2,
         "keyframes-name-pattern": null,
-        "max-nesting-depth": [
-          8,
-          {
-            ignore: ["blockless-at-rules", "pseudo-classes"],
-          },
-        ],
         "media-feature-name-no-vendor-prefix": null,
         "no-descending-specificity": null,
-        "no-eol-whitespace": true,
-        "no-missing-end-of-source-newline": true,
-        "number-leading-zero": "always",
-        "number-no-trailing-zeros": true,
         "property-disallowed-list": [
           ["margin-left", "margin-right"],
           {
@@ -309,12 +345,6 @@ module.exports = {
         ],
         "selector-class-pattern": null,
         "selector-no-vendor-prefix": null,
-        "string-quotes": [
-          "single",
-          {
-            avoidEscape: true,
-          },
-        ],
         "value-keyword-case": null,
         "value-no-vendor-prefix": null,
       },

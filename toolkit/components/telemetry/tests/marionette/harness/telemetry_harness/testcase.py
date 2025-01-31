@@ -16,6 +16,7 @@ from marionette_harness.runner.mixins.window_manager import WindowManagerMixin
 from telemetry_harness.ping_server import PingServer
 
 CANARY_CLIENT_ID = "c0ffeec0-ffee-c0ff-eec0-ffeec0ffeec0"
+CANARY_PROFILE_GROUP_ID = "decafdec-afde-cafd-ecaf-decafdecafde"
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -85,6 +86,9 @@ class TelemetryTestCase(WindowManagerMixin, MarionetteTestCase):
 
         # Check for client ID that is used when Telemetry upload is disabled
         self.assertNotEqual(value, CANARY_CLIENT_ID, msg="UUID is CANARY CLIENT ID")
+        self.assertNotEqual(
+            value, CANARY_PROFILE_GROUP_ID, msg="UUID is CANARY PROFILE GROUP ID"
+        )
 
         self.assertIsNotNone(
             re.match(UUID_PATTERN, value),
@@ -156,15 +160,6 @@ class TelemetryTestCase(WindowManagerMixin, MarionetteTestCase):
         addon_name = "helloworld"
         self._install_addon(addon_name)
 
-    def install_dynamic_addon(self):
-        """Install a dynamic probe addon.
-
-        Source Code:
-        https://github.com/mozilla-extensions/dynamic-probe-telemetry-extension
-        """
-        addon_name = "dynamic_addon/dynamic-probe-telemetry-extension-signed.xpi"
-        self._install_addon(addon_name, temp=False)
-
     def _install_addon(self, addon_name, temp=True):
         """Logic to install addon and add its ID to self.addons.ids"""
         resources_dir = os.path.join(os.path.dirname(__file__), "resources")
@@ -175,8 +170,8 @@ class TelemetryTestCase(WindowManagerMixin, MarionetteTestCase):
             # triggers an "environment-change" ping.
             script = """\
             let [resolve] = arguments;
-            const { TelemetryEnvironment } = ChromeUtils.import(
-              "resource://gre/modules/TelemetryEnvironment.jsm"
+            const { TelemetryEnvironment } = ChromeUtils.importESModule(
+              "resource://gre/modules/TelemetryEnvironment.sys.mjs"
             );
             TelemetryEnvironment.onInitialized().then(resolve);
             """
@@ -205,10 +200,23 @@ class TelemetryTestCase(WindowManagerMixin, MarionetteTestCase):
         with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
             return self.marionette.execute_script(
                 """\
-                const { ClientID } = ChromeUtils.import(
-                  "resource://gre/modules/ClientID.jsm"
+                const { ClientID } = ChromeUtils.importESModule(
+                  "resource://gre/modules/ClientID.sys.mjs"
                 );
                 return ClientID.getCachedClientID();
+                """
+            )
+
+    @property
+    def profile_group_id(self):
+        """Return the profile group ID of the current client."""
+        with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
+            return self.marionette.execute_script(
+                """\
+                const { ClientID } = ChromeUtils.importESModule(
+                  "resource://gre/modules/ClientID.sys.mjs"
+                );
+                return ClientID.getCachedProfileGroupID();
                 """
             )
 
@@ -218,13 +226,13 @@ class TelemetryTestCase(WindowManagerMixin, MarionetteTestCase):
         with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
             ping_data = self.marionette.execute_script(
                 """\
-                const { TelemetryController } = ChromeUtils.import(
-                  "resource://gre/modules/TelemetryController.jsm"
+                const { TelemetryController } = ChromeUtils.importESModule(
+                  "resource://gre/modules/TelemetryController.sys.mjs"
                 );
                 return TelemetryController.getCurrentPingData(true);
                 """
             )
-            return ping_data[u"payload"][u"info"][u"subsessionId"]
+            return ping_data["payload"]["info"]["subsessionId"]
 
     def tearDown(self, *args, **kwargs):
         """Stop the ping server and tear down the testcase."""

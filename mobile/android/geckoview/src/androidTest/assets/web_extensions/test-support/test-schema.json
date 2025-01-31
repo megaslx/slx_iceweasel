@@ -97,22 +97,6 @@
         "parameters": []
       },
       {
-        "name": "setScalar",
-        "type": "function",
-        "async": true,
-        "description": "Set the given value to the scalar with the given id.",
-        "parameters": [
-          {
-            "type": "string",
-            "name": "id"
-          },
-          {
-            "type": "any",
-            "name": "value"
-          }
-        ]
-      },
-      {
         "name": "setResolutionAndScaleTo",
         "type": "function",
         "async": true,
@@ -153,6 +137,18 @@
         ]
       },
       {
+        "name": "waitForContentTransformsReceived",
+        "type": "function",
+        "async": true,
+        "description": "If we want to test screen coordinates, we need to wait for the updated data which is what this function allows us to do",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "tabId"
+          }
+        ]
+      },
+      {
         "name": "getAllBrowserPids",
         "type": "function",
         "async": true,
@@ -183,6 +179,18 @@
         "type": "function",
         "async": true,
         "description": "Invokes nsIDOMWindowUtils.flushApzRepaints for the document of the tabId.",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "tabId"
+          }
+        ]
+      },
+      {
+        "name": "zoomToFocusedInput",
+        "type": "function",
+        "async": true,
+        "description": "Invokes nsIDOMWindowUtils.zoomToFocusedInput for the document of the tabId.",
         "parameters": [
           {
             "type": "number",
@@ -233,7 +241,21 @@
         "description": "Clears the sites on the HSTS list.",
         "parameters": []
       },
+      {
+        "name": "isSessionHistoryInParentRunning",
+        "type": "function",
+        "async": true,
+        "description": "Checks if session history in parent (SHIP) is running.",
+        "parameters": []
+      },
 
+      {
+        "name": "isFissionRunning",
+        "type": "function",
+        "async": true,
+        "description": "Checks if fission is running.",
+        "parameters": []
+      },
       {
         "name": "triggerCookieBannerDetected",
         "type": "function",
@@ -256,6 +278,38 @@
           {
             "type": "number",
             "name": "tabId"
+          }
+        ]
+      },
+
+      {
+        "name": "triggerTranslationsOffer",
+        "type": "function",
+        "async": true,
+        "description": "Simulates offering a translation.",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "tabId"
+          }
+        ]
+      },
+
+      {
+        "name": "triggerLanguageStateChange",
+        "type": "function",
+        "async": true,
+        "description": "Simulates expecting a translation.",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "tabId"
+          },
+          {
+            "name": "languageState",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": { "type": "any" }
           }
         ]
       }

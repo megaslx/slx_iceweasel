@@ -1,5 +1,5 @@
 #!/bin/sh
-## Copyright (c) 2016, Alliance for Open Media. All rights reserved
+## Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ##
 ## This source code is subject to the terms of the BSD 2 Clause License and
 ## the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -39,7 +39,7 @@ decode_to_md5() {
   fi
 
   eval "${AOM_TEST_PREFIX}" "${decoder}" "${input_file}" "${output_file}" \
-      ${devnull}
+      ${devnull} || return 1
 
   [ -e "${output_file}" ] || return 1
 
@@ -65,7 +65,7 @@ DISABLED_decode_to_md5_av1() {
   if [ "$(av1_decode_available)" = "yes" ]; then
     if [ ! -e "${AV1_IVF_FILE}" ]; then
       file="${AOM_TEST_OUTPUT_DIR}/test_encode.ivf"
-      encode_yuv_raw_input_av1 "${file}" --ivf
+      encode_yuv_raw_input_av1 "${file}" --ivf || return 1
     fi
     decode_to_md5 "${file}" "av1" "${expected_md5}"
   fi

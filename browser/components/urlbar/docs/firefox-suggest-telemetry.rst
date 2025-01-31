@@ -145,9 +145,11 @@ This keyed scalar is incremented each time the user clicks a Firefox Suggest
 checkbox or toggle switch in the preferences UI. Keys are the following:
 
 :firefoxSuggestBestMatch:
-  This key is incremented when the "Top pick" checkbox is clicked.
+  This key is incremented when the "Top pick" checkbox is clicked. In 120 this
+  UI was removed, so this key is no longer recorded.
 :firefoxSuggestBestMatchLearnMore:
-  This key is incremented when opening the learn more link for best match.
+  This key is incremented when opening the learn more link for best match. In
+  120 this UI was removed, so this key is no longer recorded.
 :firefoxSuggestDataCollectionToggle:
   This key is incremented when the toggle switch for data collection
   is clicked.
@@ -160,17 +162,22 @@ checkbox or toggle switch in the preferences UI. Keys are the following:
 
 Changelog
   Firefox 94.0.2
-    Introduced firefoxSuggestDataCollectionToggle,
-    firefoxSuggestNonsponsoredToggle and firefoxSuggestSponsoredToggle.
+    Introduced ``firefoxSuggestDataCollectionToggle``,
+    ``firefoxSuggestNonsponsoredToggle`` and ``firefoxSuggestSponsoredToggle``.
     [Bug 1735976_]
 
   Firefox 99.0
-    Introduced firefoxSuggestBestMatch. [Bug 1755100_]
-    Introduced firefoxSuggestBestMatchLearnMore. [Bug 1756917_]
+    Introduced ``firefoxSuggestBestMatch``. [Bug 1755100_]
+    Introduced ``firefoxSuggestBestMatchLearnMore``. [Bug 1756917_]
+
+  Firefox 120.0
+    Removed ``firefoxSuggestBestMatch`` and
+    ``firefoxSuggestBestMatchLearnMore``. [Bug 1857391_]
 
 .. _1735976: https://bugzilla.mozilla.org/show_bug.cgi?id=1735976
 .. _1755100: https://bugzilla.mozilla.org/show_bug.cgi?id=1755100
 .. _1756917: https://bugzilla.mozilla.org/show_bug.cgi?id=1756917
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.block_dynamic_wikipedia
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -184,7 +191,11 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.block_nonsponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -199,21 +210,29 @@ Changelog
   Firefox 101.0
     Introduced. [Bug 1761059_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.block_nonsponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user dismisses ("blocks") a
-non-sponsored best match. Each key is the index at which a suggestion appeared
-in the results (1-based), and the corresponding value is the number of
-dismissals at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user dismisses ("blocks") a non-sponsored best match. Each key is
+the index at which a suggestion appeared in the results (1-based), and the
+corresponding value is the number of dismissals at that index.
 
 Changelog
   Firefox 101.0
     Introduced. [Bug 1761059_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.block_sponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -228,21 +247,29 @@ Changelog
   Firefox 101.0
     Introduced. [Bug 1761059_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.block_sponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user dismisses ("blocks") a
-sponsored best match. Each key is the index at which a suggestion appeared in
-the results (1-based), and the corresponding value is the number of dismissals
-at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user dismisses ("blocks") a sponsored best match. Each key is the
+index at which a suggestion appeared in the results (1-based), and the
+corresponding value is the number of dismissals at that index.
 
 Changelog
   Firefox 101.0
     Introduced. [Bug 1761059_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.block_weather
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -256,7 +283,11 @@ Changelog
   Firefox 110.0
     Introduced. [Bug 1804536_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1804536: https://bugzilla.mozilla.org/show_bug.cgi?id=1804536
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -287,7 +318,11 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nav_notmatched
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -304,7 +339,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nav_shown_heuristic
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -321,7 +360,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nav_shown_nav
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -339,7 +382,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nav_superceded
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -356,7 +403,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nonsponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -370,20 +421,29 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_nonsponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user picks a non-sponsored best
-match. Each key is the index at which a suggestion appeared in the results
-(1-based), and the corresponding value is the number of clicks at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user picks a non-sponsored best match. Each key is the index at
+which a suggestion appeared in the results (1-based), and the corresponding
+value is the number of clicks at that index.
 
 Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.click_sponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -396,20 +456,29 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.click_sponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user picks a sponsored best
-match. Each key is the index at which a suggestion appeared in the results
-(1-based), and the corresponding value is the number of clicks at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user picks a sponsored best match. Each key is the index at which
+a suggestion appeared in the results (1-based), and the corresponding value is
+the number of clicks at that index.
 
 Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.click_weather
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -422,7 +491,11 @@ Changelog
   Firefox 110.0
     Introduced. [Bug 1804536_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1804536: https://bugzilla.mozilla.org/show_bug.cgi?id=1804536
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.exposure_weather
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -476,7 +549,11 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 127.0
+    Removed. [Bug 1891602_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1891602: https://bugzilla.mozilla.org/show_bug.cgi?id=1891602
 
 contextual.services.quicksuggest.help_nonsponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -490,21 +567,29 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.help_nonsponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user picks the help button in a
-non-sponsored best match. Each key is the index at which a suggestion appeared
-in the results (1-based), and the corresponding value is the number of help
-button clicks at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user picks the help button in a non-sponsored best match. Each key
+is the index at which a suggestion appeared in the results (1-based), and the
+corresponding value is the number of help button clicks at that index.
 
 Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.help_sponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -518,21 +603,29 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.help_sponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar is incremented each time the user picks the help button in a
-sponsored best match. Each key is the index at which a suggestion appeared in
-the results (1-based), and the corresponding value is the number of help button
-clicks at that index.
+This keyed scalar was removed in Firefox 120. Prior to that, it is incremented
+each time the user picks the help button in a sponsored best match. Each key is
+the index at which a suggestion appeared in the results (1-based), and the
+corresponding value is the number of help button clicks at that index.
 
 Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.help_weather
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -546,7 +639,11 @@ Changelog
   Firefox 110.0
     Introduced. [Bug 1804536_]
 
+  Firefox 127.0
+    Removed. [Bug 1891602_]
+
 .. _1804536: https://bugzilla.mozilla.org/show_bug.cgi?id=1804536
+.. _1891602: https://bugzilla.mozilla.org/show_bug.cgi?id=1891602
 
 contextual.services.quicksuggest.impression
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -591,7 +688,11 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_nav_notmatched
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -609,7 +710,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_nav_shown
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -627,7 +732,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_nav_superceded
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -645,7 +754,11 @@ Changelog
   Firefox 112.0
     Introduced. [Bug 1819797_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_nonsponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -665,14 +778,18 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_nonsponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar records non-sponsored best match impressions. It is
-incremented each time the user is shown a non-sponsored best match and the
-following two conditions hold:
+This keyed scalar was removed in Firefox 120. Prior to that, it records
+non-sponsored best match impressions. It is incremented each time the user is
+shown a non-sponsored best match and the following two conditions hold:
 
 - The user has completed an engagement with the address bar by picking a result
   in it or by pressing the Enter key.
@@ -686,7 +803,11 @@ Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.impression_sponsored
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -706,14 +827,18 @@ Changelog
   Firefox 109.0
     Introduced. [Bug 1800993_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 contextual.services.quicksuggest.impression_sponsored_bestmatch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This keyed scalar records sponsored best match impressions. It is incremented
-each time the user is shown a sponsored best match and the following two
-conditions hold:
+This keyed scalar was removed in Firefox 120. Prior to that, it records
+sponsored best match impressions. It is incremented each time the user is shown
+a sponsored best match and the following two conditions hold:
 
 - The user has completed an engagement with the address bar by picking a result
   in it or by pressing the Enter key.
@@ -727,7 +852,11 @@ Changelog
   Firefox 99.0
     Introduced. [Bug 1752953_]
 
+  Firefox 120.0
+    Removed. [Bug 1857391_]
+
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
+.. _1857391: https://bugzilla.mozilla.org/show_bug.cgi?id=1857391
 
 contextual.services.quicksuggest.impression_weather
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -748,7 +877,11 @@ Changelog
   Firefox 110.0
     Introduced. [Bug 1804536_]
 
+  Firefox 133.0
+    Removed. [Bug 1925355_]
+
 .. _1804536: https://bugzilla.mozilla.org/show_bug.cgi?id=1804536
+.. _1925355: https://bugzilla.mozilla.org/show_bug.cgi?id=1925355
 
 Events
 ------
@@ -784,7 +917,11 @@ Changelog
   Firefox 94.0.2
     Introduced. [Bug 1735976_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1735976: https://bugzilla.mozilla.org/show_bug.cgi?id=1735976
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 contextservices.quicksuggest.enable_toggled
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -818,9 +955,13 @@ Changelog
     modal dialog since the ``browser.urlbar.suggest.quicksuggest.nonsponsored``
     pref is no longer set when the user opts in or out. [Bug 1740965_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1693126: https://bugzilla.mozilla.org/show_bug.cgi?id=1693126
 .. _1735976: https://bugzilla.mozilla.org/show_bug.cgi?id=1735976
 .. _1740965: https://bugzilla.mozilla.org/show_bug.cgi?id=1740965
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 contextservices.quicksuggest.engagement
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -876,10 +1017,14 @@ Changelog
   Firefox 114.0
     ``other`` is added as a value of the event object. [Bug 1827943_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
 .. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
 .. _1819797: https://bugzilla.mozilla.org/show_bug.cgi?id=1819797
 .. _1827943: https://bugzilla.mozilla.org/show_bug.cgi?id=1827943
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 contextservices.quicksuggest.impression_cap
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -935,8 +1080,12 @@ Changelog
   Firefox 101.0
     Introduced. [Bug 1761058_, 1765881_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1761058: https://bugzilla.mozilla.org/show_bug.cgi?id=1761058
 .. _1765881: https://bugzilla.mozilla.org/show_bug.cgi?id=1765881
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 contextservices.quicksuggest.opt_in_dialog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1012,10 +1161,14 @@ Changelog
     ``dismiss_2``.
     [Bug 1761171_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1723860: https://bugzilla.mozilla.org/show_bug.cgi?id=1723860
 .. _1733687: https://bugzilla.mozilla.org/show_bug.cgi?id=1733687
 .. _1745026: https://bugzilla.mozilla.org/show_bug.cgi?id=1745026
 .. _1761171: https://bugzilla.mozilla.org/show_bug.cgi?id=1761171
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 contextservices.quicksuggest.sponsored_toggled
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1043,8 +1196,12 @@ Changelog
     modal dialog since the ``browser.urlbar.suggest.quicksuggest.sponsored``
     pref is no longer set when the user opts in or out. [Bug 1740965_]
 
+  Firefox 133.0
+    Removed. [Bug 1921748_]
+
 .. _1728430: https://bugzilla.mozilla.org/show_bug.cgi?id=1728430
 .. _1740965: https://bugzilla.mozilla.org/show_bug.cgi?id=1740965
+.. _1921748: https://bugzilla.mozilla.org/show_bug.cgi?id=1921748
 
 Environment
 -----------
@@ -1199,224 +1356,34 @@ Changelog
 .. _1730721: https://bugzilla.mozilla.org/show_bug.cgi?id=1730721
 .. _1740965: https://bugzilla.mozilla.org/show_bug.cgi?id=1740965
 
-Contextual Services Pings
--------------------------
+The "quick-suggest" Ping
+------------------------
 
-The following custom telemetry pings are recorded for Firefox Suggest
-suggestions. For general information on custom telemetry pings in Firefox, see
-the `Custom Ping`_ document.
+Firefox Suggest suggestions record telemetry via the `"quick-suggest" ping`_,
+which is detailed in the linked Glean Dictionary page.
 
-.. _Custom Ping: https://docs.telemetry.mozilla.org/cookbooks/new_ping.html#sending-a-custom-ping
-
-Block
-~~~~~
-
-A block ping is recorded when the user dismisses ("blocks") a suggestion. Its
-payload includes the following:
-
-:advertiser:
-  The name of the suggestion's advertiser.
-:block_id:
-  A unique identifier for the suggestion (a.k.a. a keywords block).
-:context_id:
-  A UUID representing this user. Note that it's not client_id, nor can it be
-  used to link to a client_id.
-:iab_category:
-  The suggestion's category, either "22 - Shopping" or "5 - Education".
-:improve_suggest_experience_checked:
-  A boolean indicating whether the user has opted in to improving the Firefox
-  Suggest experience. There are two ways for the user to opt in, either in an
-  opt-in modal experiment or by toggling a switch in Firefox's settings.
-:match_type:
-  "best-match" if the suggestion was a best match or "firefox-suggest" if it was
-  a non-best-match suggestion.
-:position:
-  The index of the suggestion in the list of results (1-based).
-:request_id:
-  A request identifier for each API request to Merino. This is only included for
-  suggestions provided by Merino.
-:source:
-  The source of the suggestion, either "remote-settings" or "merino".
+.. _"quick-suggest" ping: https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/pings/quick-suggest
 
 Changelog
-  Firefox 101.0
-    Introduced. [Bug 1764669_]
+  Firefox 116.0
+    Introduced. [Bug 1836283_]
 
-  Firefox 103.0
-    ``scenario`` is removed from the payload and
-    ``improve_suggest_experience_checked`` is added. [Bug 1776797_]
+  Firefox 122.0
+    PingCentre-sent custom pings removed. [Bug `1868580`_]
 
-  Firefox 109.0
-    ``source`` is added. [Bug 1800993_]
-
-.. _1764669: https://bugzilla.mozilla.org/show_bug.cgi?id=1764669
-.. _1776797: https://bugzilla.mozilla.org/show_bug.cgi?id=1776797
-.. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
-
-Click
-~~~~~
-
-A click ping is recorded when the user picks a suggestion. Its payload includes
-the following:
-
-:advertiser:
-  The name of the suggestion's advertiser.
-:block_id:
-  A unique identifier for the suggestion (a.k.a. a keywords block).
-:context_id:
-  A UUID representing this user. Note that it's not client_id, nor can it be
-  used to link to a client_id.
-:improve_suggest_experience_checked:
-  A boolean indicating whether the user has opted in to improving the Firefox
-  Suggest experience. There are two ways for the user to opt in, either in an
-  opt-in modal experiment or by toggling a switch in Firefox's settings.
-:match_type:
-  "best-match" if the suggestion was a best match or "firefox-suggest" if it was
-  a non-best-match suggestion.
-:position:
-  The index of the suggestion in the list of results (1-based).
-:reporting_url:
-  The reporting URL of the suggestion, normally pointing to the ad partner's
-  reporting endpoint.
-:request_id:
-  A request identifier for each API request to Merino. This is only included for
-  suggestions provided by Merino.
-:source:
-  The source of the suggestion, either "remote-settings" or "merino".
-
-Changelog
-  Firefox 87.0
-    Introduced. The payload is: ``advertiser``, ``block_id``, ``position``, and
-    ``reporting_url``. [Bug 1689365_]
-
-  Firefox 92.0.1
-    ``scenario`` is added to the payload. [Bug 1729576_]
-
-  Firefox 94.0.2
-    ``request_id`` is added to the payload. [Bug 1736117_]
-
-  Firefox 99.0
-    ``match_type`` is added to the payload. [Bug 1754622_]
-
-  Firefox 103.0
-    ``scenario`` is removed from the payload and
-    ``improve_suggest_experience_checked`` is added. [Bug 1776797_]
-
-  Firefox 109.0
-    ``source`` is added. [Bug 1800993_]
-
-.. _1689365: https://bugzilla.mozilla.org/show_bug.cgi?id=1689365
-.. _1729576: https://bugzilla.mozilla.org/show_bug.cgi?id=1729576
-.. _1736117: https://bugzilla.mozilla.org/show_bug.cgi?id=1736117
-.. _1754622: https://bugzilla.mozilla.org/show_bug.cgi?id=1754622
-.. _1776797: https://bugzilla.mozilla.org/show_bug.cgi?id=1776797
-.. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
-
-Impression
-~~~~~~~~~~
-
-An impression ping is recorded when the user is shown a suggestion and the
-following two conditions hold:
-
-- The user has completed an engagement with the address bar by picking a result
-  in it or by pressing the Enter key.
-- At the time the user completed the engagement, a suggestion was present in the
-  results.
-
-It is also recorded when the user dismisses ("blocks") a suggestion.
-
-The impression ping payload contains the following:
-
-:advertiser:
-  The name of the suggestion's advertiser.
-:block_id:
-  A unique identifier for the suggestion (a.k.a. a keywords block).
-:context_id:
-  A UUID representing this user. Note that it's not client_id, nor can it be
-  used to link to a client_id.
-:improve_suggest_experience_checked:
-  A boolean indicating whether the user has opted in to improving the Firefox
-  Suggest experience. There are two ways for the user to opt in, either in an
-  opt-in modal experiment or by toggling a switch in Firefox's settings.
-:is_clicked:
-  Whether or not the user also clicked the suggestion. When true, we will also
-  send a separate click ping. When the impression ping is recorded because the
-  user dismissed ("blocked") the suggestion, this will be false.
-:match_type:
-  "best-match" if the suggestion was a best match or "firefox-suggest" if it was
-  a non-best-match suggestion.
-:position:
-  The index of the suggestion in the list of results (1-based).
-:reporting_url:
-  The reporting URL of the suggestion, normally pointing to the ad partner's
-  reporting endpoint.
-:request_id:
-  A request identifier for each API request to Merino. This is only included for
-  suggestions provided by Merino.
-:source:
-  The source of the suggestion, either "remote-settings" or "merino".
-
-Changelog
-  Firefox 87.0
-    Introduced. The payload is: ``advertiser``, ``block_id``, ``is_clicked``,
-    ``matched_keywords``, ``position``, ``reporting_url``, and
-    ``search_query``. ``matched_keywords`` and ``search_query`` are always
-    included in the payload and are always identical: They both record the exact
-    search query as typed by the user. [Bug 1689365_]
-
-  Firefox 91.0.1 (Release and ESR)
-    ``matched_keywords`` and ``search_query`` are always recorded as empty
-    strings. [Bug 1725492_]
-
-  Firefox 92.0.1
-    - When the user's scenaro is "online", ``matched_keywords`` records the full
-      keyword of the matching suggestion and ``search_query`` records the exact
-      search query as typed by the user; otherwise both are recorded as empty
-      strings. [Bug 1728188_, 1729576_]
-    - ``scenario`` is added to the payload. [Bug 1729576_]
-
-  Firefox 94.0.2
-    - When the user has opted in to data collection and the matching suggestion
-      is provided by remote settings, ``matched_keywords`` records the full
-      keyword of the suggestion and ``search_query`` records the exact search
-      query as typed by the user; otherwise both are excluded from the ping.
-      [Bug 1736117_, 1735976_]
-    - ``request_id`` is added to the payload. [Bug 1736117_]
-
-  Firefox 97.0
-    - Stop sending ``search_query`` and ``matched_keywords`` in the custom
-      impression ping for Firefox Suggest. [Bug 1748348_]
-
-  Firefox 99.0
-    ``match_type`` is added to the payload. [Bug 1754622_]
-
-  Firefox 101.0
-    The impression ping is now also recorded when the user dismisses ("blocks")
-    a suggestion. [Bug 1761059_]
-
-  Firefox 103.0
-    ``scenario`` is removed from the payload and
-    ``improve_suggest_experience_checked`` is added. [Bug 1776797_]
-
-  Firefox 109.0
-    ``source`` is added. [Bug 1800993_]
-
-.. _1689365: https://bugzilla.mozilla.org/show_bug.cgi?id=1689365
-.. _1725492: https://bugzilla.mozilla.org/show_bug.cgi?id=1725492
-.. _1728188: https://bugzilla.mozilla.org/show_bug.cgi?id=1728188
-.. _1729576: https://bugzilla.mozilla.org/show_bug.cgi?id=1729576
-.. _1736117: https://bugzilla.mozilla.org/show_bug.cgi?id=1736117
-.. _1735976: https://bugzilla.mozilla.org/show_bug.cgi?id=1735976
-.. _1748348: https://bugzilla.mozilla.org/show_bug.cgi?id=1748348
-.. _1754622: https://bugzilla.mozilla.org/show_bug.cgi?id=1754622
-.. _1761059: https://bugzilla.mozilla.org/show_bug.cgi?id=1761059
-.. _1776797: https://bugzilla.mozilla.org/show_bug.cgi?id=1776797
-.. _1800993: https://bugzilla.mozilla.org/show_bug.cgi?id=1800993
+.. _1836283: https://bugzilla.mozilla.org/show_bug.cgi?id=1836283
+.. _1868580: https://bugzilla.mozilla.org/show_bug.cgi?id=1868580
 
 Nimbus Exposure Event
 ---------------------
 
-A `Nimbus exposure event`_ is recorded once per app session when the user first
+.. note::
+
+  This section is historical and describes how older versions of Firefox
+  recorded Nimbus exposure events for Firefox Suggest. Recent Firefox versions
+  no longer record Nimbus exposure events for Firefox Suggest.
+
+A Nimbus exposure event is recorded once per app session when the user first
 encounters the UI of an experiment in which they're enrolled. The timing of the
 event depends on the experiment and branch.
 
@@ -1436,11 +1403,14 @@ exposure events are recorded.
   at all. If the user is in the control branch, the event is recorded the first
   time they would have triggered a best match. (Users in the control branch
   cannot "disable" best match since the feature is totally hidden from them.)
+  NOTE: The "Top pick" checkbox, which allowed the user to disable best batch,
+  was removed in 120.
 :experimentType = "modal":
   If the user is in a treatment branch, the event is recorded when they are
   shown an opt-in modal. If the user is in the control branch, the event is
   recorded every time they would have been shown a modal, which is on every
   startup where another non-Suggest modal does not appear.
+  NOTE: This has been removed in Firefox 124.
 :isBestMatchExperiment = true:
   This is a deprecated version of ``experimentType == "best-match"``.
 :All other experiments:
@@ -1461,12 +1431,18 @@ Changelog
     ``isBestMatchExperiment = true`` is deprecated in favor of
     ``experimentType = "best-match"``. [Bug 1760596_]
 
-.. _Nimbus exposure event: https://experimenter.info/jetstream/jetstream/#enrollment-vs-exposure
+  Firefox 124.0
+    The ``experimentType = "modal"`` case is removed.
+
+  Firefox 135.0
+    The ``experimentType`` Nimbus variable is removed. By this time it already
+    not been referenced in Firefox code for quite a while. [Bug 1932502_]
 
 .. _1724076: https://bugzilla.mozilla.org/show_bug.cgi?id=1724076
 .. _1727392: https://bugzilla.mozilla.org/show_bug.cgi?id=1727392
 .. _1752953: https://bugzilla.mozilla.org/show_bug.cgi?id=1752953
 .. _1760596: https://bugzilla.mozilla.org/show_bug.cgi?id=1760596
+.. _1932502: https://bugzilla.mozilla.org/show_bug.cgi?id=1932502
 
 Merino Search Queries
 ---------------------

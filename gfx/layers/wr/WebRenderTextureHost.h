@@ -43,7 +43,8 @@ class WebRenderTextureHost : public TextureHost {
   // Please check TextureHost::GetReadFormat().
   gfx::SurfaceFormat GetReadFormat() const override;
 
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override;
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override;
 
   gfx::ColorDepth GetColorDepth() const override;
   gfx::YUVColorSpace GetYUVColorSpace() const override;
@@ -55,6 +56,8 @@ class WebRenderTextureHost : public TextureHost {
   const char* Name() override { return "WebRenderTextureHost"; }
 #endif
 
+  void MaybeDestroyRenderTexture() override;
+
   WebRenderTextureHost* AsWebRenderTextureHost() override { return this; }
 
   RemoteTextureHostWrapper* AsRemoteTextureHostWrapper() override {
@@ -63,6 +66,10 @@ class WebRenderTextureHost : public TextureHost {
 
   BufferTextureHost* AsBufferTextureHost() override {
     return mWrappedTextureHost->AsBufferTextureHost();
+  }
+
+  DXGITextureHostD3D11* AsDXGITextureHostD3D11() override {
+    return mWrappedTextureHost->AsDXGITextureHostD3D11();
   }
 
   bool IsWrappingSurfaceTextureHost() override;

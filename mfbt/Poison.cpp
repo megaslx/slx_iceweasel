@@ -127,9 +127,8 @@ static bool ProbeRegion(uintptr_t aRegion, uintptr_t aSize) {
   if (madvise(reinterpret_cast<void*>(aRegion), aSize, MADV_NORMAL)) {
 #  endif
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
 static uintptr_t GetDesiredRegionSize() { return sysconf(_SC_PAGESIZE); }
@@ -199,8 +198,9 @@ static uintptr_t GetPoisonValue(uintptr_t aBase, uintptr_t aSize) {
 // specifically comes before libxul, so nearly all gecko code runs strictly
 // after this.)
 extern "C" {
-uintptr_t gMozillaPoisonSize = GetDesiredRegionSize();
-uintptr_t gMozillaPoisonBase = ReservePoisonArea(gMozillaPoisonSize);
-uintptr_t gMozillaPoisonValue =
+MOZ_RUNINIT uintptr_t gMozillaPoisonSize = GetDesiredRegionSize();
+MOZ_RUNINIT uintptr_t gMozillaPoisonBase =
+    ReservePoisonArea(gMozillaPoisonSize);
+MOZ_RUNINIT uintptr_t gMozillaPoisonValue =
     GetPoisonValue(gMozillaPoisonBase, gMozillaPoisonSize);
 }

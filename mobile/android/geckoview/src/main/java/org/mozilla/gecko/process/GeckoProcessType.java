@@ -10,7 +10,7 @@ import org.mozilla.gecko.annotation.WrapForJNI;
 public enum GeckoProcessType {
   // These need to match the stringified names from the GeckoProcessType enum
   PARENT("default"),
-  PLUGIN("plugin"),
+  OBSOLETE1("plugin"),
   CONTENT("tab"),
   IPDLUNITTEST("ipdlunittest"),
   GMPLUGIN("gmplugin"),
@@ -18,13 +18,13 @@ public enum GeckoProcessType {
   VR("vr"),
   RDD("rdd"),
   SOCKET("socket"),
-  REMOTESANDBOXBROKER("sandboxbroker"),
+  OBSOLETE2("sandboxbroker"),
   FORKSERVER("forkserver"),
   UTILITY("utility");
 
   private final String mGeckoName;
 
-  private GeckoProcessType(final String geckoName) {
+  GeckoProcessType(final String geckoName) {
     mGeckoName = geckoName;
   }
 

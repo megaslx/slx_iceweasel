@@ -21,6 +21,7 @@
 #include "util/Memory.h"
 #include "vm/JitActivation.h"  // js::jit::JitActivation
 #include "vm/JSContext.h"
+#include "wasm/WasmStubs.h"
 
 #include "jit/MacroAssembler-inl.h"
 
@@ -1445,28 +1446,6 @@ void MacroAssemblerMIPSCompat::boxNonDouble(JSValueType type, Register src,
   ma_li(dest.typeReg(), ImmType(type));
 }
 
-void MacroAssemblerMIPSCompat::boolValueToDouble(const ValueOperand& operand,
-                                                 FloatRegister dest) {
-  convertBoolToInt32(operand.payloadReg(), ScratchRegister);
-  convertInt32ToDouble(ScratchRegister, dest);
-}
-
-void MacroAssemblerMIPSCompat::int32ValueToDouble(const ValueOperand& operand,
-                                                  FloatRegister dest) {
-  convertInt32ToDouble(operand.payloadReg(), dest);
-}
-
-void MacroAssemblerMIPSCompat::boolValueToFloat32(const ValueOperand& operand,
-                                                  FloatRegister dest) {
-  convertBoolToInt32(operand.payloadReg(), ScratchRegister);
-  convertInt32ToFloat32(ScratchRegister, dest);
-}
-
-void MacroAssemblerMIPSCompat::int32ValueToFloat32(const ValueOperand& operand,
-                                                   FloatRegister dest) {
-  convertInt32ToFloat32(operand.payloadReg(), dest);
-}
-
 void MacroAssemblerMIPSCompat::loadConstantFloat32(float f,
                                                    FloatRegister dest) {
   ma_lis(dest, f);
@@ -1717,22 +1696,6 @@ void MacroAssemblerMIPSCompat::storeTypeTag(ImmTag tag, const BaseIndex& dest) {
 
 void MacroAssemblerMIPSCompat::breakpoint() { as_break(0); }
 
-void MacroAssemblerMIPSCompat::ensureDouble(const ValueOperand& source,
-                                            FloatRegister dest,
-                                            Label* failure) {
-  Label isDouble, done;
-  asMasm().branchTestDouble(Assembler::Equal, source.typeReg(), &isDouble);
-  asMasm().branchTestInt32(Assembler::NotEqual, source.typeReg(), failure);
-
-  convertInt32ToDouble(source.payloadReg(), dest);
-  jump(&done);
-
-  bind(&isDouble);
-  unboxDouble(source, dest);
-
-  bind(&done);
-}
-
 void MacroAssemblerMIPSCompat::checkStackAlignment() {
 #ifdef DEBUG
   Label aligned;
@@ -1767,7 +1730,7 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   asMasm().setupUnalignedABICall(a1);
   asMasm().passABIArg(a0);
   asMasm().callWithABI<Fn, HandleException>(
-      MoveOp::GENERAL, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
+      ABIType::General, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
 
   Label entryFrame;
   Label catch_;
@@ -1898,12 +1861,7 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
 
   // Found a wasm catch handler, restore state and jump to it.
   bind(&wasmCatch);
-  loadPtr(Address(sp, ResumeFromException::offsetOfTarget()), a1);
-  loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
-          FramePointer);
-  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
-          StackPointer);
-  jump(a1);
+  wasm::GenerateJumpToCatchHandler(asMasm(), sp, a1, a2);
 }
 
 CodeOffset MacroAssemblerMIPSCompat::toggledJump(Label* label) {
@@ -2119,7 +2077,7 @@ void MacroAssembler::callWithABIPre(uint32_t* stackAdjust, bool callFromWasm) {
   assertStackAlignment(ABIStackAlignment);
 }
 
-void MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result,
+void MacroAssembler::callWithABIPost(uint32_t stackAdjust, ABIType result,
                                      bool callFromWasm) {
   // Restore ra value (as stored in callWithABIPre()).
   loadPtr(Address(StackPointer, stackAdjust - sizeof(intptr_t)), ra);
@@ -2139,7 +2097,7 @@ void MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result,
 #endif
 }
 
-void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
+void MacroAssembler::callWithABINoProfiler(Register fun, ABIType result) {
   // Load the callee in t9, no instruction between the lw and call
   // should clobber it. Note that we can't use fun.base because it may
   // be one of the IntArg registers clobbered before the call.
@@ -2150,8 +2108,7 @@ void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
   callWithABIPost(stackAdjust, result);
 }
 
-void MacroAssembler::callWithABINoProfiler(const Address& fun,
-                                           MoveOp::Type result) {
+void MacroAssembler::callWithABINoProfiler(const Address& fun, ABIType result) {
   // Load the callee in t9, as above.
   loadPtr(Address(fun.base, fun.offset), t9);
   uint32_t stackAdjust;
@@ -2412,7 +2369,7 @@ void MacroAssembler::wasmUnalignedStoreI64(const wasm::MemoryAccessDesc& access,
 void MacroAssemblerMIPSCompat::wasmLoadI64Impl(
     const wasm::MemoryAccessDesc& access, Register memoryBase, Register ptr,
     Register ptrScratch, Register64 output, Register tmp) {
-  uint32_t offset = access.offset();
+  uint32_t offset = access.offset32();
   MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
 
   MOZ_ASSERT(!access.isZeroExtendSimd128Load());
@@ -2427,33 +2384,7 @@ void MacroAssemblerMIPSCompat::wasmLoadI64Impl(
   }
 
   unsigned byteSize = access.byteSize();
-  bool isSigned;
-
-  switch (access.type()) {
-    case Scalar::Int8:
-      isSigned = true;
-      break;
-    case Scalar::Uint8:
-      isSigned = false;
-      break;
-    case Scalar::Int16:
-      isSigned = true;
-      break;
-    case Scalar::Uint16:
-      isSigned = false;
-      break;
-    case Scalar::Int32:
-      isSigned = true;
-      break;
-    case Scalar::Uint32:
-      isSigned = false;
-      break;
-    case Scalar::Int64:
-      isSigned = true;
-      break;
-    default:
-      MOZ_CRASH("unexpected array type");
-  }
+  bool isSigned = Scalar::isSignedIntType(access.type());
 
   BaseIndex address(memoryBase, ptr, TimesOne);
   MOZ_ASSERT(INT64LOW_OFFSET == 0);
@@ -2507,7 +2438,7 @@ void MacroAssemblerMIPSCompat::wasmStoreI64Impl(
     const wasm::MemoryAccessDesc& access, Register64 value, Register memoryBase,
     Register ptr, Register ptrScratch, Register tmp) {
   access.assertOffsetInGuardPages();
-  uint32_t offset = access.offset();
+  uint32_t offset = access.offset32();
   MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
 
   // Maybe add the offset.
@@ -2517,32 +2448,7 @@ void MacroAssemblerMIPSCompat::wasmStoreI64Impl(
   }
 
   unsigned byteSize = access.byteSize();
-  bool isSigned;
-  switch (access.type()) {
-    case Scalar::Int8:
-      isSigned = true;
-      break;
-    case Scalar::Uint8:
-      isSigned = false;
-      break;
-    case Scalar::Int16:
-      isSigned = true;
-      break;
-    case Scalar::Uint16:
-      isSigned = false;
-      break;
-    case Scalar::Int32:
-      isSigned = true;
-      break;
-    case Scalar::Uint32:
-      isSigned = false;
-      break;
-    case Scalar::Int64:
-      isSigned = true;
-      break;
-    default:
-      MOZ_CRASH("unexpected array type");
-  }
+  bool isSigned = Scalar::isSignedIntType(access.type());
 
   MOZ_ASSERT(INT64LOW_OFFSET == 0);
   BaseIndex address(memoryBase, ptr, TimesOne);
@@ -2746,27 +2652,27 @@ static void AtomicFetchOp64(MacroAssembler& masm,
   masm.load64(Address(SecondScratchReg, 0), output);
 
   switch (op) {
-    case AtomicFetchAddOp:
+    case AtomicOp::Add:
       masm.as_addu(temp.low, output.low, value.low);
       masm.as_sltu(temp.high, temp.low, output.low);
       masm.as_addu(temp.high, temp.high, output.high);
       masm.as_addu(temp.high, temp.high, value.high);
       break;
-    case AtomicFetchSubOp:
+    case AtomicOp::Sub:
       masm.as_sltu(temp.high, output.low, value.low);
       masm.as_subu(temp.high, output.high, temp.high);
       masm.as_subu(temp.low, output.low, value.low);
       masm.as_subu(temp.high, temp.high, value.high);
       break;
-    case AtomicFetchAndOp:
+    case AtomicOp::And:
       masm.as_and(temp.low, output.low, value.low);
       masm.as_and(temp.high, output.high, value.high);
       break;
-    case AtomicFetchOrOp:
+    case AtomicOp::Or:
       masm.as_or(temp.low, output.low, value.low);
       masm.as_or(temp.high, output.high, value.high);
       break;
-    case AtomicFetchXorOp:
+    case AtomicOp::Xor:
       masm.as_xor(temp.low, output.low, value.low);
       masm.as_xor(temp.high, output.high, value.high);
       break;

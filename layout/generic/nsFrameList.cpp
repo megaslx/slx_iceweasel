@@ -18,11 +18,7 @@
 
 using namespace mozilla;
 
-namespace mozilla {
-namespace detail {
-const AlignedFrameListBytes gEmptyFrameListBytes = {0};
-}  // namespace detail
-}  // namespace mozilla
+const nsFrameList nsFrameList::sEmptyList;
 
 void* nsFrameList::operator new(size_t sz, mozilla::PresShell* aPresShell) {
   return aPresShell->AllocateByObjectID(eArenaObjectID_nsFrameList, sz);
@@ -35,21 +31,11 @@ void nsFrameList::Delete(mozilla::PresShell* aPresShell) {
   aPresShell->FreeByObjectID(eArenaObjectID_nsFrameList, this);
 }
 
-void nsFrameList::DestroyFrames() {
-  while (nsIFrame* frame = RemoveFirstChild()) {
-    frame->Destroy();
+void nsFrameList::DestroyFrames(FrameDestroyContext& aContext) {
+  while (nsIFrame* frame = RemoveLastChild()) {
+    frame->Destroy(aContext);
   }
-  mLastChild = nullptr;
-}
-
-void nsFrameList::DestroyFramesFrom(nsIFrame* aDestructRoot,
-                                    PostFrameDestroyData& aPostDestroyData) {
-  MOZ_ASSERT(aDestructRoot, "Missing destruct root");
-
-  while (nsIFrame* frame = RemoveFirstChild()) {
-    frame->DestroyFrom(aDestructRoot, aPostDestroyData);
-  }
-  mLastChild = nullptr;
+  MOZ_ASSERT(!mFirstChild && !mLastChild, "We should've destroyed all frames!");
 }
 
 void nsFrameList::RemoveFrame(nsIFrame* aFrame) {
@@ -105,10 +91,20 @@ nsIFrame* nsFrameList::RemoveFirstChild() {
   return nullptr;
 }
 
-void nsFrameList::DestroyFrame(nsIFrame* aFrame) {
+nsIFrame* nsFrameList::RemoveLastChild() {
+  if (mLastChild) {
+    nsIFrame* lastChild = mLastChild;
+    RemoveFrame(lastChild);
+    return lastChild;
+  }
+  return nullptr;
+}
+
+void nsFrameList::DestroyFrame(FrameDestroyContext& aContext,
+                               nsIFrame* aFrame) {
   MOZ_ASSERT(aFrame, "null ptr");
   RemoveFrame(aFrame);
-  aFrame->Destroy();
+  aFrame->Destroy(aContext);
 }
 
 nsFrameList::Slice nsFrameList::InsertFrames(nsContainerFrame* aParent,
@@ -180,7 +176,9 @@ nsFrameList nsFrameList::TakeFramesBefore(nsIFrame* aFrame) {
 
 nsIFrame* nsFrameList::FrameAt(int32_t aIndex) const {
   MOZ_ASSERT(aIndex >= 0, "invalid arg");
-  if (aIndex < 0) return nullptr;
+  if (aIndex < 0) {
+    return nullptr;
+  }
   nsIFrame* frame = mFirstChild;
   while ((aIndex-- > 0) && frame) {
     frame = frame->GetNextSibling();
@@ -191,7 +189,9 @@ nsIFrame* nsFrameList::FrameAt(int32_t aIndex) const {
 int32_t nsFrameList::IndexOf(nsIFrame* aFrame) const {
   int32_t count = 0;
   for (nsIFrame* f = mFirstChild; f; f = f->GetNextSibling()) {
-    if (f == aFrame) return count;
+    if (f == aFrame) {
+      return count;
+    }
     ++count;
   }
   return -1;
@@ -249,10 +249,14 @@ void nsFrameList::List(FILE* out) const {
 #endif
 
 nsIFrame* nsFrameList::GetPrevVisualFor(nsIFrame* aFrame) const {
-  if (!mFirstChild) return nullptr;
+  if (!mFirstChild) {
+    return nullptr;
+  }
 
   nsIFrame* parent = mFirstChild->GetParent();
-  if (!parent) return aFrame ? aFrame->GetPrevSibling() : LastChild();
+  if (!parent) {
+    return aFrame ? aFrame->GetPrevSibling() : LastChild();
+  }
 
   mozilla::intl::BidiDirection paraDir =
       nsBidiPresUtils::ParagraphDirection(mFirstChild);
@@ -286,7 +290,9 @@ nsIFrame* nsFrameList::GetPrevVisualFor(nsIFrame* aFrame) const {
   int32_t thisLine;
   if (aFrame) {
     thisLine = iter->FindLineContaining(aFrame);
-    if (thisLine < 0) return nullptr;
+    if (thisLine < 0) {
+      return nullptr;
+    }
   } else {
     thisLine = iter->GetNumLines();
   }
@@ -321,10 +327,14 @@ nsIFrame* nsFrameList::GetPrevVisualFor(nsIFrame* aFrame) const {
 }
 
 nsIFrame* nsFrameList::GetNextVisualFor(nsIFrame* aFrame) const {
-  if (!mFirstChild) return nullptr;
+  if (!mFirstChild) {
+    return nullptr;
+  }
 
   nsIFrame* parent = mFirstChild->GetParent();
-  if (!parent) return aFrame ? aFrame->GetPrevSibling() : mFirstChild;
+  if (!parent) {
+    return aFrame ? aFrame->GetPrevSibling() : mFirstChild;
+  }
 
   mozilla::intl::BidiDirection paraDir =
       nsBidiPresUtils::ParagraphDirection(mFirstChild);
@@ -358,7 +368,9 @@ nsIFrame* nsFrameList::GetNextVisualFor(nsIFrame* aFrame) const {
   int32_t thisLine;
   if (aFrame) {
     thisLine = iter->FindLineContaining(aFrame);
-    if (thisLine < 0) return nullptr;
+    if (thisLine < 0) {
+      return nullptr;
+    }
   } else {
     thisLine = -1;
   }
@@ -443,8 +455,6 @@ const char* ChildListName(FrameChildListID aListID) {
   switch (aListID) {
     case FrameChildListID::Principal:
       return "";
-    case FrameChildListID::Popup:
-      return "PopupList";
     case FrameChildListID::Caption:
       return "CaptionList";
     case FrameChildListID::ColGroup:

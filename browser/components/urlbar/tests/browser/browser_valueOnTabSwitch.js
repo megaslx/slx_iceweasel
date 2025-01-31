@@ -46,9 +46,9 @@ add_task(async function () {
     false,
     testURL
   );
-  BrowserTestUtils.loadURIString(deletedURLTab.linkedBrowser, testURL);
-  BrowserTestUtils.loadURIString(fullURLTab.linkedBrowser, testURL);
-  BrowserTestUtils.loadURIString(partialURLTab.linkedBrowser, testURL);
+  BrowserTestUtils.startLoadingURIString(deletedURLTab.linkedBrowser, testURL);
+  BrowserTestUtils.startLoadingURIString(fullURLTab.linkedBrowser, testURL);
+  BrowserTestUtils.startLoadingURIString(partialURLTab.linkedBrowser, testURL);
   await Promise.all([loaded1, loaded2, loaded3]);
 
   testURL = BrowserUIUtils.trimURL(testURL);
@@ -74,11 +74,28 @@ add_task(async function () {
       testPartialURL,
       "gURLBar.value should be testPartialURL after switching back to partialURLTab"
     );
+    Assert.equal(
+      gURLBar.selectionStart,
+      gURLBar.value.length,
+      "Selection starts at value length"
+    );
+    Assert.equal(
+      gURLBar.selectionEnd,
+      gURLBar.value.length,
+      "No text selected"
+    );
+
     await BrowserTestUtils.switchTab(gBrowser, deletedURLTab);
     is(
       gURLBar.value,
       testURL,
       "gURLBar.value should be testURL after switching back to deletedURLTab"
+    );
+    Assert.equal(gURLBar.selectionStart, 0, "Selection starts from 0");
+    Assert.equal(
+      gURLBar.selectionEnd,
+      gURLBar.value.length,
+      "All text selected"
     );
 
     await BrowserTestUtils.switchTab(gBrowser, fullURLTab);
@@ -87,10 +104,16 @@ add_task(async function () {
       testURL,
       "gURLBar.value should be testURL after switching back to fullURLTab"
     );
+    Assert.equal(gURLBar.selectionStart, 0, "Selection starts from 0");
+    Assert.equal(
+      gURLBar.selectionEnd,
+      gURLBar.value.length,
+      "All text selected"
+    );
   }
 
   function urlbarBackspace(removeAll) {
-    return new Promise((resolve, reject) => {
+    return new Promise(resolve => {
       gBrowser.selectedBrowser.focus();
       gURLBar.addEventListener(
         "input",

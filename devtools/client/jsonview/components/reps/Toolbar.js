@@ -4,10 +4,12 @@
 
 "use strict";
 
-define(function (require, exports, module) {
-  const { Component } = require("devtools/client/shared/vendor/react");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const dom = require("devtools/client/shared/vendor/react-dom-factories");
+define(function (require, exports) {
+  const {
+    Component,
+  } = require("resource://devtools/client/shared/vendor/react.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
   /**
    * Renders a simple toolbar.

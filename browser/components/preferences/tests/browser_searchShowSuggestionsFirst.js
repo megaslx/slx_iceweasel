@@ -1,6 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
+const { CustomizableUITestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/CustomizableUITestUtils.sys.mjs"
+);
+let gCUITestUtils = new CustomizableUITestUtils(window);
+
 const MAIN_PREF = "browser.search.suggest.enabled";
 const URLBAR_PREF = "browser.urlbar.suggest.searches";
 const FIRST_PREF = "browser.urlbar.showSearchSuggestionsFirst";
@@ -122,6 +127,8 @@ add_task(async function superprefInteraction() {
   Assert.ok(checkbox.checked, "Checkbox should be checked");
   Assert.ok(!checkbox.disabled, "Checkbox should be enabled");
 
+  await gCUITestUtils.addSearchBar();
+
   // Two superior prefs control the show-suggestion-first pref: URLBAR_PREF and
   // MAIN_PREF.  Toggle each and make sure the show-suggestion-first checkbox
   // reacts appropriately.
@@ -237,4 +244,5 @@ add_task(async function superprefInteraction() {
   Services.prefs.clearUserPref(FIRST_PREF);
   Services.prefs.clearUserPref(URLBAR_PREF);
   Services.prefs.clearUserPref(MAIN_PREF);
+  gCUITestUtils.removeSearchBar();
 });

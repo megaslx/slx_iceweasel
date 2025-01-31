@@ -16,9 +16,7 @@
 #  include "AOMDecoder.h"
 #endif
 #include "MP4Decoder.h"
-#include "OpusDecoder.h"
 #include "VideoUtils.h"
-#include "VorbisDecoder.h"
 #include "VPXDecoder.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/CheckedInt.h"
@@ -46,6 +44,7 @@ bool StreamTypeIsVideo(const WMFStreamType& aType) {
     case WMFStreamType::VP8:
     case WMFStreamType::VP9:
     case WMFStreamType::AV1:
+    case WMFStreamType::HEVC:
       return true;
     default:
       return false;
@@ -64,31 +63,6 @@ bool StreamTypeIsAudio(const WMFStreamType& aType) {
   }
 }
 
-// Get a string representation of the stream type. Useful for logging.
-const char* StreamTypeToString(WMFStreamType aStreamType) {
-  switch (aStreamType) {
-    case WMFStreamType::H264:
-      return "H264";
-    case WMFStreamType::VP8:
-      return "VP8";
-    case WMFStreamType::VP9:
-      return "VP9";
-    case WMFStreamType::AV1:
-      return "AV1";
-    case WMFStreamType::MP3:
-      return "MP3";
-    case WMFStreamType::AAC:
-      return "AAC";
-    case WMFStreamType::OPUS:
-      return "OPUS";
-    case WMFStreamType::VORBIS:
-      return "VORBIS";
-    default:
-      MOZ_ASSERT(aStreamType == WMFStreamType::Unknown);
-      return "Unknown";
-  }
-}
-
 WMFStreamType GetStreamTypeFromMimeType(const nsCString& aMimeType) {
   if (MP4Decoder::IsH264(aMimeType)) {
     return WMFStreamType::H264;
@@ -104,6 +78,9 @@ WMFStreamType GetStreamTypeFromMimeType(const nsCString& aMimeType) {
     return WMFStreamType::AV1;
   }
 #endif
+  if (MP4Decoder::IsHEVC(aMimeType)) {
+    return WMFStreamType::HEVC;
+  }
   if (aMimeType.EqualsLiteral("audio/mp4a-latm") ||
       aMimeType.EqualsLiteral("audio/mp4")) {
     return WMFStreamType::AAC;
@@ -111,14 +88,69 @@ WMFStreamType GetStreamTypeFromMimeType(const nsCString& aMimeType) {
   if (aMimeType.EqualsLiteral("audio/mpeg")) {
     return WMFStreamType::MP3;
   }
-  if (OpusDataDecoder::IsOpus(aMimeType)) {
+  if (aMimeType.EqualsLiteral("audio/opus")) {
     return WMFStreamType::OPUS;
   }
-  if (VorbisDataDecoder::IsVorbis(aMimeType)) {
+  if (aMimeType.EqualsLiteral("audio/vorbis")) {
     return WMFStreamType::VORBIS;
   }
   return WMFStreamType::Unknown;
 }
+
+GUID GetOutputSubType(const gfx::ColorDepth& aColorDepth,
+                      bool aIsHardwareDecoding) {
+  switch (aColorDepth) {
+    case gfx::ColorDepth::COLOR_8:
+      return aIsHardwareDecoding ? MFVideoFormat_NV12 : MFVideoFormat_YV12;
+    case gfx::ColorDepth::COLOR_10:
+      return MFVideoFormat_P010;
+    case gfx::ColorDepth::COLOR_12:
+    case gfx::ColorDepth::COLOR_16:
+      return MFVideoFormat_P016;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Unexpected color depth");
+      return GUID_NULL;
+  }
+}
+
+#define ENUM_TO_STR(enumVal)          \
+  if (aSubtype == enumVal) {          \
+    return nsPrintfCString{#enumVal}; \
+  }
+
+// Audio :
+// https://learn.microsoft.com/en-us/windows/win32/medfound/audio-subtype-guids
+// Video :
+// https://learn.microsoft.com/en-us/windows/win32/medfound/video-subtype-guids
+nsCString GetSubTypeStr(const GUID& aSubtype) {
+  // output format
+  ENUM_TO_STR(MFAudioFormat_PCM)
+  ENUM_TO_STR(MFAudioFormat_Float)
+  ENUM_TO_STR(MFVideoFormat_NV12)
+  ENUM_TO_STR(MFVideoFormat_YV12)
+  ENUM_TO_STR(MFVideoFormat_IYUV)
+  ENUM_TO_STR(MFVideoFormat_P010)
+  ENUM_TO_STR(MFVideoFormat_P016)
+  ENUM_TO_STR(MFVideoFormat_ARGB32)
+  ENUM_TO_STR(MFVideoFormat_RGB32)
+  // codec
+  ENUM_TO_STR(MFAudioFormat_MP3)
+  ENUM_TO_STR(MFAudioFormat_AAC)
+  ENUM_TO_STR(MFAudioFormat_Vorbis)
+  ENUM_TO_STR(MFAudioFormat_Opus)
+  ENUM_TO_STR(MFVideoFormat_H264)
+  ENUM_TO_STR(MFVideoFormat_VP80)
+  ENUM_TO_STR(MFVideoFormat_VP90)
+  ENUM_TO_STR(MFVideoFormat_AV1)
+  ENUM_TO_STR(MFVideoFormat_HEVC)
+  LPOLESTR subtypeStr;
+  StringFromCLSID(aSubtype, &subtypeStr);
+  nsPrintfCString errorMsg("Unknown output subtype: %S", subtypeStr);
+  CoTaskMemFree(subtypeStr);
+  return errorMsg;
+}
+
+#undef ENUM_TO_STR
 
 HRESULT
 HNsToFrames(int64_t aHNs, uint32_t aRate, int64_t* aOutFrames) {
@@ -173,7 +205,8 @@ Maybe<gfx::YUVColorSpace> GetYUVColorSpace(IMFMediaType* aType) {
 }
 
 int32_t MFOffsetToInt32(const MFOffset& aOffset) {
-  return int32_t(aOffset.value + (aOffset.fract / 65536.0f));
+  return AssertedCast<int32_t>(AssertedCast<float>(aOffset.value) +
+                               (AssertedCast<float>(aOffset.fract) / 65536.0f));
 }
 
 TimeUnit GetSampleDuration(IMFSample* aSample) {
@@ -200,7 +233,7 @@ GetPictureRegion(IMFMediaType* aMediaType, gfx::IntRect& aOutPictureRegion) {
   // Determine if "pan and scan" is enabled for this media. If it is, we
   // only display a region of the video frame, not the entire frame.
   BOOL panScan =
-      MFGetAttributeUINT32(aMediaType, MF_MT_PAN_SCAN_ENABLED, FALSE);
+      !!MFGetAttributeUINT32(aMediaType, MF_MT_PAN_SCAN_ENABLED, FALSE);
 
   // If pan and scan mode is enabled. Try to get the display region.
   HRESULT hr = E_FAIL;
@@ -296,11 +329,14 @@ const char* MFTMessageTypeToStr(MFT_MESSAGE_TYPE aMsg) {
 GUID AudioMimeTypeToMediaFoundationSubtype(const nsACString& aMimeType) {
   if (aMimeType.EqualsLiteral("audio/mpeg")) {
     return MFAudioFormat_MP3;
-  } else if (MP4Decoder::IsAAC(aMimeType)) {
+  }
+  if (MP4Decoder::IsAAC(aMimeType)) {
     return MFAudioFormat_AAC;
-  } else if (VorbisDataDecoder::IsVorbis(aMimeType)) {
+  }
+  if (aMimeType.EqualsLiteral("audio/vorbis")) {
     return MFAudioFormat_Vorbis;
-  } else if (OpusDataDecoder::IsOpus(aMimeType)) {
+  }
+  if (aMimeType.EqualsLiteral("audio/opus")) {
     return MFAudioFormat_Opus;
   }
   NS_WARNING("Unsupport audio mimetype");
@@ -310,17 +346,24 @@ GUID AudioMimeTypeToMediaFoundationSubtype(const nsACString& aMimeType) {
 GUID VideoMimeTypeToMediaFoundationSubtype(const nsACString& aMimeType) {
   if (MP4Decoder::IsH264(aMimeType)) {
     return MFVideoFormat_H264;
-  } else if (VPXDecoder::IsVP8(aMimeType)) {
+  }
+  if (VPXDecoder::IsVP8(aMimeType)) {
     return MFVideoFormat_VP80;
-  } else if (VPXDecoder::IsVP9(aMimeType)) {
+  }
+  if (VPXDecoder::IsVP9(aMimeType)) {
     return MFVideoFormat_VP90;
   }
 #ifdef MOZ_AV1
-  else if (AOMDecoder::IsAV1(aMimeType)) {
+  if (AOMDecoder::IsAV1(aMimeType)) {
     return MFVideoFormat_AV1;
   }
 #endif
-  NS_WARNING("Unsupport video mimetype");
+  if (MP4Decoder::IsHEVC(aMimeType)) {
+    return MFVideoFormat_HEVC;
+  }
+  NS_WARNING(nsAutoCString(nsDependentCString("Unsupported video mimetype ") +
+                           aMimeType)
+                 .get());
   return GUID_NULL;
 }
 
@@ -361,7 +404,9 @@ void AACAudioSpecificConfigToUserData(uint8_t aAACProfileLevelIndication,
   // the rest can be all 0x00.
   BYTE heeInfo[heeInfoLen] = {0};
   WORD* w = (WORD*)heeInfo;
-  w[0] = 0x0;  // Payload type raw AAC packet
+  // If extradata has been provided, assume raw AAC packets (0). Otherwise,
+  // assume ADTS (1)
+  w[0] = aConfigLength ? 0 : 1;
   w[1] = aAACProfileLevelIndication;
 
   aOutUserData.AppendElements(heeInfo, heeInfoLen);
@@ -370,10 +415,10 @@ void AACAudioSpecificConfigToUserData(uint8_t aAACProfileLevelIndication,
     // The AudioSpecificConfig is TTTTTFFF|FCCCCGGG
     // (T=ObjectType, F=Frequency, C=Channel, G=GASpecificConfig)
     // If frequency = 0xf, then the frequency is explicitly defined on 24 bits.
-    int8_t frequency =
+    uint8_t frequency =
         (aAudioSpecConfig[0] & 0x7) << 1 | (aAudioSpecConfig[1] & 0x80) >> 7;
-    int8_t channels = (aAudioSpecConfig[1] & 0x78) >> 3;
-    int8_t gasc = aAudioSpecConfig[1] & 0x7;
+    uint8_t channels = (aAudioSpecConfig[1] & 0x78) >> 3;
+    uint8_t gasc = aAudioSpecConfig[1] & 0x7;
     if (frequency != 0xf && channels && !gasc) {
       // We enter this condition if the AudioSpecificConfig should theorically
       // be 2 bytes long but it's not.

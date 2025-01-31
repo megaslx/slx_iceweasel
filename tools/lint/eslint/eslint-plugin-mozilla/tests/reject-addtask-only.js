@@ -16,14 +16,15 @@ const ruleTester = new RuleTester({ parserOptions: { ecmaVersion: "latest" } });
 // Tests
 // ------------------------------------------------------------------------------
 
-function invalidError(output) {
-  let message =
-    "add_task(...).only() not allowed - add an exception if this is intentional";
+function invalidError(output, startColumn, endColumn) {
   return [
     {
-      message,
-      type: "CallExpression",
-      suggestions: [{ desc: "Remove only() call from task", output }],
+      messageId: "addTaskNotAllowed",
+      column: startColumn,
+      endColumn,
+      line: 1,
+      endLine: 1,
+      suggestions: [{ messageId: "addTaskNotAllowedSuggestion", output }],
     },
   ];
 }
@@ -38,19 +39,19 @@ ruleTester.run("reject-addtask-only", rule, {
   invalid: [
     {
       code: "add_task(foo()).only()",
-      errors: invalidError("add_task(foo())"),
+      errors: invalidError("add_task(foo())", 16, 23),
     },
     {
       code: "add_task(foo()).only(bar())",
-      errors: invalidError("add_task(foo())"),
+      errors: invalidError("add_task(foo())", 16, 28),
     },
     {
       code: "add_task(function() {}).only()",
-      errors: invalidError("add_task(function() {})"),
+      errors: invalidError("add_task(function() {})", 24, 31),
     },
     {
       code: "add_task(function() {}).only(bar())",
-      errors: invalidError("add_task(function() {})"),
+      errors: invalidError("add_task(function() {})", 24, 36),
     },
   ],
 });

@@ -10,6 +10,8 @@
  * httpd.js.
  */
 
+/* eslint-disable no-shadow */
+
 const CC = Components.Constructor;
 
 const PR_UINT32_MAX = Math.pow(2, 32) - 1;
@@ -450,7 +452,7 @@ nsHttpServer.prototype = {
    *   was stopped using nsIHttpServer.stop)
    * @see nsIServerSocketListener.onStopListening
    */
-  onStopListening(socket, status) {
+  onStopListening(socket) {
     dumpn(">>> shutting down server on port " + socket.port);
     for (var n in this._connections) {
       if (!this._connections[n]._requestStarted) {
@@ -1927,6 +1929,7 @@ RequestReader.prototype = {
     var lastVal = this._lastHeaderValue;
 
     var line = {};
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       dumpn("*** Last name: '" + lastName + "'");
       dumpn("*** Last val: '" + lastVal + "'");
@@ -2875,11 +2878,20 @@ ServerHandler.prototype = {
         // If you update the list of imports, please update the list in
         // tools/lint/eslint/eslint-plugin-mozilla/lib/environments/sjs.js
         // as well.
-        var s = Cu.Sandbox(Cu.getGlobalForObject({}));
+        var s = Cu.Sandbox(Cu.getGlobalForObject({}), {
+          wantGlobalProperties: [
+            "atob",
+            "btoa",
+            "ChromeUtils",
+            "IOUtils",
+            "PathUtils",
+            "TextDecoder",
+            "TextEncoder",
+            "URLSearchParams",
+            "URL",
+          ],
+        });
         s.importFunction(dump, "dump");
-        s.importFunction(atob, "atob");
-        s.importFunction(btoa, "btoa");
-        s.importFunction(ChromeUtils, "ChromeUtils");
         s.importFunction(Services, "Services");
 
         // Define a basic key-value state-preservation API across requests, with
@@ -3216,6 +3228,7 @@ ServerHandler.prototype = {
     // An example progression of tmp for a path "/foo/bar/baz/" might be:
     // "foo/bar/baz/", "foo/bar/baz", "foo/bar", "foo", ""
     var tmp = path.substring(1);
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       // do we have a match for current head of the path?
       var file = pathMap.get(tmp);
@@ -4421,7 +4434,7 @@ Response.prototype = {
 
     var response = this;
     var copyObserver = {
-      onStartRequest(request) {
+      onStartRequest() {
         dumpn("*** preamble copying started");
       },
 
@@ -4479,7 +4492,7 @@ Response.prototype = {
 
     var response = this;
     var copyObserver = {
-      onStartRequest(request) {
+      onStartRequest() {
         dumpn("*** onStartRequest");
       },
 

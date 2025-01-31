@@ -163,7 +163,7 @@ void HTMLTableCellElement::MapAttributesIntoRule(
     MappedDeclarationsBuilder& aBuilder) {
   MapImageSizeAttributesInto(aBuilder);
 
-  if (!aBuilder.PropertyIsSet(eCSSProperty_white_space)) {
+  if (!aBuilder.PropertyIsSet(eCSSProperty_text_wrap_mode)) {
     // nowrap: enum
     if (aBuilder.GetAttr(nsGkAtoms::nowrap)) {
       // See if our width is not a nonzero integer width.
@@ -171,8 +171,8 @@ void HTMLTableCellElement::MapAttributesIntoRule(
       nsCompatibility mode = aBuilder.Document().GetCompatibilityMode();
       if (!value || value->Type() != nsAttrValue::eInteger ||
           value->GetIntegerValue() == 0 || eCompatibility_NavQuirks != mode) {
-        aBuilder.SetKeywordValue(eCSSProperty_white_space,
-                                 StyleWhiteSpace::Nowrap);
+        aBuilder.SetKeywordValue(eCSSProperty_text_wrap_mode,
+                                 StyleTextWrapMode::Nowrap);
       }
     }
   }
@@ -186,9 +186,7 @@ void HTMLTableCellElement::MapAttributesIntoRule(
 NS_IMETHODIMP_(bool)
 HTMLTableCellElement::IsAttributeMapped(const nsAtom* aAttribute) const {
   static const MappedAttributeEntry attributes[] = {
-    {nsGkAtoms::align},
-    {nsGkAtoms::valign},
-    {nsGkAtoms::nowrap},
+      {nsGkAtoms::align}, {nsGkAtoms::valign}, {nsGkAtoms::nowrap},
 #if 0
     // XXXldb If these are implemented, they might need to move to
     // GetAttributeChangeHint (depending on how, and preferably not).
@@ -197,10 +195,7 @@ HTMLTableCellElement::IsAttributeMapped(const nsAtom* aAttribute) const {
     { nsGkAtoms::headers },
     { nsGkAtoms::scope },
 #endif
-    {nsGkAtoms::width},
-    {nsGkAtoms::height},
-    {nullptr}
-  };
+      {nsGkAtoms::width}, {nsGkAtoms::height}, {nullptr}};
 
   static const MappedAttributeEntry* const map[] = {
       attributes,

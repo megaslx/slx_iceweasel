@@ -13,13 +13,10 @@ namespace mozilla {
 NS_IMPL_CYCLE_COLLECTION(ScrollTimelineAnimationTracker, mPendingSet, mDocument)
 
 void ScrollTimelineAnimationTracker::TriggerPendingAnimations() {
-  for (auto iter = mPendingSet.begin(), end = mPendingSet.end(); iter != end;
-       ++iter) {
-    dom::Animation* animation = *iter;
-
+  for (RefPtr<dom::Animation>& animation :
+       ToTArray<AutoTArray<RefPtr<dom::Animation>, 32>>(mPendingSet)) {
     MOZ_ASSERT(animation->GetTimeline() &&
                !animation->GetTimeline()->IsMonotonicallyIncreasing());
-
     // FIXME: Trigger now may not be correct because the spec says:
     // If a user agent determines that animation is immediately ready, it may
     // schedule the task (i.e. ResumeAt()) as a microtask such that it runs at
@@ -29,7 +26,7 @@ void ScrollTimelineAnimationTracker::TriggerPendingAnimations() {
     // them immediately until the frames are ready. Using TriggerOnNextTick()
     // for scroll-driven animations may have issues because we don't tick if
     // no one does scroll.
-    if (!animation->TryTriggerNowForFiniteTimeline()) {
+    if (!animation->TryTriggerNow()) {
       // Note: We keep this animation pending even if its timeline is always
       // inactive. It's pretty hard to tell its future status, for example, it's
       // possible that the scroll container is in display:none subtree but the
@@ -39,9 +36,7 @@ void ScrollTimelineAnimationTracker::TriggerPendingAnimations() {
       // inactive, and this also matches the current spec definition.
       continue;
     }
-
-    // Note: Remove() is legitimately called once per entry during the loop.
-    mPendingSet.Remove(iter);
+    mPendingSet.Remove(animation);
   }
 }
 

@@ -78,7 +78,6 @@ class App extends PureComponent {
     super(props);
 
     this.onAddCustomDevice = this.onAddCustomDevice.bind(this);
-    this.onBrowserContextMenu = this.onBrowserContextMenu.bind(this);
     this.onChangeDevice = this.onChangeDevice.bind(this);
     this.onChangeNetworkThrottling = this.onChangeNetworkThrottling.bind(this);
     this.onChangePixelRatio = this.onChangePixelRatio.bind(this);
@@ -103,19 +102,8 @@ class App extends PureComponent {
     this.onUpdateDeviceModal = this.onUpdateDeviceModal.bind(this);
   }
 
-  componentWillUnmount() {
-    this.browser.removeEventListener("contextmenu", this.onContextMenu);
-    this.browser = null;
-  }
-
   onAddCustomDevice(device) {
     this.props.dispatch(addCustomDevice(device));
-  }
-
-  onBrowserContextMenu() {
-    // Update the position of remote browser so that makes the context menu to show at
-    // proper position before showing.
-    this.browser.frameLoader.requestUpdatePosition();
   }
 
   onChangeDevice(id, device, deviceType) {
@@ -240,20 +228,22 @@ class App extends PureComponent {
     // remove the device association and reset all the ui state.
     for (const viewport of this.props.viewports) {
       if (viewport.device === device.name) {
-        this.onRemoveDeviceAssociation(viewport.id);
+        this.onRemoveDeviceAssociation(viewport.id, { resetProfile: true });
       }
     }
 
     this.props.dispatch(removeCustomDevice(device));
   }
 
-  onRemoveDeviceAssociation(id) {
+  onRemoveDeviceAssociation(id, { resetProfile }) {
     // TODO: Bug 1332754: Move messaging and logic into the action creator so that device
     // property changes are sent from there instead of this function.
-    this.props.dispatch(removeDeviceAssociation(id));
-    this.props.dispatch(toggleTouchSimulation(false));
-    this.props.dispatch(changePixelRatio(id, 0));
-    this.props.dispatch(changeUserAgent(""));
+    this.props.dispatch(removeDeviceAssociation(id, { resetProfile }));
+    if (resetProfile) {
+      this.props.dispatch(toggleTouchSimulation(false));
+      this.props.dispatch(changePixelRatio(id, 0));
+      this.props.dispatch(changeUserAgent(""));
+    }
   }
 
   doResizeViewport(id, width, height) {

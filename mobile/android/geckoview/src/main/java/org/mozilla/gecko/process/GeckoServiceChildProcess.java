@@ -14,10 +14,9 @@ import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
 import android.util.Log;
+import java.io.IOException;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoThread;
-import org.mozilla.gecko.GeckoThread.FileDescriptors;
-import org.mozilla.gecko.GeckoThread.ParcelFileDescriptors;
 import org.mozilla.gecko.IGeckoEditableChild;
 import org.mozilla.gecko.annotation.WrapForJNI;
 import org.mozilla.gecko.gfx.ICompositorSurfaceManager;
@@ -31,8 +30,16 @@ public class GeckoServiceChildProcess extends Service {
   private static String sOwnerProcessId;
   private final MemoryController mMemoryController = new MemoryController();
 
-  // Makes sure we don't reuse this process
-  private static boolean sCreateCalled;
+  private enum ProcessState {
+    NEW,
+    CREATED,
+    BOUND,
+    STARTED,
+    DESTROYED,
+  }
+
+  // Keep track of the process state to ensure we don't reuse the process
+  private static ProcessState sState = ProcessState.NEW;
 
   @WrapForJNI(calledFrom = "gecko")
   private static void getEditableParent(
@@ -49,12 +56,13 @@ public class GeckoServiceChildProcess extends Service {
     super.onCreate();
     Log.i(LOGTAG, "onCreate");
 
-    if (sCreateCalled) {
+    if (sState != ProcessState.NEW) {
       // We don't support reusing processes, and this could get us in a really weird state,
       // so let's throw here.
-      throw new RuntimeException("Cannot reuse process.");
+      throw new RuntimeException(
+          String.format("Cannot reuse process %s: %s", getClass().getSimpleName(), sState));
     }
-    sCreateCalled = true;
+    sState = ProcessState.CREATED;
 
     GeckoAppShell.setApplicationContext(getApplicationContext());
     GeckoThread.launch(); // Preload Gecko.
@@ -75,18 +83,7 @@ public class GeckoServiceChildProcess extends Service {
         final int flags,
         final String userSerialNumber,
         final String crashHandlerService,
-        final ParcelFileDescriptor prefsPfd,
-        final ParcelFileDescriptor prefMapPfd,
-        final ParcelFileDescriptor ipcPfd,
-        final ParcelFileDescriptor crashReporterPfd) {
-
-      final ParcelFileDescriptors pfds =
-          ParcelFileDescriptors.builder()
-              .prefs(prefsPfd)
-              .prefMap(prefMapPfd)
-              .ipc(ipcPfd)
-              .crashReporter(crashReporterPfd)
-              .build();
+        final ParcelFileDescriptor[] pfds) {
 
       synchronized (GeckoServiceChildProcess.class) {
         if (sOwnerProcessId != null && !sOwnerProcessId.equals(mainProcessId)) {
@@ -98,19 +95,23 @@ public class GeckoServiceChildProcess extends Service {
                   + mainProcessId);
           // We need to close the File Descriptors here otherwise we will leak them causing a
           // shutdown hang.
-          pfds.close();
+          closeFds(pfds);
           return IChildProcess.STARTED_BUSY;
         }
         if (sProcessManager != null) {
           Log.e(LOGTAG, "Child process already started");
-          pfds.close();
+          closeFds(pfds);
           return IChildProcess.STARTED_FAIL;
         }
         sProcessManager = procMan;
         sOwnerProcessId = mainProcessId;
       }
 
-      final FileDescriptors fds = pfds.detach();
+      final int[] fds = new int[pfds.length];
+      for (int i = 0; i < pfds.length; ++i) {
+        fds[i] = pfds[i].detachFd();
+      }
+
       ThreadUtils.runOnUiThread(
           new Runnable() {
             @Override
@@ -144,6 +145,7 @@ public class GeckoServiceChildProcess extends Service {
               }
             }
           });
+      sState = ProcessState.STARTED;
       return IChildProcess.STARTED_OK;
     }
 
@@ -166,6 +168,16 @@ public class GeckoServiceChildProcess extends Service {
       throw new AssertionError(
           "Invalid call to IChildProcess.getSurfaceAllocator for non-GPU process.");
     }
+
+    private void closeFds(final ParcelFileDescriptor[] pfds) {
+      for (final ParcelFileDescriptor pfd : pfds) {
+        try {
+          pfd.close();
+        } catch (final IOException ex) {
+          Log.d(LOGTAG, "Failed to close File Descriptors.", ex);
+        }
+      }
+    }
   }
 
   protected Binder createBinder() {
@@ -177,6 +189,7 @@ public class GeckoServiceChildProcess extends Service {
   @Override
   public void onDestroy() {
     Log.i(LOGTAG, "Destroying GeckoServiceChildProcess");
+    sState = ProcessState.DESTROYED;
     System.exit(0);
   }
 
@@ -184,6 +197,7 @@ public class GeckoServiceChildProcess extends Service {
   public IBinder onBind(final Intent intent) {
     // Calling stopSelf ensures that whenever the client unbinds the process dies immediately.
     stopSelf();
+    sState = ProcessState.BOUND;
     return mBinder;
   }
 

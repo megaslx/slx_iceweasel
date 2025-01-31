@@ -19,6 +19,7 @@
 #include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/ElementBinding.h"
 #include "mozilla/dom/FormData.h"
 #include "mozilla/dom/FragmentOrElement.h"
 #include "mozilla/dom/HTMLElement.h"
@@ -33,6 +34,7 @@
 #include "mozilla/dom/SessionStoreUtils.h"
 #include "mozilla/dom/SessionStoreUtilsBinding.h"
 #include "mozilla/dom/ToJSValue.h"
+#include "mozilla/dom/TrustedHTML.h"
 #include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/sessionstore/SessionStoreTypes.h"
 #include "mozilla/dom/txIXPathContext.h"
@@ -49,15 +51,16 @@
 #include "nsContentList.h"
 #include "nsContentUtils.h"
 #include "nsFocusManager.h"
-#include "nsGlobalWindowOuter.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIContentInlines.h"
 #include "nsIDocShell.h"
 #include "nsIFormControl.h"
-#include "nsIScrollableFrame.h"
 #include "nsISHistory.h"
 #include "nsIXULRuntime.h"
 #include "nsPresContext.h"
 #include "nsPrintfCString.h"
+#include "nsDocShell.h"
+#include "nsNetUtil.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -221,7 +224,6 @@ void SessionStoreUtils::CollectDocShellCapabilities(const GlobalObject& aGlobal,
   }                               \
   PR_END_MACRO
 
-  TRY_ALLOWPROP(Plugins);
   // Bug 1328013 : Don't collect "AllowJavascript" property
   // TRY_ALLOWPROP(Javascript);
   TRY_ALLOWPROP(MetaRedirects);
@@ -239,7 +241,6 @@ void SessionStoreUtils::CollectDocShellCapabilities(const GlobalObject& aGlobal,
 /* static */
 void SessionStoreUtils::RestoreDocShellCapabilities(
     nsIDocShell* aDocShell, const nsCString& aDisallowCapabilities) {
-  aDocShell->SetAllowPlugins(true);
   aDocShell->SetAllowMetaRedirects(true);
   aDocShell->SetAllowSubframes(true);
   aDocShell->SetAllowImages(true);
@@ -252,9 +253,7 @@ void SessionStoreUtils::RestoreDocShellCapabilities(
   bool allowJavascript = true;
   for (const nsACString& token :
        nsCCharSeparatedTokenizer(aDisallowCapabilities, ',').ToRange()) {
-    if (token.EqualsLiteral("Plugins")) {
-      aDocShell->SetAllowPlugins(false);
-    } else if (token.EqualsLiteral("Javascript")) {
+    if (token.EqualsLiteral("Javascript")) {
       allowJavascript = false;
     } else if (token.EqualsLiteral("MetaRedirects")) {
       aDocShell->SetAllowMetaRedirects(false);
@@ -661,9 +660,8 @@ static uint32_t CollectInputElement(Document* aDocument,
   uint32_t length = inputlist->Length();
   for (uint32_t i = 0; i < length; ++i) {
     MOZ_ASSERT(inputlist->Item(i), "null item in node list!");
-    nsCOMPtr<nsIFormControl> formControl =
-        do_QueryInterface(inputlist->Item(i));
-    if (formControl) {
+    if (const auto* formControl =
+            nsIFormControl::FromNodeOrNull(inputlist->Item(i))) {
       auto controlType = formControl->ControlType();
       if (controlType == FormControlType::InputPassword ||
           controlType == FormControlType::InputHidden ||
@@ -919,9 +917,8 @@ void SessionStoreUtils::CollectFromInputElement(Document& aDocument,
   uint32_t length = inputlist->Length(true);
   for (uint32_t i = 0; i < length; ++i) {
     MOZ_ASSERT(inputlist->Item(i), "null item in node list!");
-    nsCOMPtr<nsIFormControl> formControl =
-        do_QueryInterface(inputlist->Item(i));
-    if (formControl) {
+    if (const auto* formControl =
+            nsIFormControl::FromNodeOrNull(inputlist->Item(i))) {
       auto controlType = formControl->ControlType();
       if (controlType == FormControlType::InputPassword ||
           controlType == FormControlType::InputHidden ||
@@ -1302,12 +1299,12 @@ static void SetSessionData(JSContext* aCx, Element* aElement,
   }
 }
 
-MOZ_CAN_RUN_SCRIPT
-static void SetInnerHTML(Document& aDocument, const nsString& aInnerHTML) {
+MOZ_CAN_RUN_SCRIPT static void SetInnerHTML(Document& aDocument,
+                                            const nsAString& aInnerHTML) {
   RefPtr<Element> bodyElement = aDocument.GetBody();
   if (bodyElement && bodyElement->IsInDesignMode()) {
     IgnoredErrorResult rv;
-    bodyElement->SetInnerHTML(aInnerHTML, aDocument.NodePrincipal(), rv);
+    bodyElement->SetInnerHTMLTrusted(aInnerHTML, aDocument.NodePrincipal(), rv);
     if (!rv.Failed()) {
       nsContentUtils::DispatchInputEvent(bodyElement);
     }
@@ -1319,14 +1316,13 @@ class FormDataParseContext : public txIParseContext {
   explicit FormDataParseContext(bool aCaseInsensitive)
       : mIsCaseInsensitive(aCaseInsensitive) {}
 
-  nsresult resolveNamespacePrefix(nsAtom* aPrefix, int32_t& aID) override {
+  int32_t resolveNamespacePrefix(nsAtom* aPrefix) override {
     if (aPrefix == nsGkAtoms::xul) {
-      aID = kNameSpaceID_XUL;
-    } else {
-      MOZ_ASSERT(nsDependentAtomString(aPrefix).EqualsLiteral("xhtml"));
-      aID = kNameSpaceID_XHTML;
+      return kNameSpaceID_XUL;
     }
-    return NS_OK;
+
+    MOZ_ASSERT(nsDependentAtomString(aPrefix).EqualsLiteral("xhtml"));
+    return kNameSpaceID_XHTML;
   }
 
   nsresult resolveFunctionCall(nsAtom* aName, int32_t aID,
@@ -1677,7 +1673,10 @@ already_AddRefed<Promise> SessionStoreUtils::InitializeRestore(
 void SessionStoreUtils::RestoreDocShellState(
     nsIDocShell* aDocShell, const DocShellRestoreState& aState) {
   if (aDocShell) {
-    if (aState.URI()) {
+    nsCOMPtr<nsIURI> currentUri;
+    nsDocShell::Cast(aDocShell)->GetCurrentURI(getter_AddRefs(currentUri));
+    if (aState.URI() &&
+        (!currentUri || mozilla::net::SchemeIsAbout(currentUri))) {
       aDocShell->SetCurrentURIForSessionStore(aState.URI());
     }
     RestoreDocShellCapabilities(aDocShell, aState.docShellCaps());

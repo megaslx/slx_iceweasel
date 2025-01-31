@@ -8,11 +8,8 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  ActivityStream: "resource://activity-stream/lib/ActivityStream.sys.mjs",
   ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
-});
-
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  ActivityStream: "resource://activity-stream/lib/ActivityStream.jsm",
 });
 
 const ABOUT_URL = "about:newtab";
@@ -218,19 +215,17 @@ export const AboutNewTab = {
       return;
     }
 
-    const SCALAR_KEY = "timestamps.about_home_topsites_first_paint";
-
     let startupInfo = Services.startup.getStartupInfo();
     let processStartTs = startupInfo.process.getTime();
     let delta = Math.round(timestamp - processStartTs);
-    Services.telemetry.scalarSet(SCALAR_KEY, delta);
+    Glean.timestamps.aboutHomeTopsitesFirstPaint.set(delta);
     ChromeUtils.addProfilerMarker("aboutHomeTopsitesFirstPaint");
     this._alreadyRecordedTopsitesPainted = true;
   },
 
   // nsIObserver implementation
 
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     switch (topic) {
       case TOPIC_APP_QUIT: {
         // We defer to this to the next tick of the event loop since the

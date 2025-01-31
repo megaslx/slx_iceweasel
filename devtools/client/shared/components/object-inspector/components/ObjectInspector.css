@@ -16,7 +16,7 @@
 }
 
 .tree.object-inspector .lessen,
-.tree.object-inspector .lessen *,
+.tree.object-inspector .lessen :not(button),
 .tree.object-inspector .lessen .object-label,
 .tree.object-inspector .lessen .object-label * {
   color: var(--theme-comment);
@@ -40,7 +40,7 @@
   white-space: pre-wrap;
 }
 
-.object-inspector .tree-node .arrow {
+.object-inspector .tree-node .theme-twisty {
   display: inline-block;
   vertical-align: middle;
   margin-inline-start: -1px;
@@ -96,4 +96,20 @@ button.remove-watchpoint-getorset {
 .theme-dark button[class*="remove-watchpoint-"]:hover,
 .theme-light button[class*="remove-watchpoint-"]:hover {
   background-color: transparent;
+}
+
+
+/* Specific style for when root nodes are displayed as header (e.g. in debugger preview popup */
+.tree.object-inspector.header-root-node {
+  .tree-node[aria-level="1"] {
+    border-block-end: 1px solid var(--theme-splitter-color);
+    padding-block-end: 4px;
+    margin-block-end: 4px;
+    overflow-x: clip;
+    word-break: keep-all;
+  }
+
+  .tree-node:not([aria-level="1"]) .tree-indent:first-of-type {
+    width: 0;
+  }
 }

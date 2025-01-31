@@ -12,11 +12,11 @@
 #define TEST_PC_E2E_ANALYZER_VIDEO_DEFAULT_VIDEO_QUALITY_ANALYZER_INTERNAL_SHARED_OBJECTS_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/types/optional.h"
 #include "api/numerics/samples_stats_counter.h"
 #include "api/units/data_size.h"
 #include "api/units/timestamp.h"
@@ -57,11 +57,12 @@ struct FrameStats {
   Timestamp decode_start_time = Timestamp::MinusInfinity();
   Timestamp decode_end_time = Timestamp::MinusInfinity();
   Timestamp rendered_time = Timestamp::MinusInfinity();
-  Timestamp prev_frame_rendered_time = Timestamp::MinusInfinity();
 
-  // Time between this and previous rendered frame excluding time when related
-  // stream was paused for related receiver.
-  TimeDelta time_between_rendered_frames = TimeDelta::Zero();
+  // Next timings are set if and only if previous frame exist.
+  std::optional<Timestamp> prev_frame_rendered_time = std::nullopt;
+  std::optional<TimeDelta> time_between_captured_frames = std::nullopt;
+  std::optional<TimeDelta> time_between_encoded_frames = std::nullopt;
+  std::optional<TimeDelta> time_between_rendered_frames = std::nullopt;
 
   VideoFrameType encoded_frame_type = VideoFrameType::kEmptyFrame;
   DataSize encoded_image_size = DataSize::Bytes(0);
@@ -71,14 +72,19 @@ struct FrameStats {
   // Sender side qp values per spatial layer. In case when spatial layer is not
   // set for `webrtc::EncodedImage`, 0 is used as default.
   std::map<int, SamplesStatsCounter> spatial_layers_qp;
+  // Receive side qp value. Receiver only renders one spatial layer for a given
+  // time index. The QP value here corresponds to one of the encoded spatial
+  // layer's QP given in `spatial_layers_qp`, i.e. to the one that corresponds
+  // to the rendered frame.
+  std::optional<uint8_t> decoded_frame_qp = std::nullopt;
 
-  absl::optional<int> decoded_frame_width = absl::nullopt;
-  absl::optional<int> decoded_frame_height = absl::nullopt;
+  std::optional<int> decoded_frame_width = std::nullopt;
+  std::optional<int> decoded_frame_height = std::nullopt;
 
   // Can be not set if frame was dropped by encoder.
-  absl::optional<StreamCodecInfo> used_encoder = absl::nullopt;
+  std::optional<StreamCodecInfo> used_encoder = std::nullopt;
   // Can be not set if frame was dropped in the network.
-  absl::optional<StreamCodecInfo> used_decoder = absl::nullopt;
+  std::optional<StreamCodecInfo> used_decoder = std::nullopt;
 
   bool decoder_failed = false;
 };
@@ -115,8 +121,8 @@ enum class FrameComparisonType {
 //      true or false showing was frame dropped or not.
 struct FrameComparison {
   FrameComparison(InternalStatsKey stats_key,
-                  absl::optional<VideoFrame> captured,
-                  absl::optional<VideoFrame> rendered,
+                  std::optional<VideoFrame> captured,
+                  std::optional<VideoFrame> rendered,
                   FrameComparisonType type,
                   FrameStats frame_stats,
                   OverloadReason overload_reason);
@@ -124,8 +130,8 @@ struct FrameComparison {
   InternalStatsKey stats_key;
   // Frames can be omitted if there too many computations waiting in the
   // queue.
-  absl::optional<VideoFrame> captured;
-  absl::optional<VideoFrame> rendered;
+  std::optional<VideoFrame> captured;
+  std::optional<VideoFrame> rendered;
   FrameComparisonType type;
   FrameStats frame_stats;
   OverloadReason overload_reason;

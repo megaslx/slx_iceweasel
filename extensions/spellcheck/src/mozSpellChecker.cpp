@@ -53,8 +53,11 @@ nsresult mozSpellChecker::Init() {
     mozilla::dom::ContentChild* contentChild =
         mozilla::dom::ContentChild::GetSingleton();
     MOZ_ASSERT(contentChild);
+    // mEngine is nulled in RemoteSpellcheckEngineChild(), so we don't need to
+    // worry about SendPRemoveSpellcheckEngineConstructor failing
     mEngine = new RemoteSpellcheckEngineChild(this);
-    contentChild->SendPRemoteSpellcheckEngineConstructor(mEngine);
+    MOZ_ALWAYS_TRUE(
+        contentChild->SendPRemoteSpellcheckEngineConstructor(mEngine));
   } else {
     mPersonalDictionary =
         do_GetService("@mozilla.org/spellchecker/personaldictionary;1");
@@ -340,21 +343,6 @@ nsresult mozSpellChecker::RemoveWordFromPersonalDictionary(
   }
   res = mPersonalDictionary->RemoveWord(aWord);
   return res;
-}
-
-nsresult mozSpellChecker::GetPersonalDictionary(nsTArray<nsString>* aWordList) {
-  if (!aWordList || !mPersonalDictionary) return NS_ERROR_NULL_POINTER;
-
-  nsCOMPtr<nsIStringEnumerator> words;
-  mPersonalDictionary->GetWordList(getter_AddRefs(words));
-
-  bool hasMore;
-  nsAutoString word;
-  while (NS_SUCCEEDED(words->HasMore(&hasMore)) && hasMore) {
-    words->GetNext(word);
-    aWordList->AppendElement(word);
-  }
-  return NS_OK;
 }
 
 nsresult mozSpellChecker::GetDictionaryList(

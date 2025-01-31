@@ -10,10 +10,13 @@ WORKDIR /builds/worker
 # AUFS slowness.
 VOLUME /builds/worker/checkouts
 
+ARG EXTRA_PACKAGES
+
 RUN apt-get update && \
     apt-get install -y \
         build-essential \
         curl \
+        $EXTRA_PACKAGES \
         jq \
         patch \
         patchelf \
@@ -32,12 +35,9 @@ COPY install-snap.sh /usr/local/bin/
 
 RUN install-snap.sh core
 
-RUN install-snap.sh core20
-
-# Snapcraft snap depends on core20 for python3.8 even when we target core22
 RUN install-snap.sh snapcraft
 
-RUN if [ "$SNAP_BASE" != "core20" ]; then install-snap.sh core22; fi
+RUN install-snap.sh $SNAP_BASE
 
 ARG SNAP_LIST
 
@@ -61,6 +61,10 @@ ENV PATH="/snap/bin:$PATH"
 ENV SNAP="/snap/snapcraft/current"
 ENV SNAP_NAME="snapcraft"
 ENV SNAP_ARCH="amd64"
+ENV SNAP_INSTANCE_KEY=
+ENV SNAP_INSTANCE_NAME=snapcraft
+ENV SNAPCRAFT_BUILD_FOR=amd64
+ENV SNAPCRAFT_PLATFORM=amd64
 
 # Snapcraft pull will need to sudo apt-get update ...
 RUN echo "worker ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/worker && \

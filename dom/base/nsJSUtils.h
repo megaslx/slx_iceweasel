@@ -19,7 +19,6 @@
 #include "jsapi.h"
 #include "js/CompileOptions.h"
 #include "js/Conversions.h"
-#include "js/SourceText.h"
 #include "js/String.h"  // JS::{,Lossy}CopyLinearStringChars, JS::CopyStringChars, JS::Get{,Linear}StringLength, JS::MaxStringLength, JS::StringHasLatin1Chars
 #include "js/Utility.h"  // JS::FreePolicy
 #include "nsString.h"
@@ -29,6 +28,10 @@ class nsIScriptContext;
 class nsIScriptElement;
 class nsIScriptGlobalObject;
 class nsXBLPrototypeBinding;
+
+namespace JS {
+class JS_PUBLIC_API EnvironmentChain;
+};
 
 namespace mozilla {
 union Utf8Unit;
@@ -41,13 +44,6 @@ class Element;
 
 class nsJSUtils {
  public:
-  static bool GetCallingLocation(JSContext* aContext, nsACString& aFilename,
-                                 uint32_t* aLineno = nullptr,
-                                 uint32_t* aColumn = nullptr);
-  static bool GetCallingLocation(JSContext* aContext, nsAString& aFilename,
-                                 uint32_t* aLineno = nullptr,
-                                 uint32_t* aColumn = nullptr);
-
   /**
    * Retrieve the inner window ID based on the given JSContext.
    *
@@ -59,7 +55,7 @@ class nsJSUtils {
   static uint64_t GetCurrentlyRunningCodeInnerWindowID(JSContext* aContext);
 
   static nsresult CompileFunction(mozilla::dom::AutoJSAPI& jsapi,
-                                  JS::HandleVector<JSObject*> aScopeChain,
+                                  const JS::EnvironmentChain& aEnvChain,
                                   JS::CompileOptions& aOptions,
                                   const nsACString& aName, uint32_t aArgCount,
                                   const char** aArgArray,
@@ -74,10 +70,10 @@ class nsJSUtils {
   static bool IsScriptable(JS::Handle<JSObject*> aEvaluationGlobal);
 
   // Returns false if an exception got thrown on aCx.  Passing a null
-  // aElement is allowed; that wil produce an empty aScopeChain.
-  static bool GetScopeChainForElement(
-      JSContext* aCx, mozilla::dom::Element* aElement,
-      JS::MutableHandleVector<JSObject*> aScopeChain);
+  // aElement is allowed; that wil produce an empty aEnvChain.
+  static bool GetEnvironmentChainForElement(JSContext* aCx,
+                                            mozilla::dom::Element* aElement,
+                                            JS::EnvironmentChain& aEnvChain);
 
   static void ResetTimeZone();
 
@@ -93,11 +89,6 @@ class nsJSUtils {
       mozilla::UniquePtr<uint8_t[], JS::FreePolicy> aBuffer);
 };
 
-inline void AssignFromStringBuffer(nsStringBuffer* buffer, size_t len,
-                                   nsAString& dest) {
-  buffer->ToString(len, dest);
-}
-
 template <typename T, typename std::enable_if_t<std::is_same<
                           typename T::char_type, char16_t>::value>* = nullptr>
 inline bool AssignJSString(JSContext* cx, T& dest, JSString* s) {
@@ -105,20 +96,7 @@ inline bool AssignJSString(JSContext* cx, T& dest, JSString* s) {
   static_assert(JS::MaxStringLength < (1 << 30),
                 "Shouldn't overflow here or in SetCapacity");
 
-  const char16_t* chars;
-  if (XPCStringConvert::MaybeGetDOMStringChars(s, &chars)) {
-    // The characters represent an existing string buffer that we shared with
-    // JS.  We can share that buffer ourselves if the string corresponds to the
-    // whole buffer; otherwise we have to copy.
-    if (chars[len] == '\0') {
-      AssignFromStringBuffer(
-          nsStringBuffer::FromData(const_cast<char16_t*>(chars)), len, dest);
-      return true;
-    }
-  } else if (XPCStringConvert::MaybeGetLiteralStringChars(s, &chars)) {
-    // The characters represent a literal char16_t string constant
-    // compiled into libxul; we can just use it as-is.
-    dest.AssignLiteral(chars, len);
+  if (XPCStringConvert::MaybeAssignUCStringChars(s, len, dest)) {
     return true;
   }
 
@@ -138,6 +116,11 @@ template <typename T, typename std::enable_if_t<std::is_same<
 inline bool AssignJSString(JSContext* cx, T& dest, JSString* s) {
   using namespace mozilla;
   CheckedInt<size_t> bufLen(JS::GetStringLength(s));
+
+  if (XPCStringConvert::MaybeAssignUTF8StringChars(s, bufLen.value(), dest)) {
+    return true;
+  }
+
   // From the contract for JS_EncodeStringToUTF8BufferPartial, to guarantee that
   // the whole string is converted.
   if (JS::StringHasLatin1Chars(s)) {

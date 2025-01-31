@@ -12,6 +12,30 @@
 #include "mozilla/PerfStats.h"
 #include "nsRefreshDriver.h"
 
+/* Globally initialized constants
+ */
+namespace mozilla {
+MOZ_RUNINIT const TimeDuration kOneMinute = TimeDuration::FromSeconds(60.0f);
+MOZ_RUNINIT const TimeDuration kCCDelay = TimeDuration::FromSeconds(6);
+MOZ_RUNINIT const TimeDuration kCCSkippableDelay =
+    TimeDuration::FromMilliseconds(250);
+MOZ_RUNINIT const TimeDuration kTimeBetweenForgetSkippableCycles =
+    TimeDuration::FromSeconds(2);
+MOZ_RUNINIT const TimeDuration kForgetSkippableSliceDuration =
+    TimeDuration::FromMilliseconds(2);
+MOZ_RUNINIT const TimeDuration kICCIntersliceDelay =
+    TimeDuration::FromMilliseconds(250);
+MOZ_RUNINIT const TimeDuration kICCSliceBudget =
+    TimeDuration::FromMilliseconds(3);
+MOZ_RUNINIT const TimeDuration kIdleICCSliceBudget =
+    TimeDuration::FromMilliseconds(2);
+MOZ_RUNINIT const TimeDuration kMaxICCDuration = TimeDuration::FromSeconds(2);
+
+MOZ_RUNINIT const TimeDuration kCCForced = kOneMinute * 2;
+MOZ_RUNINIT const TimeDuration kMaxCCLockedoutTime =
+    TimeDuration::FromSeconds(30);
+}  // namespace mozilla
+
 /*
  * GC Scheduling from Firefox
  * ==========================
@@ -108,80 +132,6 @@
  * There is additional logic in the code to handle concurrent requests of
  * various kinds.
  */
-
-namespace geckoprofiler::markers {
-struct CCIntervalMarker {
-  static constexpr mozilla::Span<const char> MarkerTypeName() {
-    return mozilla::MakeStringSpan("CC");
-  }
-  static void StreamJSONMarkerData(
-      mozilla::baseprofiler::SpliceableJSONWriter& aWriter, bool aIsStart,
-      const mozilla::ProfilerString8View& aReason,
-      uint32_t aForgetSkippableBeforeCC, uint32_t aSuspectedAtCCStart,
-      uint32_t aRemovedPurples, const mozilla::CycleCollectorResults& aResults,
-      mozilla::TimeDuration aMaxSliceTime) {
-    if (aIsStart) {
-      aWriter.StringProperty("mReason", aReason);
-      aWriter.IntProperty("mSuspected", aSuspectedAtCCStart);
-      aWriter.IntProperty("mForgetSkippable", aForgetSkippableBeforeCC);
-      aWriter.IntProperty("mRemovedPurples", aRemovedPurples);
-    } else {
-      aWriter.TimeDoubleMsProperty("mMaxSliceTime",
-                                   aMaxSliceTime.ToMilliseconds());
-      aWriter.IntProperty("mSlices", aResults.mNumSlices);
-
-      aWriter.BoolProperty("mAnyManual", aResults.mAnyManual);
-      aWriter.BoolProperty("mForcedGC", aResults.mForcedGC);
-      aWriter.BoolProperty("mMergedZones", aResults.mMergedZones);
-      aWriter.IntProperty("mVisitedRefCounted", aResults.mVisitedRefCounted);
-      aWriter.IntProperty("mVisitedGCed", aResults.mVisitedGCed);
-      aWriter.IntProperty("mFreedRefCounted", aResults.mFreedRefCounted);
-      aWriter.IntProperty("mFreedGCed", aResults.mFreedGCed);
-      aWriter.IntProperty("mFreedJSZones", aResults.mFreedJSZones);
-    }
-  }
-  static mozilla::MarkerSchema MarkerTypeDisplay() {
-    using MS = mozilla::MarkerSchema;
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable,
-              MS::Location::TimelineMemory};
-    schema.AddStaticLabelValue(
-        "Description",
-        "Summary data for the core part of a cycle collection, possibly "
-        "encompassing a set of incremental slices. The main thread is not "
-        "blocked for the entire major CC interval, only for the individual "
-        "slices.");
-    schema.AddKeyLabelFormatSearchable("mReason", "Reason", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormat("mMaxSliceTime", "Max Slice Time",
-                             MS::Format::Duration);
-    schema.AddKeyLabelFormat("mSuspected", "Suspected Objects",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mSlices", "Number of Slices",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mAnyManual", "Manually Triggered",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mForcedGC", "GC Forced", MS::Format::Integer);
-    schema.AddKeyLabelFormat("mMergedZones", "Zones Merged",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mForgetSkippable", "Forget Skippables",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mVisitedRefCounted", "Refcounted Objects Visited",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mVisitedGCed", "GC Objects Visited",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mFreedRefCounted", "Refcounted Objects Freed",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mFreedGCed", "GC Objects Freed",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mCollectedGCZones", "JS Zones Freed",
-                             MS::Format::Integer);
-    schema.AddKeyLabelFormat("mRemovedPurples",
-                             "Objects Removed From Purple Buffer",
-                             MS::Format::Integer);
-    return schema;
-  }
-};
-}  // namespace geckoprofiler::markers
 
 namespace mozilla {
 
@@ -282,34 +232,19 @@ void CCGCScheduler::NoteGCSliceEnd(TimeStamp aStart, TimeStamp aEnd) {
   mTriggeredGCDeadline.reset();
 }
 
-void CCGCScheduler::NoteCCBegin(CCReason aReason, TimeStamp aWhen,
-                                uint32_t aNumForgetSkippables,
-                                uint32_t aSuspected, uint32_t aRemovedPurples) {
-  CycleCollectorResults ignoredResults;
-  PROFILER_MARKER(
-      "CC", GCCC, MarkerOptions(MarkerTiming::IntervalStart(aWhen)),
-      CCIntervalMarker,
-      /* aIsStart */ true,
-      ProfilerString8View::WrapNullTerminatedString(CCReasonToString(aReason)),
-      aNumForgetSkippables, aSuspected, aRemovedPurples, ignoredResults,
-      TimeDuration());
-
-  mIsCollectingCycles = true;
-}
+void CCGCScheduler::NoteCCBegin() { mIsCollectingCycles = true; }
 
 void CCGCScheduler::NoteCCEnd(const CycleCollectorResults& aResults,
-                              TimeStamp aWhen,
-                              mozilla::TimeDuration aMaxSliceTime) {
+                              TimeStamp aWhen) {
   mCCollectedWaitingForGC += aResults.mFreedGCed;
   mCCollectedZonesWaitingForGC += aResults.mFreedJSZones;
-
-  PROFILER_MARKER("CC", GCCC, MarkerOptions(MarkerTiming::IntervalEnd(aWhen)),
-                  CCIntervalMarker, /* aIsStart */ false, nullptr, 0, 0, 0,
-                  aResults, aMaxSliceTime);
-
   mIsCollectingCycles = false;
   mLastCCEndTime = aWhen;
   mNeedsFullCC = CCReason::NO_REASON;
+  mPreferFasterCollection =
+      mCurrentCollectionHasSeenNonIdle &&
+      (aResults.mFreedGCed > 10000 || aResults.mFreedRefCounted > 10000);
+  mCurrentCollectionHasSeenNonIdle = false;
 }
 
 void CCGCScheduler::NoteWontGC() {
@@ -323,6 +258,14 @@ void CCGCScheduler::NoteWontGC() {
 
 bool CCGCScheduler::GCRunnerFired(TimeStamp aDeadline) {
   MOZ_ASSERT(!mDidShutdown, "GCRunner still alive during shutdown");
+
+  if (!aDeadline) {
+    mCurrentCollectionHasSeenNonIdle = true;
+  } else if (mPreferFasterCollection) {
+    // We found some idle time, try to utilize that a bit more given that
+    // we're in a mode where idle time is rare.
+    aDeadline = aDeadline + TimeDuration::FromMilliseconds(5.0);
+  }
 
   GCRunnerStep step = GetNextGCRunnerAction(aDeadline);
   switch (step.mAction) {
@@ -423,7 +366,7 @@ bool CCGCScheduler::GCRunnerFiredDoGC(TimeStamp aDeadline,
 
   MOZ_ASSERT(mActiveIntersliceGCBudget);
   TimeStamp startTimeStamp = TimeStamp::Now();
-  js::SliceBudget budget = ComputeInterSliceGCBudget(aDeadline, startTimeStamp);
+  JS::SliceBudget budget = ComputeInterSliceGCBudget(aDeadline, startTimeStamp);
   nsJSContext::RunIncrementalGCSlice(aStep.mReason, is_shrinking, budget);
 
   // If the GC doesn't have any more work to do on the foreground thread (and
@@ -531,7 +474,9 @@ void CCGCScheduler::PokeFullGC() {
           // set that we want a full GC we will get one eventually.
           s->SetNeedsFullGC();
           s->SetWantMajorGC(JS::GCReason::FULL_GC_TIMER);
-          if (!s->mHaveAskedParent) {
+          if (s->mCCRunner) {
+            s->EnsureCCThenGC(CCReason::GC_WAITING);
+          } else if (!s->mHaveAskedParent) {
             s->EnsureGCRunner(0);
           }
         },
@@ -603,14 +548,34 @@ void CCGCScheduler::PokeMinorGC(JS::GCReason aReason) {
   EnsureGCRunner(0);
 }
 
+void CCGCScheduler::EnsureOrResetGCRunner() {
+  if (!mGCRunner) {
+    EnsureGCRunner(0);
+    return;
+  }
+
+  mGCRunner->ResetTimer(TimeDuration::FromMilliseconds(
+      StaticPrefs::javascript_options_gc_delay_interslice()));
+}
+
+TimeDuration CCGCScheduler::ComputeMinimumBudgetForRunner(
+    TimeDuration aBaseValue) {
+  // If the main thread was too busy to find idle for the whole last collection,
+  // allow a very short budget this time.
+  return mPreferFasterCollection ? TimeDuration::FromMilliseconds(1.0)
+                                 : TimeDuration::FromMilliseconds(std::max(
+                                       nsRefreshDriver::HighRateMultiplier() *
+                                           aBaseValue.ToMilliseconds(),
+                                       1.0));
+}
+
 void CCGCScheduler::EnsureGCRunner(TimeDuration aDelay) {
   if (mGCRunner) {
     return;
   }
 
-  TimeDuration minimumBudget = nsRefreshDriver::IsInHighRateMode()
-                                   ? TimeDuration::FromMilliseconds(1)
-                                   : mActiveIntersliceGCBudget;
+  TimeDuration minimumBudget =
+      ComputeMinimumBudgetForRunner(mActiveIntersliceGCBudget);
 
   // Wait at most the interslice GC delay before forcing a run.
   mGCRunner = IdleTaskRunner::Create(
@@ -673,14 +638,13 @@ void CCGCScheduler::KillGCRunner() {
 void CCGCScheduler::EnsureCCRunner(TimeDuration aDelay, TimeDuration aBudget) {
   MOZ_ASSERT(!mDidShutdown);
 
-  TimeDuration minimumBudget = nsRefreshDriver::IsInHighRateMode()
-                                   ? TimeDuration::FromMilliseconds(1)
-                                   : aBudget;
+  TimeDuration minimumBudget = ComputeMinimumBudgetForRunner(aBudget);
 
   if (!mCCRunner) {
     mCCRunner = IdleTaskRunner::Create(
-        CCRunnerFired, "EnsureCCRunner::CCRunnerFired", 0, aDelay,
-        minimumBudget, true, [this] { return mDidShutdown; });
+        [this](TimeStamp aDeadline) { return CCRunnerFired(aDeadline); },
+        "EnsureCCRunner::CCRunnerFired", 0, aDelay, minimumBudget, true,
+        [this] { return mDidShutdown; });
   } else {
     mCCRunner->SetMinimumUsefulBudget(minimumBudget.ToMilliseconds());
     nsIEventTarget* target = mozilla::GetCurrentSerialEventTarget();
@@ -723,7 +687,7 @@ void CCGCScheduler::KillAllTimersAndRunners() {
   KillGCRunner();
 }
 
-js::SliceBudget CCGCScheduler::ComputeCCSliceBudget(
+JS::SliceBudget CCGCScheduler::ComputeCCSliceBudget(
     TimeStamp aDeadline, TimeStamp aCCBeginTime, TimeStamp aPrevSliceEndTime,
     TimeStamp aNow, bool* aPreferShorterSlices) const {
   *aPreferShorterSlices =
@@ -734,14 +698,14 @@ js::SliceBudget CCGCScheduler::ComputeCCSliceBudget(
 
   if (aPrevSliceEndTime.IsNull()) {
     // The first slice gets the standard slice time.
-    return js::SliceBudget(js::TimeBudget(baseBudget));
+    return JS::SliceBudget(JS::TimeBudget(baseBudget));
   }
 
   // Only run a limited slice if we're within the max running time.
   MOZ_ASSERT(aNow >= aCCBeginTime);
   TimeDuration runningTime = aNow - aCCBeginTime;
   if (runningTime >= kMaxICCDuration) {
-    return js::SliceBudget::unlimited();
+    return JS::SliceBudget::unlimited();
   }
 
   const TimeDuration maxSlice =
@@ -763,11 +727,11 @@ js::SliceBudget CCGCScheduler::ComputeCCSliceBudget(
   // Note: We may have already overshot the deadline, in which case
   // baseBudget will be negative and we will end up returning
   // laterSliceBudget.
-  return js::SliceBudget(js::TimeBudget(
+  return JS::SliceBudget(JS::TimeBudget(
       std::max({delaySliceBudget, laterSliceBudget, baseBudget})));
 }
 
-js::SliceBudget CCGCScheduler::ComputeInterSliceGCBudget(TimeStamp aDeadline,
+JS::SliceBudget CCGCScheduler::ComputeInterSliceGCBudget(TimeStamp aDeadline,
                                                          TimeStamp aNow) {
   // We use longer budgets when the CC has been locked out but the CC has
   // tried to run since that means we may have a significant amount of
@@ -790,7 +754,7 @@ js::SliceBudget CCGCScheduler::ComputeInterSliceGCBudget(TimeStamp aDeadline,
   }
 
   // If the budget is being extended, do not allow it to be interrupted.
-  auto result = js::SliceBudget(js::TimeBudget(extendedBudget), nullptr);
+  auto result = JS::SliceBudget(JS::TimeBudget(extendedBudget), nullptr);
   result.idle = !aDeadline.IsNull();
   result.extended = true;
   return result;
@@ -846,9 +810,8 @@ CCRunnerStep CCGCScheduler::AdvanceCCRunner(TimeStamp aDeadline, TimeStamp aNow,
       {false, false},  /* CCRunnerState::StartCycleCollection */
       {false, false},  /* CCRunnerState::CycleCollecting */
       {false, false}}; /* CCRunnerState::Canceled */
-  static_assert(
-      ArrayLength(stateDescriptors) == size_t(CCRunnerState::NumStates),
-      "need one state descriptor per state");
+  static_assert(std::size(stateDescriptors) == size_t(CCRunnerState::NumStates),
+                "need one state descriptor per state");
   const StateDescriptor& desc = stateDescriptors[int(mCCRunnerState)];
 
   // Make sure we initialized the state machine.
@@ -1043,7 +1006,7 @@ GCRunnerStep CCGCScheduler::GetNextGCRunnerAction(TimeStamp aDeadline) const {
   return {GCRunnerAction::None, JS::GCReason::NO_REASON};
 }
 
-js::SliceBudget CCGCScheduler::ComputeForgetSkippableBudget(
+JS::SliceBudget CCGCScheduler::ComputeForgetSkippableBudget(
     TimeStamp aStartTimeStamp, TimeStamp aDeadline) {
   if (mForgetSkippableFrequencyStartTime.IsNull()) {
     mForgetSkippableFrequencyStartTime = aStartTimeStamp;
@@ -1070,7 +1033,7 @@ js::SliceBudget CCGCScheduler::ComputeForgetSkippableBudget(
 
   TimeDuration budgetTime =
       aDeadline ? (aDeadline - aStartTimeStamp) : kForgetSkippableSliceDuration;
-  return js::SliceBudget(budgetTime);
+  return JS::SliceBudget(budgetTime);
 }
 
 }  // namespace mozilla

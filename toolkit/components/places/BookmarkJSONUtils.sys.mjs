@@ -21,27 +21,7 @@ const OLD_BOOKMARK_QUERY_TRANSLATIONS = {
   MOBILE_BOOKMARKS: PlacesUtils.bookmarks.mobileGuid,
 };
 
-/**
- * Generates an hash for the given string.
- *
- * @note The generated hash is returned in base64 form.  Mind the fact base64
- * is case-sensitive if you are going to reuse this code.
- */
-function generateHash(aString) {
-  let cryptoHash = Cc["@mozilla.org/security/hash;1"].createInstance(
-    Ci.nsICryptoHash
-  );
-  cryptoHash.init(Ci.nsICryptoHash.MD5);
-  let stringStream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
-    Ci.nsIStringInputStream
-  );
-  stringStream.setUTF8Data(aString);
-  cryptoHash.updateFromStream(stringStream, -1);
-  // base64 allows the '/' char, but we can't use it for filenames.
-  return cryptoHash.finish(true).replace(/\//g, "-");
-}
-
-export var BookmarkJSONUtils = Object.freeze({
+export var BookmarkJSONUtils = {
   /**
    * Import bookmarks from a url.
    *
@@ -164,7 +144,8 @@ export var BookmarkJSONUtils = Object.freeze({
       console.error("Unable to report telemetry.");
     }
 
-    let hash = generateHash(jsonString);
+    // Use "base64url" as this may be part of a filename.
+    let hash = PlacesUtils.sha256(jsonString, { format: "base64url" });
 
     if (hash === aOptions.failIfHashIs) {
       let e = new Error("Hash conflict");
@@ -181,7 +162,7 @@ export var BookmarkJSONUtils = Object.freeze({
     });
     return { count, hash };
   },
-});
+};
 
 function BookmarkImporter(aReplace, aSource) {
   this._replace = aReplace;
@@ -308,12 +289,9 @@ BookmarkImporter.prototype = {
       bookmarkCount += bookmarks.filter(
         bookmark => bookmark.type == PlacesUtils.bookmarks.TYPE_BOOKMARK
       ).length;
+
       // Now add any favicons.
-      try {
-        insertFaviconsForTree(node);
-      } catch (ex) {
-        console.error("Failed to insert favicons:", ex);
-      }
+      insertFaviconsForTree(node);
     }
     return bookmarkCount;
   },
@@ -424,7 +402,7 @@ function translateTreeTypes(node) {
   }
 
   switch (node.type) {
-    case PlacesUtils.TYPE_X_MOZ_PLACE_CONTAINER:
+    case PlacesUtils.TYPE_X_MOZ_PLACE_CONTAINER: {
       node.type = PlacesUtils.bookmarks.TYPE_FOLDER;
 
       // Older type mobile folders have a random guid with an annotation. We need
@@ -443,6 +421,7 @@ function translateTreeTypes(node) {
       // queries later.
       folderIdToGuidMap[node.id] = node.guid;
       break;
+    }
     case PlacesUtils.TYPE_X_MOZ_PLACE:
       node.type = PlacesUtils.bookmarks.TYPE_BOOKMARK;
       break;
@@ -520,44 +499,28 @@ function translateTreeTypes(node) {
  * @param {Object} node The bookmark node for icons to be inserted.
  */
 function insertFaviconForNode(node) {
-  if (node.icon) {
-    try {
-      // Create a fake faviconURI to use (FIXME: bug 523932)
-      let faviconURI = Services.io.newURI("fake-favicon-uri:" + node.url);
-      PlacesUtils.favicons.replaceFaviconDataFromDataURL(
-        faviconURI,
-        node.icon,
-        0,
-        Services.scriptSecurityManager.getSystemPrincipal()
-      );
-      PlacesUtils.favicons.setAndFetchFaviconForPage(
-        Services.io.newURI(node.url),
-        faviconURI,
-        false,
-        PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-        null,
-        Services.scriptSecurityManager.getSystemPrincipal()
-      );
-    } catch (ex) {
-      console.error("Failed to import favicon data:", ex);
-    }
-  }
-
-  if (!node.iconUri) {
+  if (!node.icon && !node.iconUri) {
+    // No favicon information.
     return;
   }
 
   try {
-    PlacesUtils.favicons.setAndFetchFaviconForPage(
-      Services.io.newURI(node.url),
-      Services.io.newURI(node.iconUri),
-      false,
-      PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-      null,
-      Services.scriptSecurityManager.getSystemPrincipal()
-    );
+    // If icon is not specified, suppose iconUri may contain a data uri.
+    let faviconDataURI = Services.io.newURI(node.icon || node.iconUri);
+    if (!faviconDataURI.schemeIs("data")) {
+      return;
+    }
+
+    PlacesUtils.favicons
+      .setFaviconForPage(
+        Services.io.newURI(node.url),
+        // Use iconUri otherwise create a fake favicon URI to use (FIXME: bug 523932)
+        Services.io.newURI(node.iconUri ?? "fake-favicon-uri:" + node.url),
+        faviconDataURI
+      )
+      .catch(console.error);
   } catch (ex) {
-    console.error("Failed to import favicon URI:" + ex);
+    console.error("Failed to import favicon data:", ex);
   }
 }
 

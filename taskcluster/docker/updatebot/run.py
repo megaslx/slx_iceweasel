@@ -19,7 +19,7 @@ import requests
 
 import taskcluster
 
-# Bump this number when you need to cause a commit for the job to re-run: 21
+# Bump this number when you need to cause a commit for the job to re-run: 22
 
 if len(sys.argv) < 3:
     print("Usage:", sys.argv[0], "gecko-dev-path updatebot-path [moz-fetches-dir]")
@@ -153,7 +153,7 @@ with open("sql-proxy-key", "w") as proxy_key_file:
 
 instance_name = sql_proxy_config["instance-name"]
 if platform.system() == "Linux":
-    sql_proxy_command = "/builds/worker/go/bin/cloud_sql_proxy"
+    sql_proxy_command = "cloud_sql_proxy"
 else:
     sql_proxy_command = os.path.join(UPDATEBOT_PATH, "..", "cloud_sql_proxy.exe")
 
@@ -192,6 +192,7 @@ localconfig = {
     "General": {
         "env": OPERATING_MODE,
         "gecko-path": GECKO_DEV_PATH,
+        "soft_timeout": 3600,
     },
     "Logging": {
         "local": True,

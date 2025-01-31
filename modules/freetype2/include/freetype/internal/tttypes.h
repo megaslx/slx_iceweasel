@@ -5,7 +5,7 @@
  *   Basic SFNT/TrueType type definitions and interface (specification
  *   only).
  *
- * Copyright (C) 1996-2023 by
+ * Copyright (C) 1996-2024 by
  * David Turner, Robert Wilhelm, and Werner Lemberg.
  *
  * This file is part of the FreeType project, and may only be used,
@@ -24,6 +24,7 @@
 #include <freetype/tttables.h>
 #include <freetype/internal/ftobjs.h>
 #include <freetype/ftcolor.h>
+#include "freetype/fttypes.h"
 
 #ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT
 #include <freetype/ftmm.h>
@@ -1394,14 +1395,6 @@ FT_BEGIN_HEADER
    *   vert_metrics_offset ::
    *     The file offset of the 'vmtx' table.
    *
-   *   sph_found_func_flags ::
-   *     Flags identifying special bytecode functions (used by the v38
-   *     implementation of the bytecode interpreter).
-   *
-   *   sph_compatibility_mode ::
-   *     This flag is set if we are in ClearType backward compatibility mode
-   *     (used by the v38 implementation of the bytecode interpreter).
-   *
    *   ebdt_start ::
    *     The file offset of the sbit data table (CBDT, bdat, etc.).
    *
@@ -1589,6 +1582,11 @@ FT_BEGIN_HEADER
     FT_UInt32             kern_avail_bits;
     FT_UInt32             kern_order_bits;
 
+#ifdef TT_CONFIG_OPTION_GPOS_KERNING
+    FT_Byte*              gpos_table;
+    FT_Bool               gpos_kerning_available;
+#endif
+
 #ifdef TT_CONFIG_OPTION_BDF
     TT_BDFRec             bdf;
 #endif /* TT_CONFIG_OPTION_BDF */
@@ -1596,13 +1594,6 @@ FT_BEGIN_HEADER
     /* since 2.3.0 */
     FT_ULong              horz_metrics_offset;
     FT_ULong              vert_metrics_offset;
-
-#ifdef TT_SUPPORT_SUBPIXEL_HINTING_INFINALITY
-    /* since 2.4.12 */
-    FT_ULong              sph_found_func_flags; /* special functions found */
-                                                /* for this face           */
-    FT_Bool               sph_compatibility_mode;
-#endif /* TT_SUPPORT_SUBPIXEL_HINTING_INFINALITY */
 
 #ifdef TT_CONFIG_OPTION_EMBEDDED_BITMAPS
     /* since 2.7 */
@@ -1664,9 +1655,9 @@ FT_BEGIN_HEADER
   {
     FT_Memory   memory;
     FT_UShort   max_points;
-    FT_Short    max_contours;
+    FT_UShort   max_contours;
     FT_UShort   n_points;    /* number of points in zone    */
-    FT_Short    n_contours;  /* number of contours          */
+    FT_UShort   n_contours;  /* number of contours          */
 
     FT_Vector*  org;         /* original point coordinates  */
     FT_Vector*  cur;         /* current point coordinates   */

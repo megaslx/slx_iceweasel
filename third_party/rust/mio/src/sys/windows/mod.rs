@@ -1,14 +1,19 @@
 mod afd;
-mod io_status_block;
 
 pub mod event;
 pub use event::{Event, Events};
 
-mod selector;
-pub use selector::{Selector, SelectorInner, SockState};
+mod handle;
+use handle::Handle;
+
+mod io_status_block;
+mod iocp;
 
 mod overlapped;
 use overlapped::Overlapped;
+
+mod selector;
+pub use selector::Selector;
 
 // Macros must be defined before the modules that use them
 cfg_net! {
@@ -30,6 +35,8 @@ cfg_net! {
 
     pub(crate) mod tcp;
     pub(crate) mod udp;
+
+    pub use selector::{SelectorInner, SockState};
 }
 
 cfg_os_ext! {

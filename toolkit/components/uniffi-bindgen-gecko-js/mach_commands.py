@@ -7,28 +7,34 @@ import subprocess
 
 from mach.decorators import Command, SubCommand
 
-# IMPORTANT: Please Request review from a DOM peer before
-# committing to using UniFFI. There are other ways to consume Rust from
-# JavaScript that might fit your use case better.
-UDL_FILES = [
-    "third_party/rust/sync15/src/sync15.udl",
-    "third_party/rust/tabs/src/tabs.udl",
-]
-
-FIXTURE_UDL_FILES = [
-    "third_party/rust/uniffi-example-geometry/src/geometry.udl",
-    "third_party/rust/uniffi-example-arithmetic/src/arithmetic.udl",
-    "third_party/rust/uniffi-example-rondpoint/src/rondpoint.udl",
-    "third_party/rust/uniffi-example-sprites/src/sprites.udl",
-    "third_party/rust/uniffi-example-todolist/src/todolist.udl",
-    "toolkit/components/uniffi-fixture-callbacks/src/callbacks.udl",
-    "toolkit/components/uniffi-example-custom-types/src/custom-types.udl",
-    "toolkit/components/uniffi-fixture-external-types/src/external-types.udl",
-]
 CPP_PATH = "toolkit/components/uniffi-js/UniFFIGeneratedScaffolding.cpp"
 JS_DIR = "toolkit/components/uniffi-bindgen-gecko-js/components/generated"
-FIXTURE_CPP_PATH = "toolkit/components/uniffi-js/UniFFIFixtureScaffolding.cpp"
 FIXTURE_JS_DIR = "toolkit/components/uniffi-bindgen-gecko-js/fixtures/generated"
+DOCS_PATH = "docs/rust-components/api/js/"
+
+
+def build_gkrust_uniffi_library(command_context, package_name):
+    uniffi_root = crate_root(command_context)
+    print("Building gkrust-uniffi-components")
+    cmdline = [
+        "cargo",
+        "build",
+        "--release",
+        "--manifest-path",
+        os.path.join(command_context.topsrcdir, "Cargo.toml"),
+        "--package",
+        package_name,
+    ]
+    subprocess.check_call(cmdline, cwd=uniffi_root)
+    print()
+
+    out_dir = os.path.join(command_context.topsrcdir, "target", "release")
+    lib_basename = "lib{}".format(package_name.replace("-", "_"))
+    for ext in [".a", ".so", ".dll", ".dylib"]:
+        candidate = os.path.join(out_dir, lib_basename + ext)
+        if os.path.exists(candidate):
+            return candidate
+    raise Exception("Can't find gkrust_uniffi library in {}".format(out_dir))
 
 
 def build_uniffi_bindgen_gecko_js(command_context):
@@ -67,22 +73,28 @@ def uniffi(command_context, *runargs, **lintargs):
     description="Generate/regenerate bindings",
 )
 def generate_command(command_context):
+    library_path = build_gkrust_uniffi_library(
+        command_context, "gkrust-uniffi-components"
+    )
+    fixtures_library_path = build_gkrust_uniffi_library(
+        command_context, "gkrust-uniffi-fixtures"
+    )
     binary_path = build_uniffi_bindgen_gecko_js(command_context)
     cmdline = [
         binary_path,
+        "--library-path",
+        library_path,
+        "--fixtures-library-path",
+        fixtures_library_path,
         "--js-dir",
         JS_DIR,
         "--fixture-js-dir",
         FIXTURE_JS_DIR,
         "--cpp-path",
         CPP_PATH,
-        "--fixture-cpp-path",
-        FIXTURE_CPP_PATH,
+        "--docs-path",
+        DOCS_PATH,
     ]
-    if UDL_FILES:
-        cmdline += ["--udl-files"] + UDL_FILES
-    if FIXTURE_UDL_FILES:
-        cmdline += ["--fixture-udl-files"] + FIXTURE_UDL_FILES
     subprocess.check_call(cmdline, cwd=command_context.topsrcdir)
     return 0
 

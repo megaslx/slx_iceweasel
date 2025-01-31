@@ -9,7 +9,7 @@ var { ExtensionParent } = ChromeUtils.importESModule(
 );
 var {
   HiddenExtensionPage,
-  promiseExtensionViewLoaded,
+  promiseBackgroundViewLoaded,
   watchExtensionWorkerContextLoaded,
 } = ExtensionParent;
 
@@ -18,7 +18,7 @@ ChromeUtils.defineESModuleGetters(this, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(this, "serviceWorkerManager", () => {
+ChromeUtils.defineLazyGetter(this, "serviceWorkerManager", () => {
   return Cc["@mozilla.org/serviceworkers/manager;1"].getService(
     Ci.nsIServiceWorkerManager
   );
@@ -32,6 +32,15 @@ XPCOMUtils.defineLazyPreferenceGetter(
   null,
   // Minimum 100ms, max 5min
   delay => Math.min(Math.max(delay, 100), 5 * 60 * 1000)
+);
+
+// Pref used in tests to assert background page state set to
+// stopped on an extension process crash.
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "disableRestartPersistentAfterCrash",
+  "extensions.background.disableRestartPersistentAfterCrash",
+  false
 );
 
 // eslint-disable-next-line mozilla/reject-importGlobalProperties
@@ -123,7 +132,7 @@ class BackgroundPage extends HiddenExtensionPage {
 
       extensions.emit("extension-browser-inserted", this.browser);
 
-      let contextPromise = promiseExtensionViewLoaded(this.browser);
+      let contextPromise = promiseBackgroundViewLoaded(this.browser);
       this.browser.fixupAndLoadURIString(this.url, {
         triggeringPrincipal: extension.principal,
       });
@@ -341,6 +350,39 @@ class BackgroundContextOwner {
   context = null;
 
   /**
+   * @property {boolean} [canBePrimed]
+   *
+   * This property reflects whether persistent listeners can be primed. This
+   * means that `backgroundState` is `STOPPED` and the listeners haven't been
+   * primed yet. It is initially `true`, and set to `false` as soon as
+   * listeners are primed. It can become `true` again if `primeBackground` was
+   * skipped due to `shouldPrimeBackground` being `false`.
+   * NOTE: this flag is set for both event pages and persistent background pages.
+   */
+  canBePrimed = true;
+
+  /**
+   * @property {boolean} [shouldPrimeBackground]
+   *
+   * This property controls whether we should prime listeners. Under normal
+   * conditions, this should always be `true` but when too many crashes have
+   * occurred, we might have to disable process spawning, which would lead to
+   * this property being set to `false`.
+   */
+  shouldPrimeBackground = true;
+
+  get #hasEnteredShutdown() {
+    // This getter is just a small helper to make sure we always check for
+    // the extension shutdown being already initiated.
+    // Ordinarily the extension object is expected to be nullified from the
+    // onShutdown method, but extension.hasShutdown is set earlier and because
+    // the shutdown goes through some async steps there is a chance for other
+    // internals to be hit while the hasShutdown flag is set bug onShutdown
+    // not hit yet.
+    return this.extension.hasShutdown || Services.startup.shuttingDown;
+  }
+
+  /**
    * @param {BackgroundBuilder} backgroundBuilder
    * @param {Extension} extension
    */
@@ -348,10 +390,22 @@ class BackgroundContextOwner {
     this.backgroundBuilder = backgroundBuilder;
     this.extension = extension;
     this.onExtensionProcessCrashed = this.onExtensionProcessCrashed.bind(this);
+    this.onApplicationInForeground = this.onApplicationInForeground.bind(this);
+    this.onExtensionEnableProcessSpawning =
+      this.onExtensionEnableProcessSpawning.bind(this);
 
     extension.backgroundState = BACKGROUND_STATE.STOPPED;
 
     extensions.on("extension-process-crash", this.onExtensionProcessCrashed);
+    extensions.on(
+      "extension-enable-process-spawning",
+      this.onExtensionEnableProcessSpawning
+    );
+    // We only defer handling extension process crashes for persistent
+    // background context.
+    if (extension.persistentBackground) {
+      extensions.on("application-foreground", this.onApplicationInForeground);
+    }
   }
 
   /**
@@ -368,6 +422,9 @@ class BackgroundContextOwner {
     }
     this.extension.backgroundState = BACKGROUND_STATE.STARTING;
     this.bgInstance = bgInstance;
+    // Often already false, except if we're waking due to a listener that was
+    // registered with isInStartup=true.
+    this.canBePrimed = false;
   }
 
   /**
@@ -440,8 +497,8 @@ class BackgroundContextOwner {
       EventManager.clearPrimedListeners(this.extension, false);
     }
 
-    // Ensure there is no backgroundTimer running
-    this.backgroundBuilder.clearIdleTimer();
+    // Ensure any idle background timer is not running.
+    this.backgroundBuilder.idleManager.clearState();
 
     const bgInstance = this.bgInstance;
     if (bgInstance) {
@@ -459,14 +516,12 @@ class BackgroundContextOwner {
 
     if (this.extension.hasShutdown) {
       this.extension = null;
-    } else if (this.extension.persistentBackground) {
-      // A crashed background page is gone until the extension restarts.
-      // TODO bug 1844490: Consider priming background pages like event pages.
-      // See also the end of terminateBackground().
-    } else {
+    } else if (this.shouldPrimeBackground) {
       // Prime again, so that a stopped background can always be revived when
       // needed.
       this.backgroundBuilder.primeBackground(false);
+    } else {
+      this.canBePrimed = true;
     }
   }
 
@@ -497,15 +552,79 @@ class BackgroundContextOwner {
     }
   }
 
+  restartPersistentBackgroundAfterCrash() {
+    const { extension } = this;
+    if (
+      this.#hasEnteredShutdown ||
+      // Ignore if the background state isn't the one expected to be set
+      // after a crash.
+      extension.backgroundState !== BACKGROUND_STATE.STOPPED ||
+      // Auto-restart persistent background scripts after crash disabled by prefs.
+      disableRestartPersistentAfterCrash
+    ) {
+      return;
+    }
+
+    // Persistent background pages are re-primed from setBgStateStopped when we
+    // are hitting a crash (if the threshold was not exceeded, otherwise they
+    // are going to be re-primed from onExtensionEnableProcessSpawning).
+    extension.emit("start-background-script");
+  }
+
+  onExtensionEnableProcessSpawning() {
+    if (this.#hasEnteredShutdown) {
+      return;
+    }
+
+    if (!this.canBePrimed) {
+      return;
+    }
+
+    // Allow priming again.
+    this.shouldPrimeBackground = true;
+    this.backgroundBuilder.primeBackground(false);
+
+    if (this.extension.persistentBackground) {
+      this.restartPersistentBackgroundAfterCrash();
+    }
+  }
+
+  onApplicationInForeground(eventName, data) {
+    if (
+      this.#hasEnteredShutdown ||
+      // Past the silent crash handling threashold.
+      data.processSpawningDisabled
+    ) {
+      return;
+    }
+
+    this.restartPersistentBackgroundAfterCrash();
+  }
+
   onExtensionProcessCrashed(eventName, data) {
+    if (this.#hasEnteredShutdown) {
+      return;
+    }
+
     // data.childID holds the process ID of the crashed extension process.
     // For now, assume that there is only one, so clean up unconditionally.
+
+    this.shouldPrimeBackground = !data.processSpawningDisabled;
 
     // We only need to clean up if a bgInstance has been created. Without it,
     // there is only state in the parent process, not the child, and a crashed
     // extension process doesn't affect us.
     if (this.bgInstance) {
       this.setBgStateStopped();
+    }
+
+    if (this.extension.persistentBackground) {
+      // Defer to when back in foreground and/or process spawning is explicitly re-enabled.
+      if (!data.appInForeground || data.processSpawningDisabled) {
+        return;
+      }
+
+      this.restartPersistentBackgroundAfterCrash();
     }
   }
 
@@ -518,6 +637,11 @@ class BackgroundContextOwner {
       this.setBgStateStopped(isAppShutdown);
     }
     extensions.off("extension-process-crash", this.onExtensionProcessCrashed);
+    extensions.off(
+      "extension-enable-process-spawning",
+      this.onExtensionEnableProcessSpawning
+    );
+    extensions.off("application-foreground", this.onApplicationInForeground);
   }
 }
 
@@ -540,6 +664,7 @@ class BackgroundBuilder {
   constructor(extension) {
     this.extension = extension;
     this.backgroundContextOwner = new BackgroundContextOwner(this, extension);
+    this.idleManager = new IdleManager(extension);
   }
 
   async build() {
@@ -551,7 +676,9 @@ class BackgroundBuilder {
     let { manifest } = extension;
     extension.backgroundState = BACKGROUND_STATE.STARTING;
 
-    this.isWorker = Boolean(manifest.background.service_worker);
+    this.isWorker =
+      !!manifest.background.service_worker &&
+      WebExtensionPolicy.backgroundServiceWorkerEnabled;
 
     let BackgroundClass = this.isWorker ? BackgroundWorker : BackgroundPage;
 
@@ -590,26 +717,6 @@ class BackgroundBuilder {
       Cu.reportError(e);
       this.backgroundContextOwner.setBgStateStopped();
     }
-  }
-
-  observe(subject, topic, data) {
-    if (topic == "timer-callback") {
-      let { extension } = this;
-      this.clearIdleTimer();
-      extension?.terminateBackground();
-    }
-  }
-
-  clearIdleTimer() {
-    this.backgroundTimer?.cancel();
-    this.backgroundTimer = null;
-  }
-
-  resetIdleTimer() {
-    this.clearIdleTimer();
-    let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
-    timer.init(this, backgroundIdleTimeout, Ci.nsITimer.TYPE_ONE_SHOT);
-    this.backgroundTimer = timer;
   }
 
   primeBackground(isInStartup = true) {
@@ -653,70 +760,81 @@ class BackgroundBuilder {
       return bgStartupPromise;
     };
 
-    let resetBackgroundIdle = (eventName, resetIdleDetails) => {
-      this.clearIdleTimer();
-      if (!this.extension || extension.persistentBackground) {
-        // Extension was already shut down or is persistent and
-        // does not idle timout.
-        return;
-      }
-      // TODO remove at an appropriate point in the future prior
-      // to general availability.  There may be some racy conditions
-      // with idle timeout between an event starting and the event firing
-      // but we still want testing with an idle timeout.
+    let resetBackgroundIdle = (event, { reason }) => {
       if (
-        !Services.prefs.getBoolPref("extensions.background.idle.enabled", true)
+        extension.backgroundState == BACKGROUND_STATE.SUSPENDING &&
+        // After we begin suspending the background, parent API calls from
+        // runtime.onSuspend listeners shouldn't cancel the suspension.
+        reason !== "parentapicall"
       ) {
-        return;
-      }
-
-      if (extension.backgroundState == BACKGROUND_STATE.SUSPENDING) {
         extension.backgroundState = BACKGROUND_STATE.RUNNING;
-        // call runtime.onSuspendCanceled
         extension.emit("background-script-suspend-canceled");
       }
-      this.resetIdleTimer();
 
-      if (
-        eventName === "background-script-reset-idle" &&
-        // TODO(Bug 1790087): record similar telemetry for background service worker.
-        !this.isWorker
-      ) {
-        // Record the reason for resetting the event page idle timeout
-        // in a idle result histogram, with the category set based
-        // on the reason for resetting (defaults to 'reset_other'
-        // if resetIdleDetails.reason is missing or not mapped into the
-        // telemetry histogram categories).
+      if (extension.backgroundState !== BACKGROUND_STATE.RUNNING) {
+        // If STOPPED (or STARTING), then there is no idle timer and we should
+        // not reset the timer, because that would actually start the timer that
+        // eventually calls terminateBackground(), see bug 1905505 for example.
         //
-        // Keep this in sync with the categories listed in Histograms.json
-        // for "WEBEXT_EVENTPAGE_IDLE_RESULT_COUNT".
-        let category = "reset_other";
-        switch (resetIdleDetails?.reason) {
-          case "event":
-            category = "reset_event";
-            break;
-          case "hasActiveNativeAppPorts":
-            category = "reset_nativeapp";
-            break;
-          case "hasActiveStreamFilter":
-            category = "reset_streamfilter";
-            break;
-          case "pendingListeners":
-            category = "reset_listeners";
-            break;
+        // When at state STARTING, we expect the startup to complete soon which
+        // in turn will start the idleManager timer.
+        if (
+          extension.backgroundState === BACKGROUND_STATE.STOPPED &&
+          // Skip logging for "event" because it can currently be encountered in
+          // practice due to bug 1905504, as explained in bug 1905505.
+          reason !== "event"
+        ) {
+          Cu.reportError(
+            `Background keepalive reset with reason "${reason}" failed for ${extension.id}, state stopped.`
+          );
         }
-
-        ExtensionTelemetry.eventPageIdleResult.histogramAdd({
-          extension,
-          category,
-        });
+        return;
       }
+
+      this.idleManager.resetTimer();
+
+      if (this.isWorker) {
+        // TODO(Bug 1790087): record similar telemetry for service workers.
+        return;
+      }
+      if (reason === "event" || reason === "parentapicall") {
+        // Bug 1868960: not recording these because too frequent.
+        return;
+      }
+
+      // Keep in sync with categories in WEBEXT_EVENTPAGE_IDLE_RESULT_COUNT.
+      let KNOWN = ["nativeapp", "streamfilter", "listeners"];
+      ExtensionTelemetry.eventPageIdleResult.histogramAdd({
+        extension,
+        category: `reset_${KNOWN.includes(reason) ? reason : "other"}`,
+      });
     };
 
-    // Listen for events from the EventManager
-    extension.on("background-script-reset-idle", resetBackgroundIdle);
-    // After the background is started, initiate the first timer
-    extension.once("background-script-started", resetBackgroundIdle);
+    let idleWaitUntil = (_, { promise, reason }) => {
+      if (extension.backgroundState === BACKGROUND_STATE.STOPPED) {
+        // Sanity check: do not start idleManager.waitUntil if we are already
+        // stopped. The purpose of waitUntil is to keep the background alive,
+        // but if it was already stopped we cannot revive. At worst, we could
+        // interfere with a future bgInstance.
+        Cu.reportError(
+          `Background keepalive with reason "${reason}" failed for ${extension.id}, state stopped.`
+        );
+        return;
+      }
+      this.idleManager.waitUntil(promise, reason);
+    };
+
+    if (!extension.persistentBackground) {
+      // Listen for events from the EventManager
+      extension.on("background-script-reset-idle", resetBackgroundIdle);
+
+      // After the background is started, initiate the first timer
+      extension.once("background-script-started", () => {
+        this.idleManager.resetTimer();
+      });
+
+      extension.on("background-script-idle-waituntil", idleWaitUntil);
+    }
 
     // TODO bug 1844488: terminateBackground should account for externally
     // triggered background restarts. It does currently performs various
@@ -726,6 +844,14 @@ class BackgroundBuilder {
       ignoreDevToolsAttached = false,
       disableResetIdleForTest = false, // Disable all reset idle checks for testing purpose.
     } = {}) => {
+      if (extension.backgroundState === BACKGROUND_STATE.STOPPED) {
+        Cu.reportError(
+          `Cannot terminate background of ${extension.id} because it was already stopped.`
+        );
+        // If we were to continue we'd wait until the next background startup
+        // and terminate immediately, which is undesired.
+        return;
+      }
       await bgStartupPromise;
       if (!this.extension || this.extension.hasShutdown) {
         // Extension was already shut down.
@@ -754,9 +880,7 @@ class BackgroundBuilder {
         !disableResetIdleForTest &&
         extension.backgroundContext?.hasActiveNativeAppPorts
       ) {
-        extension.emit("background-script-reset-idle", {
-          reason: "hasActiveNativeAppPorts",
-        });
+        extension.emit("background-script-reset-idle", { reason: "nativeapp" });
         return;
       }
 
@@ -765,7 +889,7 @@ class BackgroundBuilder {
         extension.backgroundContext?.pendingRunListenerPromisesCount
       ) {
         extension.emit("background-script-reset-idle", {
-          reason: "pendingListeners",
+          reason: "listeners",
           pendingListeners:
             extension.backgroundContext.pendingRunListenerPromisesCount,
         });
@@ -806,7 +930,7 @@ class BackgroundBuilder {
           });
         if (!disableResetIdleForTest && hasActiveStreamFilter) {
           extension.emit("background-script-reset-idle", {
-            reason: "hasActiveStreamFilter",
+            reason: "streamfilter",
           });
           return;
         }
@@ -821,7 +945,7 @@ class BackgroundBuilder {
       }
 
       extension.backgroundState = BACKGROUND_STATE.SUSPENDING;
-      this.clearIdleTimer();
+      this.idleManager.clearState();
       // call runtime.onSuspend
       await extension.emit("background-script-suspend");
       // If in the meantime another event fired, state will be RUNNING,
@@ -830,6 +954,7 @@ class BackgroundBuilder {
         return;
       }
       extension.off("background-script-reset-idle", resetBackgroundIdle);
+      extension.off("background-script-idle-waituntil", idleWaitUntil);
 
       // TODO(Bug 1790087): record similar telemetry for background service worker.
       if (!this.isWorker) {
@@ -840,17 +965,13 @@ class BackgroundBuilder {
       }
 
       this.backgroundContextOwner.setBgStateStopped(false);
-      if (extension.persistentBackground && this.extension) {
-        // Several unit tests are currently relying on terminateBackground() to
-        // prime listeners. This is correct for event pages, but not for
-        // persistent background pages!
-        // TODO bug 1844490: Resolve inconsistency, see persistentBackground
-        // check in setBgStateStopped.
-        this.primeBackground(false);
-      }
     };
 
     EventManager.primeListeners(extension, isInStartup);
+    // Avoid setting the flag to false when called during extension startup.
+    if (!isInStartup) {
+      this.backgroundContextOwner.canBePrimed = false;
+    }
 
     // TODO: start-background-script and background-script-event should be
     // unregistered when build() starts or when the extension shuts down.
@@ -896,8 +1017,109 @@ class BackgroundBuilder {
   }
 }
 
+/**
+ * Times the suspension of the background page, acts like a 3-state machine:
+ *  - suspended (or uninitialized)
+ *  - waiting for a timeout (now() < sleepTime)
+ *  - waiting on a promise (keepAlive.size > 0)
+ *
+ * When suspended, backgroundState is STOPPED and IdleManager does not have any
+ * pending timers or termination requests. The clearState() in setBgStateStopped
+ * ensures this.
+ *
+ * When backgroundState is in STARTING, waitUntil() may be called to register a
+ * termination blocker since the blocker may be relevant at the next state
+ * transition, to RUNNING.
+ *
+ * When backgroundState is in RUNNING, resetTimer() can be called for the first
+ * time to start the countdown to termination. resetTimer() may be called
+ * repeatedly to postpone termination.
+ *
+ * Eventually, if the timer will fire and call terminateBackground(), which
+ * initiates the transition from RUNNING to SUSPENDING to STOPPED.
+ */
+var IdleManager = class IdleManager {
+  sleepTime = 0;
+  /** @type {nsITimer} */
+  timer = null;
+  /** @type {Map<promise, string>} */
+  keepAlive = new Map();
+
+  constructor(extension) {
+    this.extension = extension;
+  }
+
+  waitUntil(originalPromise, reason) {
+    // Wrap the passed in promise so that we can resolve our .finally() handler
+    // in clearState() below, while also not keeping the originalPromise alive.
+    let { promise, resolve } = Promise.withResolvers();
+    originalPromise.finally(() => resolve());
+    let start = Cu.now();
+
+    this.keepAlive.set(promise, { reason, resolve });
+    promise.finally(() => {
+      if (
+        this.keepAlive.delete(promise) &&
+        !this.keepAlive.size &&
+        this.extension.backgroundState === BACKGROUND_STATE.RUNNING
+      ) {
+        this.resetTimer();
+      }
+
+      if (Cu.now() - start > backgroundIdleTimeout) {
+        ExtensionTelemetry.eventPageIdleResult.histogramAdd({
+          extension: this.extension,
+          category: reason,
+          value: Math.round((Cu.now() - start) / backgroundIdleTimeout),
+        });
+      }
+    });
+  }
+
+  clearState() {
+    for (let { resolve } of this.keepAlive.values()) {
+      resolve();
+    }
+    this.keepAlive.clear();
+    this.clearTimer();
+  }
+
+  clearTimer() {
+    this.timer?.cancel();
+    this.timer = null;
+  }
+
+  resetTimer() {
+    this.sleepTime = Cu.now() + backgroundIdleTimeout;
+    if (!this.timer) {
+      this.createTimer();
+    }
+  }
+
+  createTimer() {
+    let timeLeft = this.sleepTime - Cu.now();
+    this.timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+    this.timer.init(() => this.timeout(), timeLeft, Ci.nsITimer.TYPE_ONE_SHOT);
+  }
+
+  timeout() {
+    this.clearTimer();
+    if (!this.keepAlive.size) {
+      if (Cu.now() < this.sleepTime) {
+        this.createTimer();
+      } else {
+        // As explained in the comment before the IdleManager class, the timer
+        // is only scheduled while in the RUNNING state. Whenever the background
+        // transitions to another state (SUSPENDING or STOPPED), the timer is
+        // canceled and we won't reach this point.
+        this.extension.terminateBackground();
+      }
+    }
+  }
+};
+
 this.backgroundPage = class extends ExtensionAPI {
-  async onManifestEntry(entryName) {
+  async onManifestEntry() {
     let { extension } = this;
 
     // When in PPB background pages all run in a private context.  This check
@@ -944,10 +1166,15 @@ this.backgroundPage = class extends ExtensionAPI {
       // happen if a primed listener (isInStartup) has been triggered.
       if (
         !this.backgroundBuilder ||
-        this.backgroundBuilder.backgroundContextOwner.bgInstance
+        this.backgroundBuilder.backgroundContextOwner.bgInstance ||
+        !this.backgroundBuilder.backgroundContextOwner.canBePrimed
       ) {
         return;
       }
+
+      // We either start the background page immediately, or fully prime for
+      // real.
+      this.backgroundBuilder.backgroundContextOwner.canBePrimed = false;
 
       // If there are no listeners for the extension that were persisted, we need to
       // start the event page so they can be registered.

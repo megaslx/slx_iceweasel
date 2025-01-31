@@ -20,9 +20,6 @@ if (AppConstants.platform == "win") {
     SubprocessImpl: "resource://gre/modules/subprocess/subprocess_win.sys.mjs",
   });
 } else {
-  // Ignore the "duplicate" definitions here as this are also defined
-  // in the "win" block above.
-  // eslint-disable-next-line mozilla/valid-lazy
   ChromeUtils.defineESModuleGetters(lazy, {
     SubprocessImpl: "resource://gre/modules/subprocess/subprocess_unix.sys.mjs",
   });
@@ -190,6 +187,19 @@ export var Subprocess = {
     // pseudo-promises returned by Task.jsm.
     let path = lazy.SubprocessImpl.pathSearch(command, environment);
     return Promise.resolve(path);
+  },
+
+  /**
+   * Connect to an already-running subprocess
+   * given the file descriptors for its stdin, stdout and stderr.
+   *
+   * @param {number[]} fds
+   *        A list of three file descriptors [stdin, stdout, stderr].
+   *
+   * @returns {Promise<Process>}
+   */
+  connectRunning(fds) {
+    return lazy.SubprocessImpl.connectRunning(fds);
   },
 };
 

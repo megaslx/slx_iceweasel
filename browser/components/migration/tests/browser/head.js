@@ -74,7 +74,7 @@ async function withMigrationWizardDialog(taskFn) {
     if (gBrowser.tabs.length > 1) {
       BrowserTestUtils.removeTab(gBrowser.getTabForBrowser(prefsBrowser));
     } else {
-      BrowserTestUtils.loadURIString(prefsBrowser, "about:blank");
+      BrowserTestUtils.startLoadingURIString(prefsBrowser, "about:blank");
       await BrowserTestUtils.browserLoaded(prefsBrowser);
     }
   }
@@ -332,7 +332,7 @@ async function selectResourceTypesAndStartMigration(
 
   // First, select the InternalTestingProfileMigrator browser.
   let selector = shadow.querySelector("#browser-profile-selector");
-  selector.click();
+  EventUtils.synthesizeMouseAtCenter(selector, {}, wizard.ownerGlobal);
 
   await new Promise(resolve => {
     shadow
@@ -478,10 +478,57 @@ function assertQuantitiesShown(
       }
     } else {
       Assert.ok(
-        BrowserTestUtils.is_hidden(progressGroup),
+        BrowserTestUtils.isHidden(progressGroup),
         `Resource progress group for ${progressGroup.dataset.resourceType}` +
           ` should be hidden.`
       );
+    }
+  }
+}
+
+/**
+ * Translates an entrypoint string into the proper numeric value for the
+ * FX_MIGRATION_ENTRY_POINT_CATEGORICAL histogram.
+ *
+ * @param {string} entrypoint
+ *   The entrypoint to translate from MIGRATION_ENTRYPOINTS.
+ * @returns {number}
+ *   The numeric index value for the FX_MIGRATION_ENTRY_POINT_CATEGORICAL
+ *   histogram.
+ */
+function getEntrypointHistogramIndex(entrypoint) {
+  switch (entrypoint) {
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.FIRSTRUN: {
+      return 1;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.FXREFRESH: {
+      return 2;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.PLACES: {
+      return 3;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.PASSWORDS: {
+      return 4;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.NEWTAB: {
+      return 5;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.FILE_MENU: {
+      return 6;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.HELP_MENU: {
+      return 7;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.BOOKMARKS_TOOLBAR: {
+      return 8;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.PREFERENCES: {
+      return 9;
+    }
+    case MigrationUtils.MIGRATION_ENTRYPOINTS.UNKNOWN:
+    // Intentional fall-through
+    default: {
+      return 0; // Unknown
     }
   }
 }

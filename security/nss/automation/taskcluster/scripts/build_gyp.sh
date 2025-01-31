@@ -5,10 +5,21 @@ source $(dirname "$0")/tools.sh
 # Clone NSPR if needed.
 hg_clone https://hg.mozilla.org/projects/nspr ./nspr default
 
-if [[ -f nss/nspr.patch && "$ALLOW_NSPR_PATCH" == "1" ]]; then
-  pushd nspr
+pushd nspr
+hg revert --all
+if [[ -f ../nss/nspr.patch && "$ALLOW_NSPR_PATCH" == "1" ]]; then
   cat ../nss/nspr.patch | patch -p1
-  popd
+fi
+popd
+
+# Dependencies
+# For MacOS we have hardware in the CI which doesn't allow us o deploy VMs.
+# The setup is hardcoded and can't be changed easily.
+# This part is a helper We install dependencies manually to help.
+if [ "$(uname)" = "Darwin" ]; then
+  python3 -m pip install --user gyp-next
+  python3 -m pip install --user ninja
+  export PATH="$(python3 -m site --user-base)/bin:${PATH}"
 fi
 
 # Build.

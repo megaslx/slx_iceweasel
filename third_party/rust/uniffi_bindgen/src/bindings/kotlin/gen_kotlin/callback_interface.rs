@@ -2,7 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::backend::{CodeType, Literal};
+use super::CodeType;
+use crate::ComponentInterface;
 
 #[derive(Debug)]
 pub struct CallbackInterfaceCodeType {
@@ -16,19 +17,15 @@ impl CallbackInterfaceCodeType {
 }
 
 impl CodeType for CallbackInterfaceCodeType {
-    fn type_label(&self) -> String {
-        super::KotlinCodeOracle.class_name(&self.id)
+    fn type_label(&self, ci: &ComponentInterface) -> String {
+        super::KotlinCodeOracle.class_name(ci, &self.id)
     }
 
     fn canonical_name(&self) -> String {
         format!("Type{}", self.id)
     }
 
-    fn literal(&self, _literal: &Literal) -> String {
-        unreachable!();
-    }
-
     fn initialization_fn(&self) -> Option<String> {
-        Some(format!("{}.register", self.ffi_converter_name()))
+        Some(format!("uniffiCallbackInterface{}.register", self.id))
     }
 }

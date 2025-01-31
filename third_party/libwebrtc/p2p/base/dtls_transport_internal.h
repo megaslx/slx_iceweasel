@@ -65,11 +65,18 @@ class DtlsTransportInternal : public rtc::PacketTransportInternal {
   virtual bool GetSslVersionBytes(int* version) const = 0;
   // Finds out which DTLS-SRTP cipher was negotiated.
   // TODO(zhihuang): Remove this once all dependencies implement this.
-  virtual bool GetSrtpCryptoSuite(int* cipher) = 0;
+  virtual bool GetSrtpCryptoSuite(int* cipher) const = 0;
 
   // Finds out which DTLS cipher was negotiated.
   // TODO(zhihuang): Remove this once all dependencies implement this.
-  virtual bool GetSslCipherSuite(int* cipher) = 0;
+  virtual bool GetSslCipherSuite(int* cipher) const = 0;
+  virtual std::optional<absl::string_view> GetTlsCipherSuiteName() const = 0;
+
+  // Find out which signature algorithm was used by the peer. Returns values
+  // from
+  // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-signaturescheme
+  // If not applicable, it returns zero.
+  virtual uint16_t GetSslPeerSignatureAlgorithm() const = 0;
 
   // Gets the local RTCCertificate used for DTLS.
   virtual rtc::scoped_refptr<rtc::RTCCertificate> GetLocalCertificate()
@@ -100,7 +107,7 @@ class DtlsTransportInternal : public rtc::PacketTransportInternal {
       absl::string_view digest_alg,
       const uint8_t* digest,
       size_t digest_len,
-      absl::optional<rtc::SSLRole> role) = 0;
+      std::optional<rtc::SSLRole> role) = 0;
 
   ABSL_DEPRECATED("Set the max version via construction.")
   bool SetSslMaxProtocolVersion(rtc::SSLProtocolVersion version) {

@@ -40,9 +40,11 @@ class MediaQueryList final : public DOMEventTargetHelper,
 
   nsISupports* GetParentObject() const;
 
-  // Returns whether we need to notify of the change event using
-  // FireChangeEvent().
-  [[nodiscard]] bool MediaFeatureValuesChanged();
+  void MediaFeatureValuesChanged();
+
+  // Returns whether we need to notify of the change by dispatching a change
+  // event.
+  [[nodiscard]] bool EvaluateOnRenderingUpdate();
   void FireChangeEvent();
 
   JSObject* WrapObject(JSContext* aCx,
@@ -51,11 +53,8 @@ class MediaQueryList final : public DOMEventTargetHelper,
   // WebIDL methods
   void GetMedia(nsACString& aMedia) const;
   bool Matches();
-  void AddListener(EventListener* aListener, ErrorResult& aRv);
-  void RemoveListener(EventListener* aListener, ErrorResult& aRv);
-
-  using DOMEventTargetHelper::EventListenerAdded;
-  void EventListenerAdded(nsAtom* aType) override;
+  void AddListener(EventListener* aListener);
+  void RemoveListener(EventListener* aListener);
 
   IMPL_EVENT_HANDLER(change)
 
@@ -91,11 +90,16 @@ class MediaQueryList final : public DOMEventTargetHelper,
   // linked list.
   RefPtr<Document> mDocument;
   const RefPtr<const MediaList> mMediaList;
-  bool mMatches = false;
-  bool mMatchesValid = false;
   // Whether our MediaList depends on our viewport size. Our medialist is
   // immutable, so we can just compute this once and carry on with our lives.
-  const bool mViewportDependent;
+  const bool mViewportDependent : 1;
+  // The matches state.
+  // https://drafts.csswg.org/cssom-view/#mediaquerylist-matches-state
+  bool mMatches : 1;
+  // The value of the matches state on creation, or on the last rendering
+  // update, in order to implement:
+  // https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes
+  bool mMatchesOnRenderingUpdate : 1;
 };
 
 }  // namespace mozilla::dom

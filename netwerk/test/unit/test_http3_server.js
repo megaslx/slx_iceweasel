@@ -60,8 +60,6 @@ function channelOpenPromise(chan, flags) {
       );
       resolve([req, buffer]);
     }
-    let internal = chan.QueryInterface(Ci.nsIHttpChannelInternal);
-    internal.setWaitForHTTPSSVCRecord();
     certOverrideService.setDisableAllSecurityChecksAndLetAttackersInterceptMyData(
       true
     );
@@ -78,7 +76,7 @@ add_task(async function testHttp3ServerAsReverseProxy() {
   Services.prefs.setIntPref("network.trr.mode", 3);
   Services.prefs.setCharPref(
     "network.trr.uri",
-    `https://foo.example.com:${trrServer.port}/dns-query`
+    `https://foo.example.com:${trrServer.port()}/dns-query`
   );
 
   await trrServer.registerDoHAnswers("test.h3_example.com", "HTTPS", {
@@ -151,7 +149,7 @@ add_task(async function testHttp3ServerAsReverseProxy() {
   var stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  stream.data = "b".repeat(500);
+  stream.setByteStringData("b".repeat(500));
 
   // Test POST method.
   chan = makeChan(`https://test.h3_example.com/test`);

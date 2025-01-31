@@ -18,9 +18,6 @@ import pendingBreakpoints from "./pending-breakpoints";
 import pause, { initialPauseState } from "./pause";
 import ui, { initialUIState } from "./ui";
 import ast, { initialASTState } from "./ast";
-import projectTextSearch, {
-  initialProjectTextSearchState,
-} from "./project-text-search";
 import quickOpen, { initialQuickOpenState } from "./quick-open";
 import sourcesTree, { initialSourcesTreeState } from "./sources-tree";
 import threads, { initialThreadsState } from "./threads";
@@ -28,8 +25,9 @@ import eventListenerBreakpoints, {
   initialEventListenerState,
 } from "./event-listeners";
 import exceptions, { initialExceptionsState } from "./exceptions";
+import tracerFrames from "./tracer-frames";
 
-import { objectInspector } from "devtools/client/shared/components/reps/index";
+import * as objectInspector from "resource://devtools/client/shared/components/object-inspector/index.js";
 
 /**
  * Note that this is only used by jest tests.
@@ -49,13 +47,13 @@ export function initialState() {
     pause: initialPauseState(),
     ui: initialUIState(),
     ast: initialASTState(),
-    projectTextSearch: initialProjectTextSearchState(),
     quickOpen: initialQuickOpenState(),
     sourcesTree: initialSourcesTreeState(),
     threads: initialThreadsState(),
     objectInspector: objectInspector.reducer.initialOIState(),
     eventListenerBreakpoints: initialEventListenerState(),
     exceptions: initialExceptionsState(),
+    tracerFrames: {},
   };
 }
 
@@ -71,11 +69,11 @@ export default {
   pause,
   ui,
   ast,
-  projectTextSearch,
   quickOpen,
   sourcesTree,
   threads,
   objectInspector: objectInspector.reducer.default,
   eventListenerBreakpoints,
   exceptions,
+  tracerFrames,
 };

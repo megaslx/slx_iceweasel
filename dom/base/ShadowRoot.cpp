@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Preferences.h"
 #include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/DocumentFragment.h"
@@ -14,11 +13,16 @@
 #include "nsWindowSizes.h"
 #include "mozilla/dom/DirectionalityUtils.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/ElementBinding.h"
 #include "mozilla/dom/HTMLDetailsElement.h"
 #include "mozilla/dom/HTMLSlotElement.h"
 #include "mozilla/dom/HTMLSummaryElement.h"
+#include "mozilla/dom/MutationObservers.h"
 #include "mozilla/dom/Text.h"
 #include "mozilla/dom/TreeOrderedArrayInlines.h"
+#include "mozilla/dom/TrustedTypeUtils.h"
+#include "mozilla/dom/TrustedTypesConstants.h"
+#include "mozilla/dom/UnbindContext.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/IdentifierMapEntry.h"
 #include "mozilla/PresShell.h"
@@ -26,7 +30,6 @@
 #include "mozilla/ScopeExit.h"
 #include "mozilla/ServoStyleRuleMap.h"
 #include "mozilla/StyleSheet.h"
-#include "mozilla/StyleSheetInlines.h"
 #include "mozilla/dom/StyleSheetList.h"
 
 using namespace mozilla;
@@ -44,7 +47,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(DocumentFragment)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ShadowRoot)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIContent)
-  NS_INTERFACE_MAP_ENTRY(nsIRadioGroupContainer)
 NS_INTERFACE_MAP_END_INHERITING(DocumentFragment)
 
 NS_IMPL_ADDREF_INHERITED(ShadowRoot, DocumentFragment)
@@ -53,6 +55,8 @@ NS_IMPL_RELEASE_INHERITED(ShadowRoot, DocumentFragment)
 ShadowRoot::ShadowRoot(Element* aElement, ShadowRootMode aMode,
                        Element::DelegatesFocus aDelegatesFocus,
                        SlotAssignmentMode aSlotAssignment,
+                       IsClonable aIsClonable, IsSerializable aIsSerializable,
+                       Declarative aDeclarative,
                        already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : DocumentFragment(std::move(aNodeInfo)),
       DocumentOrShadowRoot(this),
@@ -60,7 +64,10 @@ ShadowRoot::ShadowRoot(Element* aElement, ShadowRootMode aMode,
       mDelegatesFocus(aDelegatesFocus),
       mSlotAssignment(aSlotAssignment),
       mIsDetailsShadowTree(aElement->IsHTMLElement(nsGkAtoms::details)),
-      mIsAvailableToElementInternals(false) {
+      mIsAvailableToElementInternals(false),
+      mIsDeclarative(aDeclarative),
+      mIsClonable(aIsClonable),
+      mIsSerializable(aIsSerializable) {
   // nsINode.h relies on this.
   MOZ_ASSERT(static_cast<nsINode*>(this) == reinterpret_cast<nsINode*>(this));
   MOZ_ASSERT(static_cast<nsIContent*>(this) ==
@@ -182,10 +189,13 @@ void ShadowRoot::Unbind() {
     OwnerDoc()->RemoveComposedDocShadowRoot(*this);
   }
 
+  UnbindContext context(*this);
   for (nsIContent* child = GetFirstChild(); child;
        child = child->GetNextSibling()) {
-    child->UnbindFromTree(false);
+    child->UnbindFromTree(context);
   }
+
+  MutationObservers::NotifyParentChainChanged(this);
 }
 
 void ShadowRoot::Unattach() {
@@ -245,6 +255,8 @@ void ShadowRoot::AddSlot(HTMLSlotElement* aSlot) {
     return;
   }
 
+  InvalidateStyleAndLayoutOnSubtree(aSlot);
+
   HTMLSlotElement* oldSlot = currentSlots->SafeElementAt(1);
   if (SlotAssignment() == SlotAssignmentMode::Named) {
     if (oldSlot) {
@@ -265,8 +277,6 @@ void ShadowRoot::AddSlot(HTMLSlotElement* aSlot) {
       if (doEnqueueSlotChange) {
         oldSlot->EnqueueSlotChangeEvent();
         aSlot->EnqueueSlotChangeEvent();
-        SlotStateChanged(oldSlot);
-        SlotStateChanged(aSlot);
       }
     } else {
       bool doEnqueueSlotChange = false;
@@ -284,7 +294,6 @@ void ShadowRoot::AddSlot(HTMLSlotElement* aSlot) {
 
       if (doEnqueueSlotChange) {
         aSlot->EnqueueSlotChangeEvent();
-        SlotStateChanged(aSlot);
       }
     }
   } else {
@@ -303,7 +312,6 @@ void ShadowRoot::AddSlot(HTMLSlotElement* aSlot) {
     }
     if (doEnqueueSlotChange) {
       aSlot->EnqueueSlotChangeEvent();
-      SlotStateChanged(aSlot);
     }
   }
 }
@@ -402,7 +410,7 @@ void ShadowRoot::RuleRemoved(StyleSheet& aSheet, css::Rule& aRule) {
 }
 
 void ShadowRoot::RuleChanged(StyleSheet& aSheet, css::Rule*,
-                             StyleRuleChangeKind) {
+                             const StyleRuleChange&) {
   if (!aSheet.IsApplicable()) {
     return;
   }
@@ -412,7 +420,7 @@ void ShadowRoot::RuleChanged(StyleSheet& aSheet, css::Rule*,
   ApplicableRulesChanged();
 }
 
-void ShadowRoot::ImportRuleLoaded(CSSImportRule&, StyleSheet& aSheet) {
+void ShadowRoot::ImportRuleLoaded(StyleSheet& aSheet) {
   if (mStyleRuleMap) {
     mStyleRuleMap->SheetAdded(aSheet);
   }
@@ -874,4 +882,38 @@ ServoStyleRuleMap& ShadowRoot::ServoStyleRuleMap() {
 nsresult ShadowRoot::Clone(dom::NodeInfo* aNodeInfo, nsINode** aResult) const {
   *aResult = nullptr;
   return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
+}
+
+void ShadowRoot::SetHTMLUnsafe(const TrustedHTMLOrString& aHTML,
+                               ErrorResult& aError) {
+  RefPtr<Element> host = GetHost();
+  nsContentUtils::SetHTMLUnsafe(this, host, aHTML, true /*aIsShadowRoot*/,
+                                aError);
+}
+
+void ShadowRoot::GetInnerHTML(
+    OwningTrustedHTMLOrNullIsEmptyString& aInnerHTML) {
+  DocumentFragment::GetInnerHTML(aInnerHTML.SetAsNullIsEmptyString());
+}
+
+MOZ_CAN_RUN_SCRIPT void ShadowRoot::SetInnerHTML(
+    const TrustedHTMLOrNullIsEmptyString& aInnerHTML, ErrorResult& aError) {
+  constexpr nsLiteralString sink = u"ShadowRoot innerHTML"_ns;
+
+  Maybe<nsAutoString> compliantStringHolder;
+  const nsAString* compliantString =
+      TrustedTypeUtils::GetTrustedTypesCompliantString(
+          aInnerHTML, sink, kTrustedTypesOnlySinkGroup, *this,
+          compliantStringHolder, aError);
+  if (aError.Failed()) {
+    return;
+  }
+
+  SetInnerHTMLInternal(*compliantString, aError);
+}
+
+void ShadowRoot::GetHTML(const GetHTMLOptions& aOptions, nsAString& aResult) {
+  nsContentUtils::SerializeNodeToMarkup<SerializeShadowRoots::Yes>(
+      this, true, aResult, aOptions.mSerializableShadowRoots,
+      aOptions.mShadowRoots);
 }

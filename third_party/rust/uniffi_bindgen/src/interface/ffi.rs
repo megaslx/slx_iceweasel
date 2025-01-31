@@ -11,13 +11,15 @@
 //! These types are purely an implementation detail of UniFFI, so consumers shouldn't
 //! need to know about them. But as a developer working on UniFFI itself, you're likely
 //! to spend a lot of time thinking about how these low-level types are used to represent
-//! the higher-level "interface types" from the [`super::types::Type`] enum.
+//! the higher-level "interface types" from the [`Type`] enum.
 /// Represents the restricted set of low-level types that can be used to construct
 /// the C-style FFI layer between a rust component and its foreign language bindings.
 ///
 /// For the types that involve memory allocation, we make a distinction between
 /// "owned" types (the recipient must free it, or pass it to someone else) and
 /// "borrowed" types (the sender must keep it alive for the duration of the call).
+use uniffi_meta::{ExternalKind, Type};
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FfiType {
     // N.B. there are no booleans at this layer, since they cause problems for JNA.
@@ -41,27 +43,156 @@ pub enum FfiType {
     /// or pass it to someone that will.
     /// If the inner option is Some, it is the name of the external type. The bindings may need
     /// to use this name to import the correct RustBuffer for that type.
-    RustBuffer(Option<String>),
+    RustBuffer(Option<ExternalFfiMetadata>),
     /// A borrowed reference to some raw bytes owned by foreign language code.
     /// The provider of this reference must keep it alive for the duration of the receiving call.
     ForeignBytes,
-    /// Pointer to a callback function that handles all callbacks on the foreign language side.
-    ForeignCallback,
-    /// Pointer-sized opaque handle that represents a foreign executor.  Foreign bindings can
-    /// either use an actual pointer or a usized integer.
-    ForeignExecutorHandle,
-    /// Pointer to the callback function that's invoked to schedule calls with a ForeignExecutor
-    ForeignExecutorCallback,
-    /// Pointer to a callback function to complete an async Rust function
-    FutureCallback {
-        /// Note: `return_type` is not optional because we have a void callback parameter like we
-        /// can have a void return.  Instead, we use `UInt8` as a placeholder value.
-        return_type: Box<FfiType>,
-    },
-    /// Opaque pointer passed to the FutureCallback
-    FutureCallbackData,
-    // TODO: you can imagine a richer structural typesystem here, e.g. `Ref<String>` or something.
-    // We don't need that yet and it's possible we never will, so it isn't here for now.
+    /// Pointer to a callback function.  The inner value which matches one of the callback
+    /// definitions in [crate::ComponentInterface::ffi_definitions].
+    Callback(String),
+    /// Pointer to a FFI struct (e.g. a VTable).  The inner value matches one of the struct
+    /// definitions in [crate::ComponentInterface::ffi_definitions].
+    Struct(String),
+    /// Opaque 64-bit handle
+    ///
+    /// These are used to pass objects across the FFI.
+    Handle,
+    RustCallStatus,
+    /// Pointer to an FfiType.
+    Reference(Box<FfiType>),
+    /// Opaque pointer
+    VoidPointer,
+}
+
+impl FfiType {
+    pub fn reference(self) -> FfiType {
+        FfiType::Reference(Box::new(self))
+    }
+
+    /// Unique name for an FFI return type
+    pub fn return_type_name(return_type: Option<&FfiType>) -> String {
+        match return_type {
+            Some(t) => match t {
+                FfiType::UInt8 => "u8".to_owned(),
+                FfiType::Int8 => "i8".to_owned(),
+                FfiType::UInt16 => "u16".to_owned(),
+                FfiType::Int16 => "i16".to_owned(),
+                FfiType::UInt32 => "u32".to_owned(),
+                FfiType::Int32 => "i32".to_owned(),
+                FfiType::UInt64 => "u64".to_owned(),
+                FfiType::Int64 => "i64".to_owned(),
+                FfiType::Float32 => "f32".to_owned(),
+                FfiType::Float64 => "f64".to_owned(),
+                FfiType::RustArcPtr(_) => "pointer".to_owned(),
+                FfiType::RustBuffer(_) => "rust_buffer".to_owned(),
+                _ => unimplemented!("FFI return type: {t:?}"),
+            },
+            None => "void".to_owned(),
+        }
+    }
+}
+
+/// When passing data across the FFI, each `Type` value will be lowered into a corresponding
+/// `FfiType` value. This conversion tells you which one.
+///
+/// Note that the conversion is one-way - given an FfiType, it is not in general possible to
+/// tell what the corresponding Type is that it's being used to represent.
+impl From<&Type> for FfiType {
+    fn from(t: &Type) -> FfiType {
+        match t {
+            // Types that are the same map to themselves, naturally.
+            Type::UInt8 => FfiType::UInt8,
+            Type::Int8 => FfiType::Int8,
+            Type::UInt16 => FfiType::UInt16,
+            Type::Int16 => FfiType::Int16,
+            Type::UInt32 => FfiType::UInt32,
+            Type::Int32 => FfiType::Int32,
+            Type::UInt64 => FfiType::UInt64,
+            Type::Int64 => FfiType::Int64,
+            Type::Float32 => FfiType::Float32,
+            Type::Float64 => FfiType::Float64,
+            // Booleans lower into an Int8, to work around a bug in JNA.
+            Type::Boolean => FfiType::Int8,
+            // Strings are always owned rust values.
+            // We might add a separate type for borrowed strings in future.
+            Type::String => FfiType::RustBuffer(None),
+            // Byte strings are also always owned rust values.
+            // We might add a separate type for borrowed byte strings in future as well.
+            Type::Bytes => FfiType::RustBuffer(None),
+            // Objects are pointers to an Arc<>
+            Type::Object { name, .. } => FfiType::RustArcPtr(name.to_owned()),
+            // Callback interfaces are passed as opaque integer handles.
+            Type::CallbackInterface { .. } => FfiType::UInt64,
+            // Other types are serialized into a bytebuffer and deserialized on the other side.
+            Type::Enum { .. }
+            | Type::Record { .. }
+            | Type::Optional { .. }
+            | Type::Sequence { .. }
+            | Type::Map { .. }
+            | Type::Timestamp
+            | Type::Duration => FfiType::RustBuffer(None),
+            Type::External {
+                name,
+                kind: ExternalKind::Interface,
+                ..
+            }
+            | Type::External {
+                name,
+                kind: ExternalKind::Trait,
+                ..
+            } => FfiType::RustArcPtr(name.clone()),
+            Type::External {
+                name,
+                kind: ExternalKind::DataClass,
+                module_path,
+                namespace,
+                ..
+            } => FfiType::RustBuffer(Some(ExternalFfiMetadata {
+                name: name.clone(),
+                module_path: module_path.clone(),
+                namespace: namespace.clone(),
+            })),
+            Type::Custom { builtin, .. } => FfiType::from(builtin.as_ref()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExternalFfiMetadata {
+    pub name: String,
+    pub module_path: String,
+    pub namespace: String,
+}
+
+// Needed for rust scaffolding askama template
+impl From<Type> for FfiType {
+    fn from(ty: Type) -> Self {
+        (&ty).into()
+    }
+}
+
+impl From<&&Type> for FfiType {
+    fn from(ty: &&Type) -> Self {
+        (*ty).into()
+    }
+}
+
+/// An Ffi definition
+#[derive(Debug, Clone)]
+pub enum FfiDefinition {
+    Function(FfiFunction),
+    CallbackFunction(FfiCallbackFunction),
+    Struct(FfiStruct),
+}
+
+impl FfiDefinition {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Function(f) => f.name(),
+            Self::CallbackFunction(f) => f.name(),
+            Self::Struct(s) => s.name(),
+        }
+    }
 }
 
 /// Represents an "extern C"-style function that will be part of the FFI.
@@ -83,8 +214,31 @@ pub struct FfiFunction {
 }
 
 impl FfiFunction {
+    pub fn callback_init(module_path: &str, trait_name: &str, vtable_name: String) -> Self {
+        Self {
+            name: uniffi_meta::init_callback_vtable_fn_symbol_name(module_path, trait_name),
+            arguments: vec![FfiArgument {
+                name: "vtable".to_string(),
+                type_: FfiType::Struct(vtable_name).reference(),
+            }],
+            return_type: None,
+            has_rust_call_status_arg: false,
+            ..Self::default()
+        }
+    }
+
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn rename(&mut self, new_name: String) {
+        self.name = new_name;
+    }
+
+    /// Name of the FFI buffer version of this function that's generated when the
+    /// `scaffolding-ffi-buffer-fns` feature is enabled.
+    pub fn ffi_buffer_fn_name(&self) -> String {
+        uniffi_meta::ffi_buffer_symbol_name(&self.name)
     }
 
     pub fn is_async(&self) -> bool {
@@ -114,28 +268,8 @@ impl FfiFunction {
     ) {
         self.arguments = args.into_iter().collect();
         if self.is_async() {
-            self.arguments.extend([
-                // Used to schedule polls
-                FfiArgument {
-                    name: "uniffi_executor".into(),
-                    type_: FfiType::ForeignExecutorHandle,
-                },
-                // Invoked when the future is ready
-                FfiArgument {
-                    name: "uniffi_callback".into(),
-                    type_: FfiType::FutureCallback {
-                        return_type: Box::new(return_type.unwrap_or(FfiType::UInt8)),
-                    },
-                },
-                // Data pointer passed to the callback
-                FfiArgument {
-                    name: "uniffi_callback_data".into(),
-                    type_: FfiType::FutureCallbackData,
-                },
-            ]);
-            // Async scaffolding functions never return values.  Instead, the callback is invoked
-            // when the Future is ready.
-            self.return_type = None;
+            self.return_type = Some(FfiType::Handle);
+            self.has_rust_call_status_arg = false;
         } else {
             self.return_type = return_type;
         }
@@ -165,11 +299,126 @@ pub struct FfiArgument {
 }
 
 impl FfiArgument {
+    pub fn new(name: impl Into<String>, type_: FfiType) -> Self {
+        Self {
+            name: name.into(),
+            type_,
+        }
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    pub fn rename(&mut self, new_name: String) {
+        self.name = new_name;
+    }
+
     pub fn type_(&self) -> FfiType {
         self.type_.clone()
+    }
+}
+
+/// Represents an "extern C"-style callback function
+///
+/// These are defined in the foreign code and passed to Rust as a function pointer.
+#[derive(Debug, Default, Clone)]
+pub struct FfiCallbackFunction {
+    // Name for this function type. This matches the value inside `FfiType::Callback`
+    pub(super) name: String,
+    pub(super) arguments: Vec<FfiArgument>,
+    pub(super) return_type: Option<FfiType>,
+    pub(super) has_rust_call_status_arg: bool,
+}
+
+impl FfiCallbackFunction {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn rename(&mut self, new_name: String) {
+        self.name = new_name;
+    }
+
+    pub fn arguments(&self) -> Vec<&FfiArgument> {
+        self.arguments.iter().collect()
+    }
+
+    pub fn return_type(&self) -> Option<&FfiType> {
+        self.return_type.as_ref()
+    }
+
+    pub fn has_rust_call_status_arg(&self) -> bool {
+        self.has_rust_call_status_arg
+    }
+}
+
+/// Represents a repr(C) struct used in the FFI
+#[derive(Debug, Default, Clone)]
+pub struct FfiStruct {
+    pub(super) name: String,
+    pub(super) fields: Vec<FfiField>,
+}
+
+impl FfiStruct {
+    /// Get the name of this struct
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn rename(&mut self, new_name: String) {
+        self.name = new_name;
+    }
+
+    /// Get the fields for this struct
+    pub fn fields(&self) -> &[FfiField] {
+        &self.fields
+    }
+}
+
+/// Represents a field of an [FfiStruct]
+#[derive(Debug, Clone)]
+pub struct FfiField {
+    pub(super) name: String,
+    pub(super) type_: FfiType,
+}
+
+impl FfiField {
+    pub fn new(name: impl Into<String>, type_: FfiType) -> Self {
+        Self {
+            name: name.into(),
+            type_,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn type_(&self) -> FfiType {
+        self.type_.clone()
+    }
+
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
+    }
+}
+
+impl From<FfiFunction> for FfiDefinition {
+    fn from(value: FfiFunction) -> FfiDefinition {
+        FfiDefinition::Function(value)
+    }
+}
+
+impl From<FfiStruct> for FfiDefinition {
+    fn from(value: FfiStruct) -> FfiDefinition {
+        FfiDefinition::Struct(value)
+    }
+}
+
+impl From<FfiCallbackFunction> for FfiDefinition {
+    fn from(value: FfiCallbackFunction) -> FfiDefinition {
+        FfiDefinition::CallbackFunction(value)
     }
 }
 

@@ -12,7 +12,7 @@ impl ValueEnum for Mode {
         &[Mode::Fast, Mode::Slow]
     }
 
-    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
+    fn to_possible_value(&self) -> Option<PossibleValue> {
         Some(match self {
             Mode::Fast => PossibleValue::new("fast").help("Run swiftly"),
             Mode::Slow => PossibleValue::new("slow").help("Crawl slowly but steadily"),
@@ -38,7 +38,7 @@ impl std::str::FromStr for Mode {
                 return Ok(*variant);
             }
         }
-        Err(format!("invalid variant: {}", s))
+        Err(format!("invalid variant: {s}"))
     }
 }
 

@@ -19,7 +19,6 @@
 #include "pk11pub.h"
 
 #include "nsNetCID.h"
-#include "nsIIDNService.h"
 #include "nsILoadContext.h"
 #include "nsEffectiveTLDService.h"
 #include "nsServiceManagerUtils.h"
@@ -47,11 +46,14 @@
 #include "jsep/JsepSessionImpl.h"
 
 #include "transportbridge/MediaPipeline.h"
+#include "transportbridge/RtpLogger.h"
 #include "jsapi/RTCRtpReceiver.h"
 #include "jsapi/RTCRtpSender.h"
 
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Sprintf.h"
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/media/MediaUtils.h"
 
 #ifdef XP_WIN
 // We need to undef the MS macro for Document::CreateEvent
@@ -61,7 +63,7 @@
 #endif  // XP_WIN
 
 #include "mozilla/dom/Document.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsDOMDataChannel.h"
 #include "mozilla/dom/Location.h"
 #include "mozilla/dom/Promise.h"
@@ -83,6 +85,7 @@
 #include "mozilla/dom/RTCCertificate.h"
 #include "mozilla/dom/RTCSctpTransportBinding.h"  // RTCSctpTransportState
 #include "mozilla/dom/RTCDtlsTransportBinding.h"  // RTCDtlsTransportState
+#include "mozilla/dom/RTCIceTransportBinding.h"   // RTCIceTransportState
 #include "mozilla/dom/RTCRtpReceiverBinding.h"
 #include "mozilla/dom/RTCRtpSenderBinding.h"
 #include "mozilla/dom/RTCStatsReportBinding.h"
@@ -247,19 +250,41 @@ void PeerConnectionAutoTimer::UnregisterConnection(bool aContainedAV) {
 
 bool PeerConnectionAutoTimer::IsStopped() { return mRefCnt == 0; }
 
+// There is not presently an implementation of these for nsTHashMap :(
+inline void ImplCycleCollectionUnlink(
+    PeerConnectionImpl::RTCDtlsTransportMap& aMap) {
+  for (auto& tableEntry : aMap) {
+    ImplCycleCollectionUnlink(*tableEntry.GetModifiableData());
+  }
+  aMap.Clear();
+}
+
+inline void ImplCycleCollectionTraverse(
+    nsCycleCollectionTraversalCallback& aCallback,
+    PeerConnectionImpl::RTCDtlsTransportMap& aMap, const char* aName,
+    uint32_t aFlags = 0) {
+  for (auto& tableEntry : aMap) {
+    ImplCycleCollectionTraverse(aCallback, *tableEntry.GetModifiableData(),
+                                aName, aFlags);
+  }
+}
+
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PeerConnectionImpl)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(PeerConnectionImpl)
   tmp->Close();
   tmp->BreakCycles();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPCObserver, mWindow, mCertificate,
-                                  mSTSThread, mReceiveStreams, mOperations,
-                                  mSctpTransport, mKungFuDeathGrip)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(
+      mPCObserver, mWindow, mCertificate, mSTSThread, mReceiveStreams,
+      mOperations, mTransportIdToRTCDtlsTransport, mSctpTransport,
+      mLastStableSctpTransport, mLastStableSctpDtlsTransport, mKungFuDeathGrip)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(PeerConnectionImpl)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(
       mPCObserver, mWindow, mCertificate, mSTSThread, mReceiveStreams,
-      mOperations, mTransceivers, mSctpTransport, mKungFuDeathGrip)
+      mOperations, mTransceivers, mTransportIdToRTCDtlsTransport,
+      mSctpTransport, mLastStableSctpTransport, mLastStableSctpDtlsTransport,
+      mKungFuDeathGrip)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(PeerConnectionImpl)
@@ -329,7 +354,6 @@ bool IsPrivateBrowsing(nsPIDOMWindowInner* aWindow) {
 PeerConnectionImpl::PeerConnectionImpl(const GlobalObject* aGlobal)
     : mTimeCard(MOZ_LOG_TEST(logModuleInfo, LogLevel::Error) ? create_timecard()
                                                              : nullptr),
-      mJsConfiguration(),
       mSignalingState(RTCSignalingState::Stable),
       mIceConnectionState(RTCIceConnectionState::New),
       mIceGatheringState(RTCIceGatheringState::New),
@@ -373,8 +397,11 @@ PeerConnectionImpl::PeerConnectionImpl(const GlobalObject* aGlobal)
                                              mEffectiveTLDPlus1);
       }
 
-      mRtxIsAllowed = !HostnameInPref(
+      mRtxIsAllowed = !media::HostnameInPref(
           "media.peerconnection.video.use_rtx.blocklist", mHostname);
+      mDuplicateFingerprintQuirk = media::HostnameInPref(
+          "media.peerconnection.sdp.quirk.duplicate_fingerprint.allowlist",
+          mHostname);
     }
   }
 
@@ -576,31 +603,30 @@ RefPtr<DtlsIdentity> PeerConnectionImpl::Identity() const {
 
 class CompareCodecPriority {
  public:
-  void SetPreferredCodec(int32_t preferredCodec) {
-    // This pref really ought to be a string, preferably something like
-    // "H264" or "VP8" instead of a payload type.
-    // Bug 1101259.
-    std::ostringstream os;
-    os << preferredCodec;
-    mPreferredCodec = os.str();
+  void SetPreferredCodec(const nsCString& preferredCodec) {
+    mPreferredCodec = preferredCodec;
   }
 
   bool operator()(const UniquePtr<JsepCodecDescription>& lhs,
                   const UniquePtr<JsepCodecDescription>& rhs) const {
-    if (!mPreferredCodec.empty() && lhs->mDefaultPt == mPreferredCodec &&
-        rhs->mDefaultPt != mPreferredCodec) {
-      return true;
+    // Do we have a preferred codec?
+    if (!mPreferredCodec.IsEmpty()) {
+      const bool lhsMatches = mPreferredCodec.EqualsIgnoreCase(lhs->mName) ||
+                              mPreferredCodec.EqualsIgnoreCase(lhs->mDefaultPt);
+      const bool rhsMatches = mPreferredCodec.EqualsIgnoreCase(rhs->mName) ||
+                              mPreferredCodec.EqualsIgnoreCase(rhs->mDefaultPt);
+      // If the only the left side matches, prefer it
+      if (lhsMatches && !rhsMatches) {
+        return true;
+      }
     }
-
-    if (lhs->mStronglyPreferred && !rhs->mStronglyPreferred) {
-      return true;
-    }
-
-    return false;
+    // If only the left side is strongly preferred, prefer it
+    return (lhs->mStronglyPreferred && !rhs->mStronglyPreferred);
   }
 
  private:
-  std::string mPreferredCodec;
+  // The preferred codec name or PT number
+  nsCString mPreferredCodec;
 };
 
 class ConfigureCodec {
@@ -611,6 +637,7 @@ class ConfigureCodec {
         mH264Enabled(false),
         mVP9Enabled(true),
         mVP9Preferred(false),
+        mAV1Enabled(StaticPrefs::media_webrtc_codec_video_av1_enabled()),
         mH264Level(13),   // minimum suggested for WebRTC spec
         mH264MaxBr(0),    // Unlimited
         mH264MaxMbps(0),  // Unlimited
@@ -689,9 +716,13 @@ class ConfigureCodec {
             static_cast<JsepVideoCodecDescription&>(*codec);
 
         if (videoCodec.mName == "H264") {
-          // Override level
-          videoCodec.mProfileLevelId &= 0xFFFF00;
-          videoCodec.mProfileLevelId |= mH264Level;
+          // Override level but not for the pure Baseline codec
+          if (JsepVideoCodecDescription::GetSubprofile(
+                  videoCodec.mProfileLevelId) ==
+              JsepVideoCodecDescription::kH264ConstrainedBaseline) {
+            videoCodec.mProfileLevelId &= 0xFFFF00;
+            videoCodec.mProfileLevelId |= mH264Level;
+          }
 
           videoCodec.mConstraints.maxBr = mH264MaxBr;
 
@@ -704,10 +735,6 @@ class ConfigureCodec {
             // We're assuming packetization mode 0 is unsupported by
             // hardware.
             videoCodec.mEnabled = false;
-          }
-
-          if (mHardwareH264Enabled) {
-            videoCodec.mStronglyPreferred = true;
           }
         } else if (videoCodec.mName == "red") {
           videoCodec.mEnabled = mRedUlpfecEnabled;
@@ -725,6 +752,8 @@ class ConfigureCodec {
           }
           videoCodec.mConstraints.maxFs = mVP8MaxFs;
           videoCodec.mConstraints.maxFps = Some(mVP8MaxFr);
+        } else if (videoCodec.mName == "AV1") {
+          videoCodec.mEnabled = mAV1Enabled;
         }
 
         if (mUseTmmbr) {
@@ -750,6 +779,7 @@ class ConfigureCodec {
   bool mH264Enabled;
   bool mVP9Enabled;
   bool mVP9Preferred;
+  bool mAV1Enabled;
   int32_t mH264Level;
   int32_t mH264MaxBr;
   int32_t mH264MaxMbps;
@@ -760,35 +790,6 @@ class ConfigureCodec {
   bool mUseTransportCC;
   bool mUseAudioFec;
   bool mRedUlpfecEnabled;
-};
-
-class ConfigureRedCodec {
- public:
-  explicit ConfigureRedCodec(nsCOMPtr<nsIPrefBranch>& branch,
-                             std::vector<uint8_t>* redundantEncodings)
-      : mRedundantEncodings(redundantEncodings) {
-    // if we wanted to override or modify which encodings are considered
-    // for redundant encodings, we'd probably want to handle it here by
-    // checking prefs modifying the operator() code below
-  }
-
-  void operator()(UniquePtr<JsepCodecDescription>& codec) const {
-    if (codec->Type() == SdpMediaSection::kVideo && !codec->mEnabled) {
-      uint8_t pt = (uint8_t)strtoul(codec->mDefaultPt.c_str(), nullptr, 10);
-      // don't search for the codec payload type unless we have a valid
-      // conversion (non-zero)
-      if (pt != 0) {
-        std::vector<uint8_t>::iterator it = std::find(
-            mRedundantEncodings->begin(), mRedundantEncodings->end(), pt);
-        if (it != mRedundantEncodings->end()) {
-          mRedundantEncodings->erase(it);
-        }
-      }
-    }
-  }
-
- private:
-  std::vector<uint8_t>* mRedundantEncodings;
 };
 
 nsresult PeerConnectionImpl::ConfigureJsepSessionCodecs() {
@@ -811,28 +812,12 @@ nsresult PeerConnectionImpl::ConfigureJsepSessionCodecs() {
   ConfigureCodec configurer(branch);
   mJsepSession->ForEachCodec(configurer);
 
-  // if red codec is enabled, configure it for the other enabled codecs
-  for (auto& codec : mJsepSession->Codecs()) {
-    if (codec->mName == "red" && codec->mEnabled) {
-      JsepVideoCodecDescription* redCodec =
-          static_cast<JsepVideoCodecDescription*>(codec.get());
-      ConfigureRedCodec configureRed(branch, &(redCodec->mRedundantEncodings));
-      mJsepSession->ForEachCodec(configureRed);
-      break;
-    }
-  }
-
   // We use this to sort the list of codecs once everything is configured
   CompareCodecPriority comparator;
-
-  // Sort by priority
-  int32_t preferredCodec = 0;
-  branch->GetIntPref("media.navigator.video.preferred_codec", &preferredCodec);
-
-  if (preferredCodec) {
-    comparator.SetPreferredCodec(preferredCodec);
+  if (StaticPrefs::media_webrtc_codec_video_av1_experimental_preferred()) {
+    comparator.SetPreferredCodec(nsCString("av1"));
   }
-
+  // Sort by priority
   mJsepSession->SortCodecs(comparator);
   return NS_OK;
 }
@@ -856,8 +841,7 @@ PeerConnectionImpl::EnsureDataConnection(uint16_t aLocalPort,
     return NS_OK;
   }
 
-  nsCOMPtr<nsISerialEventTarget> target =
-      mWindow ? mWindow->EventTargetFor(TaskCategory::Other) : nullptr;
+  nsCOMPtr<nsISerialEventTarget> target = GetMainThreadSerialEventTarget();
   Maybe<uint64_t> mms = aMMSSet ? Some(aMaxMessageSize) : Nothing();
   if (auto res = DataChannelConnection::Create(this, target, mTransportHandler,
                                                aLocalPort, aNumstreams, mms)) {
@@ -889,6 +873,7 @@ nsresult PeerConnectionImpl::GetDatachannelParameters(
 
   if (!datachannelTransceiver ||
       !datachannelTransceiver->mTransport.mComponents ||
+      !datachannelTransceiver->mTransport.mDtls ||
       !datachannelTransceiver->mSendTrack.GetNegotiatedDetails()) {
     return NS_ERROR_FAILURE;
   }
@@ -1101,7 +1086,7 @@ bool PeerConnectionImpl::CreatedSender(const dom::RTCRtpSender& aSender) const {
   return aSender.IsMyPc(this);
 }
 
-nsresult PeerConnectionImpl::InitializeDataChannel() {
+nsresult PeerConnectionImpl::MaybeInitializeDataChannel() {
   PC_AUTO_ENTER_API_CALL(false);
   CSFLogDebug(LOGTAG, "%s", __FUNCTION__);
 
@@ -1157,8 +1142,21 @@ PeerConnectionImpl::CreateDataChannel(
   MOZ_ASSERT(aRetval);
 
   RefPtr<DataChannel> dataChannel;
-  DataChannelConnection::Type theType =
-      static_cast<DataChannelConnection::Type>(aType);
+  DataChannelReliabilityPolicy prPolicy;
+  switch (aType) {
+    case IPeerConnection::kDataChannelReliable:
+      prPolicy = DataChannelReliabilityPolicy::Reliable;
+      break;
+    case IPeerConnection::kDataChannelPartialReliableRexmit:
+      prPolicy = DataChannelReliabilityPolicy::LimitedRetransmissions;
+      break;
+    case IPeerConnection::kDataChannelPartialReliableTimed:
+      prPolicy = DataChannelReliabilityPolicy::LimitedLifetime;
+      break;
+    default:
+      MOZ_ASSERT(false);
+      return NS_ERROR_FAILURE;
+  }
 
   nsresult rv = EnsureDataConnection(
       WEBRTC_DATACHANNEL_PORT_DEFAULT, WEBRTC_DATACHANNEL_STREAMS_DEFAULT,
@@ -1167,12 +1165,13 @@ PeerConnectionImpl::CreateDataChannel(
     return rv;
   }
   dataChannel = mDataConnection->Open(
-      NS_ConvertUTF16toUTF8(aLabel), NS_ConvertUTF16toUTF8(aProtocol), theType,
+      NS_ConvertUTF16toUTF8(aLabel), NS_ConvertUTF16toUTF8(aProtocol), prPolicy,
       ordered,
-      aType == DataChannelConnection::PARTIAL_RELIABLE_REXMIT
+      prPolicy == DataChannelReliabilityPolicy::LimitedRetransmissions
           ? aMaxNum
-          : (aType == DataChannelConnection::PARTIAL_RELIABLE_TIMED ? aMaxTime
-                                                                    : 0),
+          : (prPolicy == DataChannelReliabilityPolicy::LimitedLifetime
+                 ? aMaxTime
+                 : 0),
       nullptr, nullptr, aExternalNegotiated, aStream);
   NS_ENSURE_TRUE(dataChannel, NS_ERROR_NOT_AVAILABLE);
 
@@ -1387,6 +1386,9 @@ void PeerConnectionImpl::SyncFromJsep() {
         }
 
         if (!transceiver) {
+          if (jsepTransceiver.IsRemoved()) {
+            return;
+          }
           CSFLogDebug(LOGTAG, "%s: No match, making new", __FUNCTION__);
           dom::RTCRtpTransceiverInit init;
           init.mDirection = RTCRtpTransceiverDirection::Recvonly;
@@ -1461,6 +1463,16 @@ void PeerConnectionImpl::UpdateNegotiationNeeded() {
         ErrorResult rv;
         mPCObserver->FireNegotiationNeededEvent(rv);
       }));
+}
+
+RefPtr<dom::RTCRtpTransceiver> PeerConnectionImpl::GetTransceiver(
+    const std::string& aTransceiverId) {
+  for (const auto& transceiver : mTransceivers) {
+    if (transceiver->GetJsepTransceiverId() == aTransceiverId) {
+      return transceiver;
+    }
+  }
+  return nullptr;
 }
 
 void PeerConnectionImpl::NotifyDataChannel(
@@ -1660,7 +1672,6 @@ JsepSdpType ToJsepSdpType(dom::RTCSdpType aType) {
       return kJsepSdpAnswer;
     case dom::RTCSdpType::Rollback:
       return kJsepSdpRollback;
-    case dom::RTCSdpType::EndGuard_:;
   }
 
   MOZ_CRASH("Nonexistent dom::RTCSdpType");
@@ -2012,11 +2023,34 @@ nsresult PeerConnectionImpl::OnAlpnNegotiated(bool aPrivacyRequested) {
 
 void PeerConnectionImpl::OnDtlsStateChange(const std::string& aTransportId,
                                            TransportLayer::State aState) {
-  auto it = mTransportIdToRTCDtlsTransport.find(aTransportId);
-  if (it != mTransportIdToRTCDtlsTransport.end()) {
-    it->second->UpdateState(aState);
+  nsCString key(aTransportId.data(), aTransportId.size());
+  RefPtr<RTCDtlsTransport> dtlsTransport =
+      mTransportIdToRTCDtlsTransport.Get(key);
+  if (!dtlsTransport) {
+    return;
   }
-  UpdateConnectionState();
+
+  dtlsTransport->UpdateState(aState);
+  // Whenever the state of an RTCDtlsTransport changes or when the [[IsClosed]]
+  // slot turns true, the user agent MUST update the connection state by
+  // queueing a task that runs the following steps:
+  // NOTE: The business about [[IsClosed]] here is probably a bug, because the
+  // rest of the spec makes it very clear that events should never fire when
+  // [[IsClosed]] is true. See https://github.com/w3c/webrtc-pc/issues/2865
+  GetMainThreadSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
+      __func__, [this, self = RefPtr<PeerConnectionImpl>(this)] {
+        // Let connection be this RTCPeerConnection object.
+        // Let newState be the value of deriving a new state value as described
+        // by the RTCPeerConnectionState enum.
+        // If connection.[[ConnectionState]] is equal to newState, abort these
+        // steps.
+        // Set connection.[[ConnectionState]] to newState.
+        if (UpdateConnectionState()) {
+          // Fire an event named connectionstatechange at connection.
+          JSErrorResult jrv;
+          mPCObserver->OnStateChange(PCObserverStateType::ConnectionState, jrv);
+        }
+      }));
 }
 
 RTCPeerConnectionState PeerConnectionImpl::GetNewConnectionState() const {
@@ -2028,33 +2062,28 @@ RTCPeerConnectionState PeerConnectionImpl::GetNewConnectionState() const {
   // Would use a bitset, but that requires lots of static_cast<size_t>
   // Oh well.
   std::set<RTCDtlsTransportState> statesFound;
-  for (const auto& [id, dtlsTransport] : mTransportIdToRTCDtlsTransport) {
-    Unused << id;
-    statesFound.insert(dtlsTransport->State());
+  std::set<RefPtr<RTCDtlsTransport>> transports(GetActiveTransports());
+  for (const auto& transport : transports) {
+    statesFound.insert(transport->State());
   }
 
-  // failed 	The previous state doesn't apply and any RTCIceTransports are
-  // in the "failed" state or any RTCDtlsTransports are in the "failed" state.
-  // NOTE: "any RTCIceTransports are in the failed state" is equivalent to
-  // mIceConnectionState == Failed
+  // failed 	The previous state doesn't apply, and either
+  // [[IceConnectionState]] is "failed" or any RTCDtlsTransports are in the
+  // "failed" state.
   if (mIceConnectionState == RTCIceConnectionState::Failed ||
       statesFound.count(RTCDtlsTransportState::Failed)) {
     return RTCPeerConnectionState::Failed;
   }
 
-  // disconnected 	None of the previous states apply and any
-  // RTCIceTransports are in the "disconnected" state.
-  // NOTE: "any RTCIceTransports are in the disconnected state" is equivalent to
-  // mIceConnectionState == Disconnected.
+  // disconnected 	None of the previous states apply, and
+  // [[IceConnectionState]] is "disconnected".
   if (mIceConnectionState == RTCIceConnectionState::Disconnected) {
     return RTCPeerConnectionState::Disconnected;
   }
 
-  // new 	None of the previous states apply and all RTCIceTransports are
-  // in the "new" or "closed" state, and all RTCDtlsTransports are in the "new"
-  // or "closed" state, or there are no transports.
-  // NOTE: "all RTCIceTransports are in the new or closed state" is equivalent
-  // to mIceConnectionState == New.
+  // new 	None of the previous states apply, and either
+  // [[IceConnectionState]] is "new", and all RTCDtlsTransports are in the
+  // "new" or "closed" state...
   if (mIceConnectionState == RTCIceConnectionState::New &&
       !statesFound.count(RTCDtlsTransportState::Connecting) &&
       !statesFound.count(RTCDtlsTransportState::Connected) &&
@@ -2062,29 +2091,14 @@ RTCPeerConnectionState PeerConnectionImpl::GetNewConnectionState() const {
     return RTCPeerConnectionState::New;
   }
 
-  // No transports
+  // ...or there are no transports.
   if (statesFound.empty()) {
     return RTCPeerConnectionState::New;
   }
 
-  // connecting 	None of the previous states apply and any
-  // RTCIceTransport is in the "new" or "checking" state or any
-  // RTCDtlsTransport is in the "new" or "connecting" state.
-  // NOTE: "None of the previous states apply and any RTCIceTransport is in the
-  // "new" or "checking" state" is equivalent to mIceConnectionState ==
-  // Checking.
-  if (mIceConnectionState == RTCIceConnectionState::Checking ||
-      statesFound.count(RTCDtlsTransportState::New) ||
-      statesFound.count(RTCDtlsTransportState::Connecting)) {
-    return RTCPeerConnectionState::Connecting;
-  }
-
-  // connected 	None of the previous states apply and all RTCIceTransports are
-  // in the "connected", "completed" or "closed" state, and all
-  // RTCDtlsTransports are in the "connected" or "closed" state.
-  // NOTE: "None of the previous states apply and all RTCIceTransports are in
-  // the "connected", "completed" or "closed" state" is equivalent to
-  // mIceConnectionState == Connected.
+  // connected 	None of the previous states apply,
+  // [[IceConnectionState]] is "connected", and all RTCDtlsTransports are in
+  // the "connected" or "closed" state.
   if (mIceConnectionState == RTCIceConnectionState::Connected &&
       !statesFound.count(RTCDtlsTransportState::New) &&
       !statesFound.count(RTCDtlsTransportState::Failed) &&
@@ -2092,52 +2106,23 @@ RTCPeerConnectionState PeerConnectionImpl::GetNewConnectionState() const {
     return RTCPeerConnectionState::Connected;
   }
 
-  // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  // THERE IS NO CATCH-ALL NONE-OF-THE-ABOVE IN THE SPEC! THIS IS REALLY BAD! !!
-  // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-  // Let's try to figure out how bad, precisely.
-  // Any one of these will cause us to bail above.
-  MOZ_ASSERT(mIceConnectionState != RTCIceConnectionState::Failed &&
-             mIceConnectionState != RTCIceConnectionState::Disconnected &&
-             mIceConnectionState != RTCIceConnectionState::Checking);
-  MOZ_ASSERT(!statesFound.count(RTCDtlsTransportState::New) &&
-             !statesFound.count(RTCDtlsTransportState::Connecting) &&
-             !statesFound.count(RTCDtlsTransportState::Failed));
-
-  // One of these must be set, or the empty() check would have failed above.
-  MOZ_ASSERT(statesFound.count(RTCDtlsTransportState::Connected) ||
-             statesFound.count(RTCDtlsTransportState::Closed));
-
-  // Here are our remaining possibilities:
-  // ICE connected, !statesFound.count(Connected), statesFound.count(Closed)
-  // ICE connected, statesFound.count(Connected), !statesFound.count(Closed)
-  // ICE connected, statesFound.count(Connected), statesFound.count(Closed)
-  //    All three of these would result in returning Connected above.
-
-  // ICE new, !statesFound.count(Connected), statesFound.count(Closed)
-  //    This results in returning New above. Whew.
-
-  // ICE new, statesFound.count(Connected), !statesFound.count(Closed)
-  // ICE new, statesFound.count(Connected), statesFound.count(Closed)
-  //    These would make it all the way here! Very weird state though, for all
-  //    ICE transports to be new/closed, but having a connected DTLS transport.
-  //    Handle this as a non-transition, just in case.
-  return mConnectionState;
+  // connecting 	None of the previous states apply.
+  return RTCPeerConnectionState::Connecting;
 }
 
-void PeerConnectionImpl::UpdateConnectionState() {
+bool PeerConnectionImpl::UpdateConnectionState() {
   auto newState = GetNewConnectionState();
   if (newState != mConnectionState) {
-    CSFLogDebug(LOGTAG, "%s: %d -> %d (%p)", __FUNCTION__,
-                static_cast<int>(mConnectionState), static_cast<int>(newState),
-                this);
+    CSFLogInfo(LOGTAG, "%s: %d -> %d (%p)", __FUNCTION__,
+               static_cast<int>(mConnectionState), static_cast<int>(newState),
+               this);
     mConnectionState = newState;
     if (mConnectionState != RTCPeerConnectionState::Closed) {
-      JSErrorResult jrv;
-      mPCObserver->OnStateChange(PCObserverStateType::ConnectionState, jrv);
+      return true;
     }
   }
+
+  return false;
 }
 
 void PeerConnectionImpl::OnMediaError(const std::string& aError) {
@@ -2172,68 +2157,6 @@ void PeerConnectionImpl::DumpPacket_m(size_t level, dom::mozPacketDumpType type,
 
   JSErrorResult jrv;
   mPCObserver->OnPacket(level, type, sending, arrayBuffer, jrv);
-}
-
-bool PeerConnectionImpl::HostnameInPref(const char* aPref,
-                                        const nsCString& aHostName) {
-  auto HostInDomain = [](const nsCString& aHost, const nsCString& aPattern) {
-    int32_t patternOffset = 0;
-    int32_t hostOffset = 0;
-
-    // Act on '*.' wildcard in the left-most position in a domain pattern.
-    if (StringBeginsWith(aPattern, nsCString("*."))) {
-      patternOffset = 2;
-
-      // Ignore the lowest level sub-domain for the hostname.
-      hostOffset = aHost.FindChar('.') + 1;
-
-      if (hostOffset <= 1) {
-        // Reject a match between a wildcard and a TLD or '.foo' form.
-        return false;
-      }
-    }
-
-    nsDependentCString hostRoot(aHost, hostOffset);
-    return hostRoot.EqualsIgnoreCase(aPattern.BeginReading() + patternOffset);
-  };
-
-  nsCString domainList;
-  nsresult nr = Preferences::GetCString(aPref, domainList);
-
-  if (NS_FAILED(nr)) {
-    return false;
-  }
-
-  domainList.StripWhitespace();
-
-  if (domainList.IsEmpty() || aHostName.IsEmpty()) {
-    return false;
-  }
-
-  // Get UTF8 to ASCII domain name normalization service
-  nsresult rv;
-  nsCOMPtr<nsIIDNService> idnService =
-      do_GetService("@mozilla.org/network/idn-service;1", &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return false;
-  }
-
-  // Test each domain name in the comma separated list
-  // after converting from UTF8 to ASCII. Each domain
-  // must match exactly or have a single leading '*.' wildcard.
-  for (const nsACString& each : domainList.Split(',')) {
-    nsCString domainPattern;
-    rv = idnService->ConvertUTF8toACE(each, domainPattern);
-    if (NS_SUCCEEDED(rv)) {
-      if (HostInDomain(aHostName, domainPattern)) {
-        return true;
-      }
-    } else {
-      NS_WARNING("Failed to convert UTF-8 host to ASCII");
-    }
-  }
-
-  return false;
 }
 
 nsresult PeerConnectionImpl::EnablePacketDump(unsigned long level,
@@ -2272,11 +2195,36 @@ void PeerConnectionImpl::GetDefaultVideoCodecs(
       JsepVideoCodecDescription::CreateDefaultH264_1(aUseRtx));
   aSupportedCodecs.emplace_back(
       JsepVideoCodecDescription::CreateDefaultH264_0(aUseRtx));
+
+  const bool disableBaseline = Preferences::GetBool(
+      "media.navigator.video.disable_h264_baseline", false);
+
+  // Only add Baseline if it hasn't been disabled.
+  if (!disableBaseline) {
+    aSupportedCodecs.emplace_back(
+        JsepVideoCodecDescription::CreateDefaultH264Baseline_1(aUseRtx));
+    aSupportedCodecs.emplace_back(
+        JsepVideoCodecDescription::CreateDefaultH264Baseline_0(aUseRtx));
+  }
+
+  if (WebrtcVideoConduit::HasAv1() &&
+      StaticPrefs::media_webrtc_codec_video_av1_enabled()) {
+    aSupportedCodecs.emplace_back(
+        JsepVideoCodecDescription::CreateDefaultAV1(aUseRtx));
+  }
+
   aSupportedCodecs.emplace_back(
       JsepVideoCodecDescription::CreateDefaultUlpFec());
   aSupportedCodecs.emplace_back(
       JsepApplicationCodecDescription::CreateDefault());
   aSupportedCodecs.emplace_back(JsepVideoCodecDescription::CreateDefaultRed());
+
+  CompareCodecPriority comparator;
+  if (StaticPrefs::media_webrtc_codec_video_av1_experimental_preferred()) {
+    comparator.SetPreferredCodec(nsCString("av1"));
+  }
+  std::stable_sort(aSupportedCodecs.begin(), aSupportedCodecs.end(),
+                   comparator);
 }
 
 void PeerConnectionImpl::GetDefaultAudioCodecs(
@@ -2346,47 +2294,43 @@ void PeerConnectionImpl::GetCapabilities(
 
   GetDefaultRtpExtensions(headers);
 
-  // Use the codecs for kind to fill out the RTCRtpCodecCapability
+  const bool redUlpfecEnabled =
+      Preferences::GetBool("media.navigator.video.red_ulpfec_enabled", false);
+  bool haveAddedRtx = false;
+
+  // Use the codecs for kind to fill out the RTCRtpCodec
   for (const auto& codec : codecs) {
     // To avoid misleading information on codec capabilities skip those
     // not signaled for audio/video (webrtc-datachannel)
-    // and any disabled by default (ulpfec and red).
-    if (codec->mName == "webrtc-datachannel" || codec->mName == "ulpfec" ||
-        codec->mName == "red") {
+    // and any disabled by pref (ulpfec and red).
+    if (codec->mName == "webrtc-datachannel" ||
+        (codec->mName == "ulpfec" && !redUlpfecEnabled) ||
+        (codec->mName == "red" && !redUlpfecEnabled)) {
       continue;
     }
 
-    dom::RTCRtpCodecCapability capability;
-    capability.mMimeType = aKind + NS_ConvertASCIItoUTF16("/" + codec->mName);
-    capability.mClockRate = codec->mClock;
-
-    if (codec->mChannels) {
-      capability.mChannels.Construct(codec->mChannels);
-    }
-
-    UniquePtr<SdpFmtpAttributeList::Parameters> params;
-    codec->ApplyConfigToFmtp(params);
-
-    if (params != nullptr) {
-      std::ostringstream paramsString;
-      params->Serialize(paramsString);
-      nsTString<char16_t> fmtp;
-      fmtp.AssignASCII(paramsString.str());
-      capability.mSdpFmtpLine.Construct(fmtp);
-    }
+    dom::RTCRtpCodec capability;
+    RTCRtpTransceiver::ToDomRtpCodec(*codec, &capability);
 
     if (!aResult.SetValue().mCodecs.AppendElement(capability, fallible)) {
       mozalloc_handle_oom(0);
     }
-  }
 
-  // We need to manually add rtx for video.
-  if (mediaType == JsepMediaType::kVideo) {
-    dom::RTCRtpCodecCapability capability;
-    capability.mMimeType = aKind + NS_ConvertASCIItoUTF16("/rtx");
-    capability.mClockRate = 90000;
-    if (!aResult.SetValue().mCodecs.AppendElement(capability, fallible)) {
-      mozalloc_handle_oom(0);
+    // We need to manually add rtx for video.
+    // Spec says: There will only be a single entry in codecs for
+    // retransmission via RTX, with sdpFmtpLine not present.
+    if (mediaType == JsepMediaType::kVideo && !haveAddedRtx) {
+      const JsepVideoCodecDescription& videoCodec =
+          static_cast<JsepVideoCodecDescription&>(*codec);
+      if (videoCodec.mRtxEnabled) {
+        dom::RTCRtpCodec rtx;
+        RTCRtpTransceiver::ToDomRtpCodecRtx(videoCodec, &rtx);
+        rtx.mSdpFmtpLine.Reset();
+        if (!aResult.SetValue().mCodecs.AppendElement(rtx, fallible)) {
+          mozalloc_handle_oom(0);
+        }
+        haveAddedRtx = true;
+      }
     }
   }
 
@@ -2410,15 +2354,6 @@ void PeerConnectionImpl::SetupPreferredCodecs(
 
   GetDefaultVideoCodecs(aPreferredCodecs, useRtx);
   GetDefaultAudioCodecs(aPreferredCodecs);
-
-  // With red update the redundant encodings list
-  for (auto& videoCodec : aPreferredCodecs) {
-    if (videoCodec->mName == "red") {
-      JsepVideoCodecDescription& red =
-          static_cast<JsepVideoCodecDescription&>(*videoCodec);
-      red.UpdateRedundantEncodings(aPreferredCodecs);
-    }
-  }
 }
 
 void PeerConnectionImpl::SetupPreferredRtpExtensions(
@@ -2438,7 +2373,7 @@ void PeerConnectionImpl::SetupPreferredRtpExtensions(
 }
 
 nsresult PeerConnectionImpl::CalculateFingerprint(
-    const std::string& algorithm, std::vector<uint8_t>* fingerprint) const {
+    const nsACString& algorithm, std::vector<uint8_t>* fingerprint) const {
   DtlsDigest digest(algorithm);
 
   MOZ_ASSERT(fingerprint);
@@ -2601,6 +2536,7 @@ PeerConnectionImpl::Close() {
              "%s: Closing PeerConnectionImpl %s; "
              "ending call",
              __FUNCTION__, mHandle.c_str());
+  mRtcpReceiveListener.DisconnectIfExists();
   if (mJsepSession) {
     mJsepSession->Close();
   }
@@ -2626,7 +2562,7 @@ PeerConnectionImpl::Close() {
     transceiver->Close();
   }
 
-  mTransportIdToRTCDtlsTransport.clear();
+  mTransportIdToRTCDtlsTransport.Clear();
 
   mQueuedIceCtxOperations.clear();
 
@@ -2838,7 +2774,10 @@ bool PeerConnectionImpl::PluginCrash(uint32_t aPluginID,
   event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;
 
   nsCOMPtr<nsPIDOMWindowInner> window = mWindow;
-  EventDispatcher::DispatchDOMEvent(window, nullptr, event, nullptr, nullptr);
+  // MOZ_KnownLive due to bug 1506441
+  EventDispatcher::DispatchDOMEvent(
+      MOZ_KnownLive(nsGlobalWindowInner::Cast(window)), nullptr, event, nullptr,
+      nullptr);
 
   return true;
 }
@@ -3001,6 +2940,14 @@ void PeerConnectionImpl::DoSetDescriptionSuccessPostProcessing(
           }
         }
 
+        auto oldIceCredentials = mJsepSession->GetLocalIceCredentials();
+        auto newIceCredentials =
+            mUncommittedJsepSession->GetLocalIceCredentials();
+
+        bool iceRestartDetected =
+            (!oldIceCredentials.empty() && !newIceCredentials.empty() &&
+             (oldIceCredentials != newIceCredentials));
+
         mJsepSession = std::move(mUncommittedJsepSession);
 
         auto newSignalingState = GetSignalingState();
@@ -3010,18 +2957,25 @@ void PeerConnectionImpl::DoSetDescriptionSuccessPostProcessing(
           InvalidateLastReturnedParameters();
         }
 
+        if (aSdpType == dom::RTCSdpType::Offer &&
+            mSignalingState == RTCSignalingState::Stable) {
+          // If description is of type "offer" and
+          // connection.[[SignalingState]] is "stable" then for each
+          // transceiver in connection's set of transceivers, run the following
+          // steps:
+          SaveStateForRollback();
+        }
+
         // Section 4.4.1.5 Set the RTCSessionDescription:
         if (aSdpType == dom::RTCSdpType::Rollback) {
           // - step 4.5.10, type is rollback
-          RollbackRTCDtlsTransports();
+          RestoreStateForRollback();
         } else if (!(aRemote && aSdpType == dom::RTCSdpType::Offer)) {
           // - step 4.5.9 type is not rollback
           // - step 4.5.9.1 when remote is false
           // - step 4.5.9.2.13 when remote is true, type answer or pranswer
           // More simply: not rollback, and not for remote offers.
-          bool markAsStable = aSdpType == dom::RTCSdpType::Offer &&
-                              mSignalingState == RTCSignalingState::Stable;
-          UpdateRTCDtlsTransports(markAsStable);
+          UpdateRTCDtlsTransports();
         }
 
         // Did we just apply a local description?
@@ -3031,18 +2985,13 @@ void PeerConnectionImpl::DoSetDescriptionSuccessPostProcessing(
           // that state change.  We need to detect the ice restart here and
           // reset the PeerConnectionImpl's stun addresses so they are
           // regathered when PeerConnectionImpl::GatherIfReady is called.
-          if (mJsepSession->IsIceRestarting()) {
+          if (iceRestartDetected || mJsepSession->IsIceRestarting()) {
             ResetStunAddrsForIceRestart();
           }
           EnsureTransports(*mJsepSession);
         }
 
         if (mJsepSession->GetState() == kJsepStateStable) {
-          if (aSdpType != dom::RTCSdpType::Rollback) {
-            // We need this initted for UpdateTransports
-            InitializeDataChannel();
-          }
-
           // If we're rolling back a local offer, we might need to remove some
           // transports, and stomp some MediaPipeline setup, but nothing further
           // needs to be done.
@@ -3108,87 +3057,117 @@ void PeerConnectionImpl::DoSetDescriptionSuccessPostProcessing(
           UpdateNegotiationNeeded();
         }
 
-        // Spec does not actually tell us to do this, but that is probably a
-        // spec bug.
-        UpdateConnectionState();
-
-        JSErrorResult jrv;
+        bool signalingStateChanged = false;
         if (newSignalingState != mSignalingState) {
           mSignalingState = newSignalingState;
-          mPCObserver->OnStateChange(PCObserverStateType::SignalingState, jrv);
+          signalingStateChanged = true;
         }
 
+        // Spec does not actually tell us to do this, but that is probably a
+        // spec bug.
+        // https://github.com/w3c/webrtc-pc/issues/2817
+        bool gatheringStateChanged = UpdateIceGatheringState();
+
+        bool iceConnectionStateChanged = UpdateIceConnectionState();
+
+        bool connectionStateChanged = UpdateConnectionState();
+
+        // This only gets populated for remote descriptions
+        dom::RTCRtpReceiver::StreamAssociationChanges changes;
         if (aRemote) {
-          dom::RTCRtpReceiver::StreamAssociationChanges changes;
           for (const auto& transceiver : mTransceivers) {
             transceiver->Receiver()->UpdateStreams(&changes);
           }
+        }
 
-          for (const auto& receiver : changes.mReceiversToMute) {
-            // This sets the muted state for the recv track and all its clones.
-            receiver->SetTrackMuteFromRemoteSdp();
+        // Make sure to wait until after we've calculated track changes before
+        // doing this.
+        for (size_t i = 0; i < mTransceivers.Length();) {
+          auto& transceiver = mTransceivers[i];
+          if (transceiver->ShouldRemove()) {
+            mTransceivers[i]->Close();
+            mTransceivers[i]->SetRemovedFromPc();
+            mTransceivers.RemoveElementAt(i);
+          } else {
+            ++i;
+          }
+        }
+
+        // JS callbacks happen below. DO NOT TOUCH STATE AFTER THIS UNLESS SPEC
+        // EXPLICITLY SAYS TO, OTHERWISE STATES THAT ARE NOT SUPPOSED TO BE
+        // OBSERVABLE TO JS WILL BE!
+
+        JSErrorResult jrv;
+        RefPtr<PeerConnectionObserver> pcObserver(mPCObserver);
+        if (signalingStateChanged) {
+          pcObserver->OnStateChange(PCObserverStateType::SignalingState, jrv);
+        }
+
+        if (gatheringStateChanged) {
+          pcObserver->OnStateChange(PCObserverStateType::IceGatheringState,
+                                    jrv);
+        }
+
+        if (iceConnectionStateChanged) {
+          pcObserver->OnStateChange(PCObserverStateType::IceConnectionState,
+                                    jrv);
+        }
+
+        if (connectionStateChanged) {
+          pcObserver->OnStateChange(PCObserverStateType::ConnectionState, jrv);
+        }
+
+        for (const auto& receiver : changes.mReceiversToMute) {
+          // This sets the muted state for the recv track and all its clones.
+          receiver->SetTrackMuteFromRemoteSdp();
+        }
+
+        for (const auto& association : changes.mStreamAssociationsRemoved) {
+          RefPtr<DOMMediaStream> stream =
+              GetReceiveStream(association.mStreamId);
+          if (stream && stream->HasTrack(*association.mTrack)) {
+            stream->RemoveTrackInternal(association.mTrack);
+          }
+        }
+
+        // TODO(Bug 1241291): For legacy event, remove eventually
+        std::vector<RefPtr<DOMMediaStream>> newStreams;
+
+        for (const auto& association : changes.mStreamAssociationsAdded) {
+          RefPtr<DOMMediaStream> stream =
+              GetReceiveStream(association.mStreamId);
+          if (!stream) {
+            stream = CreateReceiveStream(association.mStreamId);
+            newStreams.push_back(stream);
           }
 
-          for (const auto& association : changes.mStreamAssociationsRemoved) {
-            RefPtr<DOMMediaStream> stream =
-                GetReceiveStream(association.mStreamId);
-            if (stream && stream->HasTrack(*association.mTrack)) {
-              stream->RemoveTrackInternal(association.mTrack);
-            }
+          if (!stream->HasTrack(*association.mTrack)) {
+            stream->AddTrackInternal(association.mTrack);
           }
+        }
 
-          // TODO(Bug 1241291): For legacy event, remove eventually
-          std::vector<RefPtr<DOMMediaStream>> newStreams;
-
-          for (const auto& association : changes.mStreamAssociationsAdded) {
-            RefPtr<DOMMediaStream> stream =
-                GetReceiveStream(association.mStreamId);
+        for (const auto& trackEvent : changes.mTrackEvents) {
+          dom::Sequence<OwningNonNull<DOMMediaStream>> streams;
+          for (const auto& id : trackEvent.mStreamIds) {
+            RefPtr<DOMMediaStream> stream = GetReceiveStream(id);
             if (!stream) {
-              stream = CreateReceiveStream(association.mStreamId);
-              newStreams.push_back(stream);
+              MOZ_ASSERT(false);
+              continue;
             }
-
-            if (!stream->HasTrack(*association.mTrack)) {
-              stream->AddTrackInternal(association.mTrack);
-            }
-          }
-
-          // Make sure to wait until after we've calculated track changes before
-          // doing this.
-          for (size_t i = 0; i < mTransceivers.Length();) {
-            auto& transceiver = mTransceivers[i];
-            if (transceiver->ShouldRemove()) {
-              mTransceivers[i]->Close();
-              mTransceivers[i]->SetRemovedFromPc();
-              mTransceivers.RemoveElementAt(i);
-            } else {
-              ++i;
+            if (!streams.AppendElement(*stream, fallible)) {
+              // XXX(Bug 1632090) Instead of extending the array 1-by-1 (which
+              // might involve multiple reallocations) and potentially
+              // crashing here, SetCapacity could be called outside the loop
+              // once.
+              mozalloc_handle_oom(0);
             }
           }
+          pcObserver->FireTrackEvent(*trackEvent.mReceiver, streams, jrv);
+        }
 
-          for (const auto& trackEvent : changes.mTrackEvents) {
-            dom::Sequence<OwningNonNull<DOMMediaStream>> streams;
-            for (const auto& id : trackEvent.mStreamIds) {
-              RefPtr<DOMMediaStream> stream = GetReceiveStream(id);
-              if (!stream) {
-                MOZ_ASSERT(false);
-                continue;
-              }
-              if (!streams.AppendElement(*stream, fallible)) {
-                // XXX(Bug 1632090) Instead of extending the array 1-by-1 (which
-                // might involve multiple reallocations) and potentially
-                // crashing here, SetCapacity could be called outside the loop
-                // once.
-                mozalloc_handle_oom(0);
-              }
-            }
-            mPCObserver->FireTrackEvent(*trackEvent.mReceiver, streams, jrv);
-          }
-
-          // TODO(Bug 1241291): Legacy event, remove eventually
-          for (const auto& stream : newStreams) {
-            mPCObserver->FireStreamEvent(*stream, jrv);
-          }
+        // TODO(Bug 1241291): Legacy event, remove eventually
+        for (const auto& stream : newStreams) {
+          pcObserver->FireStreamEvent(*stream, jrv);
         }
         aP->MaybeResolveWithUndefined();
       }));
@@ -3320,55 +3299,164 @@ void PeerConnectionImpl::SendLocalIceCandidateToContent(
 }
 
 void PeerConnectionImpl::IceConnectionStateChange(
-    dom::RTCIceConnectionState domState) {
+    const std::string& aTransportId, dom::RTCIceTransportState domState) {
+  // If connection.[[IsClosed]] is true, abort these steps.
   PC_AUTO_ENTER_API_CALL_VOID_RETURN(false);
 
-  CSFLogDebug(LOGTAG, "%s: %d -> %d", __FUNCTION__,
-              static_cast<int>(mIceConnectionState),
-              static_cast<int>(domState));
+  CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
+              aTransportId.c_str(), static_cast<int>(domState), this);
 
-  if (domState == mIceConnectionState) {
-    // no work to be done since the states are the same.
-    // this can happen during ICE rollback situations.
+  // Let transport be the RTCIceTransport whose state is changing.
+  nsCString key(aTransportId.data(), aTransportId.size());
+  RefPtr<RTCDtlsTransport> dtlsTransport =
+      mTransportIdToRTCDtlsTransport.Get(key);
+  if (!dtlsTransport) {
+    return;
+  }
+  RefPtr<RTCIceTransport> transport = dtlsTransport->IceTransport();
+
+  if (domState == RTCIceTransportState::Closed) {
+    mTransportIdToRTCDtlsTransport.Remove(key);
+  }
+
+  // Let selectedCandidatePairChanged be false.
+  // TODO(bug 1307994)
+
+  // Let transportIceConnectionStateChanged be false.
+  bool transportIceConnectionStateChanged = false;
+
+  // Let connectionIceConnectionStateChanged be false.
+  bool connectionIceConnectionStateChanged = false;
+
+  // Let connectionStateChanged be false.
+  bool connectionStateChanged = false;
+
+  if (transport->State() == domState) {
     return;
   }
 
-  mIceConnectionState = domState;
+  // If transport's RTCIceTransportState was changed, run the following steps:
 
-  // Would be nice if we had a means of converting one of these dom enums
-  // to a string that wasn't almost as much text as this switch statement...
-  switch (mIceConnectionState) {
-    case RTCIceConnectionState::New:
-      STAMP_TIMECARD(mTimeCard, "Ice state: new");
-      break;
-    case RTCIceConnectionState::Checking:
-      // For telemetry
-      mIceStartTime = TimeStamp::Now();
-      STAMP_TIMECARD(mTimeCard, "Ice state: checking");
-      break;
-    case RTCIceConnectionState::Connected:
-      STAMP_TIMECARD(mTimeCard, "Ice state: connected");
-      StartCallTelem();
-      break;
-    case RTCIceConnectionState::Completed:
-      STAMP_TIMECARD(mTimeCard, "Ice state: completed");
-      break;
-    case RTCIceConnectionState::Failed:
-      STAMP_TIMECARD(mTimeCard, "Ice state: failed");
-      break;
-    case RTCIceConnectionState::Disconnected:
-      STAMP_TIMECARD(mTimeCard, "Ice state: disconnected");
-      break;
-    case RTCIceConnectionState::Closed:
-      STAMP_TIMECARD(mTimeCard, "Ice state: closed");
-      break;
-    default:
-      MOZ_ASSERT_UNREACHABLE("Unexpected mIceConnectionState!");
+  // Set transport.[[IceTransportState]] to the new indicated
+  // RTCIceTransportState.
+  transport->SetState(domState);
+
+  // Set transportIceConnectionStateChanged to true.
+  transportIceConnectionStateChanged = true;
+
+  // Set connection.[[IceConnectionState]] to the value of deriving a new state
+  // value as described by the RTCIceConnectionState enum.
+  if (UpdateIceConnectionState()) {
+    // If connection.[[IceConnectionState]] changed in the previous step, set
+    // connectionIceConnectionStateChanged to true.
+    connectionIceConnectionStateChanged = true;
+  }
+
+  // Set connection.[[ConnectionState]] to the value of deriving a new state
+  // value as described by the RTCPeerConnectionState enum.
+  if (UpdateConnectionState()) {
+    // If connection.[[ConnectionState]] changed in the previous step, set
+    // connectionStateChanged to true.
+    connectionStateChanged = true;
+  }
+
+  // If selectedCandidatePairChanged is true, fire an event named
+  // selectedcandidatepairchange at transport.
+  // TODO(bug 1307994)
+
+  // If transportIceConnectionStateChanged is true, fire an event named
+  // statechange at transport.
+  if (transportIceConnectionStateChanged) {
+    transport->FireStateChangeEvent();
   }
 
   WrappableJSErrorResult rv;
-  mPCObserver->OnStateChange(PCObserverStateType::IceConnectionState, rv);
-  UpdateConnectionState();
+  RefPtr<PeerConnectionObserver> pcObserver(mPCObserver);
+
+  // If connectionIceConnectionStateChanged is true, fire an event named
+  // iceconnectionstatechange at connection.
+  if (connectionIceConnectionStateChanged) {
+    pcObserver->OnStateChange(PCObserverStateType::IceConnectionState, rv);
+  }
+
+  // If connectionStateChanged is true, fire an event named
+  // connectionstatechange at connection.
+  if (connectionStateChanged) {
+    pcObserver->OnStateChange(PCObserverStateType::ConnectionState, rv);
+  }
+}
+
+RTCIceConnectionState PeerConnectionImpl::GetNewIceConnectionState() const {
+  // closed 	The RTCPeerConnection object's [[IsClosed]] slot is true.
+  if (IsClosed()) {
+    return RTCIceConnectionState::Closed;
+  }
+
+  // Would use a bitset, but that requires lots of static_cast<size_t>
+  // Oh well.
+  std::set<RTCIceTransportState> statesFound;
+  std::set<RefPtr<RTCDtlsTransport>> transports(GetActiveTransports());
+  for (const auto& transport : transports) {
+    RefPtr<dom::RTCIceTransport> iceTransport = transport->IceTransport();
+    CSFLogWarn(LOGTAG, "GetNewIceConnectionState: %p %d", iceTransport.get(),
+               static_cast<int>(iceTransport->State()));
+    statesFound.insert(iceTransport->State());
+  }
+
+  // failed 	 None of the previous states apply and any RTCIceTransports are
+  // in the "failed" state.
+  if (statesFound.count(RTCIceTransportState::Failed)) {
+    return RTCIceConnectionState::Failed;
+  }
+
+  // disconnected 	 None of the previous states apply and any
+  // RTCIceTransports are in the "disconnected" state.
+  if (statesFound.count(RTCIceTransportState::Disconnected)) {
+    return RTCIceConnectionState::Disconnected;
+  }
+
+  // new 	 None of the previous states apply and all RTCIceTransports are
+  // in the "new" or "closed" state, or there are no transports.
+  if (!statesFound.count(RTCIceTransportState::Checking) &&
+      !statesFound.count(RTCIceTransportState::Completed) &&
+      !statesFound.count(RTCIceTransportState::Connected)) {
+    return RTCIceConnectionState::New;
+  }
+
+  // checking   None of the previous states apply and any RTCIceTransports are
+  // in the "new" or "checking" state.
+  if (statesFound.count(RTCIceTransportState::New) ||
+      statesFound.count(RTCIceTransportState::Checking)) {
+    return RTCIceConnectionState::Checking;
+  }
+
+  // completed  None of the previous states apply and all RTCIceTransports are
+  // in the "completed" or "closed" state.
+  if (!statesFound.count(RTCIceTransportState::Connected)) {
+    return RTCIceConnectionState::Completed;
+  }
+
+  // connected 	None of the previous states apply.
+  return RTCIceConnectionState::Connected;
+}
+
+bool PeerConnectionImpl::UpdateIceConnectionState() {
+  auto newState = GetNewIceConnectionState();
+  if (newState != mIceConnectionState) {
+    CSFLogInfo(LOGTAG, "%s: %d -> %d (%p)", __FUNCTION__,
+               static_cast<int>(mIceConnectionState),
+               static_cast<int>(newState), this);
+    mIceConnectionState = newState;
+    // Start call telemtry logging on connected.
+    if (mIceConnectionState == RTCIceConnectionState::Connected) {
+      StartCallTelem();
+    }
+    if (mIceConnectionState != RTCIceConnectionState::Closed) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 void PeerConnectionImpl::OnCandidateFound(const std::string& aTransportId,
@@ -3404,18 +3492,82 @@ void PeerConnectionImpl::OnCandidateFound(const std::string& aTransportId,
 }
 
 void PeerConnectionImpl::IceGatheringStateChange(
-    dom::RTCIceGatheringState state) {
+    const std::string& aTransportId, dom::RTCIceGathererState state) {
+  // If connection.[[IsClosed]] is true, abort these steps.
   PC_AUTO_ENTER_API_CALL_VOID_RETURN(false);
 
-  CSFLogDebug(LOGTAG, "%s %d", __FUNCTION__, static_cast<int>(state));
-  if (mIceGatheringState == state) {
+  CSFLogWarn(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
+             aTransportId.c_str(), static_cast<int>(state), this);
+
+  // Let transport be the RTCIceTransport for which candidate gathering
+  // began/finished.
+  nsCString key(aTransportId.data(), aTransportId.size());
+  RefPtr<RTCDtlsTransport> dtlsTransport =
+      mTransportIdToRTCDtlsTransport.Get(key);
+  if (!dtlsTransport) {
+    return;
+  }
+  RefPtr<RTCIceTransport> transport = dtlsTransport->IceTransport();
+
+  if (transport->GatheringState() == state) {
     return;
   }
 
-  mIceGatheringState = state;
+  // Set transport.[[IceGathererState]] to gathering.
+  // or
+  // Set transport.[[IceGathererState]] to complete.
+  transport->SetGatheringState(state);
 
-  // Would be nice if we had a means of converting one of these dom enums
-  // to a string that wasn't almost as much text as this switch statement...
+  // Set connection.[[IceGatheringState]] to the value of deriving a new state
+  // value as described by the RTCIceGatheringState enum.
+  //
+  // Let connectionIceGatheringStateChanged be true if
+  // connection.[[IceGatheringState]] changed in the previous step, otherwise
+  // false.
+  bool gatheringStateChanged = UpdateIceGatheringState();
+
+  // Do not read or modify state beyond this point.
+
+  // Fire an event named gatheringstatechange at transport.
+  transport->FireGatheringStateChangeEvent();
+
+  // If connectionIceGatheringStateChanged is true, fire an event named
+  // icegatheringstatechange at connection.
+  if (gatheringStateChanged) {
+    // NOTE: If we're in the "complete" case, our JS code will fire a null
+    // icecandidate event after firing the icegatheringstatechange event.
+    // Fire an event named icecandidate using the RTCPeerConnectionIceEvent
+    // interface with the candidate attribute set to null at connection.
+    JSErrorResult rv;
+    mPCObserver->OnStateChange(PCObserverStateType::IceGatheringState, rv);
+  }
+}
+
+bool PeerConnectionImpl::UpdateIceGatheringState() {
+  // If connection.[[IsClosed]] is true, abort these steps.
+  if (IsClosed()) {
+    return false;
+  }
+
+  // Let newState be the value of deriving a new state value as
+  // described by the RTCIceGatheringState enum.
+  auto newState = GetNewIceGatheringState();
+
+  // If connection.[[IceGatheringState]] is equal to newState, abort
+  // these steps.
+  if (newState == mIceGatheringState) {
+    return false;
+  }
+
+  CSFLogInfo(LOGTAG, "UpdateIceGatheringState: %d -> %d (%p)",
+             static_cast<int>(mIceGatheringState), static_cast<int>(newState),
+             this);
+  // Set connection.[[IceGatheringState]] to newState.
+  mIceGatheringState = newState;
+
+  // Would be nice if we had a means of converting one of these dom
+  // enums to a string that wasn't almost as much text as this switch
+  // statement...
   switch (mIceGatheringState) {
     case RTCIceGatheringState::New:
       STAMP_TIMECARD(mTimeCard, "Ice gathering state: new");
@@ -3430,8 +3582,42 @@ void PeerConnectionImpl::IceGatheringStateChange(
       MOZ_ASSERT_UNREACHABLE("Unexpected mIceGatheringState!");
   }
 
-  JSErrorResult rv;
-  mPCObserver->OnStateChange(PCObserverStateType::IceGatheringState, rv);
+  return true;
+}
+
+RTCIceGatheringState PeerConnectionImpl::GetNewIceGatheringState() const {
+  // new 	Any of the RTCIceTransports are in the "new" gathering state
+  // and none of the transports are in the "gathering" state, or there are no
+  // transports.
+
+  // NOTE! This derives the RTCIce**Gathering**State from the individual
+  // RTCIce**Gatherer**State of the transports. These are different enums.
+  // But they have exactly the same values, in the same order.
+  // ¯\_(ツ)_/¯
+  bool foundComplete = false;
+  std::set<RefPtr<RTCDtlsTransport>> transports(GetActiveTransports());
+  for (const auto& transport : transports) {
+    RefPtr<dom::RTCIceTransport> iceTransport = transport->IceTransport();
+    switch (iceTransport->GatheringState()) {
+      case RTCIceGathererState::New:
+        break;
+      case RTCIceGathererState::Gathering:
+        // gathering 	Any of the RTCIceTransports are in the "gathering"
+        // state.
+        return RTCIceGatheringState::Gathering;
+      case RTCIceGathererState::Complete:
+        foundComplete = true;
+        break;
+    }
+  }
+
+  if (!foundComplete) {
+    return RTCIceGatheringState::New;
+  }
+
+  // This could change depending on the outcome in
+  // https://github.com/w3c/webrtc-pc/issues/2914
+  return RTCIceGatheringState::Complete;
 }
 
 void PeerConnectionImpl::UpdateDefaultCandidate(
@@ -3904,11 +4090,8 @@ void PeerConnectionImpl::StunAddrsHandler::OnStunAddrsAvailable(
   pcw.impl()->mStunAddrs = addrs.Clone();
   pcw.impl()->mLocalAddrsRequestState = STUN_ADDR_REQUEST_COMPLETE;
   pcw.impl()->FlushIceCtxOperationQueueIfReady();
-  // If parent process returns 0 STUN addresses, change ICE connection
-  // state to failed.
-  if (!pcw.impl()->mStunAddrs.Length()) {
-    pcw.impl()->IceConnectionStateChange(dom::RTCIceConnectionState::Failed);
-  }
+  // If this fails, ICE cannot succeed, but we need to still go through the
+  // motions.
 }
 
 void PeerConnectionImpl::InitLocalAddrs() {
@@ -3934,9 +4117,9 @@ bool PeerConnectionImpl::ShouldForceProxy() const {
   if (mWindow && mWindow->GetExtantDoc() &&
       mWindow->GetExtantDoc()->GetPrincipal() &&
       mWindow->GetExtantDoc()
-              ->GetPrincipal()
-              ->OriginAttributesRef()
-              .mPrivateBrowsingId > 0) {
+          ->GetPrincipal()
+          ->OriginAttributesRef()
+          .IsPrivateBrowsing()) {
     isPBM = true;
   }
 
@@ -3978,107 +4161,118 @@ void PeerConnectionImpl::EnsureTransports(const JsepSession& aSession) {
   GatherIfReady();
 }
 
-void PeerConnectionImpl::UpdateRTCDtlsTransports(bool aMarkAsStable) {
+void PeerConnectionImpl::UpdateRTCDtlsTransports() {
+  // We use mDataConnection below, make sure it is initted if necessary
+  MaybeInitializeDataChannel();
+
+  // Make sure that the SCTP transport is unset if we do not see a DataChannel.
+  // We'll restore this if we do see a DataChannel.
+  RefPtr<dom::RTCSctpTransport> oldSctp = mSctpTransport.forget();
+
   mJsepSession->ForEachTransceiver(
-      [this, self = RefPtr<PeerConnectionImpl>(this)](
-          const JsepTransceiver& jsepTransceiver) {
+      [this, self = RefPtr<PeerConnectionImpl>(this),
+       oldSctp](const JsepTransceiver& jsepTransceiver) {
         std::string transportId = jsepTransceiver.mTransport.mTransportId;
-        if (transportId.empty()) {
-          return;
+        RefPtr<dom::RTCDtlsTransport> dtlsTransport;
+        if (!transportId.empty()) {
+          nsCString key(transportId.data(), transportId.size());
+          dtlsTransport = mTransportIdToRTCDtlsTransport.GetOrInsertNew(
+              key, GetParentObject());
         }
-        if (!mTransportIdToRTCDtlsTransport.count(transportId)) {
-          mTransportIdToRTCDtlsTransport.emplace(
-              transportId, new RTCDtlsTransport(GetParentObject()));
+
+        if (jsepTransceiver.GetMediaType() == SdpMediaSection::kApplication) {
+          // Spec says we only update the RTCSctpTransport when negotiation
+          // completes. This is probably a spec bug.
+          // https://github.com/w3c/webrtc-pc/issues/2898
+          if (!dtlsTransport || !mDataConnection) {
+            return;
+          }
+
+          // Why on earth does the spec use a floating point for this?
+          double maxMessageSize =
+              static_cast<double>(mDataConnection->GetMaxMessageSize());
+          Nullable<uint16_t> maxChannels;
+
+          if (!oldSctp) {
+            mSctpTransport = new RTCSctpTransport(
+                GetParentObject(), *dtlsTransport, maxMessageSize, maxChannels);
+          } else {
+            // Restore the SCTP transport we had before this function was called
+            oldSctp->SetTransport(*dtlsTransport);
+            oldSctp->SetMaxMessageSize(maxMessageSize);
+            oldSctp->SetMaxChannels(maxChannels);
+            mSctpTransport = oldSctp;
+          }
+        } else {
+          RefPtr<dom::RTCRtpTransceiver> domTransceiver =
+              GetTransceiver(jsepTransceiver.GetUuid());
+          if (domTransceiver) {
+            domTransceiver->SetDtlsTransport(dtlsTransport);
+          }
         }
       });
-
-  for (auto& transceiver : mTransceivers) {
-    std::string transportId = transceiver->GetTransportId();
-    if (transportId.empty()) {
-      continue;
-    }
-    if (mTransportIdToRTCDtlsTransport.count(transportId)) {
-      transceiver->SetDtlsTransport(mTransportIdToRTCDtlsTransport[transportId],
-                                    aMarkAsStable);
-    }
-  }
-
-  // Spec says we only update the RTCSctpTransport when negotiation completes
 }
 
-void PeerConnectionImpl::RollbackRTCDtlsTransports() {
+void PeerConnectionImpl::SaveStateForRollback() {
+  // This could change depending on the outcome in
+  // https://github.com/w3c/webrtc-pc/issues/2899
+  if (mSctpTransport) {
+    // We have to save both of these things, because the DTLS transport could
+    // change without the SCTP transport changing.
+    mLastStableSctpTransport = mSctpTransport;
+    mLastStableSctpDtlsTransport = mSctpTransport->Transport();
+  } else {
+    mLastStableSctpTransport = nullptr;
+    mLastStableSctpDtlsTransport = nullptr;
+  }
+
+  for (auto& transceiver : mTransceivers) {
+    transceiver->SaveStateForRollback();
+  }
+}
+
+void PeerConnectionImpl::RestoreStateForRollback() {
   for (auto& transceiver : mTransceivers) {
     transceiver->RollbackToStableDtlsTransport();
   }
+
+  mSctpTransport = mLastStableSctpTransport;
+  if (mSctpTransport) {
+    mSctpTransport->SetTransport(*mLastStableSctpDtlsTransport);
+  }
 }
 
-void PeerConnectionImpl::RemoveRTCDtlsTransportsExcept(
-    const std::set<std::string>& aTransportIds) {
-  for (auto iter = mTransportIdToRTCDtlsTransport.begin();
-       iter != mTransportIdToRTCDtlsTransport.end();) {
-    if (!aTransportIds.count(iter->first)) {
-      iter = mTransportIdToRTCDtlsTransport.erase(iter);
-    } else {
-      ++iter;
+std::set<RefPtr<dom::RTCDtlsTransport>>
+PeerConnectionImpl::GetActiveTransports() const {
+  std::set<RefPtr<dom::RTCDtlsTransport>> result;
+  for (const auto& transceiver : mTransceivers) {
+    if (transceiver->GetDtlsTransport()) {
+      result.insert(transceiver->GetDtlsTransport());
     }
   }
+
+  if (mSctpTransport && mSctpTransport->Transport()) {
+    result.insert(mSctpTransport->Transport());
+  }
+  return result;
 }
 
 nsresult PeerConnectionImpl::UpdateTransports(const JsepSession& aSession,
                                               const bool forceIceTcp) {
   std::set<std::string> finalTransports;
-  Maybe<std::string> sctpTransport;
   mJsepSession->ForEachTransceiver(
       [&, this, self = RefPtr<PeerConnectionImpl>(this)](
           const JsepTransceiver& transceiver) {
-        if (transceiver.GetMediaType() == SdpMediaSection::kApplication &&
-            transceiver.HasTransport()) {
-          sctpTransport = Some(transceiver.mTransport.mTransportId);
-        }
-
         if (transceiver.HasOwnTransport()) {
           finalTransports.insert(transceiver.mTransport.mTransportId);
           UpdateTransport(transceiver, forceIceTcp);
         }
       });
 
-  // clean up the unused RTCDtlsTransports
-  RemoveRTCDtlsTransportsExcept(finalTransports);
-
   mTransportHandler->RemoveTransportsExcept(finalTransports);
 
   for (const auto& transceiverImpl : mTransceivers) {
     transceiverImpl->UpdateTransport();
-  }
-
-  if (sctpTransport.isSome()) {
-    auto it = mTransportIdToRTCDtlsTransport.find(*sctpTransport);
-    if (it == mTransportIdToRTCDtlsTransport.end()) {
-      // What?
-      MOZ_ASSERT(false);
-      return NS_ERROR_FAILURE;
-    }
-    if (!mDataConnection) {
-      // What?
-      MOZ_ASSERT(false);
-      return NS_ERROR_FAILURE;
-    }
-    RefPtr<RTCDtlsTransport> dtlsTransport = it->second;
-    // Why on earth does the spec use a floating point for this?
-    double maxMessageSize =
-        static_cast<double>(mDataConnection->GetMaxMessageSize());
-    Nullable<uint16_t> maxChannels;
-
-    if (!mSctpTransport) {
-      mSctpTransport = new RTCSctpTransport(GetParentObject(), *dtlsTransport,
-                                            maxMessageSize, maxChannels);
-    } else {
-      mSctpTransport->SetTransport(*dtlsTransport);
-      mSctpTransport->SetMaxMessageSize(maxMessageSize);
-      mSctpTransport->SetMaxChannels(maxChannels);
-    }
-  } else {
-    mSctpTransport = nullptr;
   }
 
   return NS_OK;
@@ -4124,9 +4318,8 @@ void PeerConnectionImpl::UpdateTransport(const JsepTransceiver& aTransceiver,
   DtlsDigestList digests;
   for (const auto& fingerprint :
        transport.mDtls->GetFingerprints().mFingerprints) {
-    std::ostringstream ss;
-    ss << fingerprint.hashFunc;
-    digests.emplace_back(ss.str(), fingerprint.fingerprint);
+    digests.emplace_back(ToString(fingerprint.hashFunc),
+                         fingerprint.fingerprint);
   }
 
   mTransportHandler->ActivateTransport(
@@ -4168,6 +4361,9 @@ nsresult PeerConnectionImpl::UpdateMediaPipelines() {
 
 void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mJsepSession->GetState() == kJsepStateStable);
+
+  auto transports = GetActiveTransports();
 
   if (!mCanRegisterMDNSHostnamesDirectly) {
     for (auto& pair : mMDNSHostnamesToRegister) {
@@ -4219,7 +4415,7 @@ bool PeerConnectionImpl::GetPrefObfuscateHostAddresses() const {
       "media.peerconnection.ice.obfuscate_host_addresses", false);
   obfuscate_host_addresses &=
       !MediaManager::Get()->IsActivelyCapturingOrHasAPermission(winId);
-  obfuscate_host_addresses &= !PeerConnectionImpl::HostnameInPref(
+  obfuscate_host_addresses &= !media::HostnameInPref(
       "media.peerconnection.ice.obfuscate_host_addresses.blocklist", mHostname);
   obfuscate_host_addresses &= XRE_IsContentProcess();
 
@@ -4230,7 +4426,8 @@ PeerConnectionImpl::SignalHandler::SignalHandler(PeerConnectionImpl* aPc,
                                                  MediaTransportHandler* aSource)
     : mHandle(aPc->GetHandle()),
       mSource(aSource),
-      mSTSThread(aPc->GetSTSThread()) {
+      mSTSThread(aPc->GetSTSThread()),
+      mPacketDumper(aPc->GetPacketDumper()) {
   ConnectSignals();
 }
 
@@ -4251,6 +4448,8 @@ void PeerConnectionImpl::SignalHandler::ConnectSignals() {
       this, &PeerConnectionImpl::SignalHandler::ConnectionStateChange_s);
   mSource->SignalRtcpStateChange.connect(
       this, &PeerConnectionImpl::SignalHandler::ConnectionStateChange_s);
+  mSource->SignalPacketReceived.connect(
+      this, &PeerConnectionImpl::SignalHandler::OnPacketReceived_s);
 }
 
 void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
@@ -4443,6 +4642,15 @@ already_AddRefed<dom::RTCRtpTransceiver> PeerConnectionImpl::CreateTransceiver(
             u"WebrtcCallWrapper shutdown blocker"_ns,
             NS_LITERAL_STRING_FROM_CSTRING(__FILE__), __LINE__),
         ctx->GetSharedWebrtcState());
+    mRtcpReceiveListener = mSignalHandler->RtcpReceiveEvent().Connect(
+        mCall->mCallThread, [call = mCall](MediaPacket aPacket) {
+          // This might not be initted yet, because the task to do that is tail
+          // dispatched, and STS might beat it to the punch.
+          if (call->Call()) {
+            call->Call()->Receiver()->DeliverRtcpPacket(
+                rtc::CopyOnWriteBuffer(aPacket.data(), aPacket.len()));
+          }
+        });
   }
 
   if (aAddTrackMagic) {
@@ -4487,32 +4695,31 @@ std::string PeerConnectionImpl::GetTransportIdMatchingSendTrack(
 }
 
 void PeerConnectionImpl::SignalHandler::IceGatheringStateChange_s(
-    dom::RTCIceGatheringState aState) {
+    const std::string& aTransportId, dom::RTCIceGathererState aState) {
   ASSERT_ON_THREAD(mSTSThread);
-
   GetMainThreadSerialEventTarget()->Dispatch(
       NS_NewRunnableFunction(__func__,
-                             [handle = mHandle, aState] {
+                             [handle = mHandle, aTransportId, aState] {
                                PeerConnectionWrapper wrapper(handle);
                                if (wrapper.impl()) {
                                  wrapper.impl()->IceGatheringStateChange(
-                                     aState);
+                                     aTransportId, aState);
                                }
                              }),
       NS_DISPATCH_NORMAL);
 }
 
 void PeerConnectionImpl::SignalHandler::IceConnectionStateChange_s(
-    dom::RTCIceConnectionState aState) {
+    const std::string& aTransportId, dom::RTCIceTransportState aState) {
   ASSERT_ON_THREAD(mSTSThread);
 
   GetMainThreadSerialEventTarget()->Dispatch(
       NS_NewRunnableFunction(__func__,
-                             [handle = mHandle, aState] {
+                             [handle = mHandle, aTransportId, aState] {
                                PeerConnectionWrapper wrapper(handle);
                                if (wrapper.impl()) {
                                  wrapper.impl()->IceConnectionStateChange(
-                                     aState);
+                                     aTransportId, aState);
                                }
                              }),
       NS_DISPATCH_NORMAL);
@@ -4564,6 +4771,39 @@ void PeerConnectionImpl::SignalHandler::ConnectionStateChange_s(
                                }
                              }),
       NS_DISPATCH_NORMAL);
+}
+
+void PeerConnectionImpl::SignalHandler::OnPacketReceived_s(
+    const std::string& aTransportId, const MediaPacket& aPacket) {
+  ASSERT_ON_THREAD(mSTSThread);
+
+  if (!aPacket.len()) {
+    return;
+  }
+
+  if (aPacket.type() != MediaPacket::RTCP) {
+    return;
+  }
+
+  CSFLogVerbose(LOGTAG, "%s received RTCP packet.", mHandle.c_str());
+
+  RtpLogger::LogPacket(aPacket, true, mHandle);
+
+  // Might be nice to pass ownership of the buffer in this case, but it is a
+  // small optimization in a rare case.
+  mPacketDumper->Dump(SIZE_MAX, dom::mozPacketDumpType::Srtcp, false,
+                      aPacket.encrypted_data(), aPacket.encrypted_len());
+
+  mPacketDumper->Dump(SIZE_MAX, dom::mozPacketDumpType::Rtcp, false,
+                      aPacket.data(), aPacket.len());
+
+  if (StaticPrefs::media_webrtc_net_force_disable_rtcp_reception()) {
+    CSFLogVerbose(LOGTAG, "%s RTCP packet forced to be dropped",
+                  mHandle.c_str());
+    return;
+  }
+
+  mRtcpReceiveEvent.Notify(aPacket.Clone());
 }
 
 /**
@@ -4620,16 +4860,17 @@ std::unique_ptr<NrSocketProxyConfig> PeerConnectionImpl::GetProxyConfig()
 
   TabId id = browserChild->GetTabId();
   nsCOMPtr<nsILoadInfo> loadInfo =
-      new net::LoadInfo(doc->NodePrincipal(), doc->NodePrincipal(), doc, 0,
-                        nsIContentPolicy::TYPE_INVALID);
+      new net::LoadInfo(doc->NodePrincipal(), doc->NodePrincipal(), doc,
+                        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+                        nsIContentPolicy::TYPE_PROXIED_WEBRTC_MEDIA);
 
-  Maybe<net::LoadInfoArgs> loadInfoArgs;
+  net::LoadInfoArgs loadInfoArgs;
   MOZ_ALWAYS_SUCCEEDS(
       mozilla::ipc::LoadInfoToLoadInfoArgs(loadInfo, &loadInfoArgs));
   return std::unique_ptr<NrSocketProxyConfig>(new NrSocketProxyConfig(
-      net::WebrtcProxyConfig(id, alpn, *loadInfoArgs, mForceProxy)));
+      net::WebrtcProxyConfig(id, alpn, loadInfoArgs, mForceProxy)));
 }
 
-std::map<uint64_t, PeerConnectionAutoTimer>
+MOZ_RUNINIT std::map<uint64_t, PeerConnectionAutoTimer>
     PeerConnectionImpl::sCallDurationTimers;
 }  // namespace mozilla

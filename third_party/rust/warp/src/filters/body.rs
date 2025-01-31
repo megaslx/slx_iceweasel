@@ -12,10 +12,7 @@ use futures_util::{future, ready, Stream, TryFutureExt};
 use headers::ContentLength;
 use http::header::CONTENT_TYPE;
 use hyper::Body;
-use mime;
 use serde::de::DeserializeOwned;
-use serde_json;
-use serde_urlencoded;
 
 use crate::filter::{filter_fn, filter_fn_one, Filter, FilterBase};
 use crate::reject::{self, Rejection};
@@ -69,6 +66,8 @@ pub fn content_length_limit(limit: u64) -> impl Filter<Extract = (), Error = Rej
 ///
 /// If other filters have already extracted the body, this filter will reject
 /// with a `500 Internal Server Error`.
+///
+/// For example usage, please take a look at [examples/stream.rs](https://github.com/seanmonstar/warp/blob/master/examples/stream.rs).
 ///
 /// # Warning
 ///

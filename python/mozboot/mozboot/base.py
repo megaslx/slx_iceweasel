@@ -16,7 +16,6 @@ from packaging.version import Version
 from mozboot import rust
 from mozboot.util import (
     MINIMUM_RUST_VERSION,
-    get_mach_virtualenv_binary,
     http_download_and_save,
 )
 
@@ -169,13 +168,6 @@ class BaseBootstrapper(object):
         Platform-specific implementations should check the environment and offer advice/warnings
         to the user, if necessary.
         """
-
-    def suggest_install_distutils(self):
-        """Called if distutils.{sysconfig,spawn} can't be imported."""
-        print(
-            "Does your distro require installing another package for distutils?",
-            file=sys.stderr,
-        )
 
     def suggest_install_pip3(self):
         """Called if pip3 can't be found."""
@@ -339,45 +331,8 @@ class BaseBootstrapper(object):
         """
         pass
 
-    def install_toolchain_artifact(self, toolchain_job, no_unpack=False):
-        if no_unpack:
-            return self.install_toolchain_artifact_impl(
-                self.state_dir, toolchain_job, no_unpack
-            )
+    def install_toolchain_artifact(self, toolchain_job):
         bootstrap_toolchain(toolchain_job)
-
-    def install_toolchain_artifact_impl(
-        self, install_dir: Path, toolchain_job, no_unpack=False
-    ):
-        if type(self.srcdir) is str:
-            mach_binary = Path(self.srcdir) / "mach"
-        else:
-            mach_binary = (self.srcdir / "mach").resolve()
-        if not mach_binary.exists():
-            raise ValueError(f"mach not found at {mach_binary}")
-
-        if not self.state_dir:
-            raise ValueError(
-                "Need a state directory (e.g. ~/.mozbuild) to download " "artifacts"
-            )
-        python_location = get_mach_virtualenv_binary()
-        if not python_location.exists():
-            raise ValueError(f"python not found at {python_location}")
-
-        cmd = [
-            str(python_location),
-            str(mach_binary),
-            "artifact",
-            "toolchain",
-            "--bootstrap",
-            "--from-build",
-            toolchain_job,
-        ]
-
-        if no_unpack:
-            cmd += ["--no-unpack"]
-
-        subprocess.check_call(cmd, cwd=str(install_dir))
 
     def auto_bootstrap(self, application, exclude=[]):
         args = ["--with-ccache=sccache"]
@@ -494,7 +449,7 @@ class BaseBootstrapper(object):
             # path and move on.
             return None
 
-        match = re.search(name + " ([a-z0-9\.]+)", process.stdout)
+        match = re.search(name + r" ([a-z0-9\.]+)", process.stdout)
         if not match:
             print("ERROR! Unable to identify %s version." % name)
             return None

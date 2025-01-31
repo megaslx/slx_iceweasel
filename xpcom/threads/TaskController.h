@@ -12,17 +12,16 @@
 #include "mozilla/IdlePeriodState.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/EventQueue.h"
+#include "mozilla/UniquePtr.h"
 #include "nsISupportsImpl.h"
-#include "nsIEventTarget.h"
+#include "nsThreadUtils.h"  // for MOZ_COLLECTING_RUNNABLE_TELEMETRY
 
 #include <atomic>
-#include <memory>
 #include <vector>
 #include <set>
-#include <list>
 #include <stack>
 
 class nsIRunnable;
@@ -34,6 +33,7 @@ class Task;
 class TaskController;
 class PerformanceCounter;
 class PerformanceCounterState;
+struct PoolThread;
 
 const EventQueuePriority kDefaultPriorityValue = EventQueuePriority::Normal;
 
@@ -206,9 +206,14 @@ class Task {
 
   friend class TaskController;
 
-  // When this returns false, the task is considered incomplete and will be
-  // rescheduled at the current 'mPriority' level.
-  virtual bool Run() = 0;
+  enum class TaskResult {
+    Complete,
+    Incomplete,
+  };
+
+  // When this returns TaskResult::Incomplete, it will be rescheduled at the
+  // current 'mPriority' level.
+  virtual TaskResult Run() = 0;
 
  private:
   Task* GetHighestPriorityDependency();
@@ -249,14 +254,6 @@ class Task {
   mozilla::TimeStamp mInsertionTime;
 };
 
-struct PoolThread {
-  PRThread* mThread;
-  RefPtr<Task> mCurrentTask;
-  // This may be higher than mCurrentTask's priority due to priority
-  // propagation. This is -only- valid when mCurrentTask != nullptr.
-  uint32_t mEffectiveTaskPriority;
-};
-
 // A task manager implementation for priority levels that should only
 // run during idle periods.
 class IdleTaskManager : public TaskManager {
@@ -293,7 +290,10 @@ class TaskController {
  public:
   TaskController();
 
-  static TaskController* Get();
+  static TaskController* Get() {
+    MOZ_ASSERT(sSingleton.get());
+    return sSingleton.get();
+  }
 
   static void Initialize();
 
@@ -318,6 +318,8 @@ class TaskController {
       PerformanceCounterState* aPerformanceCounterState);
 
   static void Shutdown();
+
+  static Task::TaskResult RunTask(Task*);
 
   // This adds a task to the TaskController graph.
   // This may be called on any thread.
@@ -358,6 +360,7 @@ class TaskController {
 
  private:
   friend void ThreadFuncPoolThread(void* aIndex);
+  static StaticAutoPtr<TaskController> sSingleton;
 
   void InitializeThreadPool();
 
@@ -372,20 +375,27 @@ class TaskController {
       const MutexAutoLock& aProofOfLock);
 
   Task* GetFinalDependency(Task* aTask);
-  void MaybeInterruptTask(Task* aTask);
+  void MaybeInterruptTask(Task* aTask, const MutexAutoLock& aProofOfLock);
   Task* GetHighestPriorityMTTask();
+
+  void DispatchThreadableTasks(const MutexAutoLock& aProofOfLock);
+  bool MaybeDispatchOneThreadableTask(const MutexAutoLock& aProofOfLock);
+  PoolThread* SelectThread(const MutexAutoLock& aProofOfLock);
+
+  struct TaskToRun {
+    RefPtr<Task> mTask;
+    uint32_t mEffectiveTaskPriority = 0;
+  };
+  TaskToRun TakeThreadableTaskToRun(const MutexAutoLock& aProofOfLock);
 
   void EnsureMainThreadTasksScheduled();
 
   void ProcessUpdatedPriorityModifier(TaskManager* aManager);
 
   void ShutdownThreadPoolInternal();
-  void ShutdownInternal();
 
-  void RunPoolThread();
-
-  static std::unique_ptr<TaskController> sSingleton;
-  static StaticMutex sSingletonMutex MOZ_UNANNOTATED;
+  void RunPoolThread(PoolThread* aThread);
+  friend struct PoolThread;
 
   // This protects access to the task graph.
   Mutex mGraphMutex MOZ_UNANNOTATED;
@@ -395,13 +405,13 @@ class TaskController {
   // the main thread that need to be handled.
   Mutex mPoolInitializationMutex =
       Mutex("TaskController::mPoolInitializationMutex");
+
   // Created under the PoolInitialization mutex, then never extended, and
-  // only freed when the object is freed.  mThread is set at creation time;
+  // only freed when the object is freed. mThread is set at creation time;
   // mCurrentTask and mEffectiveTaskPriority are only accessed from the
   // thread, so no locking is needed to access this.
-  std::vector<PoolThread> mPoolThreads;
+  std::vector<UniquePtr<PoolThread>> mPoolThreads;
 
-  CondVar mThreadPoolCV;
   CondVar mMainThreadCV;
 
   // Variables below are protected by mGraphMutex.
@@ -415,6 +425,9 @@ class TaskController {
   // TaskManagers currently active.
   // We can use a raw pointer since tasks always hold on to their TaskManager.
   std::set<TaskManager*> mTaskManagers;
+
+  // Number of pool threads that are currently idle.
+  size_t mIdleThreadCount = 0;
 
   // This ensures we keep running the main thread if we processed a task there.
   bool mMayHaveMainThreadTask = true;

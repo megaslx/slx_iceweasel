@@ -425,6 +425,7 @@ struct InputContext final {
     mHTMLInputMode.Truncate();
     mActionHint.Truncate();
     mAutocapitalize.Truncate();
+    mAutocorrect = true;
   }
 
   bool IsPasswordEditor() const {
@@ -451,19 +452,26 @@ struct InputContext final {
 
   bool IsInputAttributeChanged(const InputContext& aOldContext) const {
     return mIMEState.mEnabled != aOldContext.mIMEState.mEnabled ||
-#if defined(ANDROID) || defined(MOZ_WIDGET_GTK) || defined(XP_WIN)
+#if defined(ANDROID) || defined(MOZ_WIDGET_GTK) || defined(XP_WIN) || \
+    defined(XP_IOS)
            // input type and inputmode are supported by Windows IME API, GTK
-           // IME API and Android IME API
+           // IME API, Android IME API and iOS API.
            mHTMLInputType != aOldContext.mHTMLInputType ||
            mHTMLInputMode != aOldContext.mHTMLInputMode ||
 #endif
-#if defined(ANDROID) || defined(MOZ_WIDGET_GTK)
-           // autocapitalize is supported by Android IME API and GTK IME API
+#if defined(ANDROID) || defined(MOZ_WIDGET_GTK) || defined(XP_IOS)
+           // autocapitalize is supported by Android IME API, GTK IME API, and
+           // iOS API
            mAutocapitalize != aOldContext.mAutocapitalize ||
 #endif
-#if defined(ANDROID)
-           // enterkeyhint is only supported by Android IME API.
+#if defined(ANDROID) || defined(XP_IOS)
+           // enterkeyhint is only supported by Android IME API and iOS API.
            mActionHint != aOldContext.mActionHint ||
+#endif
+#if defined(ANDROID) || defined(XP_DARWIN)
+           // autocorrect is only supported by Android IME API, macOS text
+           // substitution and iOS API.
+           mAutocorrect != aOldContext.mAutocorrect ||
 #endif
            false;
   }
@@ -484,6 +492,9 @@ struct InputContext final {
 
   /* A hint for autocapitalize */
   nsString mAutocapitalize;
+
+  /* A hint for autocorrect */
+  bool mAutocorrect = true;  // on-by-default
 
   /**
    * mOrigin indicates whether this focus event refers to main or remote

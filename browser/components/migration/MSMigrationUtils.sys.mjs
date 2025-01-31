@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import { ctypes } from "resource://gre/modules/ctypes.sys.mjs";
 import { MigrationUtils } from "resource:///modules/MigrationUtils.sys.mjs";
 
@@ -265,7 +264,9 @@ function getEdgeLocalDataFolder() {
   if (gEdgeDir) {
     return gEdgeDir.clone();
   }
-  let packages = Services.dirsvc.get("LocalAppData", Ci.nsIFile);
+  let packages = Services.dirsvc.get("Home", Ci.nsIFile);
+  packages.append("AppData");
+  packages.append("Local");
   packages.append("Packages");
   let edgeDir = packages.clone();
   edgeDir.append("Microsoft.MicrosoftEdge_8wekyb3d8bbwe");
@@ -374,15 +375,14 @@ Bookmarks.prototype = {
   },
 
   async _migrateFolder(aSourceFolder, aDestFolderGuid) {
-    let { bookmarks, favicons } = await this._getBookmarksInFolder(
-      aSourceFolder
-    );
+    let { bookmarks, favicons } =
+      await this._getBookmarksInFolder(aSourceFolder);
     if (!bookmarks.length) {
       return;
     }
 
     await MigrationUtils.insertManyBookmarksWrapper(bookmarks, aDestFolderGuid);
-    MigrationUtils.insertManyFavicons(favicons);
+    MigrationUtils.insertManyFavicons(favicons).catch(console.error);
   },
 
   /**
@@ -559,23 +559,19 @@ function getTypedURLs(registryKeyPath) {
   return typedURLs;
 }
 
-// Migrator for form passwords on Windows 8 and higher.
+// Migrator for form passwords
 function WindowsVaultFormPasswords() {}
 
 WindowsVaultFormPasswords.prototype = {
   type: MigrationUtils.resourceTypes.PASSWORDS,
 
   get exists() {
-    // work only on windows 8+
-    if (AppConstants.isPlatformAndVersionAtLeast("win", "6.2")) {
-      // check if there are passwords available for migration.
-      return this.migrate(() => {}, true);
-    }
-    return false;
+    // check if there are passwords available for migration.
+    return this.migrate(() => {}, true);
   },
 
   /**
-   * If aOnlyCheckExists is false, import the form passwords on Windows 8 and higher from the vault
+   * If aOnlyCheckExists is false, import the form passwords from the vault
    * and then call the aCallback.
    * Otherwise, check if there are passwords in the vault.
    *

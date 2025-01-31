@@ -10,75 +10,83 @@
 
 #include "call/call.h"
 
+#include <cstdint>
 #include <list>
-#include <map>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
-#include "api/audio_codecs/builtin_audio_decoder_factory.h"
-#include "api/rtc_event_log/rtc_event_log.h"
-#include "api/task_queue/default_task_queue_factory.h"
+#include "api/adaptation/resource.h"
+#include "api/environment/environment.h"
+#include "api/environment/environment_factory.h"
+#include "api/make_ref_counted.h"
+#include "api/media_types.h"
+#include "api/scoped_refptr.h"
 #include "api/test/mock_audio_mixer.h"
 #include "api/test/video/function_video_encoder_factory.h"
-#include "api/transport/field_trial_based_config.h"
+#include "api/units/timestamp.h"
 #include "api/video/builtin_video_bitrate_allocator_factory.h"
+#include "api/video_codecs/sdp_video_format.h"
 #include "audio/audio_receive_stream.h"
 #include "audio/audio_send_stream.h"
 #include "call/adaptation/test/fake_resource.h"
 #include "call/adaptation/test/mock_resource_listener.h"
+#include "call/audio_receive_stream.h"
+#include "call/audio_send_stream.h"
 #include "call/audio_state.h"
+#include "call/call_config.h"
+#include "call/flexfec_receive_stream.h"
+#include "call/video_send_stream.h"
 #include "modules/audio_device/include/mock_audio_device.h"
 #include "modules/audio_processing/include/mock_audio_processing.h"
-#include "modules/rtp_rtcp/source/rtp_rtcp_interface.h"
+#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "modules/rtp_rtcp/source/rtp_packet_received.h"
 #include "test/fake_encoder.h"
+#include "test/gmock.h"
 #include "test/gtest.h"
 #include "test/mock_audio_decoder_factory.h"
 #include "test/mock_transport.h"
 #include "test/run_loop.h"
+#include "video/config/video_encoder_config.h"
 
+namespace webrtc {
 namespace {
 
 using ::testing::_;
 using ::testing::Contains;
+using ::testing::MockFunction;
 using ::testing::NiceMock;
 using ::testing::StrictMock;
+using ::webrtc::test::FakeEncoder;
+using ::webrtc::test::FunctionVideoEncoderFactory;
+using ::webrtc::test::MockAudioDeviceModule;
+using ::webrtc::test::MockAudioMixer;
+using ::webrtc::test::MockAudioProcessing;
+using ::webrtc::test::RunLoop;
 
 struct CallHelper {
   explicit CallHelper(bool use_null_audio_processing) {
-    task_queue_factory_ = webrtc::CreateDefaultTaskQueueFactory();
-    webrtc::AudioState::Config audio_state_config;
-    audio_state_config.audio_mixer =
-        rtc::make_ref_counted<webrtc::test::MockAudioMixer>();
+    AudioState::Config audio_state_config;
+    audio_state_config.audio_mixer = rtc::make_ref_counted<MockAudioMixer>();
     audio_state_config.audio_processing =
         use_null_audio_processing
             ? nullptr
-            : rtc::make_ref_counted<
-                  NiceMock<webrtc::test::MockAudioProcessing>>();
+            : rtc::make_ref_counted<NiceMock<MockAudioProcessing>>();
     audio_state_config.audio_device_module =
-        rtc::make_ref_counted<webrtc::test::MockAudioDeviceModule>();
-    webrtc::Call::Config config(&event_log_);
-    config.audio_state = webrtc::AudioState::Create(audio_state_config);
-    config.task_queue_factory = task_queue_factory_.get();
-    config.trials = &field_trials_;
-    call_.reset(webrtc::Call::Create(config));
+        rtc::make_ref_counted<MockAudioDeviceModule>();
+    CallConfig config(CreateEnvironment());
+    config.audio_state = AudioState::Create(audio_state_config);
+    call_ = Call::Create(std::move(config));
   }
 
-  webrtc::Call* operator->() { return call_.get(); }
+  Call* operator->() { return call_.get(); }
 
  private:
-  webrtc::test::RunLoop loop_;
-  webrtc::RtcEventLogNull event_log_;
-  webrtc::FieldTrialBasedConfig field_trials_;
-  std::unique_ptr<webrtc::TaskQueueFactory> task_queue_factory_;
-  std::unique_ptr<webrtc::Call> call_;
+  RunLoop loop_;
+  std::unique_ptr<Call> call_;
 };
-}  // namespace
-
-namespace webrtc {
-
-namespace {
 
 rtc::scoped_refptr<Resource> FindResourceWhoseNameContains(
     const std::vector<rtc::scoped_refptr<Resource>>& resources,
@@ -323,6 +331,45 @@ TEST(CallTest, MultipleFlexfecReceiveStreamsProtectingSingleVideoStream) {
   }
 }
 
+TEST(CallTest,
+     DeliverRtpPacketOfTypeAudioTriggerOnUndemuxablePacketHandlerIfNotDemuxed) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::AUDIO, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
+TEST(CallTest,
+     DeliverRtpPacketOfTypeVideoTriggerOnUndemuxablePacketHandlerIfNotDemuxed) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::VIDEO, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
+TEST(CallTest,
+     DeliverRtpPacketOfTypeAnyDoesNotTriggerOnUndemuxablePacketHandler) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call).Times(0);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::ANY, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
 TEST(CallTest, RecreatingAudioStreamWithSameSsrcReusesRtpState) {
   constexpr uint32_t kSSRC = 12345;
   for (bool use_null_audio_processing : {false, true}) {
@@ -345,18 +392,18 @@ TEST(CallTest, RecreatingAudioStreamWithSameSsrcReusesRtpState) {
     EXPECT_EQ(rtp_state1.sequence_number, rtp_state2.sequence_number);
     EXPECT_EQ(rtp_state1.start_timestamp, rtp_state2.start_timestamp);
     EXPECT_EQ(rtp_state1.timestamp, rtp_state2.timestamp);
-    EXPECT_EQ(rtp_state1.capture_time_ms, rtp_state2.capture_time_ms);
-    EXPECT_EQ(rtp_state1.last_timestamp_time_ms,
-              rtp_state2.last_timestamp_time_ms);
+    EXPECT_EQ(rtp_state1.capture_time, rtp_state2.capture_time);
+    EXPECT_EQ(rtp_state1.last_timestamp_time, rtp_state2.last_timestamp_time);
   }
 }
 
 TEST(CallTest, AddAdaptationResourceAfterCreatingVideoSendStream) {
   CallHelper call(true);
   // Create a VideoSendStream.
-  test::FunctionVideoEncoderFactory fake_encoder_factory([]() {
-    return std::make_unique<test::FakeEncoder>(Clock::GetRealTimeClock());
-  });
+  FunctionVideoEncoderFactory fake_encoder_factory(
+      [](const Environment& env, const SdpVideoFormat& format) {
+        return std::make_unique<FakeEncoder>(env);
+      });
   auto bitrate_allocator_factory = CreateBuiltinVideoBitrateAllocatorFactory();
   MockTransport send_transport;
   VideoSendStream::Config config(&send_transport);
@@ -419,9 +466,10 @@ TEST(CallTest, AddAdaptationResourceBeforeCreatingVideoSendStream) {
   auto fake_resource = FakeResource::Create("FakeResource");
   call->AddAdaptationResource(fake_resource);
   // Create a VideoSendStream.
-  test::FunctionVideoEncoderFactory fake_encoder_factory([]() {
-    return std::make_unique<test::FakeEncoder>(Clock::GetRealTimeClock());
-  });
+  FunctionVideoEncoderFactory fake_encoder_factory(
+      [](const Environment& env, const SdpVideoFormat& format) {
+        return std::make_unique<FakeEncoder>(env);
+      });
   auto bitrate_allocator_factory = CreateBuiltinVideoBitrateAllocatorFactory();
   MockTransport send_transport;
   VideoSendStream::Config config(&send_transport);

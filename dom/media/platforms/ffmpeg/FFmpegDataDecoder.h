@@ -41,9 +41,7 @@ class FFmpegDataDecoder<LIBAV_VER>
   RefPtr<ShutdownPromise> Shutdown() override;
 
   static AVCodec* FindAVCodec(FFmpegLibWrapper* aLib, AVCodecID aCodec);
-#ifdef MOZ_WIDGET_GTK
   static AVCodec* FindHardwareAVCodec(FFmpegLibWrapper* aLib, AVCodecID aCodec);
-#endif
 
  protected:
   // Flush and Drain operation, always run
@@ -51,7 +49,7 @@ class FFmpegDataDecoder<LIBAV_VER>
   virtual void ProcessShutdown();
   virtual void InitCodecContext() MOZ_REQUIRES(sMutex) {}
   AVFrame* PrepareFrame();
-  MediaResult InitDecoder();
+  MediaResult InitSWDecoder(AVDictionary** aOptions);
   MediaResult AllocateExtraData();
   MediaResult DoDecode(MediaRawData* aSample, bool* aGotFrame,
                        DecodedData& aResults);
@@ -64,6 +62,7 @@ class FFmpegDataDecoder<LIBAV_VER>
   AVFrame* mFrame;
   RefPtr<MediaByteBuffer> mExtraData;
   AVCodecID mCodecID;  // set in constructor
+  bool mVideoCodec;
 
  protected:
   virtual ~FFmpegDataDecoder();

@@ -7,21 +7,27 @@ use proc_macro2::Delimiter;
 // Not public API.
 #[doc(hidden)]
 pub struct Parens<'a> {
+    #[doc(hidden)]
     pub token: token::Paren,
+    #[doc(hidden)]
     pub content: ParseBuffer<'a>,
 }
 
 // Not public API.
 #[doc(hidden)]
 pub struct Braces<'a> {
+    #[doc(hidden)]
     pub token: token::Brace,
+    #[doc(hidden)]
     pub content: ParseBuffer<'a>,
 }
 
 // Not public API.
 #[doc(hidden)]
 pub struct Brackets<'a> {
+    #[doc(hidden)]
     pub token: token::Bracket,
+    #[doc(hidden)]
     pub content: ParseBuffer<'a>,
 }
 
@@ -29,7 +35,9 @@ pub struct Brackets<'a> {
 #[cfg(any(feature = "full", feature = "derive"))]
 #[doc(hidden)]
 pub struct Group<'a> {
+    #[doc(hidden)]
     pub token: token::Group,
+    #[doc(hidden)]
     pub content: ParseBuffer<'a>,
 }
 
@@ -74,7 +82,7 @@ fn parse_delimited<'a>(
 ) -> Result<(DelimSpan, ParseBuffer<'a>)> {
     input.step(|cursor| {
         if let Some((content, span, rest)) = cursor.group(delimiter) {
-            let scope = crate::buffer::close_span_of_group(*cursor);
+            let scope = span.close();
             let nested = crate::parse::advance_step_cursor(cursor, content);
             let unexpected = crate::parse::get_unexpected(input);
             let content = crate::parse::new_parse_buffer(scope, nested, unexpected);
@@ -134,7 +142,7 @@ fn parse_delimited<'a>(
 /// # }
 /// ```
 #[macro_export]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
 macro_rules! parenthesized {
     ($content:ident in $cursor:expr) => {
         match $crate::__private::parse_parens(&$cursor) {
@@ -212,7 +220,7 @@ macro_rules! parenthesized {
 /// # }
 /// ```
 #[macro_export]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
 macro_rules! braced {
     ($content:ident in $cursor:expr) => {
         match $crate::__private::parse_braces(&$cursor) {
@@ -267,7 +275,7 @@ macro_rules! braced {
 /// # }
 /// ```
 #[macro_export]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
 macro_rules! bracketed {
     ($content:ident in $cursor:expr) => {
         match $crate::__private::parse_brackets(&$cursor) {

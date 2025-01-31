@@ -14,16 +14,18 @@ const {
 } = require("resource://devtools/client/fronts/string.js");
 
 const SUPPORT_ENUM_ENTRIES_SET = new Set([
-  "Headers",
-  "Map",
-  "WeakMap",
-  "Set",
-  "WeakSet",
-  "Storage",
-  "URLSearchParams",
+  "CustomStateSet",
   "FormData",
+  "Headers",
+  "HighlightRegistry",
+  "Map",
   "MIDIInputMap",
   "MIDIOutputMap",
+  "Set",
+  "Storage",
+  "URLSearchParams",
+  "WeakMap",
+  "WeakSet",
 ]);
 
 /**
@@ -43,6 +45,11 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
     this.valid = true;
 
     parentFront.manage(this);
+  }
+
+  form(data) {
+    this.actorID = data.actor;
+    this._grip = data;
   }
 
   skipDestroy() {
@@ -342,13 +349,16 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
   // actorID, unless:
   // - it's a Symbol (See Bug 1600299)
   // - it's a mapEntry (the preview.key and preview.value properties can hold actors)
+  // - it's a highlightRegistryEntry (the preview.value properties can hold actors)
   // - or it is already a front (happens when we are using the legacy listeners in the ResourceCommand)
   const isPacketAnObject = packet && typeof packet === "object";
-  const isFront = !!packet.typeName;
+  const isFront = !!packet?.typeName;
   if (
     !isPacketAnObject ||
     packet.type == "symbol" ||
-    (packet.type !== "mapEntry" && !packet.actor) ||
+    (packet.type !== "mapEntry" &&
+      packet.type !== "highlightRegistryEntry" &&
+      !packet.actor) ||
     isFront
   ) {
     return packet;
@@ -364,6 +374,16 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
   // thread actor) cache the object actors they create.
   const existingFront = conn.getFrontByID(packet.actor);
   if (existingFront) {
+    // This methods replicates Protocol.js logic when we receive an actor "form" (here `packet`):
+    // https://searchfox.org/mozilla-central/rev/aecbd5cdd28a09e11872bc829d9e6e4b943e6e49/devtools/shared/protocol/types.js#346
+    // We notify the Object Front about the new "form" so that it can update itself
+    // with latest data provided by the server.
+    // This will help ensure that the object previews get updated.
+    existingFront.form(packet);
+
+    // The `packet` may contain nested actor forms which should be converted into Fronts.
+    createChildFronts(existingFront, packet);
+
     return existingFront;
   }
 
@@ -376,7 +396,10 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
     return longStringFront;
   }
 
-  if (type === "mapEntry" && packet.preview) {
+  if (
+    (type === "mapEntry" || type === "highlightRegistryEntry") &&
+    packet.preview
+  ) {
     const { key, value } = packet.preview;
     packet.preview.key = getAdHocFrontOrPrimitiveGrip(
       key,

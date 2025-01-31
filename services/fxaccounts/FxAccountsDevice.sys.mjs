@@ -4,7 +4,7 @@
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-const {
+import {
   log,
   ERRNO_DEVICE_SESSION_CONFLICT,
   ERRNO_UNKNOWN_DEVICE,
@@ -14,7 +14,7 @@ const {
   ON_DEVICE_DISCONNECTED_NOTIFICATION,
   ONVERIFIED_NOTIFICATION,
   PREF_ACCOUNT_ROOT,
-} = ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
+} from "resource://gre/modules/FxAccountsCommon.sys.mjs";
 
 import { DEVICE_TYPE_DESKTOP } from "resource://services-sync/constants.sys.mjs";
 
@@ -540,9 +540,8 @@ export class FxAccountsDevice {
       "device session conflict, attempting to ascertain the correct device id"
     );
     try {
-      const devices = await this._fxai.fxAccountsClient.getDeviceList(
-        sessionToken
-      );
+      const devices =
+        await this._fxai.fxAccountsClient.getDeviceList(sessionToken);
       const matchingDevices = devices.filter(device => device.isCurrentDevice);
       const length = matchingDevices.length;
       if (length === 1) {

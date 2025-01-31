@@ -3,8 +3,7 @@
 
 const NAME = "Test Alias Engine";
 
-add_task(async function setup() {
-  await AddonTestUtils.promiseStartupManager();
+add_setup(async function () {
   await Services.search.init();
 });
 

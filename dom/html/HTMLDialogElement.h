@@ -9,6 +9,7 @@
 
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/CloseWatcher.h"
 #include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
 
@@ -35,17 +36,27 @@ class HTMLDialogElement final : public nsGenericHTMLElement {
     mReturnValue = aReturnValue;
   }
 
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
-  void Close(const mozilla::dom::Optional<nsAString>& aReturnValue);
-  void Show(ErrorResult& aError);
-  void ShowModal(ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void Close(
+      const mozilla::dom::Optional<nsAString>& aReturnValue);
+  MOZ_CAN_RUN_SCRIPT void Show(ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT void ShowModal(ErrorResult& aError);
+
+  void AsyncEventRunning(AsyncEventDispatcher* aEvent) override;
 
   bool IsInTopLayer() const;
   void QueueCancelDialog();
-  void RunCancelDialogSteps();
+  MOZ_CAN_RUN_SCRIPT void RunCancelDialogSteps();
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void FocusDialog();
+
+  int32_t TabIndexDefault() override;
+
+  bool IsValidInvokeAction(InvokeAction aAction) const override;
+  MOZ_CAN_RUN_SCRIPT bool HandleInvokeInternal(Element* invoker,
+                                               InvokeAction aAction,
+                                               ErrorResult& aRv) override;
 
   nsString mReturnValue;
 
@@ -58,8 +69,16 @@ class HTMLDialogElement final : public nsGenericHTMLElement {
   void AddToTopLayerIfNeeded();
   void RemoveFromTopLayerIfNeeded();
   void StorePreviouslyFocusedElement();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void QueueToggleEventTask();
 
   nsWeakPtr mPreviouslyFocusedElement;
+
+  RefPtr<AsyncEventDispatcher> mToggleEventDispatcher;
+
+  // This won't need to be cycle collected as CloseWatcher only has strong
+  // references to event listeners, which themselves have Weak References back
+  // to the Node.
+  RefPtr<CloseWatcher> mCloseWatcher;
 };
 
 }  // namespace mozilla::dom

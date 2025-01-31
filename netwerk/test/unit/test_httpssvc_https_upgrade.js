@@ -20,10 +20,17 @@ const ReferrerInfo = Components.Constructor(
   "init"
 );
 
+let h2Port;
+
 add_setup(async function setup() {
   trr_test_setup();
 
-  let h2Port = Services.env.get("MOZHTTP2_PORT");
+  Services.prefs.setBoolPref(
+    "dom.security.https_first_for_custom_ports",
+    false
+  );
+
+  h2Port = Services.env.get("MOZHTTP2_PORT");
   Assert.notEqual(h2Port, null);
   Assert.notEqual(h2Port, "");
 
@@ -34,6 +41,10 @@ add_setup(async function setup() {
 
   Services.prefs.setBoolPref("network.dns.upgrade_with_https_rr", true);
   Services.prefs.setBoolPref("network.dns.use_https_rr_as_altsvc", true);
+  Services.prefs.setBoolPref(
+    "network.dns.https_rr.check_record_with_cname",
+    false
+  );
 
   Services.prefs.setBoolPref(
     "network.dns.use_https_rr_for_speculative_connection",
@@ -49,6 +60,10 @@ add_setup(async function setup() {
     );
     Services.prefs.clearUserPref("network.dns.notifyResolution");
     Services.prefs.clearUserPref("network.dns.disablePrefetch");
+    Services.prefs.clearUserPref("dom.security.https_first_for_custom_ports");
+    Services.prefs.clearUserPref(
+      "network.dns.https_rr.check_record_with_cname"
+    );
   });
 
   if (mozinfo.socketprocess_networking) {
@@ -56,7 +71,7 @@ add_setup(async function setup() {
     await TestUtils.waitForCondition(() => Services.io.socketProcessLaunched);
   }
 
-  Services.prefs.setIntPref("network.trr.mode", Ci.nsIDNSService.MODE_TRRFIRST);
+  Services.prefs.setIntPref("network.trr.mode", Ci.nsIDNSService.MODE_TRRONLY);
 });
 
 function makeChan(url) {
@@ -192,7 +207,7 @@ add_task(async function testInvalidDNSResult1() {
   let topic = "http-on-modify-request";
   let observer = {
     QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, aTopic) {
       if (aTopic == topic) {
         Services.obs.removeObserver(observer, topic);
         let channel = aSubject.QueryInterface(Ci.nsIChannel);
@@ -266,7 +281,7 @@ add_task(async function testHttpRequestBlocked() {
         this.obs.removeObserver(this, "dns-resolution-request");
       }
     },
-    observe(subject, topic, data) {
+    observe(subject, topic) {
       if (topic == "dns-resolution-request") {
         Assert.ok(false, "unreachable");
       }
@@ -278,7 +293,7 @@ add_task(async function testHttpRequestBlocked() {
   Services.prefs.setBoolPref("network.dns.disablePrefetch", true);
 
   let httpserv = new HttpServer();
-  httpserv.registerPathHandler("/", function handler(metadata, response) {
+  httpserv.registerPathHandler("/", function handler() {
     Assert.ok(false, "unreachable");
   });
   httpserv.start(-1);
@@ -295,7 +310,7 @@ add_task(async function testHttpRequestBlocked() {
   let topic = "http-on-modify-request";
   let observer = {
     QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, aTopic) {
       if (aTopic == topic) {
         Services.obs.removeObserver(observer, topic);
         let channel = aSubject.QueryInterface(Ci.nsIChannel);
@@ -349,4 +364,16 @@ add_task(async function testHTTPSRRUpgradeWithOriginHeader() {
   req.QueryInterface(Ci.nsIHttpChannel);
   Assert.equal(req.getResponseHeader("x-connection-http2"), "yes");
   Assert.equal(buf, originURL);
+});
+
+// See bug 1899841. Test the case when network.dns.use_https_rr_as_altsvc
+// is disabled.
+add_task(async function testPrefDisabled() {
+  Services.prefs.setBoolPref("network.dns.use_https_rr_as_altsvc", false);
+
+  let chan = makeChan(`https://test.httpssvc.com:${h2Port}/server-timing`);
+  let [req] = await channelOpenPromise(chan);
+
+  req.QueryInterface(Ci.nsIHttpChannel);
+  Assert.equal(req.getResponseHeader("x-connection-http2"), "yes");
 });

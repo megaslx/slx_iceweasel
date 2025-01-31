@@ -44,6 +44,28 @@ pub extern "C" fn fog_timing_distribution_cancel(id: u32, timing_id: u64) {
 }
 
 #[no_mangle]
+pub extern "C" fn fog_timing_distribution_accumulate_samples(id: u32, samples: &ThinVec<i64>) {
+    // N.B.: Avoid reallocation here by making the underlying type take a slice.
+    let samples = samples.to_vec();
+    with_metric!(
+        TIMING_DISTRIBUTION_MAP,
+        id,
+        metric,
+        metric.accumulate_samples(samples)
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn fog_timing_distribution_accumulate_single_sample(id: u32, sample: i64) {
+    with_metric!(
+        TIMING_DISTRIBUTION_MAP,
+        id,
+        metric,
+        metric.accumulate_single_sample(sample)
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn fog_timing_distribution_test_has_value(id: u32, ping_name: &nsACString) -> bool {
     with_metric!(
         TIMING_DISTRIBUTION_MAP,
@@ -58,6 +80,7 @@ pub extern "C" fn fog_timing_distribution_test_get_value(
     id: u32,
     ping_name: &nsACString,
     sum: &mut u64,
+    count: &mut u64,
     buckets: &mut ThinVec<u64>,
     counts: &mut ThinVec<u64>,
 ) {
@@ -68,6 +91,7 @@ pub extern "C" fn fog_timing_distribution_test_get_value(
         test_get!(metric, ping_name)
     );
     *sum = val.sum as _;
+    *count = val.count as _;
     for (&bucket, &count) in val.values.iter() {
         buckets.push(bucket as _);
         counts.push(count as _);

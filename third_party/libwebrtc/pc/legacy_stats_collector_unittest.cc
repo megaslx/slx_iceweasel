@@ -13,9 +13,10 @@
 #include <stdio.h>
 
 #include <cstdint>
+#include <optional>
 
 #include "absl/algorithm/container.h"
-#include "absl/types/optional.h"
+#include "api/audio/audio_processing_statistics.h"
 #include "api/audio_codecs/audio_encoder.h"
 #include "api/candidate.h"
 #include "api/data_channel_interface.h"
@@ -25,7 +26,6 @@
 #include "api/scoped_refptr.h"
 #include "call/call.h"
 #include "media/base/media_channel.h"
-#include "modules/audio_processing/include/audio_processing_statistics.h"
 #include "p2p/base/ice_transport_internal.h"
 #include "pc/media_stream.h"
 #include "pc/rtp_receiver.h"
@@ -40,6 +40,7 @@
 #include "rtc_base/fake_ssl_identity.h"
 #include "rtc_base/message_digest.h"
 #include "rtc_base/net_helper.h"
+#include "rtc_base/null_socket_server.h"
 #include "rtc_base/rtc_certificate.h"
 #include "rtc_base/socket_address.h"
 #include "rtc_base/ssl_identity.h"
@@ -65,11 +66,6 @@ using ::testing::Return;
 using ::testing::UnorderedElementsAre;
 
 namespace webrtc {
-
-namespace internal {
-// This value comes from openssl/tls1.h
-static const int TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA = 0xC014;
-}  // namespace internal
 
 // Error return values
 const char kNotFound[] = "NOT FOUND";
@@ -222,18 +218,18 @@ const StatsReport* FindNthReportByType(const StatsReports& reports,
 // `n` starts from 1 for finding the first report.
 // If either the `n`-th report is not found, or the stat is not present in that
 // report, then nullopt is returned.
-absl::optional<std::string> GetValueInNthReportByType(
+std::optional<std::string> GetValueInNthReportByType(
     const StatsReports& reports,
     StatsReport::StatsType type,
     StatsReport::StatsValueName name,
     int n) {
   const StatsReport* report = FindNthReportByType(reports, type, n);
   if (!report) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   std::string value;
   if (!GetValue(report, name, &value)) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   return value;
 }
@@ -328,8 +324,8 @@ void VerifyVoiceReceiverInfoReport(const StatsReport* report,
   EXPECT_EQ(rtc::ToString(info.audio_level), value_in_report);
   EXPECT_TRUE(GetValue(report, StatsReport::kStatsValueNameBytesReceived,
                        &value_in_report));
-  EXPECT_EQ(rtc::ToString(info.payload_bytes_rcvd +
-                          info.header_and_padding_bytes_rcvd),
+  EXPECT_EQ(rtc::ToString(info.payload_bytes_received +
+                          info.header_and_padding_bytes_received),
             value_in_report);
   EXPECT_TRUE(GetValue(report, StatsReport::kStatsValueNameJitterReceived,
                        &value_in_report));
@@ -365,7 +361,7 @@ void VerifyVoiceReceiverInfoReport(const StatsReport* report,
   EXPECT_EQ(rtc::ToString(info.secondary_discarded_rate), value_in_report);
   EXPECT_TRUE(GetValue(report, StatsReport::kStatsValueNamePacketsReceived,
                        &value_in_report));
-  EXPECT_EQ(rtc::ToString(info.packets_rcvd), value_in_report);
+  EXPECT_EQ(rtc::ToString(info.packets_received), value_in_report);
   EXPECT_TRUE(GetValue(report, StatsReport::kStatsValueNameDecodingCTSG,
                        &value_in_report));
   EXPECT_EQ(rtc::ToString(info.decoding_calls_to_silence_generator),
@@ -565,9 +561,9 @@ void UpdateVoiceSenderInfoFromAudioTrack(
 
 void InitVoiceReceiverInfo(cricket::VoiceReceiverInfo* voice_receiver_info) {
   voice_receiver_info->add_ssrc(kSsrcOfTrack);
-  voice_receiver_info->payload_bytes_rcvd = 98;
-  voice_receiver_info->header_and_padding_bytes_rcvd = 12;
-  voice_receiver_info->packets_rcvd = 111;
+  voice_receiver_info->payload_bytes_received = 98;
+  voice_receiver_info->header_and_padding_bytes_received = 12;
+  voice_receiver_info->packets_received = 111;
   voice_receiver_info->packets_lost = 114;
   voice_receiver_info->jitter_ms = 116;
   voice_receiver_info->jitter_buffer_ms = 117;
@@ -673,8 +669,7 @@ class LegacyStatsCollectorTest : public ::testing::Test {
     TransportChannelStats channel_stats;
     channel_stats.component = 1;
     channel_stats.srtp_crypto_suite = rtc::kSrtpAes128CmSha1_80;
-    channel_stats.ssl_cipher_suite =
-        internal::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA;
+    channel_stats.tls_cipher_suite_name = "cipher_suite_for_test";
     pc->SetTransportStats(kTransportName, channel_stats);
 
     // Fake certificate to report.
@@ -721,9 +716,7 @@ class LegacyStatsCollectorTest : public ::testing::Test {
     std::string dtls_cipher_suite =
         ExtractStatsValue(StatsReport::kStatsReportTypeComponent, reports,
                           StatsReport::kStatsValueNameDtlsCipher);
-    EXPECT_EQ(rtc::SSLStreamAdapter::SslCipherSuiteToName(
-                  internal::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA),
-              dtls_cipher_suite);
+    EXPECT_EQ(dtls_cipher_suite, "cipher_suite_for_test");
     std::string srtp_crypto_suite =
         ExtractStatsValue(StatsReport::kStatsReportTypeComponent, reports,
                           StatsReport::kStatsValueNameSrtpCipher);
@@ -846,6 +839,58 @@ class StatsCollectorTrackTest : public LegacyStatsCollectorTest,
   rtc::scoped_refptr<FakeAudioTrack> audio_track_;
 };
 
+TEST(StatsCollectionTest, DetachAndMerge) {
+  StatsCollection collection;
+  ASSERT_EQ(collection.size(), 0u);
+
+  // Create a new report with some information.
+  StatsReport::Id id(
+      StatsReport::NewTypedId(StatsReport::kStatsReportTypeTrack, "track_id"));
+  StatsReport* report = collection.ReplaceOrAddNew(id);
+  report->AddString(StatsReport::kStatsValueNameTrackId, "track_id");
+  ASSERT_TRUE(report);
+  // Check that looking it up, yields the same report.
+  ASSERT_EQ(report, collection.FindOrAddNew(id));
+  // There should be one report now.
+  ASSERT_EQ(collection.size(), 1u);
+
+  // Detach the internal container from the StatsCollection.
+  StatsCollection::Container container = collection.DetachCollection();
+  EXPECT_EQ(container.size(), 1u);
+  EXPECT_EQ(collection.size(), 0u);
+  EXPECT_EQ(nullptr, collection.Find(id));
+
+  // Merge it back and test if we find the same report.
+  collection.MergeCollection(std::move(container));
+  EXPECT_EQ(collection.size(), 1u);
+  EXPECT_EQ(report, collection.Find(id));
+}
+
+// Similar to `DetachAndMerge` above but detaches on one thread, merges on
+// another to test that we don't trigger sequence checker.
+TEST(StatsCollectionTest, DetachAndMergeThreaded) {
+  rtc::Thread new_thread(std::make_unique<rtc::NullSocketServer>());
+  new_thread.Start();
+
+  StatsReport::Id id(
+      StatsReport::NewTypedId(StatsReport::kStatsReportTypeTrack, "track_id"));
+
+  StatsReport* expected_report = nullptr;
+
+  StatsCollection::Container container = new_thread.BlockingCall([&] {
+    StatsCollection collection;
+    expected_report = collection.ReplaceOrAddNew(id);
+    expected_report->AddString(StatsReport::kStatsValueNameTrackId, "track_id");
+    return collection.DetachCollection();
+  });
+
+  StatsCollection collection;
+  collection.MergeCollection(std::move(container));
+  EXPECT_EQ(collection.size(), 1u);
+  EXPECT_EQ(expected_report, collection.Find(id));
+
+  new_thread.Stop();
+}
 TEST_F(LegacyStatsCollectorTest, FilterOutNegativeDataChannelId) {
   auto pc = CreatePeerConnection();
   auto stats = CreateStatsCollector(pc.get());
@@ -1289,7 +1334,7 @@ TEST_F(LegacyStatsCollectorTest, IceCandidateReport) {
 
   cricket::Candidate local;
   EXPECT_GT(local.id().length(), 0u);
-  local.set_type(cricket::LOCAL_PORT_TYPE);
+  RTC_DCHECK_EQ(local.type(), IceCandidateType::kHost);
   local.set_protocol(cricket::UDP_PROTOCOL_NAME);
   local.set_address(kLocalAddress);
   local.set_priority(kPriority);
@@ -1297,7 +1342,7 @@ TEST_F(LegacyStatsCollectorTest, IceCandidateReport) {
 
   cricket::Candidate remote;
   EXPECT_GT(remote.id().length(), 0u);
-  remote.set_type(cricket::PRFLX_PORT_TYPE);
+  remote.set_type(IceCandidateType::kPrflx);
   remote.set_protocol(cricket::UDP_PROTOCOL_NAME);
   remote.set_address(kRemoteAddress);
   remote.set_priority(kPriority);
@@ -1338,7 +1383,7 @@ TEST_F(LegacyStatsCollectorTest, IceCandidateReport) {
       ExtractStatsValue(StatsReport::kStatsReportTypeIceLocalCandidate, reports,
                         StatsReport::kStatsValueNameCandidatePriority));
   EXPECT_EQ(
-      IceCandidateTypeToStatsType(cricket::LOCAL_PORT_TYPE),
+      IceCandidateTypeToStatsType(local),
       ExtractStatsValue(StatsReport::kStatsReportTypeIceLocalCandidate, reports,
                         StatsReport::kStatsValueNameCandidateType));
   EXPECT_EQ(
@@ -1368,7 +1413,7 @@ TEST_F(LegacyStatsCollectorTest, IceCandidateReport) {
                               reports,
                               StatsReport::kStatsValueNameCandidatePriority));
   EXPECT_EQ(
-      IceCandidateTypeToStatsType(cricket::PRFLX_PORT_TYPE),
+      IceCandidateTypeToStatsType(remote),
       ExtractStatsValue(StatsReport::kStatsReportTypeIceRemoteCandidate,
                         reports, StatsReport::kStatsValueNameCandidateType));
   EXPECT_EQ(kNotFound,
@@ -1836,7 +1881,7 @@ TEST_P(StatsCollectorTrackTest, TwoLocalSendersWithSameTrack) {
 
   // The SSRC in each SSRC report is different and correspond to the sender
   // SSRC.
-  std::vector<absl::optional<std::string>> ssrcs = {
+  std::vector<std::optional<std::string>> ssrcs = {
       GetValueInNthReportByType(reports, StatsReport::kStatsReportTypeSsrc,
                                 StatsReport::kStatsValueNameSsrc, 1),
       GetValueInNthReportByType(reports, StatsReport::kStatsReportTypeSsrc,

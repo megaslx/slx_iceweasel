@@ -2,12 +2,14 @@
 <html>
 <head>
   <title>Test IPCBlob and Workers</title>
-  <script type="text/javascript" src="/MochiKit/MochiKit.js"></script>
   <script src="/tests/SimpleTest/SimpleTest.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
 </head>
 <body>
 <script type="text/javascript">
+
+// Available to workers.
+/* global FileReaderSync */
 
 function test_workerOwner() {
   info("test_workerOwner");

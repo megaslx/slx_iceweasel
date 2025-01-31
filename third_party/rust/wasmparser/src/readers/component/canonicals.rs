@@ -1,4 +1,5 @@
 use crate::limits::MAX_WASM_CANONICAL_OPTIONS;
+use crate::prelude::*;
 use crate::{BinaryReader, FromReader, Result, SectionLimited};
 
 /// Represents options for component functions.
@@ -25,7 +26,7 @@ pub enum CanonicalOption {
 }
 
 /// Represents a canonical function in a WebAssembly component.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CanonicalFunction {
     /// The function lifts a core WebAssembly function to the canonical ABI.
     Lift {
@@ -59,6 +60,14 @@ pub enum CanonicalFunction {
         /// The type index of the resource that's being accessed.
         resource: u32,
     },
+    /// A function which spawns a new thread by invoking the shared function.
+    ThreadSpawn {
+        /// The index of the function to spawn.
+        func_ty_index: u32,
+    },
+    /// A function which returns the number of threads that can be expected to
+    /// execute concurrently
+    ThreadHwConcurrency,
 }
 
 /// A reader for the canonical section of a WebAssembly component.
@@ -100,6 +109,10 @@ impl<'a> FromReader<'a> for CanonicalFunction {
             0x04 => CanonicalFunction::ResourceRep {
                 resource: reader.read()?,
             },
+            0x05 => CanonicalFunction::ThreadSpawn {
+                func_ty_index: reader.read()?,
+            },
+            0x06 => CanonicalFunction::ThreadHwConcurrency,
             x => return reader.invalid_leading_byte(x, "canonical function"),
         })
     }

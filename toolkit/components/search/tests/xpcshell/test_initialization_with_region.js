@@ -8,38 +8,33 @@ const SEARCH_ENGINE_TOPIC = "browser-search-engine-modified";
 
 const CONFIG = [
   {
-    webExtension: {
-      id: "engine@search.mozilla.org",
-    },
-    orderHint: 30,
-    appliesTo: [
-      {
-        included: { everywhere: true },
-        excluded: { regions: ["FR"] },
-        default: "yes",
-        defaultPrivate: "yes",
-      },
-    ],
+    identifier: "everywhereExceptFRRegion",
+    variants: [{ environment: { excludedRegions: ["FR"] } }],
   },
   {
-    webExtension: {
-      id: "engine-pref@search.mozilla.org",
-    },
-    orderHint: 20,
-    appliesTo: [
+    identifier: "everywhereEngine",
+    variants: [{ environment: { allRegionsAndLocales: true } }],
+  },
+  {
+    specificDefaults: [
       {
-        included: { regions: ["FR"] },
-        default: "yes",
-        defaultPrivate: "yes",
+        default: "everywhereExceptFRRegion",
+        defaultPrivate: "everywhereExceptFRRegion",
+        environment: { excludedRegions: ["FR"] },
+      },
+      {
+        default: "everywhereEngine",
+        defaultPrivate: "everywhereEngine",
+        environment: { regions: ["FR"] },
       },
     ],
   },
 ];
 
 // Default engine with no region defined.
-const DEFAULT = "Test search engine";
+const DEFAULT = "everywhereExceptFRRegion";
 // Default engine with region set to FR.
-const FR_DEFAULT = "engine-pref";
+const FR_DEFAULT = "everywhereEngine";
 
 function listenFor(name, key) {
   let notifyObserved = false;
@@ -56,7 +51,7 @@ function listenFor(name, key) {
   };
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   Services.prefs.setBoolPref("browser.search.separatePrivateDefault", true);
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
@@ -64,8 +59,7 @@ add_task(async function setup() {
   );
 
   SearchTestUtils.useMockIdleService();
-  await SearchTestUtils.useTestEngines("data", null, CONFIG);
-  await AddonTestUtils.promiseStartupManager();
+  SearchTestUtils.setRemoteSettingsConfig(CONFIG);
 });
 
 // This tests what we expect is the normal startup route for a fresh profile -
@@ -118,12 +112,12 @@ add_task(async function test_initialization_with_region() {
   Assert.equal(
     Services.search.defaultEngine.name,
     FR_DEFAULT,
-    "engine-pref should be the default in FR"
+    "everywhereEngine should be the default in FR"
   );
   Assert.equal(
     (await Services.search.getDefaultPrivate()).name,
     FR_DEFAULT,
-    "engine-pref should be the private default in FR"
+    "everywhereEngine should be the private default in FR"
   );
 
   Assert.ok(reloadObserved(), "Engines do reload with delayed region fetch");

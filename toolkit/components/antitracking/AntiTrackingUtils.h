@@ -81,6 +81,12 @@ class AntiTrackingUtils final {
   // access.
   static Maybe<size_t> CountSitesAllowStorageAccess(nsIPrincipal* aPrincipal);
 
+  // Test whether or not there is a storage access permission in aTopPrincipal
+  // with secondary key for embedee aPrincipal.
+  static nsresult TestStoragePermissionInParent(nsIPrincipal* aTopPrincipal,
+                                                nsIPrincipal* aPrincipal,
+                                                uint32_t* aResult);
+
   // Returns the storage permission state for the given channel. And this is
   // meant to be called in the parent process. This only reflects the fact that
   // whether the channel has the storage permission. It doesn't take the window
@@ -161,6 +167,16 @@ class AntiTrackingUtils final {
    * that is not exposed to child processes.
    */
   static void UpdateAntiTrackingInfoForChannel(nsIChannel* aChannel);
+
+ private:
+  // Helper function for ComputeIsThirdPartyToTopWindow to peer into the
+  // partition
+  // key in the case that we don't have any other way to determine
+  // third-partiness to the top level, e.g. third party SharedWorker script
+  // loads.
+  static nsresult IsThirdPartyToPartitionKeySite(nsIChannel* aChannel,
+                                                 const nsCOMPtr<nsIURI>& aURI,
+                                                 bool* aIsThirdParty);
 };
 
 }  // namespace mozilla

@@ -4,21 +4,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::constants::{ContentType, Epoch};
-use crate::err::{nspr, Error, PR_SetError, Res};
-use crate::prio;
-use crate::ssl;
+use std::{
+    cmp::min,
+    fmt, mem,
+    ops::Deref,
+    os::raw::{c_uint, c_void},
+    pin::Pin,
+    ptr::{null, null_mut},
+};
 
 use neqo_common::{hex, hex_with_len, qtrace};
-use std::cmp::min;
-use std::convert::{TryFrom, TryInto};
-use std::fmt;
-use std::mem;
-use std::ops::Deref;
-use std::os::raw::{c_uint, c_void};
-use std::pin::Pin;
-use std::ptr::{null, null_mut};
-use std::vec::Vec;
+
+use crate::{
+    constants::{ContentType, Epoch},
+    err::{nspr, Error, PR_SetError, Res},
+    null_safe_slice, prio, ssl,
+};
 
 // Alias common types.
 type PrFd = *mut prio::PRFileDesc;
@@ -28,7 +29,7 @@ const PR_FAILURE: PrStatus = prio::PRStatus::PR_FAILURE;
 
 /// Convert a pinned, boxed object into a void pointer.
 pub fn as_c_void<T: Unpin>(pin: &mut Pin<Box<T>>) -> *mut c_void {
-    (Pin::into_inner(pin.as_mut()) as *mut T).cast()
+    (std::ptr::from_mut::<T>(Pin::into_inner(pin.as_mut()))).cast()
 }
 
 /// A slice of the output.
@@ -86,7 +87,6 @@ impl RecordList {
         self.records.push(Record::new(epoch, ct, data));
     }
 
-    #[allow(clippy::unused_self)]
     unsafe extern "C" fn ingest(
         _fd: *mut ssl::PRFileDesc,
         epoch: ssl::PRUint16,
@@ -97,7 +97,7 @@ impl RecordList {
     ) -> ssl::SECStatus {
         let records = arg.cast::<Self>().as_mut().unwrap();
 
-        let slice = std::slice::from_raw_parts(data, len as usize);
+        let slice = null_safe_slice(data, len);
         records.append(epoch, ContentType::try_from(ct).unwrap(), slice);
         ssl::SECSuccess
     }
@@ -142,7 +142,7 @@ pub struct AgentIoInputContext<'a> {
     input: &'a mut AgentIoInput,
 }
 
-impl<'a> Drop for AgentIoInputContext<'a> {
+impl Drop for AgentIoInputContext<'_> {
     fn drop(&mut self) {
         self.input.reset();
     }
@@ -175,6 +175,7 @@ impl AgentIoInput {
             return Err(Error::NoDataAvailable);
         }
 
+        #[allow(clippy::disallowed_methods)] // We just checked if this was empty.
         let src = unsafe { std::slice::from_raw_parts(self.input, amount) };
         qtrace!([self], "read {}", hex(src));
         let dst = unsafe { std::slice::from_raw_parts_mut(buf, amount) };
@@ -207,7 +208,7 @@ pub struct AgentIo {
 }
 
 impl AgentIo {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             input: AgentIoInput {
                 input: null(),
@@ -218,7 +219,6 @@ impl AgentIo {
     }
 
     unsafe fn borrow(fd: &mut PrFd) -> &mut Self {
-        #[allow(clippy::cast_ptr_alignment)]
         (**fd).secret.cast::<Self>().as_mut().unwrap()
     }
 
@@ -229,7 +229,7 @@ impl AgentIo {
 
     // Stage output from TLS into the output buffer.
     fn save_output(&mut self, buf: *const u8, count: usize) {
-        let slice = unsafe { std::slice::from_raw_parts(buf, count) };
+        let slice = unsafe { null_safe_slice(buf, count) };
         qtrace!([self], "save output {}", hex(slice));
         self.output.extend_from_slice(slice);
     }
@@ -278,10 +278,9 @@ unsafe extern "C" fn agent_recv(
         return PR_FAILURE;
     }
     if let Ok(a) = usize::try_from(amount) {
-        match io.input.read_input(buf.cast(), a) {
-            Ok(v) => prio::PRInt32::try_from(v).unwrap_or(PR_FAILURE),
-            Err(_) => PR_FAILURE,
-        }
+        io.input.read_input(buf.cast(), a).map_or(PR_FAILURE, |v| {
+            prio::PRInt32::try_from(v).unwrap_or(PR_FAILURE)
+        })
     } else {
         PR_FAILURE
     }
@@ -293,12 +292,10 @@ unsafe extern "C" fn agent_write(
     amount: prio::PRInt32,
 ) -> PrStatus {
     let io = AgentIo::borrow(&mut fd);
-    if let Ok(a) = usize::try_from(amount) {
+    usize::try_from(amount).map_or(PR_FAILURE, |a| {
         io.save_output(buf.cast(), a);
         amount
-    } else {
-        PR_FAILURE
-    }
+    })
 }
 
 unsafe extern "C" fn agent_send(
@@ -313,12 +310,10 @@ unsafe extern "C" fn agent_send(
     if flags != 0 {
         return PR_FAILURE;
     }
-    if let Ok(a) = usize::try_from(amount) {
+    usize::try_from(amount).map_or(PR_FAILURE, |a| {
         io.save_output(buf.cast(), a);
         amount
-    } else {
-        PR_FAILURE
-    }
+    })
 }
 
 unsafe extern "C" fn agent_available(mut fd: PrFd) -> prio::PRInt32 {

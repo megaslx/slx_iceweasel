@@ -51,18 +51,15 @@ class Rule {
     this.elementStyle = elementStyle;
     this.domRule = options.rule;
     this.compatibilityIssues = null;
-    this.matchedDesugaredSelectors =
-      options.matchedDesugaredSelectors ||
-      // @backward-compat { version 116 } matchedDesugaredSelectors is only sent by the
-      // server since 116, so we need to fall back to matchedSelectors, which was the
-      // previous name of the property.
-      options.matchedSelectors ||
-      [];
+
+    this.matchedSelectorIndexes = options.matchedSelectorIndexes || [];
     this.pseudoElement = options.pseudoElement || "";
     this.isSystem = options.isSystem;
     this.isUnmatched = options.isUnmatched || false;
+    this.darkColorScheme = options.darkColorScheme;
     this.inherited = options.inherited || null;
     this.keyframes = options.keyframes || null;
+    this.userAdded = options.rule.userAdded;
 
     this.cssProperties = this.elementStyle.ruleView.cssProperties;
     this.inspector = this.elementStyle.ruleView.inspector;
@@ -107,8 +104,10 @@ class Rule {
   get selector() {
     return {
       getUniqueSelector: this.getUniqueSelector,
-      matchedDesugaredSelectors: this.matchedDesugaredSelectors,
+      matchedSelectorIndexes: this.matchedSelectorIndexes,
       selectors: this.domRule.selectors,
+      selectorsSpecificity: this.domRule.selectorsSpecificity,
+      selectorWarnings: this.domRule.selectors,
       selectorText: this.keyframes ? this.domRule.keyText : this.selectorText,
     };
   }
@@ -581,7 +580,11 @@ class Rule {
       // However, we must keep all properties in order for rule
       // rewriting to work properly.  So, compute the "invisible"
       // property here.
-      const invisible = this.inherited && !this.cssProperties.isInherited(name);
+      const inherits = prop.isCustomProperty
+        ? prop.inherits
+        : this.cssProperties.isInherited(name);
+      const invisible = this.inherited && !inherits;
+
       const value = store.userProperties.getProperty(
         this.domRule,
         name,
@@ -634,13 +637,10 @@ class Rule {
    * properties as needed.
    */
   refresh(options) {
-    this.matchedDesugaredSelectors =
-      options.matchedDesugaredSelectors ||
-      // @backward-compat { version 116 } matchedDesugaredSelectors is only sent by the
-      // server since 116, so we need to fall back to matchedSelectors, which was the
-      // previous name of the property.
-      options.matchedSelectors ||
-      [];
+    this.matchedSelectorIndexes = options.matchedSelectorIndexes || [];
+    const colorSchemeChanged = this.darkColorScheme !== options.darkColorScheme;
+    this.darkColorScheme = options.darkColorScheme;
+
     const newTextProps = this._getTextProperties();
 
     // The element style rule behaves differently on refresh. We basically need to update
@@ -681,6 +681,17 @@ class Rule {
         prop.updateEditor();
       } else {
         delete prop._visited;
+      }
+
+      // Valid properties that aren't disabled might need to get updated in some condition
+      if (
+        prop.enabled &&
+        prop.isValid() &&
+        // Update if it's using light-dark and the color scheme changed
+        colorSchemeChanged &&
+        prop.value.includes("light-dark")
+      ) {
+        prop.updateEditor();
       }
     }
 
@@ -860,6 +871,15 @@ class Rule {
         (otherRuleLayer.value || otherRuleLayer.actorID)
       );
     });
+  }
+
+  /**
+   * @returns {Boolean} Whether or not the rule is in a @starting-style rule
+   */
+  isInStartingStyle() {
+    return this.domRule.ancestorData.some(
+      ({ type }) => type === "starting-style"
+    );
   }
 
   /**

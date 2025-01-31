@@ -6,22 +6,11 @@
 
 #include "nsSearchControlFrame.h"
 
-#include "HTMLInputElement.h"
 #include "mozilla/PresShell.h"
 #include "nsGkAtoms.h"
-#include "nsNameSpaceManager.h"
-#include "nsStyleConsts.h"
 #include "nsContentUtils.h"
-#include "nsContentCreatorFunctions.h"
-#include "nsCSSPseudoElements.h"
-#include "nsICSSDeclaration.h"
-
-#ifdef ACCESSIBILITY
-#  include "mozilla/a11y/AccTypes.h"
-#endif
 
 using namespace mozilla;
-using namespace mozilla::dom;
 
 nsIFrame* NS_NewSearchControlFrame(PresShell* aPresShell,
                                    ComputedStyle* aStyle) {
@@ -39,12 +28,6 @@ nsSearchControlFrame::nsSearchControlFrame(ComputedStyle* aStyle,
                                            nsPresContext* aPresContext)
     : nsTextControlFrame(aStyle, aPresContext, kClassID) {}
 
-void nsSearchControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                       PostDestroyData& aPostDestroyData) {
-  aPostDestroyData.AddAnonymousContent(mClearButton.forget());
-  nsTextControlFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
-}
-
 nsresult nsSearchControlFrame::CreateAnonymousContent(
     nsTArray<ContentInfo>& aElements) {
   // We create an anonymous tree for our input element that is structured as
@@ -61,23 +44,11 @@ nsresult nsSearchControlFrame::CreateAnonymousContent(
 
   nsTextControlFrame::CreateAnonymousContent(aElements);
 
-  // FIXME: We could use nsTextControlFrame making the show password buttton
-  // code a bit more generic, or rename this frame and use it for password
-  // inputs.
-  //
   // Create the ::-moz-search-clear-button pseudo-element:
-  mClearButton = MakeAnonElement(PseudoStyleType::mozSearchClearButton, nullptr,
-                                 nsGkAtoms::button);
+  mButton = MakeAnonElement(PseudoStyleType::mozSearchClearButton, nullptr,
+                            nsGkAtoms::button);
 
-  aElements.AppendElement(mClearButton);
+  aElements.AppendElement(mButton);
 
   return NS_OK;
-}
-
-void nsSearchControlFrame::AppendAnonymousContentTo(
-    nsTArray<nsIContent*>& aElements, uint32_t aFilter) {
-  nsTextControlFrame::AppendAnonymousContentTo(aElements, aFilter);
-  if (mClearButton) {
-    aElements.AppendElement(mClearButton);
-  }
 }

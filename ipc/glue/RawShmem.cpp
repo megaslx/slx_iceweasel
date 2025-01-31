@@ -9,12 +9,12 @@
 namespace mozilla::ipc {
 
 UnsafeSharedMemoryHandle::UnsafeSharedMemoryHandle()
-    : mHandle(ipc::SharedMemoryBasic::NULLHandle()), mSize(0) {}
+    : mHandle(ipc::SharedMemory::NULLHandle()), mSize(0) {}
 
 UnsafeSharedMemoryHandle::UnsafeSharedMemoryHandle(
     UnsafeSharedMemoryHandle&& aOther) noexcept
     : mHandle(std::move(aOther.mHandle)), mSize(aOther.mSize) {
-  aOther.mHandle = ipc::SharedMemoryBasic::NULLHandle();
+  aOther.mHandle = ipc::SharedMemory::NULLHandle();
   aOther.mSize = 0;
 }
 
@@ -26,7 +26,7 @@ UnsafeSharedMemoryHandle& UnsafeSharedMemoryHandle::operator=(
 
   mHandle = std::move(aOther.mHandle);
   mSize = aOther.mSize;
-  aOther.mHandle = ipc::SharedMemoryBasic::NULLHandle();
+  aOther.mHandle = ipc::SharedMemory::NULLHandle();
   aOther.mSize = 0;
   return *this;
 }
@@ -38,19 +38,13 @@ UnsafeSharedMemoryHandle::CreateAndMap(size_t aSize) {
                                WritableSharedMemoryMapping()));
   }
 
-  RefPtr<ipc::SharedMemoryBasic> shm = MakeAndAddRef<ipc::SharedMemoryBasic>();
+  RefPtr<ipc::SharedMemory> shm = MakeAndAddRef<ipc::SharedMemory>();
   if (NS_WARN_IF(!shm->Create(aSize)) || NS_WARN_IF(!shm->Map(aSize))) {
     return Nothing();
   }
 
-  // TODO(bug 1797039): At the moment the handle/mapping distinction is
-  // implemented on top of a single class SharedMemoryBasic. It leads to a few
-  // awkward or sub-optimal things such as how the following few lines clone
-  // then close the handle. It would be better to separate the underlying
-  // implementation or steal the handle to avoid cloning it.
-  auto handle = shm->CloneHandle();
+  auto handle = shm->TakeHandle();
 
-  shm->CloseHandle();
   auto size = shm->Size();
 
   return Some(std::make_pair(UnsafeSharedMemoryHandle(std::move(handle), size),
@@ -58,7 +52,7 @@ UnsafeSharedMemoryHandle::CreateAndMap(size_t aSize) {
 }
 
 WritableSharedMemoryMapping::WritableSharedMemoryMapping(
-    RefPtr<ipc::SharedMemoryBasic>&& aRef)
+    RefPtr<ipc::SharedMemory>&& aRef)
     : mRef(aRef) {}
 
 Maybe<WritableSharedMemoryMapping> WritableSharedMemoryMapping::Open(
@@ -67,7 +61,7 @@ Maybe<WritableSharedMemoryMapping> WritableSharedMemoryMapping::Open(
     return Some(WritableSharedMemoryMapping(nullptr));
   }
 
-  RefPtr<ipc::SharedMemoryBasic> shm = MakeAndAddRef<ipc::SharedMemoryBasic>();
+  RefPtr<ipc::SharedMemory> shm = MakeAndAddRef<ipc::SharedMemory>();
   if (NS_WARN_IF(!shm->SetHandle(std::move(aHandle.mHandle),
                                  ipc::SharedMemory::RightsReadWrite)) ||
       NS_WARN_IF(!shm->Map(aHandle.mSize))) {
@@ -92,7 +86,7 @@ Span<uint8_t> WritableSharedMemoryMapping::Bytes() {
     return Span<uint8_t>();
   }
 
-  uint8_t* mem = static_cast<uint8_t*>(mRef->memory());
+  uint8_t* mem = static_cast<uint8_t*>(mRef->Memory());
   return Span(mem, mRef->Size());
 }
 

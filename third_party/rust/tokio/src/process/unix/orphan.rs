@@ -1,5 +1,5 @@
 use crate::loom::sync::{Mutex, MutexGuard};
-use crate::signal::unix::driver::Handle as SignalHandle;
+use crate::runtime::signal::Handle as SignalHandle;
 use crate::signal::unix::{signal_with_handle, SignalKind};
 use crate::sync::watch;
 use std::io;
@@ -8,6 +8,7 @@ use std::process::ExitStatus;
 /// An interface for waiting on a process to exit.
 pub(crate) trait Wait {
     /// Get the identifier for this process or diagnostics.
+    #[allow(dead_code)]
     fn id(&self) -> u32;
     /// Try waiting for a process to exit in a non-blocking manner.
     fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
@@ -43,10 +44,21 @@ pub(crate) struct OrphanQueueImpl<T> {
 }
 
 impl<T> OrphanQueueImpl<T> {
-    pub(crate) fn new() -> Self {
-        Self {
-            sigchild: Mutex::new(None),
-            queue: Mutex::new(Vec::new()),
+    cfg_not_has_const_mutex_new! {
+        pub(crate) fn new() -> Self {
+            Self {
+                sigchild: Mutex::new(None),
+                queue: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    cfg_has_const_mutex_new! {
+        pub(crate) const fn new() -> Self {
+            Self {
+                sigchild: Mutex::const_new(None),
+                queue: Mutex::const_new(Vec::new()),
+            }
         }
     }
 
@@ -59,7 +71,7 @@ impl<T> OrphanQueueImpl<T> {
     where
         T: Wait,
     {
-        self.queue.lock().push(orphan)
+        self.queue.lock().push(orphan);
     }
 
     /// Attempts to reap every process in the queue, ignoring any errors and
@@ -120,8 +132,8 @@ where
 #[cfg(all(test, not(loom)))]
 pub(crate) mod test {
     use super::*;
-    use crate::io::driver::Driver as IoDriver;
-    use crate::signal::unix::driver::{Driver as SignalDriver, Handle as SignalHandle};
+    use crate::runtime::io::Driver as IoDriver;
+    use crate::runtime::signal::{Driver as SignalDriver, Handle as SignalHandle};
     use crate::sync::watch;
     use std::cell::{Cell, RefCell};
     use std::io;
@@ -283,7 +295,8 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)] // Miri does not support epoll.
     #[test]
     fn does_not_register_signal_if_queue_empty() {
-        let signal_driver = IoDriver::new().and_then(SignalDriver::new).unwrap();
+        let (io_driver, io_handle) = IoDriver::new(1024).unwrap();
+        let signal_driver = SignalDriver::new(io_driver, &io_handle).unwrap();
         let handle = signal_driver.handle();
 
         let orphanage = OrphanQueueImpl::new();

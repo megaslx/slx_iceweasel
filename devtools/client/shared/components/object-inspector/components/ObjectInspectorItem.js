@@ -206,7 +206,7 @@ class ObjectInspectorItem extends Component {
         if (
           e.target &&
           Utils.selection.documentHasSelection(e.target.ownerDocument) &&
-          !(e.target.matches && e.target.matches(".arrow"))
+          !(e.target.matches && e.target.matches(".theme-twisty"))
         ) {
           e.stopPropagation();
         }
@@ -273,7 +273,7 @@ class ObjectInspectorItem extends Component {
 
     return dom.div(
       this.getTreeItemProps(),
-      arrow,
+      this.props.mode === MODE.HEADER ? null : arrow,
       labelElement,
       delimiter,
       value,

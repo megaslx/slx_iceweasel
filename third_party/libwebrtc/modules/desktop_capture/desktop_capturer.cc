@@ -30,6 +30,10 @@
 #include "modules/desktop_capture/linux/wayland/base_capturer_pipewire.h"
 #endif
 
+#if defined(WEBRTC_MAC)
+#include "modules/desktop_capture/mac/screen_capturer_sck.h"
+#endif
+
 namespace webrtc {
 
 void LogDesktopCapturerFullscreenDetectorUsage() {
@@ -69,7 +73,8 @@ bool DesktopCapturer::IsOccluded(const DesktopVector& pos) {
 std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateWindowCapturer(
     const DesktopCaptureOptions& options) {
 #if defined(RTC_ENABLE_WIN_WGC)
-  if (options.allow_wgc_capturer() && IsWgcSupported(CaptureType::kWindow)) {
+  if (options.allow_wgc_window_capturer() &&
+      IsWgcSupported(CaptureType::kWindow)) {
     return WgcCapturerWin::CreateRawWindowCapturer(options);
   }
 #endif  // defined(RTC_ENABLE_WIN_WGC)
@@ -89,9 +94,16 @@ std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateWindowCapturer(
 }
 
 // static
-std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateGenericCapturer(
+std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateScreenCapturer(
     const DesktopCaptureOptions& options) {
-  std::unique_ptr<DesktopCapturer> capturer = CreateRawGenericCapturer(options);
+#if defined(RTC_ENABLE_WIN_WGC)
+  if (options.allow_wgc_screen_capturer() &&
+      IsWgcSupported(CaptureType::kScreen)) {
+    return WgcCapturerWin::CreateRawScreenCapturer(options);
+  }
+#endif  // defined(RTC_ENABLE_WIN_WGC)
+
+  std::unique_ptr<DesktopCapturer> capturer = CreateRawScreenCapturer(options);
   if (capturer && options.detect_updated_region()) {
     capturer.reset(new DesktopCapturerDifferWrapper(std::move(capturer)));
   }
@@ -99,28 +111,20 @@ std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateGenericCapturer(
   return capturer;
 }
 
-std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateRawGenericCapturer(
+// static
+std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateGenericCapturer(
     const DesktopCaptureOptions& options) {
+  std::unique_ptr<DesktopCapturer> capturer;
+
 #if defined(WEBRTC_USE_PIPEWIRE)
   if (options.allow_pipewire() && DesktopCapturer::IsRunningUnderWayland()) {
-    return std::make_unique<BaseCapturerPipeWire>(options,
-                                                  CaptureType::kAnyScreenContent);
+    capturer = std::make_unique<BaseCapturerPipeWire>(
+        options, CaptureType::kAnyScreenContent);
   }
-#endif  // defined(WEBRTC_USE_PIPEWIRE)
+#elif defined(WEBRTC_MAC)
+  capturer = CreateGenericCapturerSck(options);
+#endif
 
-  return nullptr;
-}
-
-// static
-std::unique_ptr<DesktopCapturer> DesktopCapturer::CreateScreenCapturer(
-    const DesktopCaptureOptions& options) {
-#if defined(RTC_ENABLE_WIN_WGC)
-  if (options.allow_wgc_capturer() && IsWgcSupported(CaptureType::kScreen)) {
-    return WgcCapturerWin::CreateRawScreenCapturer(options);
-  }
-#endif  // defined(RTC_ENABLE_WIN_WGC)
-
-  std::unique_ptr<DesktopCapturer> capturer = CreateRawScreenCapturer(options);
   if (capturer && options.detect_updated_region()) {
     capturer.reset(new DesktopCapturerDifferWrapper(std::move(capturer)));
   }

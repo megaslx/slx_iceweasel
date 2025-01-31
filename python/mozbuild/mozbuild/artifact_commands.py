@@ -22,7 +22,7 @@ from mach.decorators import Command, CommandArgument, SubCommand
 
 from mozbuild.artifact_builds import JOB_CHOICES
 from mozbuild.base import MachCommandConditions as conditions
-from mozbuild.util import ensureParentDir
+from mozbuild.dirutils import ensureParentDir
 
 _COULD_NOT_FIND_ARTIFACTS_TEMPLATE = (
     "ERROR!!!!!! Could not find artifacts for a toolchain build named "
@@ -386,7 +386,7 @@ def artifact_toolchain(
                 "should be determined in the decision task.",
             )
             return 1
-        from gecko_taskgraph.optimize.strategies import IndexSearch
+        from taskgraph.optimize.strategies import IndexSearch
 
         from mozbuild.toolchains import toolchain_task_definitions
 
@@ -480,6 +480,7 @@ def artifact_toolchain(
             )
 
             record = ArtifactRecord(task_id, artifact_name)
+            record.unpack = task.attributes.get("toolchain-extract", True)
             records[record.filename] = record
 
     # Handle the list of files of the form task_id:path from --from-task.
@@ -513,7 +514,6 @@ def artifact_toolchain(
                 requests.exceptions.ChunkedEncodingError,
                 requests.exceptions.ConnectionError,
             ) as e:
-
                 if isinstance(e, requests.exceptions.HTTPError):
                     # The relengapi proxy likes to return error 400 bad request
                     # which seems improbably to be due to our (simple) GET

@@ -49,10 +49,13 @@ class WMFVideoMFTManager : public MFTManager {
   nsCString GetCodecName() const override;
 
   MediaDataDecoder::ConversionRequired NeedsConversion() const override {
-    return mStreamType == WMFStreamType::H264
+    return mStreamType == WMFStreamType::H264 ||
+                   mStreamType == WMFStreamType::HEVC
                ? MediaDataDecoder::ConversionRequired::kNeedAnnexB
                : MediaDataDecoder::ConversionRequired::kNeedNone;
   }
+
+  bool UseZeroCopyVideoFrame() const override;
 
  private:
   MediaResult ValidateVideoInfo();
@@ -70,6 +73,8 @@ class WMFVideoMFTManager : public MFTManager {
   HRESULT SetDecoderMediaTypes();
 
   bool CanUseDXVA(IMFMediaType* aInputType, IMFMediaType* aOutputType);
+
+  GUID GetOutputSubtype() const;
 
   // Gets the duration from aSample, and if an unknown or invalid duration is
   // returned from WMF, this instead returns the last known input duration.
@@ -99,6 +104,7 @@ class WMFVideoMFTManager : public MFTManager {
   uint32_t mVideoStride;
   Maybe<gfx::YUVColorSpace> mColorSpace;
   gfx::ColorRange mColorRange;
+  gfx::ColorDepth mColorDepth;
 
   RefPtr<layers::ImageContainer> mImageContainer;
   RefPtr<layers::KnowsCompositor> mKnowsCompositor;
@@ -122,9 +128,13 @@ class WMFVideoMFTManager : public MFTManager {
   bool mIMFUsable = false;
   const float mFramerate;
   const bool mLowLatency;
+  const bool mKeepOriginalPts;
 
   PerformanceRecorderMulti<DecodeStage> mPerformanceRecorder;
   const Maybe<TrackingId> mTrackingId;
+  // Sorted array of pts of input frames, from the encoded input packets, for
+  // error recovery.
+  nsTArray<int64_t> mPTSQueue;
 };
 
 }  // namespace mozilla

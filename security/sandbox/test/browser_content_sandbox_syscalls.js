@@ -12,7 +12,9 @@ Services.scriptloader.loadSubScript(
 const lazy = {};
 
 /* getLibcConstants is only present on *nix */
-XPCOMUtils.defineLazyGetter(lazy, "LIBC", () => ChromeUtils.getLibcConstants());
+ChromeUtils.defineLazyGetter(lazy, "LIBC", () =>
+  ChromeUtils.getLibcConstants()
+);
 
 /*
  * This test is for executing system calls in content processes to validate
@@ -260,7 +262,7 @@ add_task(async function () {
   }
 
   info(`security.sandbox.content.level=${level}`);
-  ok(level > 0, "content sandbox is enabled.");
+  Assert.greater(level, 0, "content sandbox is enabled.");
 
   let areSyscallsSandboxed = areContentSyscallsSandboxed(level);
 
@@ -280,7 +282,7 @@ add_task(async function () {
     // exec something harmless, this should fail
     let cmd = getOSExecCmd();
     let rv = await SpecialPowers.spawn(browser, [{ lib, cmd }], callExec);
-    ok(rv == -1, `exec(${cmd}) is not permitted`);
+    Assert.equal(rv, -1, `exec(${cmd}) is not permitted`);
   }
 
   // use open syscall
@@ -293,14 +295,14 @@ add_task(async function () {
       [{ lib, path, flags }],
       callOpen
     );
-    ok(fd < 0, "opening a file for writing in home is not permitted");
+    Assert.less(fd, 0, "opening a file for writing in home is not permitted");
   }
 
   // use open syscall
   if (isLinux() || isMac()) {
     // open a file for writing in the content temp dir, this should fail on
-    // macOS and work on Linux. The open handler in the content process closes
-    // the file for us
+    // macOS and Linux. The open handler in the content process closes the file
+    // for us
     let path = fileInTempDir().path;
     let flags = lazy.LIBC.O_CREAT | lazy.LIBC.O_WRONLY;
     let fd = await SpecialPowers.spawn(
@@ -308,20 +310,17 @@ add_task(async function () {
       [{ lib, path, flags }],
       callOpen
     );
-    if (isMac()) {
-      ok(
-        fd === -1,
-        "opening a file for writing in content temp is not permitted"
-      );
-    } else {
-      ok(fd >= 0, "opening a file for writing in content temp is permitted");
-    }
+    Assert.strictEqual(
+      fd,
+      -1,
+      "opening a file for writing in content temp is not permitted"
+    );
   }
 
   // use fork syscall
   if (isLinux() || isMac()) {
     let rv = await SpecialPowers.spawn(browser, [{ lib }], callFork);
-    ok(rv == -1, "calling fork is not permitted");
+    Assert.equal(rv, -1, "calling fork is not permitted");
   }
 
   // On macOS before 10.10 the |sysctl-name| predicate didn't exist for
@@ -334,21 +333,21 @@ add_task(async function () {
       [{ lib, name: "kern.boottime" }],
       callSysctl
     );
-    ok(rv == -1, "calling sysctl('kern.boottime') is not permitted");
+    Assert.equal(rv, -1, "calling sysctl('kern.boottime') is not permitted");
 
     rv = await SpecialPowers.spawn(
       browser,
       [{ lib, name: "net.inet.ip.ttl" }],
       callSysctl
     );
-    ok(rv == -1, "calling sysctl('net.inet.ip.ttl') is not permitted");
+    Assert.equal(rv, -1, "calling sysctl('net.inet.ip.ttl') is not permitted");
 
     rv = await SpecialPowers.spawn(
       browser,
       [{ lib, name: "hw.ncpu" }],
       callSysctl
     );
-    ok(rv == 0, "calling sysctl('hw.ncpu') is permitted");
+    Assert.equal(rv, 0, "calling sysctl('hw.ncpu') is permitted");
   }
 
   if (isLinux()) {
@@ -357,7 +356,11 @@ add_task(async function () {
     // verify we block PR_CAPBSET_READ with EINVAL
     let option = lazy.LIBC.PR_CAPBSET_READ;
     let rv = await SpecialPowers.spawn(browser, [{ lib, option }], callPrctl);
-    ok(rv === lazy.LIBC.EINVAL, "prctl(PR_CAPBSET_READ) is blocked");
+    Assert.strictEqual(
+      rv,
+      lazy.LIBC.EINVAL,
+      "prctl(PR_CAPBSET_READ) is blocked"
+    );
 
     const kernelVersion = await getKernelVersion();
     const glibcVersion = getGlibcVersion();
@@ -373,8 +376,9 @@ add_task(async function () {
         [{ lib, dirfd, path, mode, flag: 0x01 }],
         callFaccessat2
       );
-      ok(
-        rv === lazy.LIBC.ENOSYS,
+      Assert.strictEqual(
+        rv,
+        lazy.LIBC.ENOSYS,
         "faccessat2 (flag=0x01) was blocked with ENOSYS"
       );
 
@@ -383,8 +387,9 @@ add_task(async function () {
         [{ lib, dirfd, path, mode, flag: lazy.LIBC.AT_EACCESS }],
         callFaccessat2
       );
-      ok(
-        rv === lazy.LIBC.EACCES,
+      Assert.strictEqual(
+        rv,
+        lazy.LIBC.EACCES,
         "faccessat2 (flag=0x200) was allowed, errno=EACCES"
       );
     } else {

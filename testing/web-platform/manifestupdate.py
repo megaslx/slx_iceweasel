@@ -3,17 +3,16 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import argparse
+import configparser
 import errno
 import hashlib
-import imp
 import os
 import sys
 
 import manifestdownload
-import six
 from mach.util import get_state_dir
+from mozfile import load_source
 from mozlog.structured import commandline
-from six.moves import configparser
 from wptrunner import wptcommandline
 
 manifest = None
@@ -21,9 +20,7 @@ manifest = None
 
 def do_delayed_imports(wpt_dir):
     global manifest
-    imp.load_source(
-        "localpaths", os.path.join(wpt_dir, "tests", "tools", "localpaths.py")
-    )
+    load_source("localpaths", os.path.join(wpt_dir, "tests", "tools", "localpaths.py"))
     sys.path.insert(0, os.path.join(wpt_dir, "tools", "manifest"))
     import manifest
 
@@ -115,21 +112,24 @@ def run(src_root, obj_root, logger=None, **kwargs):
 
     test_paths = wptcommandline.get_test_paths(wptcommandline.config.read(config_path))
 
-    for paths in six.itervalues(test_paths):
-        if "manifest_path" not in paths:
+    for paths in test_paths.values():
+        if isinstance(paths, dict) and "manifest_path" not in paths:
             paths["manifest_path"] = os.path.join(
                 paths["metadata_path"], "MANIFEST.json"
             )
 
     ensure_manifest_directories(logger, test_paths)
 
-    local_config = read_local_config(src_wpt_dir)
+    local_config = read_local_config(os.path.join(src_wpt_dir, "wptrunner.ini"))
     for section in ["manifest:upstream", "manifest:mozilla"]:
         url_base = local_config.get(section, "url_base")
         manifest_rel_path = os.path.join(
             local_config.get(section, "metadata"), "MANIFEST.json"
         )
-        test_paths[url_base]["manifest_rel_path"] = manifest_rel_path
+        if isinstance(test_paths[url_base], dict):
+            test_paths[url_base]["manifest_rel_path"] = manifest_rel_path
+        else:
+            test_paths[url_base].manifest_rel_path = manifest_rel_path
 
     if not kwargs["rebuild"] and kwargs["download"] is not False:
         force_download = False if kwargs["download"] is None else True
@@ -153,8 +153,11 @@ def run(src_root, obj_root, logger=None, **kwargs):
 
 
 def ensure_manifest_directories(logger, test_paths):
-    for paths in six.itervalues(test_paths):
-        manifest_dir = os.path.dirname(paths["manifest_path"])
+    for paths in test_paths.values():
+        manifest_path = (
+            paths["manifest_path"] if isinstance(paths, dict) else paths.manifest_path
+        )
+        manifest_dir = os.path.dirname(manifest_path)
         if not os.path.exists(manifest_dir):
             logger.info("Creating directory %s" % manifest_dir)
             # Even though we just checked the path doesn't exist, there's a chance
@@ -169,10 +172,8 @@ def ensure_manifest_directories(logger, test_paths):
             raise IOError("Manifest directory is a file")
 
 
-def read_local_config(wpt_dir):
-    src_config_path = os.path.join(wpt_dir, "wptrunner.ini")
-
-    parser = configparser.SafeConfigParser()
+def read_local_config(src_config_path):
+    parser = configparser.ConfigParser()
     success = parser.read(src_config_path)
     assert src_config_path in success
     return parser
@@ -190,15 +191,20 @@ def generate_config(logger, repo_root, wpt_dir, dest_path, force_rewrite=False):
             if e.errno != errno.EEXIST:
                 raise
 
+    src_config_path = os.path.join(wpt_dir, "wptrunner.ini")
     dest_config_path = os.path.join(dest_path, "wptrunner.local.ini")
 
-    if not force_rewrite and os.path.exists(dest_config_path):
+    if (
+        not force_rewrite
+        and os.path.exists(dest_config_path)
+        and os.stat(dest_config_path).st_mtime >= os.stat(src_config_path).st_mtime
+    ):
         logger.debug("Config is up to date, not regenerating")
         return dest_config_path
 
-    logger.info("Creating config file %s" % dest_config_path)
+    logger.info(f"Creating config file {dest_config_path}")
 
-    parser = read_local_config(wpt_dir)
+    parser = read_local_config(src_config_path)
 
     for section in ["manifest:upstream", "manifest:mozilla"]:
         meta_rel_path = parser.get(section, "metadata")
@@ -215,6 +221,11 @@ def generate_config(logger, repo_root, wpt_dir, dest_path, force_rewrite=False):
         "prefs",
         os.path.abspath(os.path.join(wpt_dir, parser.get("paths", "prefs"))),
     )
+    ws_extra_paths = ";".join(
+        os.path.abspath(os.path.join(wpt_dir, path))
+        for path in parser.get("paths", "ws_extra").split(";")
+    )
+    parser.set("paths", "ws_extra", ws_extra_paths)
 
     with open(dest_config_path, "wt") as config_file:
         parser.write(config_file)
@@ -233,13 +244,23 @@ def load_and_update(
 ):
     rv = {}
     wptdir_hash = hashlib.sha256(os.path.abspath(wpt_dir).encode()).hexdigest()
-    for url_base, paths in six.iteritems(test_paths):
-        manifest_path = paths["manifest_path"]
+    for url_base, paths in test_paths.items():
+        manifest_path = (
+            paths["manifest_path"] if isinstance(paths, dict) else paths.manifest_path
+        )
+        manifest_rel_path = (
+            paths["manifest_rel_path"]
+            if isinstance(paths, dict)
+            else paths.manifest_rel_path
+        )
+        tests_path = (
+            paths["tests_path"] if isinstance(paths, dict) else paths.tests_path
+        )
         this_cache_root = os.path.join(
-            cache_root, wptdir_hash, os.path.dirname(paths["manifest_rel_path"])
+            cache_root, wptdir_hash, os.path.dirname(manifest_rel_path)
         )
         m = manifest.manifest.load_and_update(
-            paths["tests_path"],
+            tests_path,
             manifest_path,
             url_base,
             update=update,
@@ -248,7 +269,12 @@ def load_and_update(
             cache_root=this_cache_root,
         )
         path_data = {"url_base": url_base}
-        path_data.update(paths)
+        if isinstance(paths, dict):
+            path_data.update(paths)
+        else:
+            for key, value in paths.__dict__.items():
+                path_data[key] = value
+
         rv[m] = path_data
 
     return rv

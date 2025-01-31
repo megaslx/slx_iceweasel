@@ -156,6 +156,28 @@
 #   - attribute not specified (default): no code generated
 #   - true: allows cloning
 #
+# can_consume_float32
+# ===================
+# Indicates whether this instruction's operands can have MIRType::Float32.
+# Possible values:
+#   - attribute not specified (default): no code generated
+#   - true: canConsumeFloat32 returns true
+#
+# generate_lir
+# ===================
+# Controls whether to generate direct 1-1 mapping LIR instruction for the MIR op
+# Possible values:
+#   - attribute not specified (default): no code generated
+#   - true: generates corresponding LIR classes in LIROpsGenerated.h
+#
+# lir_temps
+# ===================
+# Specifies the number of temporary virtual registers, LDefinitions, used by
+# the corresponding LIR op in case generate_lir is true.
+# Possible values:
+#   - attribute not specified (default): number of temps is set to 0
+#   - number: sets number of temps max 15
+#
 
 # TODO(no-TI): try to remove this instruction.
 - name: Start
@@ -171,6 +193,12 @@
   clone: true
 
 - name: LimitedTruncate
+  gen_boilerplate: false
+
+- name: IntPtrLimitedTruncate
+  gen_boilerplate: false
+
+- name: Int64LimitedTruncate
   gen_boilerplate: false
 
 - name: Constant
@@ -211,7 +239,14 @@
 
 - name: Throw
   operands:
-    ins: Value
+    value: Value
+  alias_set: custom
+  possibly_calls: true
+
+- name: ThrowWithStack
+  operands:
+    value: Value
+    stack: Value
   alias_set: custom
   possibly_calls: true
 
@@ -266,6 +301,34 @@
     initialHeap: gc::Heap
   result_type: Object
   guard: true
+  possibly_calls: true
+
+- name: NewMapObject
+  arguments:
+    templateObject: JSObject*
+  result_type: Object
+  possibly_calls: true
+
+- name: NewSetObject
+  arguments:
+    templateObject: JSObject*
+  result_type: Object
+  possibly_calls: true
+
+- name: NewMapObjectFromIterable
+  operands:
+    iterable: Value
+  arguments:
+    templateObject: JSObject*
+  result_type: Object
+  possibly_calls: true
+
+- name: NewSetObjectFromIterable
+  operands:
+    iterable: Value
+  arguments:
+    templateObject: JSObject*
+  result_type: Object
   possibly_calls: true
 
 - name: NewObject
@@ -522,6 +585,32 @@
   # The flags are packed with the length in a fixed private slot.
   alias_set: custom
 
+- name: LoadScriptedProxyHandler
+  operands:
+    object: Object
+  result_type: Object
+  guard: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+#ifdef JS_PUNBOX64
+- name: CheckScriptedProxyGetResult
+  operands:
+    target: Value
+    id: Value
+    value: Value
+  guard: true
+  alias_set: custom
+#endif
+
+- name: IdToStringOrSymbol
+  operands:
+    idVal: Value
+  result_type: Value
+  congruent_to: if_operands_equal
+  alias_set: none
+  folds_to: custom
+
 # Given a MIRType::Value A and a MIRType::Object B:
 # If the Value may be safely unboxed to an Object, return Object(A).
 # Otherwise, return B.
@@ -539,6 +628,9 @@
   gen_boilerplate: false
 
 - name: ToFloat32
+  gen_boilerplate: false
+
+- name: ToFloat16
   gen_boilerplate: false
 
 # Converts a uint32 to a double (coming from wasm).
@@ -570,12 +662,10 @@
 - name: WasmTruncateToInt32
   gen_boilerplate: false
 
-# Store a JS Value that can't be represented as an AnyRef pointer into an
-# object that holds the value (opaquely) as such a pointer.
-- name: WasmBoxValue
+- name: WasmAnyRefFromJSValue
   operands:
     def: Value
-  result_type: RefOrNull
+  result_type: WasmAnyRef
   congruent_to: if_operands_equal
   alias_set: none
 
@@ -583,7 +673,69 @@
   operands:
     def: Object
   type_policy: none
-  result_type: RefOrNull
+  result_type: WasmAnyRef
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: WasmAnyRefFromJSString
+  operands:
+    def: String
+  type_policy: none
+  result_type: WasmAnyRef
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: WasmAnyRefIsJSString
+  operands:
+    input: WasmAnyRef
+  type_policy: none
+  result_type: Int32
+  congruent_to: if_operands_equal
+  alias_set: none
+  movable: true
+  clone: true
+
+- name: WasmTrapIfAnyRefIsNotJSString
+  operands:
+    input: WasmAnyRef
+  arguments:
+    trap: wasm::Trap
+    trapSiteDesc: wasm::TrapSiteDesc
+  type_policy: none
+  congruent_to: if_operands_equal
+  alias_set: none
+  guard: true
+  clone: true
+
+- name: WasmAnyRefJSStringLength
+  operands:
+    input: WasmAnyRef
+  arguments:
+    trap: wasm::Trap
+    trapSiteDesc: wasm::TrapSiteDesc
+  type_policy: none
+  result_type: Int32
+  congruent_to: if_operands_equal
+  alias_set: none
+  guard: true
+  clone: true
+
+- name: WasmNewI31Ref
+  operands:
+    input: Int32
+  type_policy: none
+  result_type: WasmAnyRef
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: WasmI31RefGet
+  operands:
+    input: WasmAnyRef
+  arguments:
+    wideningOp: wasm::FieldWideningOp
+  type_policy: none
+  result_type: Int32
   congruent_to: if_operands_equal
   alias_set: none
 
@@ -634,6 +786,12 @@
   gen_boilerplate: false
 
 - name: Int64ToBigInt
+  gen_boilerplate: false
+
+- name: Int64ToIntPtr
+  gen_boilerplate: false
+
+- name: IntPtrToInt64
   gen_boilerplate: false
 
 - name: ToString
@@ -691,6 +849,9 @@
   gen_boilerplate: false
 
 - name: SignExtendInt64
+  gen_boilerplate: false
+
+- name: SignExtendIntPtr
   gen_boilerplate: false
 
 - name: MinMax
@@ -822,13 +983,73 @@
 - name: BigIntBitNot
   gen_boilerplate: false
 
+- name: BigIntToIntPtr
+  operands:
+    input: BigInt
+  result_type: IntPtr
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  folds_to: custom
+  can_recover: true
+  clone: true
+
+- name: IntPtrToBigInt
+  operands:
+    input: IntPtr
+  result_type: BigInt
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  folds_to: custom
+  can_recover: true
+  clone: true
+
+- name: BigIntPtrAdd
+  gen_boilerplate: false
+
+- name: BigIntPtrSub
+  gen_boilerplate: false
+
+- name: BigIntPtrMul
+  gen_boilerplate: false
+
+- name: BigIntPtrDiv
+  gen_boilerplate: false
+
+- name: BigIntPtrMod
+  gen_boilerplate: false
+
+- name: BigIntPtrPow
+  gen_boilerplate: false
+
+- name: BigIntPtrBitAnd
+  gen_boilerplate: false
+
+- name: BigIntPtrBitOr
+  gen_boilerplate: false
+
+- name: BigIntPtrBitXor
+  gen_boilerplate: false
+
+- name: BigIntPtrLsh
+  gen_boilerplate: false
+
+- name: BigIntPtrRsh
+  gen_boilerplate: false
+
+- name: BigIntPtrBitNot
+  gen_boilerplate: false
+
 - name: Int32ToStringWithBase
   operands:
     input: Int32
     base: Int32
+  arguments:
+    lowerCase: bool
   result_type: String
   movable: true
-  congruent_to: if_operands_equal
+  congruent_to: custom
   alias_set: none
 
 - name: NumberParseInt
@@ -852,6 +1073,15 @@
 - name: Concat
   gen_boilerplate: false
 
+- name: LinearizeString
+  operands:
+    string: String
+  result_type: String
+  movable: true
+  congruent_to: if_operands_equal
+  # Strings are immutable, so there is no implicit dependency.
+  alias_set: none
+
 - name: LinearizeForCharAccess
   operands:
     string: String
@@ -860,6 +1090,26 @@
   movable: true
   congruent_to: if_operands_equal
   # Strings are immutable, so there is no implicit dependency.
+  alias_set: none
+
+- name: LinearizeForCodePointAccess
+  operands:
+    string: String
+    index: Int32
+  result_type: String
+  movable: true
+  congruent_to: if_operands_equal
+  # Strings are immutable, so there is no implicit dependency.
+  alias_set: none
+
+- name: ToRelativeStringIndex
+  operands:
+    index: Int32
+    length: Int32
+  result_type: Int32
+  movable: true
+  folds_to: custom
+  congruent_to: if_operands_equal
   alias_set: none
 
 - name: CharCodeAt
@@ -876,26 +1126,57 @@
   can_recover: true
   clone: true
 
-# Similar to CharCodeAt, but also supports out-of-bounds access.
-- name: CharCodeAtMaybeOutOfBounds
+# Similar to CharCodeAt, but returns a negative value on out-of-bounds access.
+- name: CharCodeAtOrNegative
   operands:
     string: String
     index: Int32
-  result_type: Value
+  result_type: Int32
   movable: true
   congruent_to: if_operands_equal
   # Strings are immutable, so there is no implicit dependency.
   alias_set: none
 
-# Like CharCodeAtMaybeOutOfBounds, this operation also supports out-of-bounds access.
-- name: CharAtMaybeOutOfBounds
+- name: CodePointAt
   operands:
     string: String
     index: Int32
-  result_type: String
+  result_type: Int32
+  movable: true
+  folds_to: custom
+  congruent_to: if_operands_equal
+  # Strings are immutable, so there is no implicit dependency.
+  alias_set: none
+  compute_range: custom
+  clone: true
+
+# Similar to CodePointAt, but returns a negative value on out-of-bounds access.
+- name: CodePointAtOrNegative
+  operands:
+    string: String
+    index: Int32
+  result_type: Int32
   movable: true
   congruent_to: if_operands_equal
   # Strings are immutable, so there is no implicit dependency.
+  alias_set: none
+
+# Return the input if non-negative, otherwise return NaN.
+- name: NegativeToNaN
+  operands:
+    input: Int32
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+# Return the input if non-negative, otherwise return undefined.
+- name: NegativeToUndefined
+  operands:
+    input: Int32
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
   alias_set: none
 
 - name: FromCharCode
@@ -908,6 +1189,26 @@
   can_recover: true
   clone: true
 
+# Similar to FromCharCode, but returns the empty string if the input is negative.
+- name: FromCharCodeEmptyIfNegative
+  operands:
+    code: Int32
+  result_type: String
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  can_recover: true
+  clone: true
+
+# Similar to FromCharCode, but returns the |undefined| if the input is negative.
+- name: FromCharCodeUndefinedIfNegative
+  operands:
+    code: Int32
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
 - name: FromCodePoint
   operands:
     codePoint: Int32
@@ -918,7 +1219,27 @@
   alias_set: none
   clone: true
 
+- name: StringIncludes
+  operands:
+    string: String
+    searchString: String
+  result_type: Boolean
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  possibly_calls: true
+
 - name: StringIndexOf
+  operands:
+    string: String
+    searchString: String
+  result_type: Int32
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  possibly_calls: true
+
+- name: StringLastIndexOf
   operands:
     string: String
     searchString: String
@@ -951,6 +1272,26 @@
 - name: StringConvertCase
   gen_boilerplate: false
 
+- name: CharCodeConvertCase
+  gen_boilerplate: false
+
+- name: StringTrimStartIndex
+  operands:
+    string: String
+  result_type: Int32
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: StringTrimEndIndex
+  operands:
+    string: String
+    start: Int32
+  result_type: Int32
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
 - name: StringSplit
   operands:
     string: String
@@ -976,11 +1317,8 @@
 
 - name: ImplicitThis
   operands:
-    envChain: Object
-  arguments:
-    name: PropertyName*
+    env: Object
   result_type: Value
-  possibly_calls: true
 
 - name: Phi
   gen_boilerplate: false
@@ -1028,13 +1366,13 @@
 - name: WasmTrap
   gen_boilerplate: false
 
-# Trap if the given value is null
+# Trap if the given ref is null
 - name: WasmTrapIfNull
   operands:
-    value: RefOrNull
+    ref: WasmAnyRef
   arguments:
     trap: wasm::Trap
-    bytecodeOffset: wasm::BytecodeOffset
+    trapSiteDesc: wasm::TrapSiteDesc
   guard: true
   type_policy: none
   result_type: None
@@ -1075,6 +1413,8 @@
   possibly_calls: true
   can_recover: true
 
+# Note: this instruction writes to cx->regExpSearcherLastLimit.
+# See also MRegExpSearcherLastLimit.
 - name: RegExpSearcher
   operands:
     regexp: Object
@@ -1082,7 +1422,14 @@
     lastIndex: Int32
   result_type: Int32
   possibly_calls: true
-  can_recover: true
+  can_recover: false
+
+# This instruction loads cx->regExpSearcherLastLimit. We don't have a
+# specialized alias set for this so just use the default alias set similar to
+# the MRegExpSearcher instruction that precedes it.
+- name: RegExpSearcherLastLimit
+  operands:
+  result_type: Int32
 
 - name: RegExpExecMatch
   operands:
@@ -1099,6 +1446,13 @@
   result_type: Boolean
   possibly_calls: true
   can_recover: false
+
+- name: RegExpHasCaptureGroups
+  operands:
+    regexp: Object
+    input: String
+  result_type: Boolean
+  possibly_calls: true
 
 - name: RegExpPrototypeOptimizable
   operands:
@@ -1125,6 +1479,7 @@
     begin: Int32
     length: Int32
   result_type: String
+  folds_to: custom
   congruent_to: if_operands_equal
   alias_set: none
   can_recover: true
@@ -1204,6 +1559,7 @@
   result_type: Int32
   movable: true
   congruent_to: if_operands_equal
+  folds_to: custom
   alias_set: custom
   compute_range: custom
   clone: true
@@ -1216,8 +1572,6 @@
     index: Int32
   type_policy: none
   alias_set: custom
-  # By default no, unless built as a recovered instruction.
-  can_recover: custom
 
 # Load the function length. Bails for functions with lazy scripts or a
 # resolved "length" property.
@@ -1286,6 +1640,54 @@
   alias_set: custom
   clone: true
 
+# Implements the TypedArrayByteOffset intrinsic for resizable typed arrays,
+# which calls TypedArrayObject::byteOffsetMaybeOutOfBounds().
+- name: ResizableTypedArrayByteOffsetMaybeOutOfBounds
+  operands:
+    object: Object
+  result_type: IntPtr
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: custom
+  compute_range: custom
+
+# Read the length of a resizable typed array.
+- name: ResizableTypedArrayLength
+  operands:
+    object: Object
+  arguments:
+    requiresMemoryBarrier: MemoryBarrierRequirement
+  result_type: IntPtr
+  # Not removable or movable when a barrier is needed.
+  guard: true
+  movable: false
+  congruent_to: custom
+  alias_set: custom
+  compute_range: custom
+
+# Read the byteLength of a resizable dataview.
+- name: ResizableDataViewByteLength
+  operands:
+    object: Object
+  arguments:
+    requiresMemoryBarrier: MemoryBarrierRequirement
+  result_type: IntPtr
+  # Not removable or movable when a barrier is needed.
+  guard: true
+  movable: false
+  congruent_to: custom
+  alias_set: custom
+  compute_range: custom
+
+# Read the byte length of a growable shared array buffer as IntPtr.
+- name: GrowableSharedArrayBufferByteLength
+  operands:
+    object: Object
+  result_type: IntPtr
+  guard: true
+  movable: false
+  alias_set: custom
+
 # Return the element size of a typed array.
 - name: TypedArrayElementSize
   operands:
@@ -1299,6 +1701,26 @@
 
 # Guard an ArrayBufferView has an attached ArrayBuffer.
 - name: GuardHasAttachedArrayBuffer
+  operands:
+    object: Object
+  result_type: Object
+  guard: true
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: custom
+
+# Guard a resizable typed array is in-bounds.
+- name: GuardResizableArrayBufferViewInBounds
+  operands:
+    object: Object
+  result_type: Object
+  guard: true
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: custom
+
+# Guard a resizable typed array is in-bounds or detached.
+- name: GuardResizableArrayBufferViewInBoundsOrDetached
   operands:
     object: Object
   result_type: Object
@@ -1433,6 +1855,34 @@
   # might coerce the elements of the Array to strings. This coercion might
   # cause the evaluation of JavaScript code.
 
+# Object.prototype.keys. Used to elide it when possible.
+- name: ObjectKeys
+  operands:
+    object: Object
+  result_type: Object
+
+  # We can recover Object.keys on bailout as long as the object is not escaped
+  # or that the object is not mutated by any aliased calls in-between the
+  # instruction and the recovered location, as the recovered keys array might be
+  # different.
+  can_recover: custom
+
+# Used to fold Object.keys(obj).length into a single operation.
+#
+# This should not be used with a Proxy, as proxies can have a user-defined
+# `ownKeys` function which can have arbitrary outputs.
+#
+# This MIR node is created by folding an MObjectKeys with an MArrayLength, as
+# part of MArrayLength::foldsTo.
+- name: ObjectKeysLength
+  operands:
+    object: Object
+  result_type: Int32
+  movable: false
+  congruent_to: if_operands_equal
+  alias_set: custom
+  clone: true
+
 - name: LoadUnboxedScalar
   gen_boilerplate: false
 
@@ -1507,6 +1957,15 @@
   congruent_to: custom
   alias_set: custom
   might_alias: custom
+
+- name: GuardFuse
+  arguments:
+    fuseIndex: RealmFuses::FuseIndex
+  result_type: None
+  guard: true
+  movable: true
+  congruent_to: custom
+  alias_set: custom
 
 - name: GuardMultipleShapes
   operands:
@@ -1635,6 +2094,15 @@
   congruent_to: custom
   alias_set: custom
 
+- name: MegamorphicLoadSlotPermissive
+  operands:
+    object: Object
+  arguments:
+    name: PropertyKey
+  result_type: Value
+  guard: true
+  possibly_calls: true
+
 - name: MegamorphicLoadSlotByValue
   operands:
     object: Object
@@ -1646,6 +2114,15 @@
   folds_to: custom
   congruent_to: if_operands_equal
   alias_set: custom
+  possibly_calls: true
+
+- name: MegamorphicLoadSlotByValuePermissive
+  operands:
+    object: Object
+    idVal: Value
+  result_type: Value
+  guard: true
+  folds_to: custom
   possibly_calls: true
 
 - name: MegamorphicStoreSlot
@@ -1671,6 +2148,15 @@
   alias_set: custom
   possibly_calls: true
 
+- name: SmallObjectVariableKeyHasProp
+  operands:
+    idStr: String
+  arguments:
+    shape: Shape*
+  congruent_to: custom
+  result_type: Boolean
+  alias_set: custom
+
 - name: GuardIsNotArrayBufferMaybeShared
   operands:
     object: Object
@@ -1684,6 +2170,35 @@
 - name: GuardIsTypedArray
   operands:
     object: Object
+  result_type: Object
+  guard: true
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: GuardIsFixedLengthTypedArray
+  operands:
+    object: Object
+  result_type: Object
+  guard: true
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: GuardIsResizableTypedArray
+  operands:
+    object: Object
+  result_type: Object
+  guard: true
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+
+- name: GuardHasProxyHandler
+  operands:
+    object: Object
+  arguments:
+    handler: const void*
   result_type: Object
   guard: true
   movable: true
@@ -2079,6 +2594,11 @@
     completionKind: uint8_t
   possibly_calls: true
 
+- name: OptimizeGetIteratorCache
+  operands:
+    value: Value
+  result_type: Boolean
+
 - name: InCache
   gen_boilerplate: false
 
@@ -2224,11 +2744,16 @@
   folds_to: custom
   congruent_to: if_operands_equal
   alias_set: none
+  type_policy: none
+  can_consume_float32: true
 
 - name: HasClass
   gen_boilerplate: false
 
 - name: GuardToClass
+  gen_boilerplate: false
+
+- name: GuardToEitherClass
   gen_boilerplate: false
 
 - name: GuardToFunction
@@ -2272,9 +2797,14 @@
 - name: AsyncResolve
   operands:
     generator: Object
-    valueOrReason: Value
-  arguments:
-    resolveKind: AsyncFunctionResolveKind
+    value: Value
+  result_type: Object
+
+- name: AsyncReject
+  operands:
+    generator: Object
+    reason: Value
+    stack: Value
   result_type: Object
 
 # Returns from this function to the previous caller; this looks like a regular
@@ -2320,6 +2850,12 @@
 - name: AtomicIsLockFree
   gen_boilerplate: false
 
+- name: AtomicPause
+  guard: true
+  movable: false
+  alias_set: none
+  generate_lir: true
+
 - name: CompareExchangeTypedArrayElement
   gen_boilerplate: false
 
@@ -2340,7 +2876,7 @@
   result_type: Object
   guard: true
   folds_to: custom
-  alias_set: none
+  alias_set: custom
 
 - name: CheckObjCoercible
   operands:
@@ -2447,13 +2983,16 @@
   alias_set: none
 
 # Load the target object from a proxy wrapper. The target is stored in the
-# proxy object's private slot.
+# proxy object's private slot. This operation is fallible if the proxy can
+# be revoked.
 - name: LoadWrapperTarget
   operands:
     object: Object
+  arguments:
+    fallible: bool
   result_type: Object
   movable: true
-  congruent_to: if_operands_equal
+  congruent_to: custom
   # Can't use |AliasSet::None| because the target changes on navigation.
   # TODO: Investigate using a narrower or a custom alias set.
   alias_set: custom
@@ -2583,6 +3122,7 @@
   movable: true
   congruent_to: if_operands_equal
   possibly_calls: true
+  folds_to: custom
   alias_set: none
   can_recover: true
   clone: true
@@ -2595,6 +3135,7 @@
   movable: true
   congruent_to: if_operands_equal
   possibly_calls: true
+  folds_to: custom
   alias_set: none
   can_recover: true
   clone: true
@@ -2726,6 +3267,21 @@
   alias_set: custom
   possibly_calls: true
 
+- name: SetObjectDelete
+  operands:
+    setObject: Object
+    key: Value
+  result_type: Boolean
+  possibly_calls: true
+  generate_lir: true
+
+- name: SetObjectAdd
+  operands:
+    setObject: Object
+    key: Value
+  possibly_calls: true
+  generate_lir: true
+
 - name: SetObjectSize
   operands:
     set: Object
@@ -2803,6 +3359,8 @@
   movable: true
   congruent_to: if_operands_equal
   alias_set: custom
+  generate_lir: true
+  lir_temps: 4
 
 - name: MapObjectGetValueVMCall
   operands:
@@ -2814,6 +3372,22 @@
   alias_set: custom
   possibly_calls: true
 
+- name: MapObjectDelete
+  operands:
+    mapObject: Object
+    key: Value
+  result_type: Boolean
+  possibly_calls: true
+  generate_lir: true
+
+- name: MapObjectSet
+  operands:
+    mapObject: Object
+    key: Value
+    value: Value
+  possibly_calls: true
+  generate_lir: true
+
 - name: MapObjectSize
   operands:
     map: Object
@@ -2821,6 +3395,47 @@
   movable: true
   congruent_to: if_operands_equal
   alias_set: custom
+
+- name: DateFillLocalTimeSlots
+  operands:
+    date: Object
+  congruent_to: if_operands_equal
+  alias_set: custom
+  generate_lir: true
+  lir_temps: 1
+
+- name: DateHoursFromSecondsIntoYear
+  operands:
+    secondsIntoYear: Value
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  generate_lir: true
+  lir_temps: 2
+
+- name: DateMinutesFromSecondsIntoYear
+  operands:
+    secondsIntoYear: Value
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  generate_lir: true
+  lir_temps: 2
+
+- name: DateSecondsFromSecondsIntoYear
+  operands:
+    secondsIntoYear: Value
+  result_type: Value
+  movable: true
+  congruent_to: if_operands_equal
+  alias_set: none
+  generate_lir: true
+  lir_temps: 2
+
+- name: PostIntPtrConversion
+  gen_boilerplate: false
 
 - name: WasmNeg
   gen_boilerplate: false
@@ -2840,6 +3455,17 @@
 - name: WasmBoundsCheck
   gen_boilerplate: false
 
+- name: WasmBoundsCheckRange32
+  operands:
+    index: Int32
+    length: Int32
+    limit: Int32
+  arguments:
+    trapSiteDesc: wasm::TrapSiteDesc
+  result_type: Int32
+  congruent_to: if_operands_equal
+  type_policy: none
+
 - name: WasmExtendU32Index
   operands:
     input: Int32
@@ -2857,6 +3483,15 @@
   movable: true
   congruent_to: if_operands_equal
   folds_to: custom
+  type_policy: none
+  alias_set: none
+
+- name: WasmClampTable64Address
+  operands:
+    input: Int64
+  result_type: Int32
+  movable: true
+  congruent_to: if_operands_equal
   type_policy: none
   alias_set: none
 
@@ -2919,7 +3554,10 @@
 - name: WasmStoreRef
   gen_boilerplate: false
 
-- name: WasmPostWriteBarrier
+- name: WasmPostWriteBarrierImmediate
+  gen_boilerplate: false
+
+- name: WasmPostWriteBarrierIndex
   gen_boilerplate: false
 
 - name: WasmParameter
@@ -2958,6 +3596,9 @@
 - name: WasmCallLandingPrePad
   gen_boilerplate: false
 
+- name: WasmReturnCall
+  gen_boilerplate: false
+
 - name: WasmSelect
   gen_boilerplate: false
 
@@ -2966,6 +3607,27 @@
 
 - name: Rotate
   gen_boilerplate: false
+
+- name: WasmStackSwitchToMain
+  operands:
+    suspender: Object
+    fn: Object
+    data: WasmAnyRef
+  result_type: WasmAnyRef
+  type_policy: none
+
+- name: WasmStackSwitchToSuspendable
+  operands:
+    suspender: Object
+    fn: Object
+    data: WasmAnyRef
+  type_policy: none
+
+- name: WasmStackContinueOnSuspendable
+  operands:
+    suspender: Object
+    result: WasmAnyRef
+  type_policy: none
 
 - name: WasmBinarySimd128
   gen_boilerplate: false
@@ -3043,10 +3705,19 @@
 - name: WasmLoadFieldKA
   gen_boilerplate: false
 
+- name: WasmLoadElementKA
+  gen_boilerplate: false
+
 - name: WasmStoreFieldKA
   gen_boilerplate: false
 
 - name: WasmStoreFieldRefKA
+  gen_boilerplate: false
+
+- name: WasmStoreElementKA
+  gen_boilerplate: false
+
+- name: WasmStoreElementRefKA
   gen_boilerplate: false
 
 - name: WasmRefIsSubtypeOfConcrete
@@ -3055,10 +3726,39 @@
 - name: WasmRefIsSubtypeOfAbstract
   gen_boilerplate: false
 
+- name: WasmNewStructObject
+  gen_boilerplate: false
+
+- name: WasmNewArrayObject
+  gen_boilerplate: false
+
 #ifdef FUZZING_JS_FUZZILLI
 - name: FuzzilliHash
   gen_boilerplate: false
 
 - name: FuzzilliHashStore
   gen_boilerplate: false
+#endif
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+- name: AddDisposableResource
+  operands:
+    environment: Object
+    resource: Value
+    method: Value
+    needsClosure: Boolean
+  arguments:
+    hint: uint8_t
+
+- name: TakeDisposeCapability
+  operands:
+    environment: Object
+  result_type: Value
+
+- name: CreateSuppressedError
+  operands:
+    error: Value
+    suppressed: Value
+  result_type: Object
+  alias_set: none
 #endif

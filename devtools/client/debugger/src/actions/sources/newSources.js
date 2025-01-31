@@ -6,7 +6,6 @@
  * Redux actions for the sources state
  * @module actions/sources
  */
-import { PROMISE } from "../utils/middleware/promise";
 import { insertSourceActors } from "../../actions/source-actors";
 import {
   makeSourceId,
@@ -15,11 +14,11 @@ import {
   createSourceActor,
 } from "../../client/firefox/create";
 import { toggleBlackBox } from "./blackbox";
-import { syncPendingBreakpoint } from "../breakpoints";
+import { syncPendingBreakpoint } from "../breakpoints/index";
 import { loadSourceText } from "./loadSourceText";
-import { togglePrettyPrint } from "./prettyPrint";
+import { prettyPrintAndSelectSource } from "./prettyPrint";
 import { toggleSourceMapIgnoreList } from "../ui";
-import { selectLocation, setBreakableLines } from "../sources";
+import { selectLocation, setBreakableLines } from "../sources/index";
 
 import { getRawSourceURL, isPrettyURL } from "../../utils/source";
 import { createLocation } from "../../utils/location";
@@ -31,36 +30,28 @@ import {
   getSourceByActorId,
   getPendingSelectedLocation,
   getPendingBreakpointsForSource,
-} from "../../selectors";
+} from "../../selectors/index";
 
 import { prefs } from "../../utils/prefs";
 import sourceQueue from "../../utils/source-queue";
 import { validateSourceActor, ContextError } from "../../utils/context";
 
-function loadSourceMaps(sources) {
+function loadSourceMapsForSourceActors(sourceActors) {
   return async function ({ dispatch }) {
     try {
-      const sourceList = await Promise.all(
-        sources.map(async sourceActor => {
-          const originalSourcesInfo = await dispatch(
-            loadSourceMap(sourceActor)
-          );
-          originalSourcesInfo.forEach(
-            sourcesInfo => (sourcesInfo.sourceActor = sourceActor)
-          );
-          sourceQueue.queueOriginalSources(originalSourcesInfo);
-          return originalSourcesInfo;
-        })
+      await Promise.all(
+        sourceActors.map(sourceActor => dispatch(loadSourceMap(sourceActor)))
       );
-
-      await sourceQueue.flush();
-      return sourceList.flat();
     } catch (error) {
+      // This may throw a context error if we navigated while processing the source maps
       if (!(error instanceof ContextError)) {
         throw error;
       }
     }
-    return [];
+
+    // Once all the source maps, of all the bulk of new source actors are processed,
+    // flush the SourceQueue. This help aggregate all the original sources in one action.
+    await sourceQueue.flush();
   };
 }
 
@@ -69,48 +60,87 @@ function loadSourceMaps(sources) {
  * @static
  */
 function loadSourceMap(sourceActor) {
-  return async function ({ dispatch, getState, sourceMapLoader }) {
+  return async function ({ dispatch, getState, sourceMapLoader, panel }) {
     if (!prefs.clientSourceMapsEnabled || !sourceActor.sourceMapURL) {
-      return [];
+      return;
     }
 
-    let data = null;
+    let sources, ignoreListUrls, resolvedSourceMapURL, exception;
     try {
       // Ignore sourceMapURL on scripts that are part of HTML files, since
       // we currently treat sourcemaps as Source-wide, not SourceActor-specific.
       const source = getSourceByActorId(getState(), sourceActor.id);
       if (source) {
-        data = await sourceMapLoader.getOriginalURLs({
-          // Using source ID here is historical and eventually we'll want to
-          // switch to all of this being per-source-actor.
-          id: source.id,
-          url: sourceActor.url || "",
-          sourceMapBaseURL: sourceActor.sourceMapBaseURL || "",
-          sourceMapURL: sourceActor.sourceMapURL || "",
-          isWasm: sourceActor.introductionType === "wasm",
-        });
-        dispatch({
-          type: "ADD_SOURCEMAP_IGNORE_LIST_SOURCES",
-          [PROMISE]: sourceMapLoader.getSourceMapIgnoreList(source.id),
-        });
+        ({ sources, ignoreListUrls, resolvedSourceMapURL, exception } =
+          await sourceMapLoader.loadSourceMap({
+            // Using source ID here is historical and eventually we'll want to
+            // switch to all of this being per-source-actor.
+            id: source.id,
+            url: sourceActor.url || "",
+            sourceMapBaseURL: sourceActor.sourceMapBaseURL || "",
+            sourceMapURL: sourceActor.sourceMapURL || "",
+            isWasm: sourceActor.introductionType === "wasm",
+          }));
       }
     } catch (e) {
-      console.error(e);
+      exception = `Internal error: ${e.message}`;
     }
 
-    if (!data || !data.length) {
+    if (resolvedSourceMapURL) {
+      dispatch({
+        type: "RESOLVED_SOURCEMAP_URL",
+        sourceActor,
+        resolvedSourceMapURL,
+      });
+    }
+
+    if (ignoreListUrls?.length) {
+      dispatch({
+        type: "ADD_SOURCEMAP_IGNORE_LIST_SOURCES",
+        ignoreListUrls,
+      });
+    }
+
+    if (exception) {
+      // Catch all errors and log them to the Web Console for users to see.
+      const message = L10N.getFormatStr(
+        "toolbox.sourceMapFailure",
+        exception,
+        sourceActor.url,
+        sourceActor.sourceMapURL
+      );
+      panel.toolbox.commands.targetCommand.targetFront.logWarningInPage(
+        message,
+        "source map",
+        resolvedSourceMapURL
+      );
+
+      dispatch({
+        type: "SOURCE_MAP_ERROR",
+        sourceActor,
+        errorMessage: exception,
+      });
+
       // If this source doesn't have a sourcemap or there are no original files
       // existing, enable it for pretty printing
       dispatch({
         type: "CLEAR_SOURCE_ACTOR_MAP_URL",
         sourceActor,
       });
-      return [];
+      return;
     }
 
     // Before dispatching this action, ensure that the related sourceActor is still registered
     validateSourceActor(getState(), sourceActor);
-    return data;
+
+    for (const originalSource of sources) {
+      // The Source Map worker doesn't set the `sourceActor` attribute,
+      // which is handy to know what is the related bundle.
+      originalSource.sourceActor = sourceActor;
+    }
+
+    // Register all the new reported original sources in the queue to be flushed once all new bundles are processed.
+    sourceQueue.queueOriginalSources(sources);
   };
 }
 
@@ -136,7 +166,7 @@ function checkSelectedSource(sourceId) {
 
     if (rawPendingUrl === source.url) {
       if (isPrettyURL(pendingUrl)) {
-        const prettySource = await dispatch(togglePrettyPrint(source.id));
+        const prettySource = await dispatch(prettyPrintAndSelectSource(source));
         dispatch(checkPendingBreakpoints(prettySource, null));
         return;
       }
@@ -264,7 +294,7 @@ export function newGeneratedSource(sourceInfo) {
 }
 
 export function newGeneratedSources(sourceResources) {
-  return async ({ dispatch, getState, client }) => {
+  return async ({ dispatch, getState }) => {
     if (!sourceResources.length) {
       return [];
     }
@@ -311,7 +341,7 @@ export function newGeneratedSources(sourceResources) {
     await dispatch(checkNewSources(newSources));
 
     (async () => {
-      await dispatch(loadSourceMaps(newSourceActors));
+      await dispatch(loadSourceMapsForSourceActors(newSourceActors));
 
       // We would like to sync breakpoints after we are done
       // loading source maps as sometimes generated and original
@@ -340,7 +370,7 @@ export function newGeneratedSources(sourceResources) {
 }
 
 function checkNewSources(sources) {
-  return async ({ dispatch, getState }) => {
+  return async ({ dispatch }) => {
     for (const source of sources) {
       dispatch(checkSelectedSource(source.id));
     }

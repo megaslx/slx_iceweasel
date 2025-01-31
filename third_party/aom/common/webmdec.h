@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -28,7 +28,7 @@ struct WebmInputContext {
   const void *block;
   int block_frame_index;
   int video_track_index;
-  uint64_t timestamp_ns;
+  int64_t timestamp_ns;
   int is_key_frame;
   int reached_eos;
 };

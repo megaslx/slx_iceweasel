@@ -1,4 +1,5 @@
 """Functions to download, install, setup, and use the mitmproxy playback tool"""
+
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -74,7 +75,7 @@ class MitmproxyDesktop(Mitmproxy):
         2. Create the policies.json file inside that folder; which points to the certificate
            location, and turns on the the browser proxy settings
         """
-        LOG.info("Installing mitmproxy CA certficate into Firefox")
+        LOG.info("Installing mitmproxy CA certificate into Firefox")
 
         # browser_path is the exe, we want the folder
         self.policies_dir = os.path.dirname(browser_path)
@@ -137,7 +138,6 @@ class MitmproxyDesktop(Mitmproxy):
             ) in contents:
                 LOG.info("Verified mitmproxy CA certificate is installed in Firefox")
             else:
-
                 return False
         except Exception as e:
             LOG.info("failed to read Firefox policies file, exeption: %s" % e)

@@ -36,8 +36,8 @@ VCMEncodedFrame::~VCMEncodedFrame() {
 }
 
 void VCMEncodedFrame::Reset() {
-  SetTimestamp(0);
-  SetSpatialIndex(absl::nullopt);
+  SetRtpTimestamp(0);
+  SetSpatialIndex(std::nullopt);
   _renderTimeMs = -1;
   _payloadType = 0;
   _frameType = VideoFrameType::kVideoFrameDelta;
@@ -138,6 +138,10 @@ void VCMEncodedFrame::CopyCodecSpecific(const RTPVideoHeader* header) {
       }
       case kVideoCodecAV1: {
         _codecSpecificInfo.codecType = kVideoCodecAV1;
+        break;
+      }
+      case kVideoCodecH265: {
+        _codecSpecificInfo.codecType = kVideoCodecH265;
         break;
       }
       default: {

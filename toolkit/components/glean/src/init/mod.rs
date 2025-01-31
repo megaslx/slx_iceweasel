@@ -3,14 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::env;
-use std::ffi::CString;
+use std::ffi::{c_char, CStr, CString};
 use std::ops::DerefMut;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use firefox_on_glean::{metrics, pings};
 use nserror::{nsresult, NS_ERROR_FAILURE};
 use nsstring::{nsACString, nsCString, nsString};
-use xpcom::interfaces::{nsIFile, nsIPrefService, nsIProperties, nsIXULAppInfo, nsIXULRuntime};
+use xpcom::interfaces::{
+    mozILocaleService, nsIFile, nsIPrefService, nsIProperties, nsIXULAppInfo, nsIXULRuntime,
+};
 use xpcom::{RefPtr, XpCom};
 
 use glean::{ClientInfoMetrics, Configuration};
@@ -36,6 +39,7 @@ use viaduct_uploader::ViaductUploader;
 pub extern "C" fn fog_init(
     data_path_override: &nsACString,
     app_id_override: &nsACString,
+    disable_internal_pings: bool,
 ) -> nsresult {
     let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
     let recording_enabled = static_prefs::pref!("telemetry.fog.test.localhost_port") < 0;
@@ -46,6 +50,9 @@ pub extern "C" fn fog_init(
         app_id_override,
         upload_enabled || recording_enabled,
         uploader,
+        // Flipping it around, because no value = defaults to false,
+        // so we take in `disable` but pass on `enable`.
+        !disable_internal_pings,
     )
     .into()
 }
@@ -62,6 +69,7 @@ pub extern "C" fn fog_init(
 pub extern "C" fn fog_init(
     data_path_override: &nsACString,
     app_id_override: &nsACString,
+    disable_internal_pings: bool,
 ) -> nsresult {
     // On Android always enable Glean upload.
     let upload_enabled = true;
@@ -73,6 +81,7 @@ pub extern "C" fn fog_init(
         app_id_override,
         upload_enabled,
         uploader,
+        !disable_internal_pings,
     )
     .into()
 }
@@ -82,6 +91,7 @@ fn fog_init_internal(
     app_id_override: &nsACString,
     upload_enabled: bool,
     uploader: Option<Box<dyn glean::net::PingUploader>>,
+    enable_internal_pings: bool,
 ) -> Result<(), nsresult> {
     metrics::fog::initialization.start();
 
@@ -93,6 +103,7 @@ fn fog_init_internal(
 
     conf.upload_enabled = upload_enabled;
     conf.uploader = uploader;
+    conf.enable_internal_pings = enable_internal_pings;
 
     // If we're operating in automation without any specific source tags to set,
     // set the tag "automation" so any pings that escape don't clutter the tables.
@@ -127,21 +138,25 @@ fn build_configuration(
     };
     let data_path = PathBuf::from(&data_path_str);
 
-    let (app_build, app_display_version, channel) = get_app_info()?;
+    let (app_build, app_display_version, channel, locale) = get_app_info()?;
 
     let client_info = ClientInfoMetrics {
         app_build,
         app_display_version,
         channel: Some(channel),
+        locale: Some(locale),
     };
     log::debug!("Client Info: {:#?}", client_info);
 
-    const SERVER: &str = "https://incoming.telemetry.mozilla.org";
     let localhost_port = static_prefs::pref!("telemetry.fog.test.localhost_port");
     let server = if localhost_port > 0 {
         format!("http://localhost:{}", localhost_port)
     } else {
-        String::from(SERVER)
+        if app_id_override == "thunderbird.desktop" {
+            String::from("https://incoming.thunderbird.net")
+        } else {
+            String::from("https://incoming.telemetry.mozilla.org")
+        }
     };
 
     let application_id = if app_id_override.is_empty() {
@@ -149,6 +164,19 @@ fn build_configuration(
     } else {
         app_id_override.to_utf8().to_string()
     };
+
+    extern "C" {
+        fn FOG_MaxPingLimit() -> u32;
+    }
+
+    // SAFETY NOTE: Safe because it returns a primitive by value.
+    let pings_per_interval = unsafe { FOG_MaxPingLimit() };
+    metrics::fog::max_pings_per_minute.set(pings_per_interval.into());
+
+    let rate_limit = Some(glean::PingRateLimit {
+        seconds_per_interval: 60,
+        pings_per_interval,
+    });
 
     let configuration = Configuration {
         upload_enabled: false,
@@ -161,7 +189,13 @@ fn build_configuration(
         use_core_mps: true,
         trim_data_to_registered_pings: true,
         log_level: None,
-        rate_limit: None,
+        rate_limit,
+        enable_event_timestamps: true,
+        experimentation_id: None,
+        enable_internal_pings: true,
+        ping_schedule: pings::ping_schedule(),
+        ping_lifetime_threshold: 0,
+        ping_lifetime_max_time: Duration::ZERO,
     };
 
     Ok((configuration, client_info))
@@ -220,16 +254,18 @@ fn get_data_path() -> Result<String, nsresult> {
     Ok(data_path)
 }
 
-/// Return a tuple of the build_id, app version, and build channel.
+/// Return a tuple of the build_id, app version, build channel, and locale.
 /// If the XUL Runtime isn't a XULAppInfo (e.g. in xpcshell),
-/// build_id ad app_version will be "unknown".
+/// build_id will be "unknown".
 /// Other problems result in an error being returned instead.
-fn get_app_info() -> Result<(String, String, String), nsresult> {
+fn get_app_info() -> Result<(String, String, String, String), nsresult> {
     let xul: RefPtr<nsIXULRuntime> =
         xpcom::components::XULRuntime::service().map_err(|_| NS_ERROR_FAILURE)?;
 
     let pref_service: RefPtr<nsIPrefService> =
         xpcom::components::Preferences::service().map_err(|_| NS_ERROR_FAILURE)?;
+    let locale_service: RefPtr<mozILocaleService> =
+        xpcom::components::Locale::service().map_err(|_| NS_ERROR_FAILURE)?;
     let branch = xpcom::getter_addrefs(|p| {
         // Safe because:
         //  * `null` is explicitly allowed per documentation
@@ -252,6 +288,14 @@ fn get_app_info() -> Result<(String, String, String), nsresult> {
         }
     }
 
+    extern "C" {
+        fn FOG_MozAppVersionDisplay() -> *const c_char;
+    }
+    // SAFETY: It's literally a quoted literal.
+    let version = unsafe { CStr::from_ptr(FOG_MozAppVersionDisplay()) }
+        .to_str()
+        .map_err(|_| NS_ERROR_FAILURE)?;
+
     let app_info = match xul.query_interface::<nsIXULAppInfo>() {
         Some(ai) => ai,
         // In e.g. xpcshell the XULRuntime isn't XULAppInfo.
@@ -259,8 +303,9 @@ fn get_app_info() -> Result<(String, String, String), nsresult> {
         _ => {
             return Ok((
                 "unknown".to_owned(),
-                "unknown".to_owned(),
+                version.to_string(),
                 channel.to_string(),
+                "unknown".to_owned(),
             ))
         }
     };
@@ -270,15 +315,18 @@ fn get_app_info() -> Result<(String, String, String), nsresult> {
         app_info.GetAppBuildID(&mut *build_id).to_result()?;
     }
 
-    let mut version = nsCString::new();
+    let mut locale = nsCString::new();
     unsafe {
-        app_info.GetVersion(&mut *version).to_result()?;
+        locale_service
+            .GetAppLocaleAsBCP47(&mut *locale)
+            .to_result()?;
     }
 
     Ok((
         build_id.to_string(),
         version.to_string(),
         channel.to_string(),
+        locale.to_string(),
     ))
 }
 
@@ -309,6 +357,9 @@ fn fog_test_reset_internal(
 
     // I'd prefer to reuse the uploader, but it gets moved into Glean so we build anew.
     conf.uploader = Some(Box::new(ViaductUploader) as Box<dyn glean::net::PingUploader>);
+
+    // Register all custom pings before we initialize.
+    pings::register_pings(None);
 
     glean::test_reset_glean(conf, client_info, true);
     Ok(())

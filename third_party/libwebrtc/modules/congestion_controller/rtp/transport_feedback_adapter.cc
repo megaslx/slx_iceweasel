@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 #include "absl/algorithm/container.h"
 #include "api/units/timestamp.h"
@@ -85,7 +86,6 @@ bool InFlightBytesTracker::NetworkRouteComparator::operator()(
 
 TransportFeedbackAdapter::TransportFeedbackAdapter() = default;
 
-
 void TransportFeedbackAdapter::AddPacket(const RtpPacketSendInfo& packet_info,
                                          size_t overhead_bytes,
                                          Timestamp creation_time) {
@@ -109,7 +109,7 @@ void TransportFeedbackAdapter::AddPacket(const RtpPacketSendInfo& packet_info,
   history_.insert(std::make_pair(packet.sent.sequence_number, packet));
 }
 
-absl::optional<SentPacket> TransportFeedbackAdapter::ProcessSentPacket(
+std::optional<SentPacket> TransportFeedbackAdapter::ProcessSentPacket(
     const rtc::SentPacket& sent_packet) {
   auto send_time = Timestamp::Millis(sent_packet.send_time_ms);
   // TODO(srte): Only use one way to indicate that packet feedback is used.
@@ -145,31 +145,24 @@ absl::optional<SentPacket> TransportFeedbackAdapter::ProcessSentPacket(
         DataSize::Bytes(sent_packet.info.packet_size_bytes);
     last_untracked_send_time_ = std::max(last_untracked_send_time_, send_time);
   }
-  return absl::nullopt;
+  return std::nullopt;
 }
 
-absl::optional<TransportPacketsFeedback>
+std::optional<TransportPacketsFeedback>
 TransportFeedbackAdapter::ProcessTransportFeedback(
     const rtcp::TransportFeedback& feedback,
     Timestamp feedback_receive_time) {
   if (feedback.GetPacketStatusCount() == 0) {
     RTC_LOG(LS_INFO) << "Empty transport feedback packet received.";
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   TransportPacketsFeedback msg;
   msg.feedback_time = feedback_receive_time;
-
-  msg.prior_in_flight = in_flight_.GetOutstandingData(network_route_);
   msg.packet_feedbacks =
       ProcessTransportFeedbackInner(feedback, feedback_receive_time);
   if (msg.packet_feedbacks.empty())
-    return absl::nullopt;
-
-  auto it = history_.find(last_ack_seq_num_);
-  if (it != history_.end()) {
-    msg.first_unacked_send_time = it->second.sent.send_time;
-  }
+    return std::nullopt;
   msg.data_in_flight = in_flight_.GetOutstandingData(network_route_);
 
   return msg;
@@ -213,56 +206,58 @@ TransportFeedbackAdapter::ProcessTransportFeedbackInner(
   size_t failed_lookups = 0;
   size_t ignored = 0;
 
-  feedback.ForAllPackets([&](uint16_t sequence_number,
-                             TimeDelta delta_since_base) {
-    int64_t seq_num = seq_num_unwrapper_.Unwrap(sequence_number);
+  feedback.ForAllPackets(
+      [&](uint16_t sequence_number, TimeDelta delta_since_base) {
+        int64_t seq_num = seq_num_unwrapper_.Unwrap(sequence_number);
 
-    if (seq_num > last_ack_seq_num_) {
-      // Starts at history_.begin() if last_ack_seq_num_ < 0, since any valid
-      // sequence number is >= 0.
-      for (auto it = history_.upper_bound(last_ack_seq_num_);
-           it != history_.upper_bound(seq_num); ++it) {
-        in_flight_.RemoveInFlightPacketBytes(it->second);
-      }
-      last_ack_seq_num_ = seq_num;
-    }
+        if (seq_num > last_ack_seq_num_) {
+          // Starts at history_.begin() if last_ack_seq_num_ < 0, since any
+          // valid sequence number is >= 0.
+          for (auto it = history_.upper_bound(last_ack_seq_num_);
+               it != history_.upper_bound(seq_num); ++it) {
+            in_flight_.RemoveInFlightPacketBytes(it->second);
+          }
+          last_ack_seq_num_ = seq_num;
+        }
 
-    auto it = history_.find(seq_num);
-    if (it == history_.end()) {
-      ++failed_lookups;
-      return;
-    }
+        auto it = history_.find(seq_num);
+        if (it == history_.end()) {
+          ++failed_lookups;
+          return;
+        }
 
-    if (it->second.sent.send_time.IsInfinite()) {
-      // TODO(srte): Fix the tests that makes this happen and make this a
-      // DCHECK.
-      RTC_DLOG(LS_ERROR)
-          << "Received feedback before packet was indicated as sent";
-      return;
-    }
+        if (it->second.sent.send_time.IsInfinite()) {
+          // TODO(srte): Fix the tests that makes this happen and make this a
+          // DCHECK.
+          RTC_DLOG(LS_ERROR)
+              << "Received feedback before packet was indicated as sent";
+          return;
+        }
 
-    PacketFeedback packet_feedback = it->second;
-    if (delta_since_base.IsFinite()) {
-      packet_feedback.receive_time =
-          current_offset_ + delta_since_base.RoundDownTo(TimeDelta::Millis(1));
-      // Note: Lost packets are not removed from history because they might be
-      // reported as received by a later feedback.
-      history_.erase(it);
-    }
-    if (packet_feedback.network_route == network_route_) {
-      PacketResult result;
-      result.sent_packet = packet_feedback.sent;
-      result.receive_time = packet_feedback.receive_time;
-      packet_result_vector.push_back(result);
-    } else {
-      ++ignored;
-    }
-  });
+        PacketFeedback packet_feedback = it->second;
+        if (delta_since_base.IsFinite()) {
+          packet_feedback.receive_time =
+              current_offset_ +
+              delta_since_base.RoundDownTo(TimeDelta::Millis(1));
+          // Note: Lost packets are not removed from history because they might
+          // be reported as received by a later feedback.
+          history_.erase(it);
+        }
+        if (packet_feedback.network_route == network_route_) {
+          PacketResult result;
+          result.sent_packet = packet_feedback.sent;
+          result.receive_time = packet_feedback.receive_time;
+          packet_result_vector.push_back(result);
+        } else {
+          ++ignored;
+        }
+      });
 
   if (failed_lookups > 0) {
-    RTC_LOG(LS_WARNING) << "Failed to lookup send time for " << failed_lookups
-                        << " packet" << (failed_lookups > 1 ? "s" : "")
-                        << ". Send time history too small?";
+    RTC_LOG(LS_WARNING)
+        << "Failed to lookup send time for " << failed_lookups << " packet"
+        << (failed_lookups > 1 ? "s" : "")
+        << ". Packets reordered or send time history too small?";
   }
   if (ignored > 0) {
     RTC_LOG(LS_INFO) << "Ignoring " << ignored

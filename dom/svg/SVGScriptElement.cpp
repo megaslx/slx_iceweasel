@@ -6,6 +6,8 @@
 
 #include "mozilla/dom/SVGScriptElement.h"
 
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/FetchPriority.h"
 #include "nsGkAtoms.h"
 #include "nsNetUtil.h"
 #include "nsContentUtils.h"
@@ -129,6 +131,8 @@ void SVGScriptElement::FreezeExecutionAttrs(const Document* aOwnerDoc) {
       mStringAttributes[XLINK_HREF].GetAnimValue(src, this);
     }
 
+    SourceLocation loc{OwnerDoc()->GetDocumentURI(), GetScriptLineNumber(),
+                       GetScriptColumnNumber().oneOriginValue()};
     // Empty src should be treated as invalid URL.
     if (!src.IsEmpty()) {
       NS_NewURI(getter_AddRefs(mUri), src, nullptr, GetBaseURI());
@@ -137,18 +141,17 @@ void SVGScriptElement::FreezeExecutionAttrs(const Document* aOwnerDoc) {
         AutoTArray<nsString, 2> params = {
             isHref ? u"href"_ns : u"xlink:href"_ns, src};
 
-        nsContentUtils::ReportToConsole(
-            nsIScriptError::warningFlag, "SVG"_ns, OwnerDoc(),
-            nsContentUtils::eDOM_PROPERTIES, "ScriptSourceInvalidUri", params,
-            nullptr, u""_ns, GetScriptLineNumber(), GetScriptColumnNumber());
+        nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "SVG"_ns,
+                                        OwnerDoc(),
+                                        nsContentUtils::eDOM_PROPERTIES,
+                                        "ScriptSourceInvalidUri", params, loc);
       }
     } else {
       AutoTArray<nsString, 1> params = {isHref ? u"href"_ns : u"xlink:href"_ns};
 
       nsContentUtils::ReportToConsole(
           nsIScriptError::warningFlag, "SVG"_ns, OwnerDoc(),
-          nsContentUtils::eDOM_PROPERTIES, "ScriptSourceEmpty", params, nullptr,
-          u""_ns, GetScriptLineNumber(), GetScriptColumnNumber());
+          nsContentUtils::eDOM_PROPERTIES, "ScriptSourceEmpty", params, loc);
     }
 
     // At this point mUri will be null for invalid URLs.
@@ -179,7 +182,7 @@ bool SVGScriptElement::HasScriptContent() {
 
 SVGElement::StringAttributesInfo SVGScriptElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 //----------------------------------------------------------------------
@@ -212,6 +215,11 @@ bool SVGScriptElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
 
 CORSMode SVGScriptElement::GetCORSMode() const {
   return AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin));
+}
+
+FetchPriority SVGScriptElement::GetFetchPriority() const {
+  // <https://github.com/w3c/svgwg/issues/916>.
+  return FetchPriority::Auto;
 }
 
 }  // namespace mozilla::dom

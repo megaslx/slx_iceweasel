@@ -7,7 +7,16 @@
 const {
   generateActorSpec,
   Arg,
+  types,
 } = require("resource://devtools/shared/protocol.js");
+
+types.addDictType("tracer.start.options", {
+  logMethod: "string",
+  traceValues: "boolean",
+  traceOnNextInteraction: "boolean",
+  traceOnNextLoad: "boolean",
+  traceDOMMutations: "nullable:array:string",
+});
 
 const tracerSpec = generateActorSpec({
   typeName: "tracer",
@@ -15,7 +24,7 @@ const tracerSpec = generateActorSpec({
   methods: {
     startTracing: {
       request: {
-        logMethod: Arg(0, "string"),
+        options: Arg(0, "tracer.start.options"),
       },
     },
     stopTracing: {
@@ -25,3 +34,11 @@ const tracerSpec = generateActorSpec({
 });
 
 exports.tracerSpec = tracerSpec;
+
+const TRACER_LOG_METHODS = {
+  DEBUGGER_SIDEBAR: "debugger-sidebar",
+  STDOUT: "stdout",
+  CONSOLE: "console",
+  PROFILER: "profiler",
+};
+exports.TRACER_LOG_METHODS = TRACER_LOG_METHODS;

@@ -29,7 +29,6 @@
 
 using namespace js;
 using namespace js::gc;
-using mozilla::DebugOnly;
 
 template void RuntimeScopeData<LexicalScope::SlotInfo>::trace(JSTracer* trc);
 template void RuntimeScopeData<ClassBodyScope::SlotInfo>::trace(JSTracer* trc);
@@ -43,7 +42,7 @@ void JS::TracingContext::getEdgeName(const char* name, char* buffer,
                                      size_t bufferSize) {
   MOZ_ASSERT(bufferSize > 0);
   if (functor_) {
-    (*functor_)(this, buffer, bufferSize);
+    (*functor_)(this, name, buffer, bufferSize);
     return;
   }
   if (index_ != InvalidIndex) {
@@ -227,10 +226,10 @@ void js::gc::GetTraceThingInfo(char* buf, size_t bufsize, void* thing,
         JSObject* obj = (JSObject*)thing;
         if (obj->is<JSFunction>()) {
           JSFunction* fun = &obj->as<JSFunction>();
-          if (fun->displayAtom()) {
+          if (fun->maybePartialDisplayAtom()) {
             *buf++ = ' ';
             bufsize--;
-            PutEscapedString(buf, bufsize, fun->displayAtom(), 0);
+            PutEscapedString(buf, bufsize, fun->maybePartialDisplayAtom(), 0);
           }
         } else {
           snprintf(buf, bufsize, " <unknown object>");

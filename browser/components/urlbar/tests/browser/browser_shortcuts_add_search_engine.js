@@ -15,7 +15,10 @@ const BASE_URL =
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.suggest.searches", false]],
+    set: [
+      ["browser.urlbar.suggest.searches", false],
+      ["browser.urlbar.scotchBonnet.enableOverride", false],
+    ],
   });
   // Ensure initial state.
   UrlbarTestUtils.getOneOffSearchButtons(window).invalidateCache();
@@ -92,7 +95,7 @@ async function do_test_shortcuts(activateTask) {
     );
 
     for (let button of addEngineButtons) {
-      Assert.ok(BrowserTestUtils.is_visible(button));
+      Assert.ok(BrowserTestUtils.isVisible(button));
       Assert.ok(button.hasAttribute("image"));
       await document.l10n.translateElements([button]);
       Assert.ok(
@@ -206,7 +209,7 @@ function promiseEngine(expectedData, expectedEngineName) {
         expectedEngineName == engine.wrappedJSObject.name
       );
     }
-  ).then(([engine, data]) => engine);
+  ).then(([engine]) => engine);
 }
 
 add_task(async function shortcuts_without_other_engines() {

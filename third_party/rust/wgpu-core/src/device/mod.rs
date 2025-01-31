@@ -1,78 +1,64 @@
 use crate::{
     binding_model,
-    device::life::WaitIdleError,
-    hal_api::HalApi,
     hub::Hub,
-    id,
-    identity::{GlobalIdentityHandlerFactory, Input},
-    resource::{Buffer, BufferAccessResult},
-    resource::{BufferAccessError, BufferMapOperation},
+    id::{BindGroupLayoutId, PipelineLayoutId},
+    resource::{
+        Buffer, BufferAccessError, BufferAccessResult, BufferMapOperation, Labeled,
+        ResourceErrorIdent,
+    },
+    snatch::SnatchGuard,
     Label, DOWNLEVEL_ERROR_MESSAGE,
 };
 
 use arrayvec::ArrayVec;
-use hal::Device as _;
 use smallvec::SmallVec;
 use thiserror::Error;
-use wgt::{BufferAddress, TextureFormat};
+use wgt::{BufferAddress, DeviceLostReason, TextureFormat};
 
-use std::{iter, num::NonZeroU32, ptr};
+use std::num::NonZeroU32;
 
+pub(crate) mod bgl;
 pub mod global;
 mod life;
 pub mod queue;
+pub mod ray_tracing;
 pub mod resource;
 #[cfg(any(feature = "trace", feature = "replay"))]
 pub mod trace;
-pub use resource::Device;
+pub use {life::WaitIdleError, resource::Device};
 
-pub const SHADER_STAGE_COUNT: usize = 3;
+pub const SHADER_STAGE_COUNT: usize = hal::MAX_CONCURRENT_SHADER_STAGES;
 // Should be large enough for the largest possible texture row. This
 // value is enough for a 16k texture with float4 format.
 pub(crate) const ZERO_BUFFER_SIZE: BufferAddress = 512 << 10;
 
-const CLEANUP_WAIT_MS: u32 = 5000;
+// If a submission is not completed within this time, we go off into UB land.
+// See https://github.com/gfx-rs/wgpu/issues/4589. 60s to reduce the chances of this.
+const CLEANUP_WAIT_MS: u32 = 60000;
 
-const IMPLICIT_FAILURE: &str = "failed implicit";
-const EP_FAILURE: &str = "EP is invalid";
+pub(crate) const ENTRYPOINT_FAILURE_ERROR: &str = "The given EntryPoint is Invalid";
 
 pub type DeviceDescriptor<'a> = wgt::DeviceDescriptor<Label<'a>>;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "trace", derive(serde::Serialize))]
-#[cfg_attr(feature = "replay", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HostMap {
     Read,
     Write,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq)]
-#[cfg_attr(feature = "serial-pass", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub(crate) struct AttachmentData<T> {
     pub colors: ArrayVec<Option<T>, { hal::MAX_COLOR_ATTACHMENTS }>,
     pub resolves: ArrayVec<T, { hal::MAX_COLOR_ATTACHMENTS }>,
     pub depth_stencil: Option<T>,
 }
 impl<T: PartialEq> Eq for AttachmentData<T> {}
-impl<T> AttachmentData<T> {
-    pub(crate) fn map<U, F: Fn(&T) -> U>(&self, fun: F) -> AttachmentData<U> {
-        AttachmentData {
-            colors: self.colors.iter().map(|c| c.as_ref().map(&fun)).collect(),
-            resolves: self.resolves.iter().map(&fun).collect(),
-            depth_stencil: self.depth_stencil.as_ref().map(&fun),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum RenderPassCompatibilityCheckType {
-    RenderPipeline,
-    RenderBundle,
-}
 
 #[derive(Clone, Debug, Hash, PartialEq)]
-#[cfg_attr(feature = "serial-pass", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub(crate) struct RenderPassContext {
     pub attachments: AttachmentData<TextureFormat>,
     pub sample_count: u32,
@@ -82,44 +68,44 @@ pub(crate) struct RenderPassContext {
 #[non_exhaustive]
 pub enum RenderPassCompatibilityError {
     #[error(
-        "Incompatible color attachments at indices {indices:?}: the RenderPass uses textures with formats {expected:?} but the {ty:?} uses attachments with formats {actual:?}",
+        "Incompatible color attachments at indices {indices:?}: the RenderPass uses textures with formats {expected:?} but the {res} uses attachments with formats {actual:?}",
     )]
     IncompatibleColorAttachment {
         indices: Vec<usize>,
         expected: Vec<Option<TextureFormat>>,
         actual: Vec<Option<TextureFormat>>,
-        ty: RenderPassCompatibilityCheckType,
+        res: ResourceErrorIdent,
     },
     #[error(
-        "Incompatible depth-stencil attachment format: the RenderPass uses a texture with format {expected:?} but the {ty:?} uses an attachment with format {actual:?}",
+        "Incompatible depth-stencil attachment format: the RenderPass uses a texture with format {expected:?} but the {res} uses an attachment with format {actual:?}",
     )]
     IncompatibleDepthStencilAttachment {
         expected: Option<TextureFormat>,
         actual: Option<TextureFormat>,
-        ty: RenderPassCompatibilityCheckType,
+        res: ResourceErrorIdent,
     },
     #[error(
-        "Incompatible sample count: the RenderPass uses textures with sample count {expected:?} but the {ty:?} uses attachments with format {actual:?}",
+        "Incompatible sample count: the RenderPass uses textures with sample count {expected:?} but the {res} uses attachments with format {actual:?}",
     )]
     IncompatibleSampleCount {
         expected: u32,
         actual: u32,
-        ty: RenderPassCompatibilityCheckType,
+        res: ResourceErrorIdent,
     },
-    #[error("Incompatible multiview setting: the RenderPass uses setting {expected:?} but the {ty:?} uses setting {actual:?}")]
+    #[error("Incompatible multiview setting: the RenderPass uses setting {expected:?} but the {res} uses setting {actual:?}")]
     IncompatibleMultiview {
         expected: Option<NonZeroU32>,
         actual: Option<NonZeroU32>,
-        ty: RenderPassCompatibilityCheckType,
+        res: ResourceErrorIdent,
     },
 }
 
 impl RenderPassContext {
     // Assumes the renderpass only contains one subpass
-    pub(crate) fn check_compatible(
+    pub(crate) fn check_compatible<T: Labeled>(
         &self,
         other: &Self,
-        ty: RenderPassCompatibilityCheckType,
+        res: &T,
     ) -> Result<(), RenderPassCompatibilityError> {
         if self.attachments.colors != other.attachments.colors {
             let indices = self
@@ -134,7 +120,7 @@ impl RenderPassContext {
                 indices,
                 expected: self.attachments.colors.iter().cloned().collect(),
                 actual: other.attachments.colors.iter().cloned().collect(),
-                ty,
+                res: res.error_ident(),
             });
         }
         if self.attachments.depth_stencil != other.attachments.depth_stencil {
@@ -142,7 +128,7 @@ impl RenderPassContext {
                 RenderPassCompatibilityError::IncompatibleDepthStencilAttachment {
                     expected: self.attachments.depth_stencil,
                     actual: other.attachments.depth_stencil,
-                    ty,
+                    res: res.error_ident(),
                 },
             );
         }
@@ -150,14 +136,14 @@ impl RenderPassContext {
             return Err(RenderPassCompatibilityError::IncompatibleSampleCount {
                 expected: self.sample_count,
                 actual: other.sample_count,
-                ty,
+                res: res.error_ident(),
             });
         }
         if self.multiview != other.multiview {
             return Err(RenderPassCompatibilityError::IncompatibleMultiview {
                 expected: self.multiview,
                 actual: other.multiview,
-                ty,
+                res: res.error_ident(),
             });
         }
         Ok(())
@@ -170,49 +156,69 @@ pub type BufferMapPendingClosure = (BufferMapOperation, BufferAccessResult);
 pub struct UserClosures {
     pub mappings: Vec<BufferMapPendingClosure>,
     pub submissions: SmallVec<[queue::SubmittedWorkDoneClosure; 1]>,
+    pub device_lost_invocations: SmallVec<[DeviceLostInvocation; 1]>,
 }
 
 impl UserClosures {
     fn extend(&mut self, other: Self) {
         self.mappings.extend(other.mappings);
         self.submissions.extend(other.submissions);
+        self.device_lost_invocations
+            .extend(other.device_lost_invocations);
     }
 
     fn fire(self) {
         // Note: this logic is specifically moved out of `handle_mapping()` in order to
         // have nothing locked by the time we execute users callback code.
-        for (operation, status) in self.mappings {
-            operation.callback.call(status);
+
+        // Mappings _must_ be fired before submissions, as the spec requires all mapping callbacks that are registered before
+        // a on_submitted_work_done callback to be fired before the on_submitted_work_done callback.
+        for (mut operation, status) in self.mappings {
+            if let Some(callback) = operation.callback.take() {
+                callback(status);
+            }
         }
         for closure in self.submissions {
-            closure.call();
+            closure();
+        }
+        for invocation in self.device_lost_invocations {
+            (invocation.closure)(invocation.reason, invocation.message);
         }
     }
 }
 
-fn map_buffer<A: hal::Api>(
-    raw: &A::Device,
-    buffer: &mut Buffer<A>,
+#[cfg(send_sync)]
+pub type DeviceLostClosure = Box<dyn FnOnce(DeviceLostReason, String) + Send + 'static>;
+#[cfg(not(send_sync))]
+pub type DeviceLostClosure = Box<dyn FnOnce(DeviceLostReason, String) + 'static>;
+
+pub struct DeviceLostInvocation {
+    closure: DeviceLostClosure,
+    reason: DeviceLostReason,
+    message: String,
+}
+
+pub(crate) fn map_buffer(
+    buffer: &Buffer,
     offset: BufferAddress,
     size: BufferAddress,
     kind: HostMap,
-) -> Result<ptr::NonNull<u8>, BufferAccessError> {
+    snatch_guard: &SnatchGuard,
+) -> Result<hal::BufferMapping, BufferAccessError> {
+    let raw_device = buffer.device.raw();
+    let raw_buffer = buffer.try_raw(snatch_guard)?;
     let mapping = unsafe {
-        raw.map_buffer(buffer.raw.as_ref().unwrap(), offset..offset + size)
-            .map_err(DeviceError::from)?
+        raw_device
+            .map_buffer(raw_buffer, offset..offset + size)
+            .map_err(|e| buffer.device.handle_hal_error(e))?
     };
 
-    buffer.sync_mapped_writes = match kind {
-        HostMap::Read if !mapping.is_coherent => unsafe {
-            raw.invalidate_mapped_ranges(
-                buffer.raw.as_ref().unwrap(),
-                iter::once(offset..offset + size),
-            );
-            None
-        },
-        HostMap::Write if !mapping.is_coherent => Some(offset..offset + size),
-        _ => None,
-    };
+    if !mapping.is_coherent && kind == HostMap::Read {
+        #[allow(clippy::single_range_in_vec_init)]
+        unsafe {
+            raw_device.invalidate_mapped_ranges(raw_buffer, &[offset..offset + size]);
+        }
+    }
 
     assert_eq!(offset % wgt::COPY_BUFFER_ALIGNMENT, 0);
     assert_eq!(size % wgt::COPY_BUFFER_ALIGNMENT, 0);
@@ -230,79 +236,100 @@ fn map_buffer<A: hal::Api>(
     // If this is a write mapping zeroing out the memory here is the only
     // reasonable way as all data is pushed to GPU anyways.
 
-    // No need to flush if it is flushed later anyways.
-    let zero_init_needs_flush_now = mapping.is_coherent && buffer.sync_mapped_writes.is_none();
     let mapped = unsafe { std::slice::from_raw_parts_mut(mapping.ptr.as_ptr(), size as usize) };
 
-    for uninitialized in buffer.initialization_status.drain(offset..(size + offset)) {
-        // The mapping's pointer is already offset, however we track the
-        // uninitialized range relative to the buffer's start.
-        let fill_range =
-            (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
-        mapped[fill_range].fill(0);
-
-        if zero_init_needs_flush_now {
-            unsafe {
-                raw.flush_mapped_ranges(buffer.raw.as_ref().unwrap(), iter::once(uninitialized))
-            };
+    // We can't call flush_mapped_ranges in this case, so we can't drain the uninitialized ranges either
+    if !mapping.is_coherent
+        && kind == HostMap::Read
+        && !buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
+    {
+        for uninitialized in buffer
+            .initialization_status
+            .write()
+            .uninitialized(offset..(size + offset))
+        {
+            // The mapping's pointer is already offset, however we track the
+            // uninitialized range relative to the buffer's start.
+            let fill_range =
+                (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
+            mapped[fill_range].fill(0);
         }
-    }
+    } else {
+        for uninitialized in buffer
+            .initialization_status
+            .write()
+            .drain(offset..(size + offset))
+        {
+            // The mapping's pointer is already offset, however we track the
+            // uninitialized range relative to the buffer's start.
+            let fill_range =
+                (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
+            mapped[fill_range].fill(0);
 
-    Ok(mapping.ptr)
-}
-
-struct CommandAllocator<A: hal::Api> {
-    free_encoders: Vec<A::CommandEncoder>,
-}
-
-impl<A: hal::Api> CommandAllocator<A> {
-    fn acquire_encoder(
-        &mut self,
-        device: &A::Device,
-        queue: &A::Queue,
-    ) -> Result<A::CommandEncoder, hal::DeviceError> {
-        match self.free_encoders.pop() {
-            Some(encoder) => Ok(encoder),
-            None => unsafe {
-                let hal_desc = hal::CommandEncoderDescriptor { label: None, queue };
-                device.create_command_encoder(&hal_desc)
-            },
-        }
-    }
-
-    fn release_encoder(&mut self, encoder: A::CommandEncoder) {
-        self.free_encoders.push(encoder);
-    }
-
-    fn dispose(self, device: &A::Device) {
-        log::info!("Destroying {} command encoders", self.free_encoders.len());
-        for cmd_encoder in self.free_encoders {
-            unsafe {
-                device.destroy_command_encoder(cmd_encoder);
+            // NOTE: This is only possible when MAPPABLE_PRIMARY_BUFFERS is enabled.
+            if !mapping.is_coherent
+                && kind == HostMap::Read
+                && buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
+            {
+                unsafe { raw_device.flush_mapped_ranges(raw_buffer, &[uninitialized]) };
             }
         }
     }
+
+    Ok(mapping)
 }
 
-#[derive(Clone, Debug, Error)]
-#[error("Device is invalid")]
-pub struct InvalidDevice;
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DeviceMismatch {
+    pub(super) res: ResourceErrorIdent,
+    pub(super) res_device: ResourceErrorIdent,
+    pub(super) target: Option<ResourceErrorIdent>,
+    pub(super) target_device: ResourceErrorIdent,
+}
+
+impl std::fmt::Display for DeviceMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "{} of {} doesn't match {}",
+            self.res_device, self.res, self.target_device
+        )?;
+        if let Some(target) = self.target.as_ref() {
+            write!(f, " of {target}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DeviceMismatch {}
 
 #[derive(Clone, Debug, Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DeviceError {
-    #[error("Parent device is invalid")]
-    Invalid,
+    #[error("{0} is invalid.")]
+    Invalid(ResourceErrorIdent),
     #[error("Parent device is lost")]
     Lost,
-    #[error("Not enough memory left")]
+    #[error("Not enough memory left.")]
     OutOfMemory,
+    #[error("Creation of a resource failed for a reason other than running out of memory.")]
+    ResourceCreationFailed,
+    #[error(transparent)]
+    DeviceMismatch(#[from] Box<DeviceMismatch>),
 }
 
-impl From<hal::DeviceError> for DeviceError {
-    fn from(error: hal::DeviceError) -> Self {
+impl DeviceError {
+    /// Only use this function in contexts where there is no `Device`.
+    ///
+    /// Use [`Device::handle_hal_error`] otherwise.
+    pub fn from_hal(error: hal::DeviceError) -> Self {
         match error {
-            hal::DeviceError::Lost => DeviceError::Lost,
-            hal::DeviceError::OutOfMemory => DeviceError::OutOfMemory,
+            hal::DeviceError::Lost => Self::Lost,
+            hal::DeviceError::OutOfMemory => Self::OutOfMemory,
+            hal::DeviceError::ResourceCreationFailed => Self::ResourceCreationFailed,
+            hal::DeviceError::Unexpected => Self::Lost,
         }
     }
 }
@@ -319,27 +346,114 @@ pub struct MissingFeatures(pub wgt::Features);
 pub struct MissingDownlevelFlags(pub wgt::DownlevelFlags);
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "trace", derive(serde::Serialize))]
-#[cfg_attr(feature = "replay", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImplicitPipelineContext {
-    pub root_id: id::PipelineLayoutId,
-    pub group_ids: ArrayVec<id::BindGroupLayoutId, { hal::MAX_BIND_GROUPS }>,
+    pub root_id: PipelineLayoutId,
+    pub group_ids: ArrayVec<BindGroupLayoutId, { hal::MAX_BIND_GROUPS }>,
 }
 
-pub struct ImplicitPipelineIds<'a, G: GlobalIdentityHandlerFactory> {
-    pub root_id: Input<G, id::PipelineLayoutId>,
-    pub group_ids: &'a [Input<G, id::BindGroupLayoutId>],
+pub struct ImplicitPipelineIds<'a> {
+    pub root_id: PipelineLayoutId,
+    pub group_ids: &'a [BindGroupLayoutId],
 }
 
-impl<G: GlobalIdentityHandlerFactory> ImplicitPipelineIds<'_, G> {
-    fn prepare<A: HalApi>(self, hub: &Hub<A, G>) -> ImplicitPipelineContext {
+impl ImplicitPipelineIds<'_> {
+    fn prepare(self, hub: &Hub) -> ImplicitPipelineContext {
         ImplicitPipelineContext {
-            root_id: hub.pipeline_layouts.prepare(self.root_id).into_id(),
+            root_id: hub.pipeline_layouts.prepare(Some(self.root_id)).id(),
             group_ids: self
                 .group_ids
                 .iter()
-                .map(|id_in| hub.bind_group_layouts.prepare(id_in.clone()).into_id())
+                .map(|id_in| hub.bind_group_layouts.prepare(Some(*id_in)).id())
                 .collect(),
         }
     }
+}
+
+/// Create a validator with the given validation flags.
+pub fn create_validator(
+    features: wgt::Features,
+    downlevel: wgt::DownlevelFlags,
+    flags: naga::valid::ValidationFlags,
+) -> naga::valid::Validator {
+    use naga::valid::Capabilities as Caps;
+    let mut caps = Caps::empty();
+    caps.set(
+        Caps::PUSH_CONSTANT,
+        features.contains(wgt::Features::PUSH_CONSTANTS),
+    );
+    caps.set(Caps::FLOAT64, features.contains(wgt::Features::SHADER_F64));
+    caps.set(
+        Caps::PRIMITIVE_INDEX,
+        features.contains(wgt::Features::SHADER_PRIMITIVE_INDEX),
+    );
+    caps.set(
+        Caps::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+        features
+            .contains(wgt::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING),
+    );
+    caps.set(
+        Caps::UNIFORM_BUFFER_AND_STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING,
+        features
+            .contains(wgt::Features::UNIFORM_BUFFER_AND_STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING),
+    );
+    // TODO: This needs a proper wgpu feature
+    caps.set(
+        Caps::SAMPLER_NON_UNIFORM_INDEXING,
+        features
+            .contains(wgt::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING),
+    );
+    caps.set(
+        Caps::STORAGE_TEXTURE_16BIT_NORM_FORMATS,
+        features.contains(wgt::Features::TEXTURE_FORMAT_16BIT_NORM),
+    );
+    caps.set(Caps::MULTIVIEW, features.contains(wgt::Features::MULTIVIEW));
+    caps.set(
+        Caps::EARLY_DEPTH_TEST,
+        features.contains(wgt::Features::SHADER_EARLY_DEPTH_TEST),
+    );
+    caps.set(
+        Caps::SHADER_INT64,
+        features.contains(wgt::Features::SHADER_INT64),
+    );
+    caps.set(
+        Caps::SHADER_INT64_ATOMIC_MIN_MAX,
+        features.intersects(
+            wgt::Features::SHADER_INT64_ATOMIC_MIN_MAX | wgt::Features::SHADER_INT64_ATOMIC_ALL_OPS,
+        ),
+    );
+    caps.set(
+        Caps::SHADER_INT64_ATOMIC_ALL_OPS,
+        features.contains(wgt::Features::SHADER_INT64_ATOMIC_ALL_OPS),
+    );
+    caps.set(
+        Caps::MULTISAMPLED_SHADING,
+        downlevel.contains(wgt::DownlevelFlags::MULTISAMPLED_SHADING),
+    );
+    caps.set(
+        Caps::DUAL_SOURCE_BLENDING,
+        features.contains(wgt::Features::DUAL_SOURCE_BLENDING),
+    );
+    caps.set(
+        Caps::CUBE_ARRAY_TEXTURES,
+        downlevel.contains(wgt::DownlevelFlags::CUBE_ARRAY_TEXTURES),
+    );
+    caps.set(
+        Caps::SUBGROUP,
+        features.intersects(wgt::Features::SUBGROUP | wgt::Features::SUBGROUP_VERTEX),
+    );
+    caps.set(
+        Caps::SUBGROUP_BARRIER,
+        features.intersects(wgt::Features::SUBGROUP_BARRIER),
+    );
+    caps.set(
+        Caps::RAY_QUERY,
+        features.intersects(wgt::Features::EXPERIMENTAL_RAY_QUERY),
+    );
+    caps.set(
+        Caps::SUBGROUP_VERTEX_STAGE,
+        features.contains(wgt::Features::SUBGROUP_VERTEX),
+    );
+
+    naga::valid::Validator::new(flags, caps)
 }

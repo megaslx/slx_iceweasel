@@ -79,7 +79,7 @@ class CompositableClient {
 
   virtual void Dump(std::stringstream& aStream, const char* aPrefix = "",
                     bool aDumpHtml = false,
-                    TextureDumpMode aCompress = TextureDumpMode::Compress){};
+                    TextureDumpMode aCompress = TextureDumpMode::Compress) {};
 
   virtual TextureInfo GetTextureInfo() const = 0;
 
@@ -92,11 +92,6 @@ class CompositableClient {
 
   already_AddRefed<TextureClient> CreateTextureClientForDrawing(
       gfx::SurfaceFormat aFormat, gfx::IntSize aSize, BackendSelector aSelector,
-      TextureFlags aTextureFlags,
-      TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
-
-  already_AddRefed<TextureClient> CreateTextureClientFromSurface(
-      gfx::SourceSurface* aSurface, BackendSelector aSelector,
       TextureFlags aTextureFlags,
       TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
 

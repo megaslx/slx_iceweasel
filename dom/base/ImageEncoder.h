@@ -19,7 +19,6 @@ class nsICanvasRenderingContextInternal;
 namespace mozilla {
 
 namespace layers {
-class CanvasRenderer;
 class Image;
 }  // namespace layers
 
@@ -27,6 +26,7 @@ namespace dom {
 
 class EncodeCompleteCallback;
 class EncodingRunnable;
+class OffscreenCanvasDisplayHelper;
 
 class ImageEncoder {
  public:
@@ -37,9 +37,9 @@ class ImageEncoder {
   // aOptions, NS_ERROR_INVALID_ARG will be returned. When encountering this
   // error it is usual to call this function again without any options at all.
   static nsresult ExtractData(nsAString& aType, const nsAString& aOptions,
-                              const nsIntSize aSize, bool aUsePlaceholder,
+                              const CSSIntSize aSize, bool aUsePlaceholder,
                               nsICanvasRenderingContextInternal* aContext,
-                              layers::CanvasRenderer* aRenderer,
+                              OffscreenCanvasDisplayHelper* aOffscreenDisplay,
                               nsIInputStream** aStream);
 
   // Extracts data asynchronously. aType may change to "image/png" if we had to
@@ -56,7 +56,7 @@ class ImageEncoder {
   static nsresult ExtractDataAsync(nsAString& aType, const nsAString& aOptions,
                                    bool aUsingCustomOptions,
                                    UniquePtr<uint8_t[]> aImageBuffer,
-                                   int32_t aFormat, const nsIntSize aSize,
+                                   int32_t aFormat, const CSSIntSize aSize,
                                    bool aUsePlaceholder,
                                    EncodeCompleteCallback* aEncodeCallback);
 
@@ -83,9 +83,9 @@ class ImageEncoder {
   // When called asynchronously, aContext and aRenderer are null.
   static nsresult ExtractDataInternal(
       const nsAString& aType, const nsAString& aOptions, uint8_t* aImageBuffer,
-      int32_t aFormat, const nsIntSize aSize, bool aUsePlaceholder,
+      int32_t aFormat, const CSSIntSize aSize, bool aUsePlaceholder,
       layers::Image* aImage, nsICanvasRenderingContextInternal* aContext,
-      layers::CanvasRenderer* aRenderer, nsIInputStream** aStream,
+      OffscreenCanvasDisplayHelper* aOffscreenDisplay, nsIInputStream** aStream,
       imgIEncoder* aEncoder);
 
   // Creates and returns an encoder instance of the type specified in aType.

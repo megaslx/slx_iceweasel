@@ -20,7 +20,6 @@
 
 # LIBSRTP overrides
 { include: ['"rdbx.h"', "private", '"third_party/libsrtp/include/srtp_priv.h"', "public"] },
-{ include: ['"auth.h"', "private", '"third_party/libsrtp/include/srtp_priv.h"', "public"] },
 
 # pthread internals
 { include: ['<bits/pthread_types.h>', "private", '<pthread.h>', "public"] },
@@ -33,6 +32,6 @@
 # Needed to avoid <iosfwd>
 { symbol: ["std::ostringstream", "public", "<sstream>", "public"] },
 
-{ ref: "../../buildtools/third_party/libc++/trunk/include/libcxx.imp" },
+{ ref: "../../third_party/libc++/src/include/libcxx.imp" },
 ]
 

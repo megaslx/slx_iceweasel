@@ -4,15 +4,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![deny(clippy::pedantic)]
-
-use crate::version::Version;
-use crate::{Error, Res};
+use std::cell::RefCell;
 
 use neqo_common::qerror;
 use neqo_crypto::{hkdf, Aead, TLS_AES_128_GCM_SHA256, TLS_VERSION_1_3};
 
-use std::cell::RefCell;
+use crate::{version::Version, Error, Res};
 
 /// The AEAD used for Retry is fixed, so use thread local storage.
 fn make_aead(version: Version) -> Aead {
@@ -45,15 +42,12 @@ where
     .try_with(|aead| f(&aead.borrow()))
     .map_err(|e| {
         qerror!("Unable to access Retry AEAD: {:?}", e);
-        Error::InternalError(6)
+        Error::InternalError
     })?
 }
 
 /// Determine how large the expansion is for a given key.
 pub fn expansion(version: Version) -> usize {
-    if let Ok(ex) = use_aead(version, |aead| Ok(aead.expansion())) {
-        ex
-    } else {
-        panic!("Unable to access Retry AEAD")
-    }
+    use_aead(version, |aead| Ok(aead.expansion()))
+        .unwrap_or_else(|_| panic!("Unable to access Retry AEAD"))
 }

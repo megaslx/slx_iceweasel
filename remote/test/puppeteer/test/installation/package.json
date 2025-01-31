@@ -5,9 +5,8 @@
   "private": true,
   "scripts": {
     "build": "wireit",
-    "build:packages": "wireit",
-    "clean": "tsc -b --clean && rm -rf build",
-    "test": "mocha"
+    "clean": "../../tools/clean.mjs",
+    "test": "wireit"
   },
   "wireit": {
     "build": {
@@ -30,11 +29,18 @@
       "dependencies": [
         "../../packages/puppeteer:build",
         "../../packages/puppeteer-core:build",
-        "../../packages/browsers:build"
+        "../../packages/browsers:build",
+        "../../packages/testserver:build"
       ],
       "files": [],
       "output": [
         "puppeteer-*.tgz"
+      ]
+    },
+    "test": {
+      "command": "mocha",
+      "dependencies": [
+        "build"
       ]
     }
   },
@@ -44,8 +50,8 @@
     "build",
     "assets"
   ],
-  "dependencies": {
-    "glob": "10.3.3",
-    "mocha": "10.2.0"
+  "devDependencies": {
+    "glob": "10.4.5",
+    "mocha": "10.7.0"
   }
 }

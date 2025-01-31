@@ -139,6 +139,7 @@ export class PictureInPictureLauncherChild extends JSWindowActorChild {
           this.togglePictureInPicture({
             video: event.target,
             reason: event.detail?.reason,
+            eventExtraKeys: event.detail?.eventExtraKeys,
           });
         }
         break;
@@ -152,6 +153,10 @@ export class PictureInPictureLauncherChild extends JSWindowActorChild {
         this.keyToggle();
         break;
       }
+      case "PictureInPicture:AutoToggle": {
+        this.autoToggle();
+        break;
+      }
     }
   }
 
@@ -161,15 +166,18 @@ export class PictureInPictureLauncherChild extends JSWindowActorChild {
    * Picture-in-Picture window existing, this tells the parent to
    * close it before opening the new one.
    *
-   * @param {Object} pipObject An object containing the video and reason
-   * for toggling the PiP video
+   * @param {Object} pipObject
+   * @param {HTMLVideoElement} pipObject.video
+   * @param {String} pipObject.reason What toggled PiP, e.g. "shortcut"
+   * @param {Object} pipObject.eventExtraKeys Extra telemetry keys to record
+   * @param {boolean} autoFocus Autofocus the PiP window (default: true)
    *
    * @return {Promise}
    * @resolves {undefined} Once the new Picture-in-Picture window
    * has been requested.
    */
-  async togglePictureInPicture(pipObject) {
-    let { video, reason } = pipObject;
+  async togglePictureInPicture(pipObject, autoFocus = true) {
+    let { video, reason, eventExtraKeys = {} } = pipObject;
     if (video.isCloningElementVisually) {
       // The only way we could have entered here for the same video is if
       // we are toggling via the context menu or via the urlbar button,
@@ -225,46 +233,67 @@ export class PictureInPictureLauncherChild extends JSWindowActorChild {
       scrubberPosition,
       timestamp,
       volume: PictureInPictureChild.videoWrapper.getVolume(video),
+      autoFocus,
     });
 
-    let args = {
-      firstTimeToggle: (!Services.prefs.getBoolPref(
-        TOGGLE_HAS_USED_PREF
-      )).toString(),
-    };
-
-    Services.telemetry.recordEvent(
-      "pictureinpicture",
-      "opened_method",
-      reason,
-      null,
-      args
-    );
+    Glean.pictureinpicture["openedMethod" + reason].record({
+      firstTimeToggle: !Services.prefs.getBoolPref(TOGGLE_HAS_USED_PREF),
+      ...eventExtraKeys,
+    });
   }
 
   /**
-   * The keyboard was used to attempt to open Picture-in-Picture. If a video is focused,
-   * select that video. Otherwise find the first playing video, or if none, the largest
-   * dimension video. We suspect this heuristic will handle most cases, though we
-   * might refine this later on. Note that we assume that this method will only be
-   * called for the focused document.
+   * The keyboard was used to attempt to open Picture-in-Picture.
+   * Note that we assume that this method will only be called for the focused
+   * document.
    */
   keyToggle() {
     let doc = this.document;
     if (doc) {
-      let video = doc.activeElement;
-      if (!HTMLVideoElement.isInstance(video)) {
-        let listOfVideos = [...doc.querySelectorAll("video")].filter(
-          video => !isNaN(video.duration)
-        );
-        // Get the first non-paused video, otherwise the longest video. This
-        // fallback is designed to skip over "preview"-style videos on sidebars.
-        video =
-          listOfVideos.filter(v => !v.paused)[0] ||
-          listOfVideos.sort((a, b) => b.duration - a.duration)[0];
-      }
+      let video = this.findVideoToPiP(doc);
       if (video) {
-        this.togglePictureInPicture({ video, reason: "shortcut" });
+        this.togglePictureInPicture({ video, reason: "Shortcut" });
+      }
+    }
+  }
+
+  /**
+   * If a video is focused, select that video. Otherwise find the first playing
+   * video, or if none, the largest dimension video. We suspect this heuristic
+   * will handle most cases, though we might refine this later on.
+   *
+   * @param {HTMLDocument} doc The HTML document to search for a video element in.
+   * @returns {HTMLVideoElement} The selected HTML video element to enter PiP mode.
+   */
+  findVideoToPiP(doc) {
+    let video = doc.activeElement;
+    if (!HTMLVideoElement.isInstance(video)) {
+      let listOfVideos = [...doc.querySelectorAll("video")].filter(
+        video => !isNaN(video.duration)
+      );
+      // Get the first non-paused video, otherwise the longest video. This
+      // fallback is designed to skip over "preview"-style videos on sidebars.
+      video =
+        listOfVideos.filter(v => !v.paused)[0] ||
+        listOfVideos.sort((a, b) => b.duration - a.duration)[0];
+    }
+    return video;
+  }
+
+  /**
+   * Automatically toggle Picture-in-Picture if a video tab has been
+   * backgrounded.
+   */
+  autoToggle() {
+    let doc = this.document;
+    if (doc) {
+      let video = this.findVideoToPiP(doc);
+      if (
+        video &&
+        PictureInPictureChild.videoIsPlaying(video) &&
+        PictureInPictureChild.videoIsPiPEligible(video)
+      ) {
+        this.togglePictureInPicture({ video, reason: "AutoPip" }, false);
       }
     }
   }
@@ -307,7 +336,7 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
   receiveMessage(message) {
     switch (message.name) {
       case "PictureInPicture:UrlbarToggle": {
-        this.urlbarToggle();
+        this.urlbarToggle(message.data);
         break;
       }
     }
@@ -441,6 +470,7 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
         // might change for a document via the history API, so we remember
         // the last checked documentURI to determine if we need to check again.
         checkedPolicyDocumentURI: null,
+        isUnloaded: false,
       };
       this.weakDocStates.set(this.document, state);
     }
@@ -561,6 +591,10 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
         this.onPageHide(event);
         break;
       }
+      case "visibilitychange": {
+        this.onVisibilityChange(event);
+        break;
+      }
       case "durationchange":
       // Intentional fall-through
       case "emptied":
@@ -606,7 +640,7 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
   }
 
   updatePipVideoEligibility(video) {
-    let isEligible = this.isVideoPiPEligible(video);
+    let isEligible = PictureInPictureChild.videoIsPiPEligible(video);
     if (isEligible) {
       if (!this.eligiblePipVideos.has(video)) {
         this.eligiblePipVideos.add(video);
@@ -630,10 +664,7 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
       pipCount: videos.length,
       pipDisabledCount: videos.reduce(
         (accumulator, currentVal) =>
-          accumulator +
-          (currentVal.getAttribute("disablePictureInPicture") === "true"
-            ? 1
-            : 0),
+          accumulator + (currentVal.disablePictureInPicture ? 1 : 0),
         0
       ),
     });
@@ -653,16 +684,13 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
       pipCount: videos.length,
       pipDisabledCount: videos.reduce(
         (accumulator, currentVal) =>
-          accumulator +
-          (currentVal.getAttribute("disablePictureInPicture") === "true"
-            ? 1
-            : 0),
+          accumulator + (currentVal.disablePictureInPicture ? 1 : 0),
         0
       ),
     });
   }
 
-  urlbarToggle() {
+  urlbarToggle(eventExtraKeys) {
     let video = ChromeUtils.nondeterministicGetWeakSetKeys(
       this.eligiblePipVideos
     )[0];
@@ -671,31 +699,11 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
         "MozTogglePictureInPicture",
         {
           bubbles: true,
-          detail: { reason: "urlBar" },
+          detail: { reason: "UrlBar", eventExtraKeys },
         }
       );
       video.dispatchEvent(pipEvent);
     }
-  }
-
-  isVideoPiPEligible(video) {
-    if (lazy.PIP_TOGGLE_ALWAYS_SHOW) {
-      return true;
-    }
-
-    if (isNaN(video.duration) || video.duration < lazy.MIN_VIDEO_LENGTH) {
-      return false;
-    }
-
-    const MIN_VIDEO_DIMENSION = 140; // pixels
-    if (
-      video.clientWidth < MIN_VIDEO_DIMENSION ||
-      video.clientHeight < MIN_VIDEO_DIMENSION
-    ) {
-      return false;
-    }
-
-    return true;
   }
 
   /**
@@ -907,6 +915,10 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
     this.contentWindow.addEventListener("pagehide", this, {
       mozSystemGroup: true,
     });
+    lazy.logConsole.debug("Adding visibilitychange event handler");
+    this.contentWindow.addEventListener("visibilitychange", this, {
+      mozSystemGroup: true,
+    });
     this.addMouseButtonListeners();
     state.isTrackingVideos = true;
   }
@@ -937,6 +949,10 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
       this.contentWindow.removeEventListener("pagehide", this, {
         mozSystemGroup: true,
       });
+      lazy.logConsole.debug("Removing visibilitychange event handler");
+      this.contentWindow.removeEventListener("visibilitychange", this, {
+        mozSystemGroup: true,
+      });
     }
     this.removeMouseButtonListeners();
     let oldOverVideo = this.getWeakOverVideo();
@@ -951,12 +967,10 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
    * tear out or in. If we happened to be tracking videos before the tear
    * occurred, we re-add the mouse event listeners so that they're attached to
    * the right WindowRoot.
-   *
-   * @param {Event} event The pageshow event fired when completing a tab tear
-   * out or in.
    */
-  onPageShow(event) {
+  onPageShow() {
     let state = this.docState;
+    state.isUnloaded = false;
     if (state.isTrackingVideos) {
       this.addMouseButtonListeners();
     }
@@ -967,14 +981,26 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
    * tear out or in. If we happened to be tracking videos before the tear
    * occurred, we remove the mouse event listeners. We'll re-add them when the
    * pageshow event fires.
-   *
-   * @param {Event} event The pagehide event fired when starting a tab tear
-   * out or in.
    */
-  onPageHide(event) {
+  onPageHide() {
     let state = this.docState;
+    state.isUnloaded = true;
     if (state.isTrackingVideos) {
       this.removeMouseButtonListeners();
+    }
+  }
+
+  onVisibilityChange() {
+    // Ignore if the document was unloaded or unloading
+    let state = this.docState;
+    if (state.isUnloaded) {
+      return;
+    }
+
+    if (this.document.visibilityState == "hidden") {
+      this.sendAsyncMessage("PictureInPicture:VideoTabHidden");
+    } else if (this.document.visibilityState == "visible") {
+      this.sendAsyncMessage("PictureInPicture:VideoTabShown");
     }
   }
 
@@ -1053,18 +1079,12 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
     }
   }
 
-  startPictureInPicture(event, video, toggle) {
-    Services.telemetry.keyedScalarAdd(
-      "pictureinpicture.opened_method",
-      "toggle",
-      1
-    );
-
+  startPictureInPicture(event, video) {
     let pipEvent = new this.contentWindow.CustomEvent(
       "MozTogglePictureInPicture",
       {
         bubbles: true,
-        detail: { reason: "toggle" },
+        detail: { reason: "Toggle" },
       }
     );
     video.dispatchEvent(pipEvent);
@@ -1229,11 +1249,11 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
     let shadowRoot = video.openOrClosedShadowRoot;
 
     if (shadowRoot.firstChild && video != oldOverVideo) {
-      if (video.getTransformToViewport().a == -1) {
-        shadowRoot.firstChild.setAttribute("flipped", true);
-      } else {
-        shadowRoot.firstChild.removeAttribute("flipped");
-      }
+      // TODO: Maybe this should move to videocontrols.js somehow.
+      shadowRoot.firstChild.toggleAttribute(
+        "flipped",
+        video.getTransformToViewport().a == -1
+      );
     }
 
     // It seems from automated testing that if it's still very early on in the
@@ -1387,18 +1407,10 @@ export class PictureInPictureToggleChild extends JSWindowActorChild {
       state.togglePolicy != lazy.TOGGLE_POLICIES.HIDDEN &&
       !toggle.hasAttribute("hidden")
     ) {
-      Services.telemetry.scalarAdd("pictureinpicture.saw_toggle", 1);
       const hasUsedPiP = Services.prefs.getBoolPref(TOGGLE_HAS_USED_PREF);
-      let args = {
-        firstTime: (!hasUsedPiP).toString(),
-      };
-      Services.telemetry.recordEvent(
-        "pictureinpicture",
-        "saw_toggle",
-        "toggle",
-        null,
-        args
-      );
+      Glean.pictureinpicture.sawToggleToggle.record({
+        firstTime: !hasUsedPiP,
+      });
       // only record if this is the first time seeing the toggle
       if (!hasUsedPiP) {
         lazy.NimbusFeatures.pictureinpicture.recordExposureEvent();
@@ -1691,6 +1703,8 @@ export class PictureInPictureChild extends JSWindowActorChild {
   removeTextTracks(originatingVideo) {
     const isWebVTTSupported = !!originatingVideo.textTracks;
 
+    this.removeCaptionChangeListener(originatingVideo);
+
     if (!isWebVTTSupported) {
       return;
     }
@@ -1816,7 +1830,7 @@ export class PictureInPictureChild extends JSWindowActorChild {
    *  4) all active cues with VTTCue.line integer have VTTCue.snapToLines = true
    *  5) all active cues with VTTCue.line percentage have VTTCue.snapToLines = false
    *
-   * vtt.jsm currently sets snapToLines to false if line is a percentage value, but
+   * vtt.sys.mjs currently sets snapToLines to false if line is a percentage value, but
    * cues are still ordered by line. In most cases, snapToLines is set to true by default,
    * unless intentionally overridden.
    * @param allCuesArray {Array<VTTCue>} array of active cues
@@ -1895,11 +1909,43 @@ export class PictureInPictureChild extends JSWindowActorChild {
     return this.videoWrapper.isMuted(video);
   }
 
+  /**
+   * Returns true if a video passes heuristics indicating that it'd be a good
+   * candidate for the Picture-in-Picture feature.
+   *
+   * @param {Element} video
+   *   The <video> element to evaluate.
+   * @returns {boolean}
+   */
+  static videoIsPiPEligible(video) {
+    if (lazy.PIP_TOGGLE_ALWAYS_SHOW) {
+      return true;
+    }
+
+    if (isNaN(video.duration) || video.duration < lazy.MIN_VIDEO_LENGTH) {
+      return false;
+    }
+
+    const MIN_VIDEO_DIMENSION = 140; // pixels
+    if (
+      video.clientWidth < MIN_VIDEO_DIMENSION ||
+      video.clientHeight < MIN_VIDEO_DIMENSION
+    ) {
+      return false;
+    }
+
+    if (!video.mozHasAudio) {
+      return false;
+    }
+
+    return true;
+  }
+
   handleEvent(event) {
     switch (event.type) {
       case "MozStopPictureInPicture": {
         if (event.isTrusted && event.target === this.getWeakVideo()) {
-          const reason = event.detail?.reason || "videoElRemove";
+          const reason = event.detail?.reason || "VideoElRemove";
           this.closePictureInPicture({ reason });
         }
         break;
@@ -1907,11 +1953,11 @@ export class PictureInPictureChild extends JSWindowActorChild {
       case "pagehide": {
         // The originating video's content document has unloaded,
         // so close Picture-in-Picture.
-        this.closePictureInPicture({ reason: "pagehide" });
+        this.closePictureInPicture({ reason: "Pagehide" });
         break;
       }
       case "MozDOMFullscreen:Request": {
-        this.closePictureInPicture({ reason: "fullscreen" });
+        this.closePictureInPicture({ reason: "Fullscreen" });
         break;
       }
       case "play": {
@@ -1968,7 +2014,7 @@ export class PictureInPictureChild extends JSWindowActorChild {
         // close Picture-in-Picture.
         this.emptiedTimeout = setTimeout(() => {
           if (!video || !video.src) {
-            this.closePictureInPicture({ reason: "videoElEmptied" });
+            this.closePictureInPicture({ reason: "VideoElEmptied" });
           }
         }, EMPTIED_TIMEOUT_MS);
         break;
@@ -2275,6 +2321,12 @@ export class PictureInPictureChild extends JSWindowActorChild {
     }
   }
 
+  removeCaptionChangeListener(originatingVideo) {
+    if (this.videoWrapper) {
+      this.videoWrapper.removeCaptionContainerObserver(originatingVideo, this);
+    }
+  }
+
   /**
    * Stops tracking the originating video's document. This should
    * happen once the Picture-in-Picture window goes away (or is about
@@ -2339,7 +2391,7 @@ export class PictureInPictureChild extends JSWindowActorChild {
       // If the video element has gone away before we've had a chance to set up
       // Picture-in-Picture for it, tell the parent to close the Picture-in-Picture
       // window.
-      await this.closePictureInPicture({ reason: "setupFailure" });
+      await this.closePictureInPicture({ reason: "SetupFailure" });
       return;
     }
 
@@ -2449,7 +2501,7 @@ export class PictureInPictureChild extends JSWindowActorChild {
     }
   }
 
-  onCueChange(e) {
+  onCueChange() {
     if (!lazy.DISPLAY_TEXT_TRACKS_PREF) {
       this.updateWebVTTTextTracksDisplay(null);
     } else {
@@ -2572,7 +2624,7 @@ export class PictureInPictureChild extends JSWindowActorChild {
             return;
           }
           this.pause();
-          this.closePictureInPicture({ reason: "closePlayerShortcut" });
+          this.closePictureInPicture({ reason: "ClosePlayerShortcut" });
           break;
         case "downArrow" /* Volume decrease */:
           if (
@@ -2678,16 +2730,9 @@ export class PictureInPictureChild extends JSWindowActorChild {
 
   set isSubtitlesEnabled(val) {
     if (val) {
-      Services.telemetry.recordEvent(
-        "pictureinpicture",
-        "subtitles_shown",
-        "subtitles",
-        null,
-        {
-          webVTTSubtitles: (!!this.getWeakVideo().textTracks
-            ?.length).toString(),
-        }
-      );
+      Glean.pictureinpicture.subtitlesShownSubtitles.record({
+        webVTTSubtitles: !!this.getWeakVideo().textTracks?.length,
+      });
     } else {
       this.sendAsyncMessage("PictureInPicture:DisableSubtitlesButton");
     }
@@ -3114,10 +3159,10 @@ class PictureInPictureChildVideoWrapper {
    * a cue change is triggered {@see updatePiPTextTracks()}.
    * @param {HTMLVideoElement} video
    *  The originating video source element
-   * @param {Function} callback
+   * @param {Function} _callback
    *  The callback function to be executed when cue changes are detected
    */
-  setCaptionContainerObserver(video, callback) {
+  setCaptionContainerObserver(video, _callback) {
     return this.#callWrapperMethod({
       name: "setCaptionContainerObserver",
       args: [
@@ -3126,6 +3171,24 @@ class PictureInPictureChildVideoWrapper {
           this.updatePiPTextTracks(text);
         },
       ],
+      fallback: () => {},
+      validateRetVal: retVal => retVal == null,
+    });
+  }
+
+  /**
+   * OVERRIDABLE - calls the removeCaptionContainerObserver() method defined in the site wrapper script. Runs a fallback implementation
+   * if the method does not exist or if an error is thrown while calling it. This method is meant to remove any caption observers that
+   * may have been set in setCaptionContainerObserver().
+   * @param {HTMLVideoElement} video
+   *  The originating video source element
+   * @param {Function} _callback
+   *  The callback function to be executed when cue changes are detected
+   */
+  removeCaptionContainerObserver(video, _callback) {
+    return this.#callWrapperMethod({
+      name: "removeCaptionContainerObserver",
+      args: [video],
       fallback: () => {},
       validateRetVal: retVal => retVal == null,
     });

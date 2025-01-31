@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 
 import datetime
 import functools
@@ -115,21 +113,6 @@ class AndroidMixin(object):
             )
         url = "%s/raw-file/%s/%s" % (repo, revision, path)
         return url
-
-    def _tooltool_fetch(self, url, dir):
-        c = self.config
-        manifest_path = self.download_file(
-            url, file_name="releng.manifest", parent_dir=dir
-        )
-        if not os.path.exists(manifest_path):
-            self.fatal(
-                "Could not retrieve manifest needed to retrieve "
-                "artifacts from %s" % manifest_path
-            )
-        # from TooltoolMixin, included in TestingMixin
-        self.tooltool_fetch(
-            manifest_path, output_dir=dir, cache=c.get("tooltool_cache", None)
-        )
 
     def _launch_emulator(self):
         env = self.query_env()
@@ -291,7 +274,6 @@ class AndroidMixin(object):
         dir = self.query_abs_dirs()["abs_blob_upload_dir"]
         perf_path = os.path.join(dir, "android-performance.log")
         with open(perf_path, "w") as f:
-
             f.write("\n\nHost cpufreq/scaling_governor:\n")
             cpus = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
             for cpu in cpus:
@@ -316,18 +298,18 @@ class AndroidMixin(object):
 
             f.write("\n\nDevice /proc/cpuinfo:\n")
             cmd = "cat /proc/cpuinfo"
-            out = self.shell_output(cmd)
+            out = self.shell_output(cmd, attempts=3)
             f.write(out)
             cpuinfo = out
 
             f.write("\n\nDevice /proc/meminfo:\n")
             cmd = "cat /proc/meminfo"
-            out = self.shell_output(cmd)
+            out = self.shell_output(cmd, attempts=3)
             f.write(out)
 
             f.write("\n\nDevice process list:\n")
             cmd = "ps"
-            out = self.shell_output(cmd)
+            out = self.shell_output(cmd, attempts=3)
             f.write(out)
 
         # Search android cpuinfo for "BogoMIPS"; if found and < (minimum), retry
@@ -338,7 +320,7 @@ class AndroidMixin(object):
         # low bogomips can be a good predictor of that condition.
         bogomips_minimum = int(self.config.get("bogomips_minimum") or 0)
         for line in cpuinfo.split("\n"):
-            m = re.match("BogoMIPS.*: (\d*)", line, re.IGNORECASE)
+            m = re.match(r"BogoMIPS.*: (\d*)", line, re.IGNORECASE)
             if m:
                 bogomips = int(m.group(1))
                 if bogomips_minimum > 0 and bogomips < bogomips_minimum:
@@ -466,14 +448,14 @@ class AndroidMixin(object):
             pass
         return False
 
-    def shell_output(self, cmd, enable_run_as=False):
+    def shell_output(self, cmd, enable_run_as=False, attempts=1):
         import mozdevice
 
         try:
             return self.device.shell_output(
-                cmd, timeout=30, enable_run_as=enable_run_as
+                cmd, timeout=30, enable_run_as=enable_run_as, attempts=attempts
             )
-        except (mozdevice.ADBTimeoutError) as e:
+        except mozdevice.ADBTimeoutError as e:
             self.info(
                 "Failed to run shell command %s from %s: %s %s"
                 % (cmd, self.device_name, type(e).__name__, e)
@@ -507,25 +489,6 @@ class AndroidMixin(object):
             dump_device_screen(self.device, self, prefix=prefix)
         if reset_dir:
             del os.environ["MOZ_UPLOAD_DIR"]
-
-    def download_hostutils(self, xre_dir):
-        """
-        Download and install hostutils from tooltool.
-        """
-        xre_path = None
-        self.rmtree(xre_dir)
-        self.mkdir_p(xre_dir)
-        if self.config["hostutils_manifest_path"]:
-            url = self._get_repo_url(self.config["hostutils_manifest_path"])
-            self._tooltool_fetch(url, xre_dir)
-            for p in glob.glob(os.path.join(xre_dir, "host-utils-*")):
-                if os.path.isdir(p) and os.path.isfile(os.path.join(p, "xpcshell")):
-                    xre_path = p
-            if not xre_path:
-                self.fatal("xre path not found in %s" % xre_dir)
-        else:
-            self.fatal("configure hostutils_manifest_path!")
-        return xre_path
 
     def query_package_name(self):
         if self.app_name is None:

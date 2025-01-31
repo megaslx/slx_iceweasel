@@ -11,8 +11,10 @@
 #ifndef ProfilerLabels_h
 #define ProfilerLabels_h
 
+#include "mozilla/ProfilerState.h"
 #include "mozilla/ProfilerThreadState.h"
 
+#include "js/Debug.h"
 #include "js/ProfilingCategory.h"
 #include "js/ProfilingStack.h"
 #include "js/RootingAPI.h"
@@ -38,9 +40,23 @@ struct JSContext;
 // like this: "ClassName::FunctionName:PartName".
 //
 // Use AUTO_PROFILER_LABEL_DYNAMIC_* if you want to add additional / dynamic
-// information to the label stack frame.
+// information to the label stack frame, and AUTO_PROFILER_LABEL_HOT if you're
+// instrumenting functions for which overhead on the order of nanoseconds is
+// noticeable.
 #define AUTO_PROFILER_LABEL(label, categoryPair) \
   mozilla::AutoProfilerLabel PROFILER_RAII(      \
+      label, nullptr, JS::ProfilingCategoryPair::categoryPair)
+
+// Like AUTO_PROFILER_LABEL, but for super-hot code where overhead must be
+// kept to the absolute minimum. This variant doesn't push the label if the
+// profiler isn't running.
+// Don't use this for long-running functions: If the profiler is started in
+// the middle of the function, this label won't be on the stack until the
+// function is entered the next time. As a result, category information for
+// samples at the start of the profile can be misleading.
+// For short-running functions, that's often an acceptable trade-off.
+#define AUTO_PROFILER_LABEL_HOT(label, categoryPair) \
+  mozilla::AutoProfilerLabelHot PROFILER_RAII(       \
       label, nullptr, JS::ProfilingCategoryPair::categoryPair)
 
 // Similar to AUTO_PROFILER_LABEL, but that adds the RELEVANT_FOR_JS flag.
@@ -171,7 +187,7 @@ struct JSContext;
 // ProfilingStack from the JS context, and avoids almost all overhead in the
 // case where the profiler is disabled.
 #define AUTO_PROFILER_LABEL_FAST(label, categoryPair, ctx) \
-  mozilla::AutoProfilerLabel PROFILER_RAII(                \
+  mozilla::AutoProfilerLabelHot PROFILER_RAII(             \
       ctx, label, nullptr, JS::ProfilingCategoryPair::categoryPair)
 
 // Similar to AUTO_PROFILER_LABEL_FAST, but also takes an extra string and an
@@ -179,7 +195,7 @@ struct JSContext;
 // js::ProfilingStackFrame::Flags enum.
 #define AUTO_PROFILER_LABEL_DYNAMIC_FAST(label, dynamicString, categoryPair, \
                                          ctx, flags)                         \
-  mozilla::AutoProfilerLabel PROFILER_RAII(                                  \
+  mozilla::AutoProfilerLabelHot PROFILER_RAII(                               \
       ctx, label, dynamicString, JS::ProfilingCategoryPair::categoryPair,    \
       flags)
 
@@ -194,12 +210,23 @@ class MOZ_RAII AutoProfilerLabel {
                     JS::ProfilingCategoryPair aCategoryPair,
                     uint32_t aFlags = 0) {}
 
-  // This is the AUTO_PROFILER_LABEL_FAST variant.
-  AutoProfilerLabel(JSContext* aJSContext, const char* aLabel,
-                    const char* aDynamicString,
-                    JS::ProfilingCategoryPair aCategoryPair, uint32_t aFlags) {}
-
   ~AutoProfilerLabel() {}
+};
+
+class MOZ_RAII AutoProfilerLabelHot {
+ public:
+  // This is the AUTO_PROFILER_LABEL_HOT variant.
+  AutoProfilerLabelHot(const char* aLabel, const char* aDynamicString,
+                       JS::ProfilingCategoryPair aCategoryPair,
+                       uint32_t aFlags = 0) {}
+
+  // This is the AUTO_PROFILER_LABEL_FAST variant.
+  AutoProfilerLabelHot(JSContext* aJSContext, const char* aLabel,
+                       const char* aDynamicString,
+                       JS::ProfilingCategoryPair aCategoryPair,
+                       uint32_t aFlags) {}
+
+  ~AutoProfilerLabelHot() {}
 };
 
 #else  // !MOZ_GECKO_PROFILER
@@ -215,32 +242,12 @@ class MOZ_RAII AutoProfilerLabel {
                     JS::ProfilingCategoryPair aCategoryPair,
                     uint32_t aFlags = 0) {
     // Get the ProfilingStack from TLS.
-    ProfilingStack* profilingStack =
-        profiler::ThreadRegistration::WithOnThreadRefOr(
-            [](profiler::ThreadRegistration::OnThreadRef aThread) {
-              return &aThread.UnlockedConstReaderAndAtomicRWRef()
-                          .ProfilingStackRef();
-            },
-            nullptr);
-    Push(profilingStack, aLabel, aDynamicString, aCategoryPair, aFlags);
-  }
-
-  // This is the AUTO_PROFILER_LABEL_FAST variant. It retrieves the
-  // ProfilingStack from the JSContext and does nothing if the profiler is
-  // inactive.
-  AutoProfilerLabel(JSContext* aJSContext, const char* aLabel,
-                    const char* aDynamicString,
-                    JS::ProfilingCategoryPair aCategoryPair, uint32_t aFlags) {
-    Push(js::GetContextProfilingStackIfEnabled(aJSContext), aLabel,
-         aDynamicString, aCategoryPair, aFlags);
-  }
-
-  void Push(ProfilingStack* aProfilingStack, const char* aLabel,
-            const char* aDynamicString, JS::ProfilingCategoryPair aCategoryPair,
-            uint32_t aFlags = 0) {
-    // This function runs both on and off the main thread.
-
-    mProfilingStack = aProfilingStack;
+    mProfilingStack = profiler::ThreadRegistration::WithOnThreadRefOr(
+        [](profiler::ThreadRegistration::OnThreadRef aThread) {
+          return &aThread.UnlockedConstReaderAndAtomicRWRef()
+                      .ProfilingStackRef();
+        },
+        nullptr);
     if (mProfilingStack) {
       mProfilingStack->pushLabelFrame(aLabel, aDynamicString, this,
                                       aCategoryPair, aFlags);
@@ -259,6 +266,92 @@ class MOZ_RAII AutoProfilerLabel {
   // We save a ProfilingStack pointer in the ctor so we don't have to redo the
   // TLS lookup in the dtor.
   ProfilingStack* mProfilingStack;
+};
+
+class MOZ_RAII AutoProfilerLabelHot {
+ public:
+  // This is the AUTO_PROFILER_LABEL_HOT variant. It does nothing if
+  // the profiler is inactive.
+  AutoProfilerLabelHot(const char* aLabel, const char* aDynamicString,
+                       JS::ProfilingCategoryPair aCategoryPair,
+                       uint32_t aFlags = 0) {
+    if (MOZ_LIKELY(!profiler_is_active())) {
+      mProfilingStack = nullptr;
+      return;
+    }
+
+    // Get the ProfilingStack from TLS.
+    mProfilingStack = profiler::ThreadRegistration::WithOnThreadRefOr(
+        [](profiler::ThreadRegistration::OnThreadRef aThread) {
+          return &aThread.UnlockedConstReaderAndAtomicRWRef()
+                      .ProfilingStackRef();
+        },
+        nullptr);
+    if (mProfilingStack) {
+      mProfilingStack->pushLabelFrame(aLabel, aDynamicString, this,
+                                      aCategoryPair, aFlags);
+
+#  ifdef MOZ_EXECUTION_TRACING
+      // We don't have a JSContext in this case, so we don't trace it.
+      mCx = nullptr;
+#  endif
+    }
+  }
+
+  // This is the AUTO_PROFILER_LABEL_FAST variant. It retrieves the
+  // ProfilingStack from the JSContext and does nothing if the profiler is
+  // inactive.
+  AutoProfilerLabelHot(JSContext* aJSContext, const char* aLabel,
+                       const char* aDynamicString,
+                       JS::ProfilingCategoryPair aCategoryPair,
+                       uint32_t aFlags) {
+    mProfilingStack = js::GetContextProfilingStackIfEnabled(aJSContext);
+    if (MOZ_UNLIKELY(mProfilingStack)) {
+      mProfilingStack->pushLabelFrame(aLabel, aDynamicString, this,
+                                      aCategoryPair, aFlags);
+#  ifdef MOZ_EXECUTION_TRACING
+      if (MOZ_UNLIKELY(JS_TracerIsTracing(aJSContext))) {
+        mCx = aJSContext;
+        TraceLabel(aLabel, aDynamicString);
+      } else {
+        mCx = nullptr;
+      }
+#  endif
+    }
+  }
+
+  ~AutoProfilerLabelHot() {
+    // This function runs both on and off the main thread.
+    if (MOZ_UNLIKELY(mProfilingStack)) {
+      mProfilingStack->pop();
+#  ifdef MOZ_EXECUTION_TRACING
+      if (MOZ_UNLIKELY(mCx)) {
+        // We do not bother to produce a detailed label here, and just use an
+        // empty string. The label will be lost if we wrap over the ring
+        // buffer, but that's fine.
+        JS_TracerLeaveLabelLatin1(mCx, "");
+      }
+#  endif
+    }
+  }
+
+ private:
+#  ifdef MOZ_EXECUTION_TRACING
+  MOZ_NEVER_INLINE void TraceLabel(const char* aLabel,
+                                   const char* aDynamicString) {
+    char buffer[1024];
+    SprintfLiteral(buffer, "(DOM) %s.%s", aLabel, aDynamicString);
+    JS_TracerEnterLabelLatin1(mCx, buffer);
+  }
+#  endif
+
+  // We save a ProfilingStack pointer in the ctor so we don't have to redo the
+  // TLS lookup in the dtor.
+  ProfilingStack* mProfilingStack;
+
+#  ifdef MOZ_EXECUTION_TRACING
+  JSContext* mCx;
+#  endif
 };
 
 #endif  // !MOZ_GECKO_PROFILER

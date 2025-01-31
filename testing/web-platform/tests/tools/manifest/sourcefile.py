@@ -4,8 +4,8 @@ import os
 from collections import deque
 from fnmatch import fnmatch
 from io import BytesIO
-from typing import (Any, BinaryIO, Callable, Deque, Dict, Iterable, List, Optional, Pattern,
-                    Set, Text, Tuple, Union, cast)
+from typing import (Any, BinaryIO, Callable, Deque, Dict, Iterable, List,
+                    Optional, Pattern, Set, Text, Tuple, TypedDict, Union, cast)
 from urllib.parse import urljoin
 
 try:
@@ -28,6 +28,10 @@ from .item import (ConformanceCheckerTest,
                    VisualTest,
                    WebDriverSpecTest)
 from .utils import cached_property
+
+# Cannot do `from ..metadata.webfeatures.schema import WEB_FEATURES_YML_FILENAME`
+# because relative import beyond toplevel throws *ImportError*!
+from metadata.webfeatures.schema import WEB_FEATURES_YML_FILENAME  # type: ignore
 
 wd_pattern = "*.py"
 js_meta_re = re.compile(br"//\s*META:\s*(\w*)=(.*)$")
@@ -64,8 +68,15 @@ def read_script_metadata(f: BinaryIO, regexp: Pattern[bytes]) -> Iterable[Tuple[
         yield (m.groups()[0].decode("utf8"), m.groups()[1].decode("utf8"))
 
 
-_any_variants: Dict[Text, Dict[Text, Any]] = {
+class VariantData(TypedDict, total=False):
+    suffix: str
+    force_https: bool
+    longhand: Set[str]
+
+
+_any_variants: Dict[Text, VariantData] = {
     "window": {"suffix": ".any.html"},
+    "window-module": {},
     "serviceworker": {"force_https": True},
     "serviceworker-module": {"force_https": True},
     "sharedworker": {},
@@ -74,7 +85,26 @@ _any_variants: Dict[Text, Dict[Text, Any]] = {
     "dedicatedworker-module": {"suffix": ".any.worker-module.html"},
     "worker": {"longhand": {"dedicatedworker", "sharedworker", "serviceworker"}},
     "worker-module": {},
-    "shadowrealm": {},
+    "shadowrealm-in-window": {},
+    "shadowrealm-in-shadowrealm": {},
+    "shadowrealm-in-dedicatedworker": {},
+    "shadowrealm-in-sharedworker": {},
+    "shadowrealm-in-serviceworker": {
+        "force_https": True,
+        "suffix": ".https.any.shadowrealm-in-serviceworker.html",
+    },
+    "shadowrealm-in-audioworklet": {
+        "force_https": True,
+        "suffix": ".https.any.shadowrealm-in-audioworklet.html",
+    },
+    "shadowrealm": {"longhand": {
+        "shadowrealm-in-window",
+        "shadowrealm-in-shadowrealm",
+        "shadowrealm-in-dedicatedworker",
+        "shadowrealm-in-sharedworker",
+        "shadowrealm-in-serviceworker",
+        "shadowrealm-in-audioworklet",
+    }},
     "jsshell": {"suffix": ".any.js"},
 }
 
@@ -200,9 +230,11 @@ class SourceFile:
 
         type_flag = None
         if "-" in name:
-            type_flag = name.rsplit("-", 1)[1].split(".")[0]
-
-        meta_flags = name.split(".")[1:]
+            type_meta = name.rsplit("-", 1)[1].split(".")
+            type_flag = type_meta[0]
+            meta_flags = type_meta[1:]
+        else:
+            meta_flags = name.split(".")[1:]
 
         self.tests_root: Text = tests_root
         self.rel_path: Text = rel_path
@@ -302,6 +334,7 @@ class SourceFile:
         return (self.is_dir() or
                 self.name_prefix("MANIFEST") or
                 self.filename == "META.yml" or
+                self.filename == WEB_FEATURES_YML_FILENAME or
                 self.filename.startswith(".") or
                 self.filename.endswith(".headers") or
                 self.filename.endswith(".ini") or
@@ -913,7 +946,8 @@ class SourceFile:
                     self.tests_root,
                     self.rel_path,
                     self.url_base,
-                    self.rel_url
+                    self.rel_url,
+                    testdriver=self.has_testdriver,
                 )]
 
         elif self.name_is_print_reftest:
@@ -932,6 +966,7 @@ class SourceFile:
                     viewport_size=self.viewport_size,
                     fuzzy=self.fuzzy,
                     page_ranges=self.page_ranges,
+                    testdriver=self.has_testdriver,
                 )]
 
         elif self.name_is_multi_global:
@@ -1032,7 +1067,8 @@ class SourceFile:
                     timeout=self.timeout,
                     viewport_size=self.viewport_size,
                     dpi=self.dpi,
-                    fuzzy=self.fuzzy
+                    fuzzy=self.fuzzy,
+                    testdriver=self.has_testdriver,
                 ))
 
         elif self.content_is_css_visual and not self.name_is_reference:

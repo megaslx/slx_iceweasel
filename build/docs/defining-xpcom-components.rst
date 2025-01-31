@@ -1,8 +1,8 @@
 .. _defining_xpcom_components:
 
-=========================================
-Defining XPCOM C++-implemented Components
-=========================================
+=========================
+Defining XPCOM Components
+=========================
 
 This document explains how to write a :code:`components.conf` file. For
 documentation on the idl format see :ref:`XPIDL`. For a tutorial on writing
@@ -121,11 +121,16 @@ Class definitions may have the following properties:
 
   This property is incompatible with ``legacy_constructor``.
 
-``jsm`` (optional)
-  If provided, must be the URL of a JavaScript module which contains a
-  JavaScript implementation of the component. The ``constructor`` property
-  must contain the name of an exported function which can be constructed to
-  create a new instance of the component.
+``esModule`` (optional)
+  If provided, must be the URL of a
+  `JavaScript module <https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules>`_
+  which contains a JavaScript implementation of the component.
+  The ``constructor`` property must contain the name of an exported
+  function which can be constructed to create a new instance of the component.
+
+
+``jsm`` (deprecated, optional)
+  Do not use. Use ``esModule`` instead.
 
 ``legacy_constructor`` (optional)
   This property is deprecated, and should not be used in new code.
@@ -203,6 +208,7 @@ Class Constructors
 This simplest way to define a component is to include a header defining a
 concrete type, and let the component manager call that class's constructor:
 
+.. rstcheck: ignore-languages=python
 .. code-block:: python
 
   'type': 'mozilla::foo::Foo',
@@ -221,6 +227,7 @@ returns the same instance on subsequent calls. This requires declaring the
 constructor in an included header, and implementing it in a separate source
 file:
 
+.. rstcheck: ignore-languages=python
 .. code-block:: python
 
   'type': 'mozilla::foo::Foo',
@@ -229,7 +236,7 @@ file:
 
 ``Foo.h``
 
-.. code-block:: c++
+.. code-block:: cpp
 
     class Foo final : public nsISupports {
      public:
@@ -238,7 +245,7 @@ file:
 
 ``Foo.cpp``
 
-.. code-block:: c++
+.. code-block:: cpp
 
     already_AddRefed<Foo> Foo::GetSingleton() {
       // ...
@@ -250,6 +257,7 @@ External Constructors
 For types whose headers can't easily be included, constructors can be defined
 using a template specialization on an incomplete type:
 
+.. rstcheck: ignore-languages=python
 .. code-block:: python
 
   'type': 'mozilla::foo::Foo',
@@ -257,7 +265,7 @@ using a template specialization on an incomplete type:
 
 ``Foo.cpp``
 
-.. code-block:: c++
+.. code-block:: cpp
 
     NS_IMPL_COMPONENT_FACTORY(Foo) {
       return do_AddRef(new Foo()).downcast<nsISupports>();
@@ -276,6 +284,7 @@ Registering Categories
 Classes which need define category entries with the same value as their
 contract ID may do so using the following:
 
+.. rstcheck: ignore-languages=python
 .. code-block:: python
 
     'contract_ids': ['@mozilla.org/foo;1'],

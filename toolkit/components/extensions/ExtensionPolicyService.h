@@ -21,6 +21,7 @@
 #include "nsPointerHashKeys.h"
 #include "nsRefPtrHashtable.h"
 #include "nsTHashSet.h"
+#include "nsAtomHashKeys.h"
 
 class nsIChannel;
 class nsIObserverService;
@@ -74,7 +75,10 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
   static RefPtr<extensions::WebExtensionPolicyCore> GetCoreByHost(
       const nsACString& aHost);
 
-  WebExtensionPolicy* GetByID(const nsAtom* aAddonId) {
+  static RefPtr<extensions::WebExtensionPolicyCore> GetCoreByURL(
+      const extensions::URLInfo& aURL);
+
+  WebExtensionPolicy* GetByID(nsAtom* aAddonId) {
     return mExtensions.GetWeak(aAddonId);
   }
 
@@ -99,7 +103,7 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
   bool IsExtensionProcess() const;
   bool GetQuarantinedDomainsEnabled() const;
 
-  nsresult InjectContentScripts(WebExtensionPolicy* aExtension);
+  void InjectContentScripts(WebExtensionPolicy* aExtension, ErrorResult& aRv);
 
  protected:
   virtual ~ExtensionPolicyService();
@@ -119,14 +123,15 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
       nsPIDOMWindowInner* aWindow,
       extensions::WebExtensionContentScript& aScript);
 
-  RefPtr<dom::Promise> ExecuteContentScripts(
+  already_AddRefed<dom::Promise> ExecuteContentScripts(
       JSContext* aCx, nsPIDOMWindowInner* aWindow,
       const nsTArray<RefPtr<extensions::WebExtensionContentScript>>& aScripts);
 
   void UpdateRestrictedDomains();
   void UpdateQuarantinedDomains();
 
-  nsRefPtrHashtable<nsPtrHashKey<const nsAtom>, WebExtensionPolicy> mExtensions;
+  // The WebExtensionPolicy object keeps the key alive.
+  nsRefPtrHashtable<nsWeakAtomHashKey, WebExtensionPolicy> mExtensions;
 
   nsRefPtrHashtable<nsPtrHashKey<const extensions::DocumentObserver>,
                     extensions::DocumentObserver>

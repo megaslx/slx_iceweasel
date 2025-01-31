@@ -40,7 +40,6 @@ class TalosResults(object):
         - output_formats: a dict mapping formats to a list of URLs
         """
         try:
-
             for key, urls in output_formats.items():
                 _output = output.Output(self, Results)
                 results = _output()
@@ -310,11 +309,6 @@ class BrowserLogResults(object):
     # regular expression for failure case if we can't parse the tokens
     RESULTS_REGEX_FAIL = re.compile("__FAIL(.*?)__FAIL", re.DOTALL | re.MULTILINE)
 
-    # regular expression for responsiveness results
-    RESULTS_RESPONSIVENESS_REGEX = re.compile(
-        "MOZ_EVENT_TRACE\ssample\s\d*?\s(\d*\.?\d*)$", re.DOTALL | re.MULTILINE
-    )
-
     # classes for results types
     classes = {"tsformat": TsResults, "tpformat": PageloaderResults}
 
@@ -377,7 +371,6 @@ class BrowserLogResults(object):
 
         # parse the timestamps
         for attr, tokens in self.time_tokens:
-
             # parse the token contents
             value, _last_token = self.get_single_token(*tokens)
 
@@ -432,8 +425,6 @@ class BrowserLogResults(object):
         """accumulate all counters"""
 
         if global_counters is not None:
-            if "responsiveness" in global_counters:
-                global_counters["responsiveness"].extend(self.responsiveness())
             self.xperf(global_counters)
 
     def xperf(self, counter_results):
@@ -553,6 +544,3 @@ class BrowserLogResults(object):
         except Exception:
             # silent failure is fine here as we will only see this on tp5n runs
             pass
-
-    def responsiveness(self):
-        return self.RESULTS_RESPONSIVENESS_REGEX.findall(self.results_raw)

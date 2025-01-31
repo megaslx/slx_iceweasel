@@ -6,11 +6,11 @@
  * LoginManagerStorage implementation for the JSON back-end.
  */
 
-import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
-
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  FXA_PWDMGR_HOST: "resource://gre/modules/FxAccountsCommon.sys.mjs",
+  FXA_PWDMGR_REALM: "resource://gre/modules/FxAccountsCommon.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
   LoginStore: "resource://gre/modules/LoginStore.sys.mjs",
 });
@@ -45,11 +45,6 @@ function isSyncableChange(oldLogin, newLogin) {
 function isFXAHost(login) {
   return login.hostname == lazy.FXA_PWDMGR_HOST;
 }
-
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  FXA_PWDMGR_HOST: "resource://gre/modules/FxAccountsCommon.js",
-  FXA_PWDMGR_REALM: "resource://gre/modules/FxAccountsCommon.js",
-});
 
 export class LoginManagerStorage_json {
   constructor() {
@@ -291,12 +286,13 @@ export class LoginManagerStorage_json {
     const resultLogins = [];
     for (const [login, encryptedLogin] of encryptedLogins) {
       // check for duplicates
-      const { origin, formActionOrigin, httpRealm } = login;
-      const existingLogins = this.findLogins(
-        origin,
-        formActionOrigin,
-        httpRealm
-      );
+      let loginData = {
+        origin: login.origin,
+        formActionOrigin: login.formActionOrigin,
+        httpRealm: login.httpRealm,
+      };
+      const existingLogins = await Services.logins.searchLoginsAsync(loginData);
+
       const matchingLogin = existingLogins.find(l => login.matches(l, true));
       if (matchingLogin) {
         if (continueOnDuplicates) {
@@ -337,11 +333,11 @@ export class LoginManagerStorage_json {
       let login = this._store.data.logins[foundIndex];
       if (!login.deleted) {
         if (fromSync) {
-          login.deleted = true;
+          this.#replaceLoginWithTombstone(login);
         } else if (login.everSynced) {
           // The login has been synced, so mark it as deleted.
-          login.deleted = true;
           this.#incrementSyncCounter(login);
+          this.#replaceLoginWithTombstone(login);
         } else {
           // The login was never synced, so just remove it from the data.
           this._store.data.logins.splice(foundIndex, 1);
@@ -377,10 +373,14 @@ export class LoginManagerStorage_json {
 
     // Look for an existing entry in case key properties changed.
     if (!newLogin.matches(oldLogin, true)) {
-      let logins = this.findLogins(
-        newLogin.origin,
-        newLogin.formActionOrigin,
-        newLogin.httpRealm
+      let loginData = {
+        origin: newLogin.origin,
+        formActionOrigin: newLogin.formActionOrigin,
+        httpRealm: newLogin.httpRealm,
+      };
+
+      let logins = this.searchLogins(
+        lazy.LoginHelper.newPropertyBag(loginData)
       );
 
       let matchingLogin = logins.find(login => newLogin.matches(login, true));
@@ -431,6 +431,27 @@ export class LoginManagerStorage_json {
       oldStoredLogin,
       newLogin,
     ]);
+  }
+
+  // Replace the login with a tombstone. It has a guid and sync-related properties,
+  // but does not contain the login or password information.
+  #replaceLoginWithTombstone(login) {
+    login.deleted = true;
+
+    // Delete all fields except guid, timePasswordChanged, syncCounter
+    // and everSynced;
+    delete login.hostname;
+    delete login.httpRealm;
+    delete login.formSubmitURL;
+    delete login.usernameField;
+    delete login.passwordField;
+    delete login.encryptedUsername;
+    delete login.encryptedPassword;
+    delete login.encType;
+    delete login.timeCreated;
+    delete login.timeLastUsed;
+    delete login.timesUsed;
+    delete login.encryptedUnknownFields;
   }
 
   recordPasswordUse(login) {
@@ -539,6 +560,10 @@ export class LoginManagerStorage_json {
    * Private method to perform arbitrary searches on any field. Decryption is
    * left to the caller.
    *
+   * formActionOrigin is handled specially for compatibility. If a null string
+   * is passed and other match fields are present, it is treated as if it was
+   * not present.
+   *
    * Returns [logins, ids] for logins that match the arguments, where logins
    * is an array of encrypted nsLoginInfo and ids is an array of associated
    * ids in the database.
@@ -554,17 +579,6 @@ export class LoginManagerStorage_json {
     },
     candidateLogins = this._store.data.logins
   ) {
-    if (
-      "formActionOrigin" in matchData &&
-      matchData.formActionOrigin === "" &&
-      // Carve an exception out for a unit test in test_legacy_empty_formSubmitURL.js
-      Object.keys(matchData).length != 1
-    ) {
-      throw new Error(
-        "Searching with an empty `formActionOrigin` doesn't do a wildcard search"
-      );
-    }
-
     function match(aLoginItem) {
       for (let field in matchData) {
         let wantedValue = matchData[field];
@@ -587,7 +601,10 @@ export class LoginManagerStorage_json {
           case "formActionOrigin":
             if (wantedValue != null) {
               // Historical compatibility requires this special case
-              if (aLoginItem.formSubmitURL == "") {
+              if (
+                aLoginItem.formSubmitURL == "" ||
+                (wantedValue == "" && Object.keys(matchData).length != 1)
+              ) {
                 break;
               }
               if (
@@ -735,8 +752,8 @@ export class LoginManagerStorage_json {
         removedLogins.push(login);
         if (!fullyRemove && login?.everSynced) {
           // The login has been synced, so mark it as deleted.
-          login.deleted = true;
           this.#incrementSyncCounter(login);
+          this.#replaceLoginWithTombstone(login);
           remainingLogins.push(login);
         }
       }
@@ -929,7 +946,11 @@ export class LoginManagerStorage_json {
 
     return logins
       .map((login, i) => {
+        // Deleted logins don't have any info to decrypt.
         const decryptedLogin = login.clone();
+        if (this.loginIsDeleted(login.guid)) {
+          return decryptedLogin;
+        }
 
         const [username, password, unknownFields] = plaintexts.slice(
           3 * i,
@@ -1002,6 +1023,11 @@ export class LoginManagerStorage_json {
     let result = [];
 
     for (let login of logins) {
+      if (this.loginIsDeleted(login.guid)) {
+        result.push(login);
+        continue;
+      }
+
       try {
         login.username = this._crypto.decrypt(login.username);
         login.password = this._crypto.decrypt(login.password);

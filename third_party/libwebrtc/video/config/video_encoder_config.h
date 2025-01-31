@@ -13,10 +13,11 @@
 
 #include <stddef.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "absl/types/optional.h"
+#include "api/field_trials_view.h"
 #include "api/scoped_refptr.h"
 #include "api/video/resolution.h"
 #include "api/video_codecs/scalability_mode.h"
@@ -61,13 +62,13 @@ struct VideoStream {
   // (meaning that this field _must_ be set), and for signaling the app-level
   // encoder settings (meaning that the field _may_ be set). We should separate
   // this and remove this optional instead.
-  absl::optional<size_t> num_temporal_layers;
+  std::optional<size_t> num_temporal_layers;
 
   // The priority of this stream, to be used when allocating resources
   // between multiple streams.
-  absl::optional<double> bitrate_priority;
+  std::optional<double> bitrate_priority;
 
-  absl::optional<ScalabilityMode> scalability_mode;
+  std::optional<ScalabilityMode> scalability_mode;
 
   // If this stream is enabled by the user, or not.
   bool active;
@@ -81,7 +82,7 @@ struct VideoStream {
   // which can be lower than requested_resolution,
   // e.g. if source only provides lower resolution or
   // if resource adaptation is active.
-  absl::optional<Resolution> requested_resolution;
+  std::optional<Resolution> requested_resolution;
 };
 
 class VideoEncoderConfig {
@@ -89,8 +90,8 @@ class VideoEncoderConfig {
   // These are reference counted to permit copying VideoEncoderConfig and be
   // kept alive until all encoder_specific_settings go out of scope.
   // TODO(kthelgason): Consider removing the need for copying VideoEncoderConfig
-  // and use absl::optional for encoder_specific_settings instead.
-  class EncoderSpecificSettings : public rtc::RefCountInterface {
+  // and use std::optional for encoder_specific_settings instead.
+  class EncoderSpecificSettings : public RefCountInterface {
    public:
     // TODO(pbos): Remove FillEncoderSpecificSettings as soon as VideoCodec is
     // not in use and encoder implementations ask for codec-specific structs
@@ -99,6 +100,7 @@ class VideoEncoderConfig {
 
     virtual void FillVideoCodecVp8(VideoCodecVP8* vp8_settings) const;
     virtual void FillVideoCodecVp9(VideoCodecVP9* vp9_settings) const;
+    virtual void FillVideoCodecAv1(VideoCodecAV1* av1_settings) const;
 
    private:
     ~EncoderSpecificSettings() override {}
@@ -123,18 +125,28 @@ class VideoEncoderConfig {
     VideoCodecVP9 specifics_;
   };
 
+  class Av1EncoderSpecificSettings : public EncoderSpecificSettings {
+   public:
+    explicit Av1EncoderSpecificSettings(const VideoCodecAV1& specifics);
+    void FillVideoCodecAv1(VideoCodecAV1* av1_settings) const override;
+
+   private:
+    VideoCodecAV1 specifics_;
+  };
+
   enum class ContentType {
     kRealtimeVideo,
     kScreen,
   };
 
-  class VideoStreamFactoryInterface : public rtc::RefCountInterface {
+  class VideoStreamFactoryInterface : public RefCountInterface {
    public:
     // An implementation should return a std::vector<VideoStream> with the
     // wanted VideoStream settings for the given video resolution.
     // The size of the vector may not be larger than
     // `encoder_config.number_of_streams`.
     virtual std::vector<VideoStream> CreateEncoderStreams(
+        const FieldTrialsView& field_trials,
         int frame_width,
         int frame_height,
         const VideoEncoderConfig& encoder_config) = 0;
@@ -153,6 +165,8 @@ class VideoEncoderConfig {
   VideoEncoderConfig(VideoEncoderConfig&&);
   ~VideoEncoderConfig();
   std::string ToString() const;
+
+  bool HasRequestedResolution() const;
 
   // TODO(bugs.webrtc.org/6883): Consolidate on one of these.
   VideoCodecType codec_type;
@@ -181,9 +195,15 @@ class VideoEncoderConfig {
   // down to lower layers for the video encoding.
   // `simulcast_layers` is also used for configuring non-simulcast (when there
   // is a single VideoStream).
+  // We have the same number of `simulcast_layers` as we have negotiated
+  // encodings, for example 3 are used in both simulcast and legacy kSVC.
   std::vector<VideoStream> simulcast_layers;
 
   // Max number of encoded VideoStreams to produce.
+  // This is the same as the number of encodings negotiated (i.e. SSRCs),
+  // whether or not those encodings are `active`, except for when legacy kSVC
+  // is used. In this case we have three SSRCs but `number_of_streams` is
+  // changed to 1 to tell lower layers to limit the number of streams.
   size_t number_of_streams;
 
   // Legacy Google conference mode flag for simulcast screenshare

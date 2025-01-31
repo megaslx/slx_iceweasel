@@ -7,6 +7,8 @@
 #include "nsIGlobalObject.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/GlobalFreezeObserver.h"
+#include "mozilla/GlobalTeardownObserver.h"
 #include "mozilla/Result.h"
 #include "mozilla/StorageAccess.h"
 #include "mozilla/dom/BindingDeclarations.h"
@@ -15,6 +17,7 @@
 #include "mozilla/dom/Report.h"
 #include "mozilla/dom/ReportingObserver.h"
 #include "mozilla/dom/ServiceWorker.h"
+#include "mozilla/dom/ServiceWorkerContainer.h"
 #include "mozilla/dom/ServiceWorkerRegistration.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsContentUtils.h"
@@ -28,6 +31,8 @@ using mozilla::AutoSlowOperation;
 using mozilla::CycleCollectedJSContext;
 using mozilla::DOMEventTargetHelper;
 using mozilla::ErrorResult;
+using mozilla::GlobalFreezeObserver;
+using mozilla::GlobalTeardownObserver;
 using mozilla::IgnoredErrorResult;
 using mozilla::MallocSizeOf;
 using mozilla::Maybe;
@@ -35,9 +40,11 @@ using mozilla::MicroTaskRunnable;
 using mozilla::dom::BlobURLProtocolHandler;
 using mozilla::dom::CallerType;
 using mozilla::dom::ClientInfo;
+using mozilla::dom::ClientState;
 using mozilla::dom::Report;
 using mozilla::dom::ReportingObserver;
 using mozilla::dom::ServiceWorker;
+using mozilla::dom::ServiceWorkerContainer;
 using mozilla::dom::ServiceWorkerDescriptor;
 using mozilla::dom::ServiceWorkerRegistration;
 using mozilla::dom::ServiceWorkerRegistrationDescriptor;
@@ -67,8 +74,10 @@ bool nsIGlobalObject::IsScriptForbidden(JSObject* aCallback,
 
 nsIGlobalObject::~nsIGlobalObject() {
   UnlinkObjectsInGlobal();
-  DisconnectEventTargetObjects();
-  MOZ_DIAGNOSTIC_ASSERT(mEventTargetObjects.isEmpty());
+  DisconnectGlobalTeardownObservers();
+  DisconnectGlobalFreezeObservers();
+  MOZ_DIAGNOSTIC_ASSERT(mGlobalTeardownObservers.isEmpty());
+  MOZ_DIAGNOSTIC_ASSERT(mGlobalFreezeObservers.isEmpty());
 }
 
 nsIPrincipal* nsIGlobalObject::PrincipalOrNull() const {
@@ -157,34 +166,48 @@ void nsIGlobalObject::TraverseObjectsInGlobal(
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mByteLengthQueuingStrategySizeFunction)
 }
 
-void nsIGlobalObject::AddEventTargetObject(DOMEventTargetHelper* aObject) {
+void nsIGlobalObject::AddGlobalTeardownObserver(
+    GlobalTeardownObserver* aObject) {
   MOZ_DIAGNOSTIC_ASSERT(aObject);
   MOZ_ASSERT(!aObject->isInList());
-  mEventTargetObjects.insertBack(aObject);
+  mGlobalTeardownObservers.insertBack(aObject);
 }
 
-void nsIGlobalObject::RemoveEventTargetObject(DOMEventTargetHelper* aObject) {
+void nsIGlobalObject::RemoveGlobalTeardownObserver(
+    GlobalTeardownObserver* aObject) {
   MOZ_DIAGNOSTIC_ASSERT(aObject);
   MOZ_ASSERT(aObject->isInList());
   MOZ_ASSERT(aObject->GetOwnerGlobal() == this);
   aObject->remove();
 }
 
-void nsIGlobalObject::ForEachEventTargetObject(
-    const std::function<void(DOMEventTargetHelper*, bool* aDoneOut)>& aFunc)
+void nsIGlobalObject::AddGlobalFreezeObserver(GlobalFreezeObserver* aObserver) {
+  MOZ_DIAGNOSTIC_ASSERT(aObserver);
+  MOZ_ASSERT(!aObserver->isInList());
+  mGlobalFreezeObservers.insertBack(aObserver);
+}
+
+void nsIGlobalObject::RemoveGlobalFreezeObserver(
+    GlobalFreezeObserver* aObserver) {
+  MOZ_DIAGNOSTIC_ASSERT(aObserver);
+  MOZ_ASSERT(aObserver->isInList());
+  aObserver->remove();
+}
+
+void nsIGlobalObject::ForEachGlobalTeardownObserver(
+    const std::function<void(GlobalTeardownObserver*, bool* aDoneOut)>& aFunc)
     const {
   // Protect against the function call triggering a mutation of the list
-  // while we are iterating by copying the DETH references to a temporary
+  // while we are iterating by copying the observer references to a temporary
   // list.
-  AutoTArray<RefPtr<DOMEventTargetHelper>, 64> targetList;
-  for (const DOMEventTargetHelper* deth = mEventTargetObjects.getFirst(); deth;
-       deth = deth->getNext()) {
-    targetList.AppendElement(const_cast<DOMEventTargetHelper*>(deth));
+  AutoTArray<RefPtr<GlobalTeardownObserver>, 64> targetList;
+  for (const GlobalTeardownObserver* observer : mGlobalTeardownObservers) {
+    targetList.AppendElement(const_cast<GlobalTeardownObserver*>(observer));
   }
 
   // Iterate the target list and call the function on each one.
   bool done = false;
-  for (auto target : targetList) {
+  for (auto& target : targetList) {
     // Check to see if a previous iteration's callback triggered the removal
     // of this target as a side-effect.  If it did, then just ignore it.
     if (target->GetOwnerGlobal() != this) {
@@ -197,20 +220,76 @@ void nsIGlobalObject::ForEachEventTargetObject(
   }
 }
 
-void nsIGlobalObject::DisconnectEventTargetObjects() {
-  ForEachEventTargetObject([&](DOMEventTargetHelper* aTarget, bool* aDoneOut) {
-    aTarget->DisconnectFromOwner();
+void nsIGlobalObject::DisconnectGlobalTeardownObservers() {
+  ForEachGlobalTeardownObserver(
+      [&](GlobalTeardownObserver* aTarget, bool* aDoneOut) {
+        aTarget->DisconnectFromOwner();
 
-    // Calling DisconnectFromOwner() should result in
-    // RemoveEventTargetObject() being called.
-    MOZ_DIAGNOSTIC_ASSERT(aTarget->GetOwnerGlobal() != this);
-  });
+        // Calling DisconnectFromOwner() should result in
+        // RemoveGlobalTeardownObserver() being called.
+        MOZ_DIAGNOSTIC_ASSERT(aTarget->GetOwnerGlobal() != this);
+      });
 }
+
+void nsIGlobalObject::ForEachGlobalFreezeObserver(
+    const std::function<void(GlobalFreezeObserver*, bool* aDoneOut)>& aFunc)
+    const {
+  // Protect against the function call triggering a mutation of the list
+  // while we are iterating by copying the observer references to a temporary
+  // list.
+  AutoTArray<RefPtr<GlobalFreezeObserver>, 64> targetList;
+  for (const GlobalFreezeObserver* observer : mGlobalFreezeObservers) {
+    targetList.AppendElement(const_cast<GlobalFreezeObserver*>(observer));
+  }
+
+  // Iterate the target list and call the function on each one.
+  bool done = false;
+  for (auto& target : targetList) {
+    // Check to see if a previous iteration's callback triggered the removal
+    // of this target as a side-effect.  If it did, then just ignore it.
+    if (!target->Observing()) {
+      continue;
+    }
+    aFunc(target, &done);
+    if (done) {
+      break;
+    }
+  }
+}
+
+void nsIGlobalObject::DisconnectGlobalFreezeObservers() {
+  ForEachGlobalFreezeObserver(
+      [&](GlobalFreezeObserver* aTarget, bool* aDoneOut) {
+        aTarget->DisconnectFreezeObserver();
+      });
+}
+
+void nsIGlobalObject::NotifyGlobalFrozen() {
+  ForEachGlobalFreezeObserver(
+      [&](GlobalFreezeObserver* aTarget, bool* aDoneOut) {
+        aTarget->FrozenCallback(this);
+      });
+}
+
+void nsIGlobalObject::NotifyGlobalThawed() {
+  ForEachGlobalFreezeObserver(
+      [&](GlobalFreezeObserver* aTarget, bool* aDoneOut) {
+        aTarget->ThawedCallback(this);
+      });
+}
+
+nsIURI* nsIGlobalObject::GetBaseURI() const { return nullptr; }
 
 Maybe<ClientInfo> nsIGlobalObject::GetClientInfo() const {
   // By default globals do not expose themselves as a client.  Only real
   // window and worker globals are currently considered clients.
   return Maybe<ClientInfo>();
+}
+
+Maybe<ClientState> nsIGlobalObject::GetClientState() const {
+  // By default globals do not expose themselves as a client.  Only real
+  // window and worker globals are currently considered clients.
+  return Maybe<ClientState>();
 }
 
 Maybe<nsID> nsIGlobalObject::GetAgentClusterId() const {
@@ -227,18 +306,21 @@ Maybe<ServiceWorkerDescriptor> nsIGlobalObject::GetController() const {
   return Maybe<ServiceWorkerDescriptor>();
 }
 
+already_AddRefed<ServiceWorkerContainer>
+nsIGlobalObject::GetServiceWorkerContainer() {
+  return nullptr;
+}
+
 RefPtr<ServiceWorker> nsIGlobalObject::GetOrCreateServiceWorker(
     const ServiceWorkerDescriptor& aDescriptor) {
-  MOZ_DIAGNOSTIC_ASSERT(false,
-                        "this global should not have any service workers");
+  MOZ_DIAGNOSTIC_CRASH("this global should not have any service workers");
   return nullptr;
 }
 
 RefPtr<ServiceWorkerRegistration> nsIGlobalObject::GetServiceWorkerRegistration(
     const mozilla::dom::ServiceWorkerRegistrationDescriptor& aDescriptor)
     const {
-  MOZ_DIAGNOSTIC_ASSERT(false,
-                        "this global should not have any service workers");
+  MOZ_DIAGNOSTIC_CRASH("this global should not have any service workers");
   return nullptr;
 }
 
@@ -254,7 +336,11 @@ mozilla::StorageAccess nsIGlobalObject::GetStorageAccess() {
   return mozilla::StorageAccess::eDeny;
 }
 
-nsPIDOMWindowInner* nsIGlobalObject::AsInnerWindow() {
+nsICookieJarSettings* nsIGlobalObject::GetCookieJarSettings() {
+  return nullptr;
+}
+
+nsPIDOMWindowInner* nsIGlobalObject::GetAsInnerWindow() {
   if (MOZ_LIKELY(mIsInnerWindow)) {
     return static_cast<nsPIDOMWindowInner*>(
         static_cast<nsGlobalWindowInner*>(this));
@@ -412,4 +498,16 @@ bool nsIGlobalObject::ShouldResistFingerprinting(CallerType aCallerType,
                                                  RFPTarget aTarget) const {
   return aCallerType != CallerType::System &&
          ShouldResistFingerprinting(aTarget);
+}
+
+void nsIGlobalObject::ReportToConsole(
+    uint32_t aErrorFlags, const nsCString& aCategory,
+    nsContentUtils::PropertiesFile aFile, const nsCString& aMessageName,
+    const nsTArray<nsString>& aParams,
+    const mozilla::SourceLocation& aLocation) {
+  // We pass nullptr for the document because nsGlobalWindowInner handles the
+  // case where it should be non-null.  We also expect the worker impl to
+  // override.
+  nsContentUtils::ReportToConsole(aErrorFlags, aCategory, nullptr, aFile,
+                                  aMessageName.get(), aParams, aLocation);
 }

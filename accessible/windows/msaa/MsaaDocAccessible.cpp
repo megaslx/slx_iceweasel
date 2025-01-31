@@ -12,7 +12,6 @@
 #include "nsAccessibilityService.h"
 #include "nsAccUtils.h"
 #include "nsWinUtils.h"
-#include "Statistics.h"
 #include "sdnDocAccessible.h"
 #include "mozilla/a11y/Role.h"
 #include "ISimpleDOM.h"
@@ -54,7 +53,6 @@ MsaaDocAccessible* MsaaDocAccessible::GetFromOwned(Accessible* aAcc) {
 // IUnknown
 IMPL_IUNKNOWN_QUERY_HEAD(MsaaDocAccessible)
 if (aIID == IID_ISimpleDOMDocument && LocalAcc()) {
-  statistics::ISimpleDOMUsed();
   *aInstancePtr = static_cast<ISimpleDOMDocument*>(new sdnDocAccessible(this));
   static_cast<IUnknown*>(*aInstancePtr)->AddRef();
   return S_OK;
@@ -94,29 +92,6 @@ MsaaDocAccessible::get_accParent(
        (nsWinUtils::IsWindowEmulationStarted() &&
         nsCoreUtils::IsTopLevelContentDocInProcess(docAcc->DocumentNode())))) {
     HWND hwnd = static_cast<HWND>(docAcc->GetNativeWindow());
-    if (hwnd && !docAcc->ParentDocument()) {
-      nsIFrame* frame = docAcc->GetFrame();
-      if (frame) {
-        nsIWidget* widget = frame->GetNearestWidget();
-        if (widget->GetWindowType() == widget::WindowType::Child &&
-            !widget->GetParent()) {
-          // Bug 1427304: Windows opened with popup=yes (such as the WebRTC
-          // sharing indicator) get two HWNDs. The root widget is associated
-          // with the inner HWND, but the outer HWND still answers to
-          // WM_GETOBJECT queries. This means that getting the parent of the
-          // oleacc window accessible for the inner HWND returns this
-          // root accessible. Thus, to avoid a loop, we must never return the
-          // oleacc window accessible for the inner HWND. Instead, we use the
-          // outer HWND here.
-          HWND parentHwnd = ::GetParent(hwnd);
-          if (parentHwnd) {
-            MOZ_ASSERT(::GetWindowLongW(parentHwnd, GWL_STYLE) & WS_POPUP,
-                       "Parent HWND should be a popup!");
-            hwnd = parentHwnd;
-          }
-        }
-      }
-    }
     if (hwnd &&
         SUCCEEDED(::CreateStdAccessibleObject(
             hwnd, OBJID_WINDOW, IID_IAccessible, (void**)ppdispParent))) {

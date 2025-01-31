@@ -43,11 +43,6 @@ let gHasOpenedBefore = false;
  * the associated MigrationWizardChild.
  */
 export class MigrationWizardParent extends JSWindowActorParent {
-  constructor() {
-    super();
-    Services.telemetry.setEventRecordingEnabled("browser.migration", true);
-  }
-
   didDestroy() {
     Services.obs.notifyObservers(this, "MigrationWizard:Destroyed");
     MigrationUtils.finishMigration();
@@ -78,7 +73,9 @@ export class MigrationWizardParent extends JSWindowActorParent {
 
     switch (message.name) {
       case "GetAvailableMigrators": {
-        let start = Cu.now();
+        if (!gHasOpenedBefore) {
+          Glean.migration.timeToProduceMigratorList.start();
+        }
 
         let availableMigrators = [];
         for (const key of MigrationUtils.availableMigratorKeys) {
@@ -103,13 +100,9 @@ export class MigrationWizardParent extends JSWindowActorParent {
             return b.lastModifiedDate - a.lastModifiedDate;
           });
 
-        let elapsed = Cu.now() - start;
         if (!gHasOpenedBefore) {
           gHasOpenedBefore = true;
-          Services.telemetry.scalarSet(
-            "migration.time_to_produce_migrator_list",
-            elapsed
-          );
+          Glean.migration.timeToProduceMigratorList.stop();
         }
 
         return filteredResults;
@@ -161,6 +154,23 @@ export class MigrationWizardParent extends JSWindowActorParent {
         this.#recordEvent(message.data.type, message.data.args);
         break;
       }
+
+      case "OpenAboutAddons": {
+        let browser = this.browsingContext.topChromeWindow;
+        this.#openAboutAddons(browser);
+        break;
+      }
+
+      case "GetPermissions": {
+        let migrator = await MigrationUtils.getMigrator(message.data.key);
+        return migrator.getPermissions(this.browsingContext.topChromeWindow);
+      }
+
+      case "OpenURL": {
+        let browser = this.browsingContext.topChromeWindow;
+        this.#openURL(browser, message.data.url, message.data.where);
+        break;
+      }
     }
 
     return null;
@@ -174,14 +184,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
    * @param {object} args
    *   The data to pass to telemetry when the event is recorded.
    */
-  #recordEvent(type, args = null) {
-    Services.telemetry.recordEvent(
-      "browser.migration",
-      type,
-      "wizard",
-      null,
-      args
-    );
+  #recordEvent(type, args) {
+    Glean.browserMigration[type + "Wizard"].record(args);
   }
 
   /**
@@ -208,7 +212,11 @@ export class MigrationWizardParent extends JSWindowActorParent {
 
     let { result, path } = await new Promise(resolve => {
       let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(window, filePickerConfig.title, Ci.nsIFilePicker.modeOpen);
+      fp.init(
+        window.browsingContext,
+        filePickerConfig.title,
+        Ci.nsIFilePicker.modeOpen
+      );
 
       for (let filter of filePickerConfig.filters) {
         fp.appendFilter(filter.title, filter.extensionPattern);
@@ -288,7 +296,11 @@ export class MigrationWizardParent extends JSWindowActorParent {
 
     let { result, path } = await new Promise(resolve => {
       let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(window, filePickerConfig.title, Ci.nsIFilePicker.modeOpen);
+      fp.init(
+        window.browsingContext,
+        filePickerConfig.title,
+        Ci.nsIFilePicker.modeOpen
+      );
 
       for (let filter of filePickerConfig.filters) {
         fp.appendFilter(filter.title, filter.extensionPattern);
@@ -573,17 +585,28 @@ export class MigrationWizardParent extends JSWindowActorParent {
         return null;
       }
 
+      if (!(await migrator.hasPermissions())) {
+        // If we're unable to get permissions for this migrator, then we
+        // just don't bother showing it.
+        let permissionsPath = await migrator.canGetPermissions();
+        if (!permissionsPath) {
+          return null;
+        }
+        return this.#serializeMigratorAndProfile(
+          migrator,
+          null,
+          false /* hasPermissions */,
+          permissionsPath
+        );
+      }
+
       let sourceProfiles = await migrator.getSourceProfiles();
       if (Array.isArray(sourceProfiles)) {
         if (!sourceProfiles.length) {
           return null;
         }
 
-        Services.telemetry.keyedScalarAdd(
-          "migration.discovered_migrators",
-          key,
-          sourceProfiles.length
-        );
+        Glean.migration.discoveredMigrators[key].add(sourceProfiles.length);
 
         let result = [];
         for (let profile of sourceProfiles) {
@@ -594,11 +617,7 @@ export class MigrationWizardParent extends JSWindowActorParent {
         return result;
       }
 
-      Services.telemetry.keyedScalarAdd(
-        "migration.discovered_migrators",
-        key,
-        1
-      );
+      Glean.migration.discoveredMigrators[key].add(1);
       return this.#serializeMigratorAndProfile(migrator, sourceProfiles);
     } catch (e) {
       console.error(`Could not get migrator with key ${key}`, e);
@@ -618,9 +637,23 @@ export class MigrationWizardParent extends JSWindowActorParent {
    *   The user profile object representing the profile to get information
    *   about. This object is usually gotten by calling getSourceProfiles on
    *   the migrator.
+   * @param {boolean} [hasPermissions=true]
+   *   Whether or not the migrator has permission to read the data for the
+   *   other browser. It is expected that the caller will have already
+   *   computed this by calling hasPermissions() on the migrator, and
+   *   passing the result into this method. This is true by default.
+   * @param {string} [permissionsPath=undefined]
+   *   The path that the selected migrator needs read access to in order to
+   *   do a migration, in the event that hasPermissions is false. This is
+   *   undefined if hasPermissions is true.
    * @returns {Promise<MigratorProfileInstance>}
    */
-  async #serializeMigratorAndProfile(migrator, profileObj) {
+  async #serializeMigratorAndProfile(
+    migrator,
+    profileObj,
+    hasPermissions = true,
+    permissionsPath
+  ) {
     let [profileMigrationData, lastModifiedDate] = await Promise.all([
       migrator.getMigrateData(profileObj),
       migrator.getLastUsedDate(),
@@ -628,25 +661,29 @@ export class MigrationWizardParent extends JSWindowActorParent {
 
     let availableResourceTypes = [];
 
-    for (let resourceType in MigrationUtils.resourceTypes) {
-      // Normally, we check each possible resourceType to see if we have one or
-      // more corresponding resourceTypes in profileMigrationData. The exception
-      // is for Safari, where the migrator does not expose a PASSWORDS resource
-      // type, but we allow the user to express that they'd like to import
-      // passwords from it anyways. This is because the Safari migration flow is
-      // special, and allows the user to import passwords from a file exported
-      // from Safari.
-      if (
-        profileMigrationData & MigrationUtils.resourceTypes[resourceType] ||
-        (migrator.constructor.key == lazy.SafariProfileMigrator?.key &&
-          MigrationUtils.resourceTypes[resourceType] ==
-            MigrationUtils.resourceTypes.PASSWORDS &&
-          Services.prefs.getBoolPref(
-            "signon.management.page.fileImport.enabled",
-            false
-          ))
-      ) {
-        availableResourceTypes.push(resourceType);
+    // Even if we don't have permissions, we'll show the resources available
+    // for Safari. For Safari, the workflow is to request permissions only
+    // after the resources have been selected.
+    if (
+      hasPermissions ||
+      migrator.constructor.key == lazy.SafariProfileMigrator?.key
+    ) {
+      for (let resourceType in MigrationUtils.resourceTypes) {
+        // Normally, we check each possible resourceType to see if we have one or
+        // more corresponding resourceTypes in profileMigrationData. The exception
+        // is for Safari, where the migrator does not expose a PASSWORDS resource
+        // type, but we allow the user to express that they'd like to import
+        // passwords from it anyways. This is because the Safari migration flow is
+        // special, and allows the user to import passwords from a file exported
+        // from Safari.
+        if (
+          profileMigrationData & MigrationUtils.resourceTypes[resourceType] ||
+          (migrator.constructor.key == lazy.SafariProfileMigrator?.key &&
+            MigrationUtils.resourceTypes[resourceType] ==
+              MigrationUtils.resourceTypes.PASSWORDS)
+        ) {
+          availableResourceTypes.push(resourceType);
+        }
       }
     }
 
@@ -671,6 +708,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
       resourceTypes: availableResourceTypes,
       profile: profileObj,
       lastModifiedDate,
+      hasPermissions,
+      permissionsPath,
     };
   }
 
@@ -768,5 +807,43 @@ export class MigrationWizardParent extends JSWindowActorParent {
       brandImage: fileMigrator.constructor.brandImage,
       resourceTypes: [],
     };
+  }
+
+  /**
+   * Opens the about:addons page in a new background tab in the same window
+   * as the passed browser.
+   *
+   * @param {Element} browser
+   *   The browser element requesting that about:addons opens.
+   */
+  #openAboutAddons(browser) {
+    let window = browser.ownerGlobal;
+    window.openTrustedLinkIn("about:addons", "tab", { inBackground: true });
+  }
+
+  /**
+   * Opens a url in a new background tab in the same window
+   * as the passed browser.
+   *
+   * @param {Element} browser
+   *   The browser element requesting that the URL opens in.
+   * @param {string} url
+   *   The URL that will be opened.
+   * @param {string} where
+   *   Where the URL will be opened. Defaults to current tab.
+   */
+  #openURL(browser, url, where) {
+    let window = browser.ownerGlobal;
+    window.openLinkIn(
+      Services.urlFormatter.formatURL(url),
+      where || "current",
+      {
+        private: false,
+        triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
+          {}
+        ),
+        csp: null,
+      }
+    );
   }
 }

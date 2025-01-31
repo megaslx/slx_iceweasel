@@ -1,5 +1,5 @@
 ;
-; Copyright (c) 2016, Alliance for Open Media. All rights reserved
+; Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ;
 ; This source code is subject to the terms of the BSD 2 Clause License and
 ; the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -45,7 +45,7 @@ TRANSFORM_COEFFS  9102,  13623
 
 SECTION .text
 
-%if ARCH_X86_64
+%if AOM_ARCH_X86_64
 INIT_XMM ssse3
 cglobal fdct8x8, 3, 5, 13, input, output, stride
 

@@ -9,7 +9,6 @@ import six
 
 @six.python_2_unicode_compatible
 class MarionetteException(Exception):
-
     """Raised when a generic non-recoverable exception has occured."""
 
     status = "webdriver error"
@@ -39,17 +38,17 @@ class MarionetteException(Exception):
 
         if self.cause:
             if type(self.cause) is tuple:
-                msg += u", caused by {0!r}".format(self.cause[0])
+                msg += ", caused by {0!r}".format(self.cause[0])
                 tb = self.cause[2]
             else:
-                msg += u", caused by {}".format(self.cause)
+                msg += ", caused by {}".format(self.cause)
 
         if self.stacktrace:
-            st = u"".join(["\t{}\n".format(x) for x in self.stacktrace.splitlines()])
-            msg += u"\nstacktrace:\n{}".format(st)
+            st = "".join(["\t{}\n".format(x) for x in self.stacktrace.splitlines()])
+            msg += "\nstacktrace:\n{}".format(st)
 
         if tb:
-            msg += u": " + u"".join(traceback.format_tb(tb))
+            msg += ": " + "".join(traceback.format_tb(tb))
 
         return six.text_type(msg)
 
@@ -193,7 +192,7 @@ class UnresponsiveInstanceException(Exception):
 es_ = [
     e
     for e in locals().values()
-    if type(e) == type and issubclass(e, MarionetteException)
+    if type(e) is type and issubclass(e, MarionetteException)
 ]
 by_string = {e.status: e for e in es_}
 

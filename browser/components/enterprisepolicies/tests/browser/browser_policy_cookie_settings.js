@@ -12,9 +12,6 @@ function restore_prefs() {
   Services.prefs.clearUserPref(
     "network.cookieJarSettings.unblocked_for_testing"
   );
-  Services.prefs.clearUserPref(
-    "network.cookie.rejectForeignWithExceptions.enabled"
-  );
 }
 
 registerCleanupFunction(restore_prefs);
@@ -52,9 +49,8 @@ async function test_cookie_settings({
     uri: firstPartyURI,
     loadUsingSystemPrincipal: true,
   });
-  channel.QueryInterface(
-    Ci.nsIHttpChannelInternal
-  ).forceAllowThirdPartyCookie = true;
+  channel.QueryInterface(Ci.nsIHttpChannelInternal).forceAllowThirdPartyCookie =
+    true;
   Services.cookies.removeAll();
   Services.cookies.setCookieStringFromHttp(
     firstPartyURI,
@@ -172,10 +168,6 @@ add_task(async function test_initial_state() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
 
   await test_cookie_settings({
     cookiesEnabled: true,
@@ -191,10 +183,7 @@ add_task(async function test_undefined_unlocked() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {},
@@ -213,10 +202,7 @@ add_task(async function test_disabled() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {
@@ -238,10 +224,7 @@ add_task(async function test_third_party_disabled() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {
@@ -263,10 +246,7 @@ add_task(async function test_disabled_and_third_party_disabled() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {
@@ -289,10 +269,7 @@ add_task(async function test_disabled_and_third_party_disabled_locked() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {
@@ -316,10 +293,7 @@ add_task(async function test_undefined_locked() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {
@@ -341,10 +315,7 @@ add_task(async function test_cookie_reject_trackers() {
     "network.cookieJarSettings.unblocked_for_testing",
     true
   );
-  Services.prefs.setBoolPref(
-    "network.cookie.rejectForeignWithExceptions.enabled",
-    false
-  );
+
   await setupPolicyEngineWithJson({
     policies: {
       Cookies: {

@@ -31,6 +31,8 @@ SVGTitleElement::SVGTitleElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGTitleElementBase(std::move(aNodeInfo)) {
   AddMutationObserver(this);
+  SetEnabledCallbacks(kCharacterDataChanged | kContentAppended |
+                      kContentInserted | kContentWillBeRemoved);
 }
 
 void SVGTitleElement::CharacterDataChanged(nsIContent* aContent,
@@ -46,8 +48,7 @@ void SVGTitleElement::ContentInserted(nsIContent* aChild) {
   SendTitleChangeEvent(false);
 }
 
-void SVGTitleElement::ContentRemoved(nsIContent* aChild,
-                                     nsIContent* aPreviousSibling) {
+void SVGTitleElement::ContentWillBeRemoved(nsIContent* aChild) {
   SendTitleChangeEvent(false);
 }
 
@@ -61,11 +62,11 @@ nsresult SVGTitleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void SVGTitleElement::UnbindFromTree(bool aNullParent) {
+void SVGTitleElement::UnbindFromTree(UnbindContext& aContext) {
   SendTitleChangeEvent(false);
 
   // Let this fall through.
-  SVGTitleElementBase::UnbindFromTree(aNullParent);
+  SVGTitleElementBase::UnbindFromTree(aContext);
 }
 
 void SVGTitleElement::DoneAddingChildren(bool aHaveNotified) {
@@ -75,8 +76,7 @@ void SVGTitleElement::DoneAddingChildren(bool aHaveNotified) {
 }
 
 void SVGTitleElement::SendTitleChangeEvent(bool aBound) {
-  Document* doc = GetUncomposedDoc();
-  if (doc) {
+  if (Document* doc = GetUncomposedDoc()) {
     doc->NotifyPossibleTitleChange(aBound);
   }
 }

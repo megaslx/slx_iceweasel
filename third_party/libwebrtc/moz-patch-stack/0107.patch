@@ -1,42 +1,59 @@
 From: Michael Froman <mfroman@mozilla.com>
-Date: Fri, 9 Jun 2023 19:59:00 +0000
-Subject: Bug 1837647 - limit GetDpiForMonitor to return default value to fix
- Win7 tests. r=dbaker,webrtc-reviewers
+Date: Fri, 21 Jun 2024 16:28:00 -0500
+Subject: Bug 1903098 - (fix-cd09858f4a) disable perfetto usage to avoid new
+ third_party library.
 
-Upstream commit 60795e8c7a added a call to ::GetDpiForMonitor which is only
-supported in Win8 and newer.  This is causing perma-orange on try, so we'll
-disable it for now and fix properly in Bug 1837667.
-
-Differential Revision: https://phabricator.services.mozilla.com/D180460
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/501ade4b55d97797e4cf4416ddf1aa5aca207b9e
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/b050c455caa1d24a0cfa4933ac8cd82c9cd3c347
 ---
- modules/desktop_capture/win/screen_capture_utils.cc | 6 ++++++
- 1 file changed, 6 insertions(+)
+ BUILD.gn                                |  2 ++
+ modules/video_coding/generic_decoder.cc | 10 +++++-----
+ 2 files changed, 7 insertions(+), 5 deletions(-)
 
-diff --git a/modules/desktop_capture/win/screen_capture_utils.cc b/modules/desktop_capture/win/screen_capture_utils.cc
-index 5409417a88..c0144b0ef3 100644
---- a/modules/desktop_capture/win/screen_capture_utils.cc
-+++ b/modules/desktop_capture/win/screen_capture_utils.cc
-@@ -147,6 +147,11 @@ DesktopRect GetFullscreenRect() {
+diff --git a/BUILD.gn b/BUILD.gn
+index 4a965e69d5..9f0c1277c5 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -278,6 +278,7 @@ config("rtc_prod_config") {
  }
  
- DesktopVector GetDpiForMonitor(HMONITOR monitor) {
-+// See Bug 1837647 - upstream commit 60795e8c7a added this method using
-+// ::GetDpiForMonitor which is not available on Win7 machines.  For now,
-+// we'll return the default case of {96, 96} until we can properly
-+// restore the functionality for newer machines (See Bug 1837667).
-+#if 0
-   UINT dpi_x, dpi_y;
-   // MDT_EFFECTIVE_DPI includes the scale factor as well as the system DPI.
-   HRESULT hr = ::GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
-@@ -163,6 +168,7 @@ DesktopVector GetDpiForMonitor(HMONITOR monitor) {
-     ReleaseDC(nullptr, hdc);
-     return dpi;
+ group("tracing") {
++if (!build_with_mozilla) {
+   all_dependent_configs = [ "//third_party/perfetto/gn:public_config" ]
+   if (rtc_use_perfetto) {
+     if (build_with_chromium) {
+@@ -294,6 +295,7 @@ group("tracing") {
+         [ "//third_party/perfetto/include/perfetto/tracing" ]
    }
-+#endif
+ }
++}
  
-   // If everything fails, then return the default DPI for Windows.
-   return {96, 96};
--- 
-2.34.1
-
+ if (rtc_use_perfetto) {
+   rtc_library("webrtc_libperfetto") {
+diff --git a/modules/video_coding/generic_decoder.cc b/modules/video_coding/generic_decoder.cc
+index 23199f7a34..721ce7fac9 100644
+--- a/modules/video_coding/generic_decoder.cc
++++ b/modules/video_coding/generic_decoder.cc
+@@ -109,9 +109,9 @@ void VCMDecodedFrameCallback::Decoded(VideoFrame& decodedImage,
+                                       std::optional<int32_t> decode_time_ms,
+                                       std::optional<uint8_t> qp) {
+   RTC_DCHECK(_receiveCallback) << "Callback must not be null at this point";
+-  TRACE_EVENT(
+-      "webrtc", "VCMDecodedFrameCallback::Decoded",
+-      perfetto::TerminatingFlow::ProcessScoped(decodedImage.rtp_timestamp()));
++  TRACE_EVENT_INSTANT1("webrtc", "VCMDecodedFrameCallback::Decoded",
++                       TRACE_EVENT_SCOPE_GLOBAL, "timestamp",
++                       decodedImage.rtp_timestamp());
+   // TODO(holmer): We should improve this so that we can handle multiple
+   // callbacks from one call to Decode().
+   std::optional<FrameInfo> frame_info;
+@@ -319,8 +319,8 @@ int32_t VCMGenericDecoder::Decode(
+     const std::optional<
+         absl::variant<FrameInstrumentationSyncData, FrameInstrumentationData>>&
+         frame_instrumentation_data) {
+-  TRACE_EVENT("webrtc", "VCMGenericDecoder::Decode",
+-              perfetto::Flow::ProcessScoped(frame.RtpTimestamp()));
++  TRACE_EVENT1("webrtc", "VCMGenericDecoder::Decode", "timestamp",
++               frame.RtpTimestamp());
+   FrameInfo frame_info;
+   frame_info.rtp_timestamp = frame.RtpTimestamp();
+   frame_info.decode_start = now;

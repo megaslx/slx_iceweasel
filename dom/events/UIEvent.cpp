@@ -30,12 +30,7 @@ UIEvent::UIEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                  WidgetGUIEvent* aEvent)
     : Event(aOwner, aPresContext,
             aEvent ? aEvent : new InternalUIEvent(false, eVoidEvent, nullptr)),
-      mDefaultClientPoint(0, 0),
-      mLayerPoint(0, 0),
-      mPagePoint(0, 0),
-      mMovementPoint(0, 0),
-      mIsPointerLocked(PointerLockManager::IsLocked()),
-      mLastClientPoint(EventStateManager::sLastClientPoint) {
+      mLayerPoint(0, 0) {
   if (aEvent) {
     mEventIsInternal = false;
   } else {
@@ -91,34 +86,6 @@ NS_IMPL_RELEASE_INHERITED(UIEvent, Event)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UIEvent)
 NS_INTERFACE_MAP_END_INHERITING(Event)
-
-static nsIntPoint DevPixelsToCSSPixels(const LayoutDeviceIntPoint& aPoint,
-                                       nsPresContext* aContext) {
-  return nsIntPoint(aContext->DevPixelsToIntCSSPixels(aPoint.x),
-                    aContext->DevPixelsToIntCSSPixels(aPoint.y));
-}
-
-nsIntPoint UIEvent::GetMovementPoint() {
-  if (mEvent->mFlags.mIsPositionless) {
-    return nsIntPoint(0, 0);
-  }
-
-  if (mPrivateDataDuplicated || mEventIsInternal) {
-    return mMovementPoint;
-  }
-
-  if (!mEvent || !mEvent->AsGUIEvent()->mWidget ||
-      (mEvent->mMessage != eMouseMove && mEvent->mMessage != ePointerMove)) {
-    // Pointer Lock spec defines that movementX/Y must be zero for all mouse
-    // events except mousemove.
-    return nsIntPoint(0, 0);
-  }
-
-  // Calculate the delta between the last screen point and the current one.
-  nsIntPoint current = DevPixelsToCSSPixels(mEvent->mRefPoint, mPresContext);
-  nsIntPoint last = DevPixelsToCSSPixels(mEvent->mLastRefPoint, mPresContext);
-  return current - last;
-}
 
 void UIEvent::InitUIEvent(const nsAString& typeArg, bool canBubbleArg,
                           bool cancelableArg, nsGlobalWindowInner* viewArg,
@@ -189,16 +156,12 @@ nsIntPoint UIEvent::GetLayerPoint() const {
 }
 
 void UIEvent::DuplicatePrivateData() {
-  mDefaultClientPoint = Event::GetClientCoords(
-      mPresContext, mEvent, mEvent->mRefPoint, mDefaultClientPoint);
-  mMovementPoint = GetMovementPoint();
   mLayerPoint = GetLayerPoint();
-  mPagePoint = Event::GetPageCoords(mPresContext, mEvent, mEvent->mRefPoint,
-                                    mDefaultClientPoint);
+
   // GetScreenPoint converts mEvent->mRefPoint to right coordinates.
-  CSSIntPoint screenPoint =
+  const CSSIntPoint screenPoint = RoundedToInt(
       Event::GetScreenCoords(mPresContext, mEvent, mEvent->mRefPoint)
-          .valueOr(CSSIntPoint{0, 0});
+          .valueOr(CSSIntPoint{0, 0}));
 
   Event::DuplicatePrivateData();
 
@@ -227,7 +190,7 @@ bool UIEvent::Deserialize(IPC::MessageReader* aReader) {
 
 // XXX Following struct and array are used only in
 //     UIEvent::ComputeModifierState(), but if we define them in it,
-//     we fail to build on Mac at calling mozilla::ArrayLength().
+//     we fail to build on Mac at calling std::size().
 struct ModifierPair {
   Modifier modifier;
   const char* name;
@@ -246,7 +209,6 @@ static const ModifierPair kPairs[] = {
   { MODIFIER_SHIFT,      NS_DOM_KEYNAME_SHIFT },
   { MODIFIER_SYMBOL,     NS_DOM_KEYNAME_SYMBOL },
   { MODIFIER_SYMBOLLOCK, NS_DOM_KEYNAME_SYMBOLLOCK },
-  { MODIFIER_OS,         NS_DOM_KEYNAME_OS }
     // clang-format on
 };
 
@@ -266,7 +228,7 @@ Modifiers UIEvent::ComputeModifierState(const nsAString& aModifiersList) {
   aModifiersList.BeginReading(listStart);
   aModifiersList.EndReading(listEnd);
 
-  for (uint32_t i = 0; i < ArrayLength(kPairs); i++) {
+  for (uint32_t i = 0; i < std::size(kPairs); i++) {
     nsAString::const_iterator start(listStart), end(listEnd);
     if (!FindInReadable(NS_ConvertASCIItoUTF16(kPairs[i].name), start, end)) {
       continue;
@@ -288,6 +250,29 @@ bool UIEvent::GetModifierStateInternal(const nsAString& aKey) {
   return ((inputEvent->mModifiers & WidgetInputEvent::GetModifier(aKey)) != 0);
 }
 
+static Modifiers ConvertToModifiers(const EventModifierInit& aParam) {
+  Modifiers bits = MODIFIER_NONE;
+
+#define SET_MODIFIER(aName, aValue) bits |= aParam.m##aName ? (aValue) : 0;
+
+  SET_MODIFIER(CtrlKey, MODIFIER_CONTROL)
+  SET_MODIFIER(ShiftKey, MODIFIER_SHIFT)
+  SET_MODIFIER(AltKey, MODIFIER_ALT)
+  SET_MODIFIER(MetaKey, MODIFIER_META)
+  SET_MODIFIER(ModifierAltGraph, MODIFIER_ALTGRAPH)
+  SET_MODIFIER(ModifierCapsLock, MODIFIER_CAPSLOCK)
+  SET_MODIFIER(ModifierFn, MODIFIER_FN)
+  SET_MODIFIER(ModifierFnLock, MODIFIER_FNLOCK)
+  SET_MODIFIER(ModifierNumLock, MODIFIER_NUMLOCK)
+  SET_MODIFIER(ModifierScrollLock, MODIFIER_SCROLLLOCK)
+  SET_MODIFIER(ModifierSymbol, MODIFIER_SYMBOL)
+  SET_MODIFIER(ModifierSymbolLock, MODIFIER_SYMBOLLOCK)
+
+#undef SET_MODIFIER
+
+  return bits;
+}
+
 void UIEvent::InitModifiers(const EventModifierInit& aParam) {
   if (NS_WARN_IF(!mEvent)) {
     return;
@@ -299,28 +284,7 @@ void UIEvent::InitModifiers(const EventModifierInit& aParam) {
     return;
   }
 
-  inputEvent->mModifiers = MODIFIER_NONE;
-
-#define SET_MODIFIER(aName, aValue)   \
-  if (aParam.m##aName) {              \
-    inputEvent->mModifiers |= aValue; \
-  }
-
-  SET_MODIFIER(CtrlKey, MODIFIER_CONTROL)
-  SET_MODIFIER(ShiftKey, MODIFIER_SHIFT)
-  SET_MODIFIER(AltKey, MODIFIER_ALT)
-  SET_MODIFIER(MetaKey, MODIFIER_META)
-  SET_MODIFIER(ModifierAltGraph, MODIFIER_ALTGRAPH)
-  SET_MODIFIER(ModifierCapsLock, MODIFIER_CAPSLOCK)
-  SET_MODIFIER(ModifierFn, MODIFIER_FN)
-  SET_MODIFIER(ModifierFnLock, MODIFIER_FNLOCK)
-  SET_MODIFIER(ModifierNumLock, MODIFIER_NUMLOCK)
-  SET_MODIFIER(ModifierOS, MODIFIER_OS)
-  SET_MODIFIER(ModifierScrollLock, MODIFIER_SCROLLLOCK)
-  SET_MODIFIER(ModifierSymbol, MODIFIER_SYMBOL)
-  SET_MODIFIER(ModifierSymbolLock, MODIFIER_SYMBOLLOCK)
-
-#undef SET_MODIFIER
+  inputEvent->mModifiers = ConvertToModifiers(aParam);
 }
 
 }  // namespace mozilla::dom

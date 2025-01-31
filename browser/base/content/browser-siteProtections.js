@@ -7,10 +7,9 @@
 ChromeUtils.defineESModuleGetters(this, {
   ContentBlockingAllowList:
     "resource://gre/modules/ContentBlockingAllowList.sys.mjs",
-});
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  ToolbarPanelHub: "resource://activity-stream/lib/ToolbarPanelHub.jsm",
+  ReportBrokenSite: "resource:///modules/ReportBrokenSite.sys.mjs",
+  SpecialMessageActions:
+    "resource://messaging-system/lib/SpecialMessageActions.sys.mjs",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -33,10 +32,6 @@ class ProtectionCategory {
    * @param {Object} options - Category options.
    * @param {string} options.prefEnabled - ID of pref which controls the
    * category enabled state.
-   * @param {string} [options.reportBreakageLabel] - Telemetry label to use when
-   * users report TP breakage. Defaults to protection ID.
-   * @param {string} [options.l10nId] - Identifier l10n strings are keyed under
-   * for this category. Defaults to protection ID.
    * @param {Object} flags - Flags for this category to look for in the content
    * blocking event and content blocking log.
    * @param {Number} [flags.load] - Load flag for this protection category. If
@@ -53,7 +48,7 @@ class ProtectionCategory {
    */
   constructor(
     id,
-    { prefEnabled, reportBreakageLabel, l10nId },
+    { prefEnabled },
     {
       load,
       block,
@@ -63,7 +58,6 @@ class ProtectionCategory {
   ) {
     this._id = id;
     this.prefEnabled = prefEnabled;
-    this._reportBreakageLabel = reportBreakageLabel || id;
 
     this._flags = { load, block, shim, allow };
 
@@ -79,34 +73,28 @@ class ProtectionCategory {
       );
     }
 
-    l10nId = l10nId || id;
-    this.strings = {};
-    XPCOMUtils.defineLazyGetter(this.strings, "subViewBlocked", () =>
-      gNavigatorBundle.getString(`contentBlocking.${l10nId}View.blocked.label`)
-    );
-    XPCOMUtils.defineLazyGetter(this.strings, "subViewTitleBlocking", () =>
-      gNavigatorBundle.getString(`protections.blocking.${l10nId}.title`)
-    );
-    XPCOMUtils.defineLazyGetter(this.strings, "subViewTitleNotBlocking", () =>
-      gNavigatorBundle.getString(`protections.notBlocking.${l10nId}.title`)
-    );
+    MozXULElement.insertFTLIfNeeded("browser/siteProtections.ftl");
 
-    XPCOMUtils.defineLazyGetter(this, "subView", () =>
+    ChromeUtils.defineLazyGetter(this, "subView", () =>
       document.getElementById(`protections-popup-${this._id}View`)
     );
 
-    XPCOMUtils.defineLazyGetter(this, "subViewHeading", () =>
+    ChromeUtils.defineLazyGetter(this, "subViewHeading", () =>
       document.getElementById(`protections-popup-${this._id}View-heading`)
     );
 
-    XPCOMUtils.defineLazyGetter(this, "subViewList", () =>
+    ChromeUtils.defineLazyGetter(this, "subViewList", () =>
       document.getElementById(`protections-popup-${this._id}View-list`)
     );
 
-    XPCOMUtils.defineLazyGetter(this, "subViewShimAllowHint", () =>
+    ChromeUtils.defineLazyGetter(this, "subViewShimAllowHint", () =>
       document.getElementById(
         `protections-popup-${this._id}View-shim-allow-hint`
       )
+    );
+
+    ChromeUtils.defineLazyGetter(this, "isWindowPrivate", () =>
+      PrivateBrowsingUtils.isWindowPrivate(window)
     );
   }
 
@@ -118,10 +106,6 @@ class ProtectionCategory {
   // Some child classes may overide this getter.
   get enabled() {
     return this._enabled;
-  }
-
-  get reportBreakageLabel() {
-    return this._reportBreakageLabel;
   }
 
   /**
@@ -178,12 +162,29 @@ class ProtectionCategory {
 
     this.subViewList.textContent = "";
     this.subViewList.append(items);
-    this.subView.setAttribute(
-      "title",
-      this.blockingEnabled && !gProtectionsHandler.hasException
-        ? this.strings.subViewTitleBlocking
-        : this.strings.subViewTitleNotBlocking
-    );
+    const isBlocking =
+      this.blockingEnabled && !gProtectionsHandler.hasException;
+    let l10nId;
+    switch (this._id) {
+      case "cryptominers":
+        l10nId = isBlocking
+          ? "protections-blocking-cryptominers"
+          : "protections-not-blocking-cryptominers";
+        break;
+      case "fingerprinters":
+        l10nId = isBlocking
+          ? "protections-blocking-fingerprinters"
+          : "protections-not-blocking-fingerprinters";
+        break;
+      case "socialblock":
+        l10nId = isBlocking
+          ? "protections-blocking-social-media-trackers"
+          : "protections-not-blocking-social-media-trackers";
+        break;
+    }
+    if (l10nId) {
+      document.l10n.setAttributes(this.subView, l10nId);
+    }
   }
 
   /**
@@ -276,7 +277,6 @@ class ProtectionCategory {
       allowIndicator,
       "protections-panel-shim-allowed-indicator"
     );
-    allowIndicator.tooltipText = this.strings.subViewShimAllowedTooltip;
     allowIndicator.classList.add(
       "protections-popup-list-host-shim-allow-indicator"
     );
@@ -318,25 +318,90 @@ class ProtectionCategory {
   }
 }
 
-let Fingerprinting = new ProtectionCategory(
-  "fingerprinters",
-  {
-    prefEnabled: "privacy.trackingprotection.fingerprinting.enabled",
-    reportBreakageLabel: "fingerprinting",
-  },
-  {
-    load: Ci.nsIWebProgressListener.STATE_LOADED_FINGERPRINTING_CONTENT,
-    block: Ci.nsIWebProgressListener.STATE_BLOCKED_FINGERPRINTING_CONTENT,
-    shim: Ci.nsIWebProgressListener.STATE_REPLACED_FINGERPRINTING_CONTENT,
-    allow: Ci.nsIWebProgressListener.STATE_ALLOWED_FINGERPRINTING_CONTENT,
-  }
-);
+let Fingerprinting =
+  new (class FingerprintingProtection extends ProtectionCategory {
+    constructor() {
+      super(
+        "fingerprinters",
+        {
+          prefEnabled: "privacy.trackingprotection.fingerprinting.enabled",
+        },
+        {
+          load: Ci.nsIWebProgressListener.STATE_LOADED_FINGERPRINTING_CONTENT,
+          block: Ci.nsIWebProgressListener.STATE_BLOCKED_FINGERPRINTING_CONTENT,
+          shim: Ci.nsIWebProgressListener.STATE_REPLACED_FINGERPRINTING_CONTENT,
+          allow: Ci.nsIWebProgressListener.STATE_ALLOWED_FINGERPRINTING_CONTENT,
+        }
+      );
+
+      this.prefFPPEnabled = "privacy.fingerprintingProtection";
+      this.prefFPPEnabledInPrivateWindows =
+        "privacy.fingerprintingProtection.pbmode";
+
+      this.enabledFPB = false;
+      this.enabledFPPGlobally = false;
+      this.enabledFPPInPrivateWindows = false;
+    }
+
+    init() {
+      this.updateEnabled();
+
+      Services.prefs.addObserver(this.prefEnabled, this);
+      Services.prefs.addObserver(this.prefFPPEnabled, this);
+      Services.prefs.addObserver(this.prefFPPEnabledInPrivateWindows, this);
+    }
+
+    uninit() {
+      Services.prefs.removeObserver(this.prefEnabled, this);
+      Services.prefs.removeObserver(this.prefFPPEnabled, this);
+      Services.prefs.removeObserver(this.prefFPPEnabledInPrivateWindows, this);
+    }
+
+    updateEnabled() {
+      this.enabledFPB = Services.prefs.getBoolPref(this.prefEnabled);
+      this.enabledFPPGlobally = Services.prefs.getBoolPref(this.prefFPPEnabled);
+      this.enabledFPPInPrivateWindows = Services.prefs.getBoolPref(
+        this.prefFPPEnabledInPrivateWindows
+      );
+    }
+
+    observe() {
+      this.updateEnabled();
+      this.updateCategoryItem();
+    }
+
+    get enabled() {
+      return (
+        this.enabledFPB ||
+        this.enabledFPPGlobally ||
+        (this.isWindowPrivate && this.enabledFPPInPrivateWindows)
+      );
+    }
+
+    isBlocking(state) {
+      let blockFlag = this._flags.block;
+
+      // We only consider the suspicious fingerprinting flag if the
+      // fingerprinting protection is enabled in the context.
+      if (
+        this.enabledFPPGlobally ||
+        (this.isWindowPrivate && this.enabledFPPInPrivateWindows)
+      ) {
+        blockFlag |=
+          Ci.nsIWebProgressListener.STATE_BLOCKED_SUSPICIOUS_FINGERPRINTING;
+      }
+
+      return (state & blockFlag) != 0;
+    }
+
+    // TODO (Bug 1864914): Consider showing suspicious fingerprinting as allowed
+    // when the fingerprinting protection is disabled.
+  })();
 
 let Cryptomining = new ProtectionCategory(
   "cryptominers",
   {
     prefEnabled: "privacy.trackingprotection.cryptomining.enabled",
-    reportBreakageLabel: "cryptomining",
   },
   {
     load: Ci.nsIWebProgressListener.STATE_LOADED_CRYPTOMINING_CONTENT,
@@ -350,9 +415,7 @@ let TrackingProtection =
       super(
         "trackers",
         {
-          l10nId: "trackingContent",
           prefEnabled: "privacy.trackingprotection.enabled",
-          reportBreakageLabel: "trackingprotection",
         },
         {
           load: null,
@@ -360,11 +423,6 @@ let TrackingProtection =
             Ci.nsIWebProgressListener.STATE_BLOCKED_TRACKING_CONTENT |
             Ci.nsIWebProgressListener.STATE_BLOCKED_EMAILTRACKING_CONTENT,
         }
-      );
-
-      // Blocked label has custom key, overwrite the getter.
-      XPCOMUtils.defineLazyGetter(this.strings, "subViewBlocked", () =>
-        gNavigatorBundle.getString("contentBlocking.trackersView.blocked.label")
       );
 
       this.prefEnabledInPrivateWindows =
@@ -444,7 +502,7 @@ let TrackingProtection =
       return (
         this.enabledGlobally ||
         this.emailTrackingProtectionEnabledGlobally ||
-        (PrivateBrowsingUtils.isWindowPrivate(window) &&
+        (this.isWindowPrivate &&
           (this.enabledInPrivateWindows ||
             this.emailTrackingProtectionEnabledInPrivateWindows))
       );
@@ -503,8 +561,9 @@ let TrackingProtection =
 
         let emptyLabel = document.createXULElement("label");
         emptyLabel.classList.add("protections-popup-empty-label");
-        emptyLabel.textContent = gNavigatorBundle.getString(
-          "contentBlocking.trackersView.empty.label"
+        document.l10n.setAttributes(
+          emptyLabel,
+          "content-blocking-trackers-view-empty"
         );
 
         items.appendChild(emptyImage);
@@ -524,12 +583,11 @@ let TrackingProtection =
 
         this.subViewList.textContent = "";
         this.subViewList.append(items);
-        this.subView.setAttribute(
-          "title",
+        const l10nId =
           this.enabled && !gProtectionsHandler.hasException
-            ? this.strings.subViewTitleBlocking
-            : this.strings.subViewTitleNotBlocking
-        );
+            ? "protections-blocking-tracking-content"
+            : "protections-not-blocking-tracking-content";
+        document.l10n.setAttributes(this.subView, l10nId);
       }
     }
 
@@ -607,20 +665,8 @@ let ThirdPartyCookies =
         }
       );
 
-      XPCOMUtils.defineLazyGetter(this, "categoryLabel", () =>
+      ChromeUtils.defineLazyGetter(this, "categoryLabel", () =>
         document.getElementById("protections-popup-cookies-category-label")
-      );
-
-      // Not blocking title has custom key, overwrite the getter.
-      XPCOMUtils.defineLazyGetter(this.strings, "subViewTitleNotBlocking", () =>
-        gNavigatorBundle.getString(
-          "protections.notBlocking.crossSiteTrackingCookies.title"
-        )
-      );
-
-      // Cookie permission state label.
-      XPCOMUtils.defineLazyGetter(this.strings, "subViewAllowed", () =>
-        gNavigatorBundle.getString("contentBlocking.cookiesView.allowed.label")
       );
 
       this.prefEnabledValues = [
@@ -641,28 +687,6 @@ let ThirdPartyCookies =
       );
     }
 
-    get reportBreakageLabel() {
-      switch (this.behaviorPref) {
-        case Ci.nsICookieService.BEHAVIOR_ACCEPT:
-          return "nocookiesblocked";
-        case Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN:
-          return "allthirdpartycookiesblocked";
-        case Ci.nsICookieService.BEHAVIOR_REJECT:
-          return "allcookiesblocked";
-        case Ci.nsICookieService.BEHAVIOR_LIMIT_FOREIGN:
-          return "cookiesfromunvisitedsitesblocked";
-        default:
-          console.error(
-            `Error: Unknown cookieBehavior pref observed: ${this.behaviorPref}`
-          );
-        // fall through
-        case Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER:
-          return "cookierestrictions";
-        case Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN:
-          return "cookierestrictionsforeignpartitioned";
-      }
-    }
-
     isBlocking(state) {
       return (
         (state & Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_TRACKER) !=
@@ -674,7 +698,10 @@ let ThirdPartyCookies =
         (state &
           Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_BY_PERMISSION) !=
           0 ||
-        (state & Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_FOREIGN) != 0
+        (state & Ci.nsIWebProgressListener.STATE_COOKIES_BLOCKED_FOREIGN) !=
+          0 ||
+        (state & Ci.nsIWebProgressListener.STATE_COOKIES_PARTITIONED_TRACKER) !=
+          0
       );
     }
 
@@ -709,36 +736,36 @@ let ThirdPartyCookies =
       if (!super.updateCategoryItem()) {
         return;
       }
-      let label;
 
+      let l10nId;
       if (!this.enabled) {
-        label = "contentBlocking.cookies.blockingTrackers3.label";
+        l10nId = "content-blocking-cookies-blocking-trackers-label";
       } else {
         switch (this.behaviorPref) {
           case Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN:
-            label = "contentBlocking.cookies.blocking3rdParty2.label";
+            l10nId = "content-blocking-cookies-blocking-third-party-label";
             break;
           case Ci.nsICookieService.BEHAVIOR_REJECT:
-            label = "contentBlocking.cookies.blockingAll2.label";
+            l10nId = "content-blocking-cookies-blocking-all-label";
             break;
           case Ci.nsICookieService.BEHAVIOR_LIMIT_FOREIGN:
-            label = "contentBlocking.cookies.blockingUnvisited2.label";
+            l10nId = "content-blocking-cookies-blocking-unvisited-label";
             break;
           case Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER:
           case Ci.nsICookieService
             .BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN:
-            label = "contentBlocking.cookies.blockingTrackers3.label";
+            l10nId = "content-blocking-cookies-blocking-trackers-label";
             break;
           default:
             console.error(
               `Error: Unknown cookieBehavior pref observed: ${this.behaviorPref}`
             );
-            break;
+            this.categoryLabel.removeAttribute("data-l10n-id");
+            this.categoryLabel.textContent = "";
+            return;
         }
       }
-      this.categoryLabel.textContent = label
-        ? gNavigatorBundle.getString(label)
-        : "";
+      document.l10n.setAttributes(this.categoryLabel, l10nId);
     }
 
     get enabled() {
@@ -773,11 +800,21 @@ let ThirdPartyCookies =
         box.className = "protections-popup-cookiesView-list-section";
         let label = document.createXULElement("label");
         label.className = "protections-popup-cookiesView-list-header";
-        label.textContent = gNavigatorBundle.getString(
-          `contentBlocking.cookiesView.${
-            category == "trackers" ? "trackers2" : category
-          }.label`
-        );
+        let l10nId;
+        switch (category) {
+          case "trackers":
+            l10nId = "content-blocking-cookies-view-trackers-label";
+            break;
+          case "firstParty":
+            l10nId = "content-blocking-cookies-view-first-party-label";
+            break;
+          case "thirdParty":
+            l10nId = "content-blocking-cookies-view-third-party-label";
+            break;
+        }
+        if (l10nId) {
+          document.l10n.setAttributes(label, l10nId);
+        }
         box.appendChild(label);
 
         for (let info of itemsToShow) {
@@ -789,35 +826,36 @@ let ThirdPartyCookies =
 
       this.subViewHeading.hidden = false;
       if (!this.enabled) {
-        this.subView.setAttribute(
-          "title",
-          this.strings.subViewTitleNotBlocking
+        document.l10n.setAttributes(
+          this.subView,
+          "protections-not-blocking-cross-site-tracking-cookies"
         );
         return;
       }
 
-      let title;
+      let l10nId;
       let siteException = gProtectionsHandler.hasException;
-      let titleStringPrefix = `protections.${
-        siteException ? "notBlocking" : "blocking"
-      }.cookies.`;
       switch (this.behaviorPref) {
         case Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN:
-          title = titleStringPrefix + "3rdParty.title";
+          l10nId = siteException
+            ? "protections-not-blocking-cookies-third-party"
+            : "protections-blocking-cookies-third-party";
           this.subViewHeading.hidden = true;
           if (this.subViewHeading.nextSibling.nodeName == "toolbarseparator") {
             this.subViewHeading.nextSibling.hidden = true;
           }
           break;
         case Ci.nsICookieService.BEHAVIOR_REJECT:
-          title = titleStringPrefix + "all.title";
+          l10nId = siteException
+            ? "protections-not-blocking-cookies-all"
+            : "protections-blocking-cookies-all";
           this.subViewHeading.hidden = true;
           if (this.subViewHeading.nextSibling.nodeName == "toolbarseparator") {
             this.subViewHeading.nextSibling.hidden = true;
           }
           break;
         case Ci.nsICookieService.BEHAVIOR_LIMIT_FOREIGN:
-          title = "protections.blocking.cookies.unvisited.title";
+          l10nId = "protections-blocking-cookies-unvisited";
           this.subViewHeading.hidden = true;
           if (this.subViewHeading.nextSibling.nodeName == "toolbarseparator") {
             this.subViewHeading.nextSibling.hidden = true;
@@ -825,18 +863,18 @@ let ThirdPartyCookies =
           break;
         case Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER:
         case Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN:
-          title = siteException
-            ? "protections.notBlocking.crossSiteTrackingCookies.title"
-            : "protections.blocking.cookies.trackers.title";
+          l10nId = siteException
+            ? "protections-not-blocking-cross-site-tracking-cookies"
+            : "protections-blocking-cookies-trackers";
           break;
         default:
           console.error(
             `Error: Unknown cookieBehavior pref when updating subview: ${this.behaviorPref}`
           );
-          break;
+          return;
       }
 
-      this.subView.setAttribute("title", gNavigatorBundle.getString(title));
+      document.l10n.setAttributes(this.subView, l10nId);
     }
 
     _getExceptionState(origin) {
@@ -988,18 +1026,21 @@ let ThirdPartyCookies =
 
         let stateLabel = document.createXULElement("label");
         stateLabel.className = "protections-popup-list-state-label";
+        let l10nId;
         if (isAllowed) {
-          stateLabel.value = this.strings.subViewAllowed;
+          l10nId = "content-blocking-cookies-view-allowed-label";
           listItem.classList.toggle("allowed", true);
         } else {
-          stateLabel.value = this.strings.subViewBlocked;
+          l10nId = "content-blocking-cookies-view-blocked-label";
         }
+        document.l10n.setAttributes(stateLabel, l10nId);
 
         let removeException = document.createXULElement("button");
         removeException.className = "permission-popup-permission-remove-button";
-        removeException.tooltipText = gNavigatorBundle.getFormattedString(
-          "contentBlocking.cookiesView.removeButton.tooltip",
-          [origin]
+        document.l10n.setAttributes(
+          removeException,
+          "content-blocking-cookies-view-remove-button",
+          { domain: origin }
         );
         removeException.appendChild(stateLabel);
 
@@ -1025,9 +1066,7 @@ let SocialTracking =
       super(
         "socialblock",
         {
-          l10nId: "socialMediaTrackers",
           prefEnabled: "privacy.socialtracking.block_cookies.enabled",
-          reportBreakageLabel: "socialtracking",
         },
         {
           load: Ci.nsIWebProgressListener.STATE_LOADED_SOCIALTRACKING_CONTENT,
@@ -1143,24 +1182,24 @@ let cookieBannerHandling = new (class {
       "cookiebanners.ui.desktop.enabled",
       false
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerSection", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerSection", () =>
       document.getElementById("protections-popup-cookie-banner-section")
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerSectionSeparator", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerSectionSeparator", () =>
       document.getElementById(
         "protections-popup-cookie-banner-section-separator"
       )
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerSwitch", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerSwitch", () =>
       document.getElementById("protections-popup-cookie-banner-switch")
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerSubview", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerSubview", () =>
       document.getElementById("protections-popup-cookieBannerView")
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerEnableSite", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerEnableSite", () =>
       document.getElementById("cookieBannerView-enable-site")
     );
-    XPCOMUtils.defineLazyGetter(this, "_cookieBannerDisableSite", () =>
+    ChromeUtils.defineLazyGetter(this, "_cookieBannerDisableSite", () =>
       document.getElementById("cookieBannerView-disable-site")
     );
   }
@@ -1320,10 +1359,10 @@ let cookieBannerHandling = new (class {
       this._cookieBannerSection.toggleAttribute("hasException");
     if (hasException) {
       await this.#disableCookieBannerHandling();
-      gProtectionsHandler.recordClick("cookieb_toggle_off");
+      Glean.securityUiProtectionspopup.clickCookiebToggleOff.record();
     } else {
       this.#enableCookieBannerHandling();
-      gProtectionsHandler.recordClick("cookieb_toggle_on");
+      Glean.securityUiProtectionspopup.clickCookiebToggleOn.record();
     }
     gProtectionsHandler._hidePopup();
     gBrowser.reloadTab(gBrowser.selectedTab);
@@ -1334,22 +1373,72 @@ let cookieBannerHandling = new (class {
  * Utility object to handle manipulations of the protections indicators in the UI
  */
 var gProtectionsHandler = {
-  PREF_REPORT_BREAKAGE_URL: "browser.contentblocking.reportBreakage.url",
   PREF_CB_CATEGORY: "browser.contentblocking.category",
+
+  /**
+   * Contains an array of smartblock compatible sites and information on the corresponding shim
+   * site is the compatible site
+   * shimId is the id of the shim blocking content from the origin
+   * toggleDisplayName is the name shown for the toggle used for blocking/unblocking the origin
+   */
+  smartblockEmbedInfo: [
+    {
+      sites: ["https://www.instagram.com", "https://platform.instagram.com"],
+      shimId: "InstagramEmbed",
+      displayName: "Instagram",
+    },
+    {
+      sites: ["https://www.tiktok.com"],
+      shimId: "TiktokEmbed",
+      displayName: "Tiktok",
+    },
+  ],
 
   _protectionsPopup: null,
   _initializePopup() {
     if (!this._protectionsPopup) {
       let wrapper = document.getElementById("template-protections-popup");
       this._protectionsPopup = wrapper.content.firstElementChild;
+      this._protectionsPopup.addEventListener("popupshown", this);
+      this._protectionsPopup.addEventListener("popuphidden", this);
       wrapper.replaceWith(wrapper.content);
-      window.ensureCustomElements("moz-support-link");
 
       this.maybeSetMilestoneCounterText();
 
       for (let blocker of Object.values(this.blockers)) {
         blocker.updateCategoryItem();
       }
+
+      this._protectionsPopup.addEventListener("command", this);
+      this._protectionsPopup.addEventListener("popupshown", this);
+      this._protectionsPopup.addEventListener("popuphidden", this);
+
+      function openTooltip(event) {
+        document.getElementById(event.target.tooltip).openPopup(event.target);
+      }
+      function closeTooltip(event) {
+        document.getElementById(event.target.tooltip).hidePopup();
+      }
+      let notBlockingWhy = document.getElementById(
+        "protections-popup-not-blocking-section-why"
+      );
+      notBlockingWhy.addEventListener("mouseover", openTooltip);
+      notBlockingWhy.addEventListener("focus", openTooltip);
+      notBlockingWhy.addEventListener("mouseout", closeTooltip);
+      notBlockingWhy.addEventListener("blur", closeTooltip);
+
+      document
+        .getElementById(
+          "protections-popup-trackers-blocked-counter-description"
+        )
+        .addEventListener("click", () =>
+          gProtectionsHandler.openProtections(true)
+        );
+      document
+        .getElementById("protections-popup-cookie-banner-switch")
+        .addEventListener("click", () =>
+          gProtectionsHandler.onCookieBannerClick()
+        );
     }
   },
 
@@ -1384,22 +1473,16 @@ var gProtectionsHandler = {
       "protections-popup-mainView-panel-header-span"
     ));
   },
-  get _protectionsPopupTPSwitchBreakageLink() {
-    delete this._protectionsPopupTPSwitchBreakageLink;
-    return (this._protectionsPopupTPSwitchBreakageLink =
-      document.getElementById("protections-popup-tp-switch-breakage-link"));
-  },
-  get _protectionsPopupTPSwitchBreakageFixedLink() {
-    delete this._protectionsPopupTPSwitchBreakageFixedLink;
-    return (this._protectionsPopupTPSwitchBreakageFixedLink =
-      document.getElementById(
-        "protections-popup-tp-switch-breakage-fixed-link"
-      ));
-  },
   get _protectionsPopupTPSwitch() {
     delete this._protectionsPopupTPSwitch;
     return (this._protectionsPopupTPSwitch = document.getElementById(
       "protections-popup-tp-switch"
+    ));
+  },
+  get _protectionsPopupCategoryList() {
+    delete this._protectionsPopupCategoryList;
+    return (this._protectionsPopupCategoryList = document.getElementById(
+      "protections-popup-category-list"
     ));
   },
   get _protectionsPopupBlockingHeader() {
@@ -1419,6 +1502,22 @@ var gProtectionsHandler = {
     return (this._protectionsPopupNotFoundHeader = document.getElementById(
       "protections-popup-not-found-section-header"
     ));
+  },
+  get _protectionsPopupSmartblockContainer() {
+    delete this._protectionsPopupSmartblockContainer;
+    return (this._protectionsPopupSmartblockContainer = document.getElementById(
+      "protections-popup-smartblock-highlight-container"
+    ));
+  },
+  get _protectionsPopupSmartblockDescription() {
+    delete this._protectionsPopupSmartblockDescription;
+    return (this._protectionsPopupSmartblockDescription =
+      document.getElementById("protections-popup-smartblock-description"));
+  },
+  get _protectionsPopupSmartblockToggleContainer() {
+    delete this._protectionsPopupSmartblockToggleContainer;
+    return (this._protectionsPopupSmartblockToggleContainer =
+      document.getElementById("protections-popup-smartblock-toggle-container"));
   },
   get _protectionsPopupSettingsButton() {
     delete this._protectionsPopupSettingsButton;
@@ -1452,28 +1551,6 @@ var gProtectionsHandler = {
         "protections-popup-footer-protection-type-label"
       ));
   },
-  get _protectionsPopupSiteNotWorkingTPSwitch() {
-    delete this._protectionsPopupSiteNotWorkingTPSwitch;
-    return (this._protectionsPopupSiteNotWorkingTPSwitch =
-      document.getElementById("protections-popup-siteNotWorking-tp-switch"));
-  },
-  get _protectionsPopupSiteNotWorkingReportError() {
-    delete this._protectionsPopupSiteNotWorkingReportError;
-    return (this._protectionsPopupSiteNotWorkingReportError =
-      document.getElementById("protections-popup-sendReportView-report-error"));
-  },
-  get _protectionsPopupSendReportURL() {
-    delete this._protectionsPopupSendReportURL;
-    return (this._protectionsPopupSendReportURL = document.getElementById(
-      "protections-popup-sendReportView-collection-url"
-    ));
-  },
-  get _protectionsPopupSendReportButton() {
-    delete this._protectionsPopupSendReportButton;
-    return (this._protectionsPopupSendReportButton = document.getElementById(
-      "protections-popup-sendReportView-submit"
-    ));
-  },
   get _trackingProtectionIconTooltipLabel() {
     delete this._trackingProtectionIconTooltipLabel;
     return (this._trackingProtectionIconTooltipLabel = document.getElementById(
@@ -1506,37 +1583,6 @@ var gProtectionsHandler = {
     return (this._notBlockingWhyLink = document.getElementById(
       "protections-popup-not-blocking-section-why"
     ));
-  },
-
-  get _siteNotWorkingIssueListFonts() {
-    delete this._siteNotWorkingIssueListFonts;
-    return (this._siteNotWorkingIssueListFonts = document.getElementById(
-      "protections-panel-site-not-working-view-issue-list-fonts"
-    ));
-  },
-
-  strings: {
-    get activeTooltipText() {
-      delete this.activeTooltipText;
-      return (this.activeTooltipText = gNavigatorBundle.getString(
-        "trackingProtection.icon.activeTooltip2"
-      ));
-    },
-
-    get disabledTooltipText() {
-      delete this.disabledTooltipText;
-      return (this.disabledTooltipText = gNavigatorBundle.getString(
-        "trackingProtection.icon.disabledTooltip2"
-      ));
-    },
-
-    get noTrackerTooltipText() {
-      delete this.noTrackerTooltipText;
-      return (this.noTrackerTooltipText = gNavigatorBundle.getFormattedString(
-        "trackingProtection.icon.noTrackersDetectedTooltip",
-        [gBrandBundle.GetStringFromName("brandShortName")]
-      ));
-    },
   },
 
   // A list of blockers that will be displayed in the categories list
@@ -1607,6 +1653,20 @@ var gProtectionsHandler = {
       () => this.maybeSetMilestoneCounterText()
     );
 
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "protectionsPanelMessageSeen",
+      "browser.protections_panel.infoMessage.seen",
+      false
+    );
+
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "smartblockEmbedsEnabledPref",
+      "extensions.webcompat.smartblockEmbeds.enabled",
+      false
+    );
+
     for (let blocker of Object.values(this.blockers)) {
       if (blocker.init) {
         blocker.init();
@@ -1615,6 +1675,8 @@ var gProtectionsHandler = {
 
     // Add an observer to observe that the history has been cleared.
     Services.obs.addObserver(this, "browser:purge-session-history");
+    // Add an observer to listen to requests to open the protections panel
+    Services.obs.addObserver(this, "smartblock:open-protections-panel");
   },
 
   uninit() {
@@ -1625,6 +1687,7 @@ var gProtectionsHandler = {
     }
 
     Services.obs.removeObserver(this, "browser:purge-session-history");
+    Services.obs.removeObserver(this, "smartblock:open-protections-panel");
   },
 
   getTrackingProtectionLabel() {
@@ -1659,57 +1722,48 @@ var gProtectionsHandler = {
     );
   },
 
-  async showTrackersSubview(event) {
+  async showTrackersSubview() {
     await TrackingProtection.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-trackersView"
     );
   },
 
-  async showSocialblockerSubview(event) {
+  async showSocialblockerSubview() {
     await SocialTracking.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-socialblockView"
     );
   },
 
-  async showCookiesSubview(event) {
+  async showCookiesSubview() {
     await ThirdPartyCookies.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-cookiesView"
     );
   },
 
-  async showFingerprintersSubview(event) {
+  async showFingerprintersSubview() {
     await Fingerprinting.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-fingerprintersView"
     );
   },
 
-  async showCryptominersSubview(event) {
+  async showCryptominersSubview() {
     await Cryptomining.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-cryptominersView"
     );
   },
 
-  async onCookieBannerClick(event) {
+  async onCookieBannerClick() {
     if (!cookieBannerHandling.isSiteSupported) {
       return;
     }
     await cookieBannerHandling.updateSubView();
     this._protectionsPopupMultiView.showSubView(
       "protections-popup-cookieBannerView"
-    );
-  },
-
-  recordClick(object, value = null, source = "protectionspopup") {
-    Services.telemetry.recordEvent(
-      `security.ui.${source}`,
-      "click",
-      object,
-      value
     );
   },
 
@@ -1750,40 +1804,27 @@ var gProtectionsHandler = {
 
   onPopupShown(event) {
     if (event.target == this._protectionsPopup) {
-      window.ensureCustomElements("moz-button-group");
-
       PopupNotifications.suppressWhileOpen(this._protectionsPopup);
 
       window.addEventListener("focus", this, true);
+      this._protectionsPopupTPSwitch.addEventListener("toggle", this);
 
       // Insert the info message if needed. This will be shown once and then
       // remain collapsed.
-      ToolbarPanelHub.insertProtectionPanelMessage(event);
+      this._insertProtectionsPanelInfoMessage(event);
 
       if (!event.target.hasAttribute("toast")) {
-        Services.telemetry.recordEvent(
-          "security.ui.protectionspopup",
-          "open",
-          "protections_popup"
-        );
+        Glean.securityUiProtectionspopup.openProtectionsPopup.record();
       }
+
+      ReportBrokenSite.updateParentMenu(event);
     }
   },
 
   onPopupHidden(event) {
     if (event.target == this._protectionsPopup) {
       window.removeEventListener("focus", this, true);
-    }
-  },
-
-  onHeaderClicked(event) {
-    // Display the whole protections panel if the toast has been clicked.
-    if (this._protectionsPopup.hasAttribute("toast")) {
-      // Hide the toast first.
-      PanelMultiView.hidePopup(this._protectionsPopup);
-
-      // Open the full protections panel.
-      this.showProtectionsPopup({ event });
+      this._protectionsPopupTPSwitch.removeEventListener("toggle", this);
     }
   },
 
@@ -1809,7 +1850,7 @@ var gProtectionsHandler = {
 
     // Try to get the earliest recorded date in case that there was no record
     // during the initiation but new records come after that.
-    await this.maybeUpdateEarliestRecordedDateTooltip();
+    await this.maybeUpdateEarliestRecordedDateTooltip(trackerCount);
 
     this._updatingFooter = false;
   },
@@ -2044,32 +2085,151 @@ var gProtectionsHandler = {
     this.reportBlockingEventTelemetry(event, isSimulated, previousState);
   },
 
-  // We handle focus here when the panel is shown.
-  handleEvent(event) {
-    let elem = document.activeElement;
-    let position = elem.compareDocumentPosition(this._protectionsPopup);
+  onCommand(event) {
+    switch (event.target.id) {
+      case "protections-popup-category-trackers":
+        gProtectionsHandler.showTrackersSubview(event);
+        Glean.securityUiProtectionspopup.clickTrackers.record();
+        break;
+      case "protections-popup-category-socialblock":
+        gProtectionsHandler.showSocialblockerSubview(event);
+        Glean.securityUiProtectionspopup.clickSocial.record();
+        break;
+      case "protections-popup-category-cookies":
+        gProtectionsHandler.showCookiesSubview(event);
+        Glean.securityUiProtectionspopup.clickCookies.record();
+        break;
+      case "protections-popup-category-cryptominers":
+        gProtectionsHandler.showCryptominersSubview(event);
+        Glean.securityUiProtectionspopup.clickCryptominers.record();
+        return;
+      case "protections-popup-category-fingerprinters":
+        gProtectionsHandler.showFingerprintersSubview(event);
+        Glean.securityUiProtectionspopup.clickFingerprinters.record();
+        break;
+      case "protections-popup-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSettings.record();
+        break;
+      case "protections-popup-show-report-button":
+        gProtectionsHandler.openProtections(true);
+        Glean.securityUiProtectionspopup.clickFullReport.record();
+        break;
+      case "protections-popup-milestones-content":
+        gProtectionsHandler.openProtections(true);
+        Glean.securityUiProtectionspopup.clickMilestoneMessage.record();
+        break;
+      case "protections-popup-trackersView-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSubviewSettings.record({
+          value: "trackers",
+        });
+        break;
+      case "protections-popup-socialblockView-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSubviewSettings.record({
+          value: "social",
+        });
+        break;
+      case "protections-popup-cookiesView-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSubviewSettings.record({
+          value: "cookies",
+        });
+        break;
+      case "protections-popup-fingerprintersView-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSubviewSettings.record({
+          value: "fingerprinters",
+        });
+        break;
+      case "protections-popup-cryptominersView-settings-button":
+        gProtectionsHandler.openPreferences();
+        Glean.securityUiProtectionspopup.clickSubviewSettings.record({
+          value: "cryptominers",
+        });
+        break;
+      case "protections-popup-cookieBannerView-cancel":
+        gProtectionsHandler._protectionsPopupMultiView.goBack();
+        break;
+      case "protections-popup-cookieBannerView-enable-button":
+      case "protections-popup-cookieBannerView-disable-button":
+        gProtectionsHandler.onCookieBannerToggleCommand();
+        break;
+      case "protections-popup-toast-panel-tp-on-desc":
+      case "protections-popup-toast-panel-tp-off-desc":
+        // Hide the toast first.
+        PanelMultiView.hidePopup(this._protectionsPopup);
 
-    if (
-      !(
-        position &
-        (Node.DOCUMENT_POSITION_CONTAINS | Node.DOCUMENT_POSITION_CONTAINED_BY)
-      ) &&
-      !this._protectionsPopup.hasAttribute("noautohide")
-    ) {
-      // Hide the panel when focusing an element that is
-      // neither an ancestor nor descendant unless the panel has
-      // @noautohide (e.g. for a tour).
-      PanelMultiView.hidePopup(this._protectionsPopup);
+        // Open the full protections panel.
+        this.showProtectionsPopup({ event });
+        break;
     }
   },
 
-  observe(subject, topic, data) {
+  // We handle focus here when the panel is shown.
+  handleEvent(event) {
+    switch (event.type) {
+      case "command":
+        this.onCommand(event);
+        break;
+      case "focus": {
+        let elem = document.activeElement;
+        let position = elem.compareDocumentPosition(this._protectionsPopup);
+
+        if (
+          !(
+            position &
+            (Node.DOCUMENT_POSITION_CONTAINS |
+              Node.DOCUMENT_POSITION_CONTAINED_BY)
+          ) &&
+          !this._protectionsPopup.hasAttribute("noautohide")
+        ) {
+          // Hide the panel when focusing an element that is
+          // neither an ancestor nor descendant unless the panel has
+          // @noautohide (e.g. for a tour).
+          PanelMultiView.hidePopup(this._protectionsPopup);
+        }
+        break;
+      }
+      case "popupshown":
+        this.onPopupShown(event);
+        break;
+      case "popuphidden":
+        this.onPopupHidden(event);
+        break;
+      case "toggle": {
+        this.onTPSwitchCommand(event);
+        break;
+      }
+    }
+  },
+
+  observe(subject, topic) {
     switch (topic) {
       case "browser:purge-session-history":
         // We need to update the earliest recorded date if history has been
         // cleared.
-        this._hasEarliestRecord = false;
+        this._earliestRecordedDate = 0;
         this.maybeUpdateEarliestRecordedDateTooltip();
+        break;
+      case "smartblock:open-protections-panel":
+        if (!this.smartblockEmbedsEnabledPref) {
+          // don't react if smartblock disabled by pref
+          break;
+        }
+
+        if (this._protectionsPopup?.state == "open") {
+          // don't open the panel if it is already open
+          // This is not sufficent since the panel is technically "closed" by the button click
+          // outside the panel, see Bug 1926460
+          break;
+        }
+
+        if (gBrowser.selectedBrowser.browserId !== subject.browserId) {
+          break;
+        }
+        this.showProtectionsPopup();
         break;
     }
   },
@@ -2080,19 +2240,15 @@ var gProtectionsHandler = {
    */
   refreshProtectionsPopup() {
     let host = gIdentityHandler.getHostForDisplay();
-
-    // Push the appropriate strings out to the UI.
-    this._protectionsPopupMainViewHeaderLabel.textContent =
-      gNavigatorBundle.getFormattedString("protections.header", [host]);
+    document.l10n.setAttributes(
+      this._protectionsPopupMainViewHeaderLabel,
+      "protections-header",
+      { host }
+    );
 
     let currentlyEnabled = !this.hasException;
 
-    for (let tpSwitch of [
-      this._protectionsPopupTPSwitch,
-      this._protectionsPopupSiteNotWorkingTPSwitch,
-    ]) {
-      tpSwitch.toggleAttribute("enabled", currentlyEnabled);
-    }
+    this.updateProtectionsToggle(currentlyEnabled);
 
     this._notBlockingWhyLink.setAttribute(
       "tooltip",
@@ -2100,26 +2256,6 @@ var gProtectionsHandler = {
         ? "protections-popup-not-blocking-why-etp-on-tooltip"
         : "protections-popup-not-blocking-why-etp-off-tooltip"
     );
-
-    // Toggle the breakage link according to the current enable state.
-    this.toggleBreakageLink();
-
-    // Give the button an accessible label for screen readers.
-    if (currentlyEnabled) {
-      this._protectionsPopupTPSwitch.setAttribute(
-        "aria-label",
-        gNavigatorBundle.getFormattedString("protections.disableAriaLabel", [
-          host,
-        ])
-      );
-    } else {
-      this._protectionsPopupTPSwitch.setAttribute(
-        "aria-label",
-        gNavigatorBundle.getFormattedString("protections.enableAriaLabel", [
-          host,
-        ])
-      );
-    }
 
     // Update the tooltip of the blocked tracker counter.
     this.maybeUpdateEarliestRecordedDateTooltip();
@@ -2141,6 +2277,26 @@ var gProtectionsHandler = {
     this._protectionsPopup.toggleAttribute("hasException", this.hasException);
   },
 
+  /**
+   * Updates the "pressed" state and labels for the toggle
+   *
+   * @param {boolean} isPressed - Whether or not the toggle should be pressed.
+   *  True if ETP is enabled for a given site.
+   */
+  updateProtectionsToggle(isPressed) {
+    let host = gIdentityHandler.getHostForDisplay();
+    let toggle = this._protectionsPopupTPSwitch;
+    toggle.toggleAttribute("pressed", isPressed);
+    toggle.toggleAttribute("disabled", !!this._TPSwitchCommanding);
+    document.l10n.setAttributes(
+      toggle,
+      isPressed
+        ? "protections-panel-etp-toggle-on"
+        : "protections-panel-etp-toggle-off",
+      { host }
+    );
+  },
+
   /*
    * This function sorts the category items into the Blocked/Allowed/None Detected
    * sections. It's called immediately in onContentBlockingEvent if the popup
@@ -2157,6 +2313,7 @@ var gProtectionsHandler = {
     this._protectionsPopupBlockingHeader.hidden = true;
     this._protectionsPopupNotBlockingHeader.hidden = true;
     this._protectionsPopupNotFoundHeader.hidden = true;
+    this._protectionsPopupSmartblockContainer.hidden = true;
 
     for (let { categoryItem } of Object.values(this.blockers)) {
       if (
@@ -2165,7 +2322,7 @@ var gProtectionsHandler = {
       ) {
         // Add the item to the bottom of the list. This will be under
         // the "None Detected" section.
-        categoryItem.parentNode.insertAdjacentElement(
+        this._protectionsPopupCategoryList.insertAdjacentElement(
           "beforeend",
           categoryItem
         );
@@ -2180,11 +2337,11 @@ var gProtectionsHandler = {
       categoryItem.removeAttribute("disabled");
 
       if (categoryItem.classList.contains("blocked") && !this.hasException) {
-        // Add the item just above the "Allowed" section - this will be the
+        // Add the item just above the Smartblock embeds section - this will be the
         // bottom of the "Blocked" section.
         categoryItem.parentNode.insertBefore(
           categoryItem,
-          this._protectionsPopupNotBlockingHeader
+          this._protectionsPopupSmartblockContainer
         );
         // We have a blocking category, show the header.
         this._protectionsPopupBlockingHeader.hidden = false;
@@ -2200,13 +2357,137 @@ var gProtectionsHandler = {
       // We have an allowing category, show the header.
       this._protectionsPopupNotBlockingHeader.hidden = false;
     }
+
+    // add toggles if required to the Smartblock embed section
+    let smartblockEmbedDetected = this._addSmartblockEmbedToggles();
+
+    if (smartblockEmbedDetected) {
+      // We have a compatible smartblock toggle, show the smartblock
+      // embed section
+      this._protectionsPopupSmartblockContainer.hidden = false;
+    }
+  },
+
+  /**
+   * Adds the toggles into the smartblock toggle container. Clears existing toggles first, then
+   * searches through the contentBlockingLog for smartblock-compatible content.
+   *
+   * @returns {boolean} true if a smartblock compatible resource is blocked or shimmed, false otherwise
+   */
+  _addSmartblockEmbedToggles() {
+    if (!this.smartblockEmbedsEnabledPref) {
+      // Do not insert toggles if feature is disabled.
+      return false;
+    }
+
+    let contentBlockingLog = gBrowser.selectedBrowser.getContentBlockingLog();
+    contentBlockingLog = JSON.parse(contentBlockingLog);
+    let smartBlockEmbedToggleAdded = false;
+
+    // remove all old toggles
+    while (this._protectionsPopupSmartblockToggleContainer.lastChild) {
+      this._protectionsPopupSmartblockToggleContainer.lastChild.remove();
+    }
+
+    // check that there is an allowed or replaced flag present
+    let contentBlockingEvents =
+      gBrowser.selectedBrowser.getContentBlockingEvents();
+
+    // In the future, we should add a flag specifically for smartblock embeds so that
+    // these checks do not trigger when a non-embed-related shim is shimming
+    // a smartblock compatible site, see Bug 1926461
+    let somethingAllowedOrReplaced =
+      contentBlockingEvents &
+        Ci.nsIWebProgressListener.STATE_ALLOWED_TRACKING_CONTENT ||
+      contentBlockingEvents &
+        Ci.nsIWebProgressListener.STATE_REPLACED_TRACKING_CONTENT;
+
+    if (!somethingAllowedOrReplaced) {
+      // return early if there is no content that is allowed or replaced
+      return smartBlockEmbedToggleAdded;
+    }
+
+    // search through content log for compatible blocked origins
+    for (let [origin, actions] of Object.entries(contentBlockingLog)) {
+      let shimAllowed = actions.some(
+        ([flag]) =>
+          (flag & Ci.nsIWebProgressListener.STATE_ALLOWED_TRACKING_CONTENT) != 0
+      );
+
+      let shimDetected = actions.some(
+        ([flag]) =>
+          (flag & Ci.nsIWebProgressListener.STATE_REPLACED_TRACKING_CONTENT) !=
+          0
+      );
+
+      if (!shimAllowed && !shimDetected) {
+        // origin is not being shimmed or allowed
+        continue;
+      }
+
+      let shimInfo = this.smartblockEmbedInfo.find(element =>
+        element.sites.includes(origin)
+      );
+      if (!shimInfo) {
+        // origin not relevant to smartblock
+        continue;
+      }
+
+      const { shimId, displayName } = shimInfo;
+      smartBlockEmbedToggleAdded = true;
+
+      // check that a toggle doesn't already exist
+      let existingToggle = document.getElementById(
+        `smartblock-${shimId.toLowerCase()}-toggle`
+      );
+      if (existingToggle) {
+        // make sure toggle state is allowed if ANY of the sites are allowed
+        if (shimAllowed) {
+          existingToggle.setAttribute("pressed", true);
+        }
+        // skip adding a new toggle
+        continue;
+      }
+
+      // create the toggle element
+      let toggle = document.createElement("moz-toggle");
+      toggle.setAttribute("id", `smartblock-${shimId.toLowerCase()}-toggle`);
+      toggle.setAttribute("data-l10n-attrs", "label");
+      document.l10n.setAttributes(
+        toggle,
+        "protections-panel-smartblock-blocking-toggle",
+        {
+          trackername: displayName,
+        }
+      );
+
+      // set toggle to correct position
+      toggle.toggleAttribute("pressed", !!shimAllowed);
+
+      // add functionality to toggle
+      toggle.addEventListener("toggle", event => {
+        let newToggleState = event.target.pressed;
+        if (newToggleState) {
+          this._sendUnblockMessageToSmartblock(shimId);
+        } else {
+          this._sendReblockMessageToSmartblock(shimId);
+        }
+      });
+
+      this._protectionsPopupSmartblockToggleContainer.insertAdjacentElement(
+        "beforeend",
+        toggle
+      );
+    }
+
+    return smartBlockEmbedToggleAdded;
   },
 
   disableForCurrentPage(shouldReload = true) {
     ContentBlockingAllowList.add(gBrowser.selectedBrowser);
     if (shouldReload) {
       this._hidePopup();
-      BrowserReload();
+      BrowserCommands.reload();
     }
   },
 
@@ -2214,11 +2495,11 @@ var gProtectionsHandler = {
     ContentBlockingAllowList.remove(gBrowser.selectedBrowser);
     if (shouldReload) {
       this._hidePopup();
-      BrowserReload();
+      BrowserCommands.reload();
     }
   },
 
-  async onTPSwitchCommand(event) {
+  async onTPSwitchCommand() {
     // When the switch is clicked, we wait 500ms and then disable/enable
     // protections, causing the page to refresh, and close the popup.
     // We need to ensure we don't handle more clicks during the 500ms delay,
@@ -2233,15 +2514,8 @@ var gProtectionsHandler = {
     // styling after toggling the TP switch.
     let newExceptionState =
       this._protectionsPopup.toggleAttribute("hasException");
-    for (let tpSwitch of [
-      this._protectionsPopupTPSwitch,
-      this._protectionsPopupSiteNotWorkingTPSwitch,
-    ]) {
-      tpSwitch.toggleAttribute("enabled", !newExceptionState);
-    }
 
-    // Toggle the breakage link if needed.
-    this.toggleBreakageLink();
+    this.updateProtectionsToggle(!newExceptionState);
 
     // Change the tooltip of the tracking protection icon.
     if (newExceptionState) {
@@ -2262,10 +2536,10 @@ var gProtectionsHandler = {
 
     if (newExceptionState) {
       this.disableForCurrentPage(false);
-      this.recordClick("etp_toggle_off");
+      Glean.securityUiProtectionspopup.clickEtpToggleOff.record();
     } else {
       this.enableForCurrentPage(false);
-      this.recordClick("etp_toggle_on");
+      Glean.securityUiProtectionspopup.clickEtpToggleOn.record();
     }
 
     // We need to flush the TP state change immediately without waiting the
@@ -2291,14 +2565,22 @@ var gProtectionsHandler = {
   },
 
   setTrackersBlockedCounter(trackerCount) {
-    let forms = gNavigatorBundle.getString(
-      "protections.footer.blockedTrackerCounter.description"
-    );
-    this._protectionsPopupTrackersCounterDescription.textContent =
-      PluralForm.get(trackerCount, forms).replace(
-        "#1",
-        trackerCount.toLocaleString(Services.locale.appLocalesAsBCP47)
+    if (this._earliestRecordedDate) {
+      document.l10n.setAttributes(
+        this._protectionsPopupTrackersCounterDescription,
+        "protections-footer-blocked-tracker-counter",
+        { trackerCount, date: this._earliestRecordedDate }
       );
+    } else {
+      document.l10n.setAttributes(
+        this._protectionsPopupTrackersCounterDescription,
+        "protections-footer-blocked-tracker-counter-no-tooltip",
+        { trackerCount }
+      );
+      this._protectionsPopupTrackersCounterDescription.removeAttribute(
+        "tooltiptext"
+      );
+    }
 
     // Show the counter if the number of tracker is not zero.
     this._protectionsPopupTrackersCounterBox.toggleAttribute(
@@ -2329,51 +2611,44 @@ var gProtectionsHandler = {
     }
 
     let date = await TrackingDBService.getEarliestRecordedDate();
-    let dateLocaleStr = new Date(date).toLocaleDateString("default", {
-      month: "long",
-      year: "numeric",
-    });
-
-    let desc = PluralForm.get(
-      trackerCount,
-      gNavigatorBundle.getString("protections.milestone.description")
+    document.l10n.setAttributes(
+      this._protectionsPopupMilestonesText,
+      "protections-milestone",
+      { date: date ?? 0, trackerCount }
     );
-
-    this._protectionsPopupMilestonesText.textContent = desc
-      .replace("#1", gBrandBundle.GetStringFromName("brandShortName"))
-      .replace(
-        "#2",
-        trackerCount.toLocaleString(Services.locale.appLocalesAsBCP47)
-      )
-      .replace("#3", dateLocaleStr);
-
     this._milestoneTextSet = true;
   },
 
   showDisabledTooltipForTPIcon() {
-    this._trackingProtectionIconTooltipLabel.textContent =
-      this.strings.disabledTooltipText;
-    this._trackingProtectionIconContainer.setAttribute(
-      "aria-label",
-      this.strings.disabledTooltipText
+    document.l10n.setAttributes(
+      this._trackingProtectionIconTooltipLabel,
+      "tracking-protection-icon-disabled"
+    );
+    document.l10n.setAttributes(
+      this._trackingProtectionIconContainer,
+      "tracking-protection-icon-disabled-container"
     );
   },
 
   showActiveTooltipForTPIcon() {
-    this._trackingProtectionIconTooltipLabel.textContent =
-      this.strings.activeTooltipText;
-    this._trackingProtectionIconContainer.setAttribute(
-      "aria-label",
-      this.strings.activeTooltipText
+    document.l10n.setAttributes(
+      this._trackingProtectionIconTooltipLabel,
+      "tracking-protection-icon-active"
+    );
+    document.l10n.setAttributes(
+      this._trackingProtectionIconContainer,
+      "tracking-protection-icon-active-container"
     );
   },
 
   showNoTrackerTooltipForTPIcon() {
-    this._trackingProtectionIconTooltipLabel.textContent =
-      this.strings.noTrackerTooltipText;
-    this._trackingProtectionIconContainer.setAttribute(
-      "aria-label",
-      this.strings.noTrackerTooltipText
+    document.l10n.setAttributes(
+      this._trackingProtectionIconTooltipLabel,
+      "tracking-protection-icon-no-trackers-detected"
+    );
+    document.l10n.setAttributes(
+      this._trackingProtectionIconContainer,
+      "tracking-protection-icon-no-trackers-detected-container"
     );
   },
 
@@ -2447,159 +2722,10 @@ var gProtectionsHandler = {
     ).catch(console.error);
   },
 
-  showSiteNotWorkingView() {
-    // Only show the Fonts item if we are restricting font visibility
-    if (this._fontVisibilityTrackingProtection >= 3) {
-      this._siteNotWorkingIssueListFonts.setAttribute("hidden", "true");
-    } else {
-      this._siteNotWorkingIssueListFonts.removeAttribute("hidden");
-    }
-
-    this._protectionsPopupMultiView.showSubView(
-      "protections-popup-siteNotWorkingView"
-    );
-  },
-
-  showSendReportView() {
-    // Save this URI to make sure that the user really only submits the location
-    // they see in the report breakage dialog.
-    this.reportURI = gBrowser.currentURI;
-    let urlWithoutQuery = this.reportURI.asciiSpec.replace(
-      "?" + this.reportURI.query,
-      ""
-    );
-    let commentsTextarea = document.getElementById(
-      "protections-popup-sendReportView-collection-comments"
-    );
-    commentsTextarea.value = "";
-    this._protectionsPopupSendReportURL.value = urlWithoutQuery;
-    this._protectionsPopupSiteNotWorkingReportError.hidden = true;
-    this._protectionsPopupMultiView.showSubView(
-      "protections-popup-sendReportView"
-    );
-  },
-
-  toggleBreakageLink() {
-    // The breakage link will only be shown if tracking protection is enabled
-    // for the site and the TP toggle state is on. And we won't show the
-    // link as toggling TP switch to On from Off. In order to do so, we need to
-    // know the previous TP state. We check the ContentBlockingAllowList instead
-    // of 'hasException' attribute of the protection popup for the previous
-    // since the 'hasException' will also be toggled as well as toggling the TP
-    // switch. We won't be able to know the previous TP state through the
-    // 'hasException' attribute. So we fallback to check the
-    // ContentBlockingAllowList here.
-    this._protectionsPopupTPSwitchBreakageLink.hidden =
-      ContentBlockingAllowList.includes(gBrowser.selectedBrowser) ||
-      !this.anyBlocking ||
-      !this._protectionsPopupTPSwitch.hasAttribute("enabled");
-    // The "Site Fixed?" link behaves similarly but for the opposite state.
-    this._protectionsPopupTPSwitchBreakageFixedLink.hidden =
-      !ContentBlockingAllowList.includes(gBrowser.selectedBrowser) ||
-      this._protectionsPopupTPSwitch.hasAttribute("enabled");
-  },
-
-  submitBreakageReport(uri) {
-    let reportEndpoint = Services.prefs.getStringPref(
-      this.PREF_REPORT_BREAKAGE_URL
-    );
-    if (!reportEndpoint) {
-      return;
-    }
-
-    let commentsTextarea = document.getElementById(
-      "protections-popup-sendReportView-collection-comments"
-    );
-
-    let formData = new FormData();
-    formData.set("title", uri.host);
-
-    // Leave the ? at the end of the URL to signify that this URL had its query stripped.
-    let urlWithoutQuery = uri.asciiSpec.replace(uri.query, "");
-    let body = `Full URL: ${urlWithoutQuery}\n`;
-    body += `userAgent: ${navigator.userAgent}\n`;
-
-    body += "\n**Preferences**\n";
-    body += `${TrackingProtection.prefEnabled}: ${Services.prefs.getBoolPref(
-      TrackingProtection.prefEnabled
-    )}\n`;
-    body += `${
-      TrackingProtection.prefEnabledInPrivateWindows
-    }: ${Services.prefs.getBoolPref(
-      TrackingProtection.prefEnabledInPrivateWindows
-    )}\n`;
-    body += `urlclassifier.trackingTable: ${Services.prefs.getStringPref(
-      "urlclassifier.trackingTable"
-    )}\n`;
-    body += `network.http.referer.defaultPolicy: ${Services.prefs.getIntPref(
-      "network.http.referer.defaultPolicy"
-    )}\n`;
-    body += `network.http.referer.defaultPolicy.pbmode: ${Services.prefs.getIntPref(
-      "network.http.referer.defaultPolicy.pbmode"
-    )}\n`;
-    body += `${ThirdPartyCookies.prefEnabled}: ${Services.prefs.getIntPref(
-      ThirdPartyCookies.prefEnabled
-    )}\n`;
-    body += `privacy.annotate_channels.strict_list.enabled: ${Services.prefs.getBoolPref(
-      "privacy.annotate_channels.strict_list.enabled"
-    )}\n`;
-    body += `privacy.restrict3rdpartystorage.expiration: ${Services.prefs.getIntPref(
-      "privacy.restrict3rdpartystorage.expiration"
-    )}\n`;
-    body += `${Fingerprinting.prefEnabled}: ${Services.prefs.getBoolPref(
-      Fingerprinting.prefEnabled
-    )}\n`;
-    body += `${Cryptomining.prefEnabled}: ${Services.prefs.getBoolPref(
-      Cryptomining.prefEnabled
-    )}\n`;
-    body += `\nhasException: ${this.hasException}\n`;
-
-    body += "\n**Comments**\n" + commentsTextarea.value;
-
-    formData.set("body", body);
-
-    let activatedBlockers = [];
-    for (let blocker of Object.values(this.blockers)) {
-      if (blocker.activated) {
-        activatedBlockers.push(blocker.reportBreakageLabel);
-      }
-    }
-
-    formData.set("labels", activatedBlockers.join(","));
-
-    this._protectionsPopupSendReportButton.disabled = true;
-
-    fetch(reportEndpoint, {
-      method: "POST",
-      credentials: "omit",
-      body: formData,
-    })
-      .then(response => {
-        this._protectionsPopupSendReportButton.disabled = false;
-        if (!response.ok) {
-          console.error(
-            `Content Blocking report to ${reportEndpoint} failed with status ${response.status}`
-          );
-          this._protectionsPopupSiteNotWorkingReportError.hidden = false;
-        } else {
-          this._protectionsPopup.hidePopup();
-          ConfirmationHint.show(
-            this.iconBox,
-            "confirmation-hint-breakage-report-sent"
-          );
-        }
-      })
-      .catch(console.error);
-  },
-
-  onSendReportClicked() {
-    this.submitBreakageReport(this.reportURI);
-  },
-
-  async maybeUpdateEarliestRecordedDateTooltip() {
+  async maybeUpdateEarliestRecordedDateTooltip(trackerCount) {
     // If we've already updated or the popup isn't in the DOM yet, don't bother
     // doing this:
-    if (this._hasEarliestRecord || !this._protectionsPopup) {
+    if (this._earliestRecordedDate || !this._protectionsPopup) {
       return;
     }
 
@@ -2607,25 +2733,222 @@ var gProtectionsHandler = {
 
     // If there is no record for any blocked tracker, we don't have to do anything
     // since the tracker counter won't be shown.
-    if (!date) {
-      return;
+    if (date) {
+      if (typeof trackerCount !== "number") {
+        trackerCount = await TrackingDBService.sumAllEvents();
+      }
+      document.l10n.setAttributes(
+        this._protectionsPopupTrackersCounterDescription,
+        "protections-footer-blocked-tracker-counter",
+        { trackerCount, date }
+      );
+      this._earliestRecordedDate = date;
     }
-    this._hasEarliestRecord = true;
+  },
 
-    const dateLocaleStr = new Date(date).toLocaleDateString("default", {
-      month: "long",
-      day: "numeric",
-      year: "numeric",
+  /**
+   * Sends a message to webcompat extension to unblock content and remove placeholders
+   *
+   * @param {String} shimId - the id of the shim blocking the content
+   */
+  _sendUnblockMessageToSmartblock(shimId) {
+    Services.obs.notifyObservers(
+      gBrowser.selectedTab,
+      "smartblock:unblock-embed",
+      shimId
+    );
+  },
+
+  /**
+   * Sends a message to webcompat extension to reblock content
+   *
+   * @param {String} shimId - the id of the shim blocking the content
+   */
+  _sendReblockMessageToSmartblock(shimId) {
+    Services.obs.notifyObservers(
+      gBrowser.selectedTab,
+      "smartblock:reblock-embed",
+      shimId
+    );
+  },
+
+  /**
+   * Dispatch the action defined in the message and user telemetry event.
+   */
+  _dispatchUserAction(message) {
+    let url;
+    try {
+      // Set platform specific path variables for SUMO articles
+      url = Services.urlFormatter.formatURL(message.content.cta_url);
+    } catch (e) {
+      console.error(e);
+      url = message.content.cta_url;
+    }
+    SpecialMessageActions.handleAction(
+      {
+        type: message.content.cta_type,
+        data: {
+          args: url,
+          where: message.content.cta_where || "tabshifted",
+        },
+      },
+      window.browser
+    );
+
+    // Only send telemetry for non private browsing windows
+    if (!PrivateBrowsingUtils.isWindowPrivate(window)) {
+      Glean.securityUiProtectionspopup.clickProtectionspopupCfr.record({
+        value: "learn_more_link",
+        message: message.id,
+      });
+    }
+  },
+
+  /**
+   * Attach event listener to dispatch message defined action.
+   */
+  _attachCommandListener(element, message) {
+    // Add event listener for `mouseup` not to overlap with the
+    // `mousedown` & `click` events dispatched from PanelMultiView.sys.mjs
+    // https://searchfox.org/mozilla-central/rev/7531325c8660cfa61bf71725f83501028178cbb9/browser/components/customizableui/PanelMultiView.jsm#1830-1837
+    element.addEventListener("mouseup", () => {
+      this._dispatchUserAction(message);
     });
+    element.addEventListener("keyup", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        this._dispatchUserAction(message);
+      }
+    });
+  },
 
-    const tooltipStr = gNavigatorBundle.getFormattedString(
-      "protections.footer.blockedTrackerCounter.tooltip",
-      [dateLocaleStr]
+  /**
+   * Inserts a message into the Protections Panel. The message is visible once
+   * and afterwards set in a collapsed state. It can be shown again using the
+   * info button in the panel header.
+   */
+  _insertProtectionsPanelInfoMessage(event) {
+    // const PROTECTIONS_PANEL_INFOMSG_PREF =
+    //   "browser.protections_panel.infoMessage.seen";
+    const message = {
+      id: "PROTECTIONS_PANEL_1",
+      content: {
+        title: { string_id: "cfr-protections-panel-header" },
+        body: { string_id: "cfr-protections-panel-body" },
+        link_text: { string_id: "cfr-protections-panel-link-text" },
+        cta_url: `${Services.urlFormatter.formatURLPref(
+          "app.support.baseURL"
+        )}etp-promotions?as=u&utm_source=inproduct`,
+        cta_type: "OPEN_URL",
+      },
+    };
+
+    const doc = event.target.ownerDocument;
+    const container = doc.getElementById("info-message-container");
+    const infoButton = doc.getElementById("protections-popup-info-button");
+    const panelContainer = doc.getElementById("protections-popup");
+    const toggleMessage = () => {
+      const learnMoreLink = doc.querySelector(
+        "#info-message-container .text-link"
+      );
+      if (learnMoreLink) {
+        container.toggleAttribute("disabled");
+        infoButton.toggleAttribute("checked");
+        panelContainer.toggleAttribute("infoMessageShowing");
+        learnMoreLink.disabled = !learnMoreLink.disabled;
+      }
+      // If the message panel is opened, send impression telemetry
+      // if we are in a non private browsing window.
+      if (
+        panelContainer.hasAttribute("infoMessageShowing") &&
+        !PrivateBrowsingUtils.isWindowPrivate(window)
+      ) {
+        Glean.securityUiProtectionspopup.openProtectionspopupCfr.record({
+          value: "impression",
+          message: message.id,
+        });
+      }
+    };
+    if (!container.childElementCount) {
+      const messageEl = this._createHeroElement(doc, message);
+      container.appendChild(messageEl);
+      infoButton.addEventListener("click", toggleMessage);
+    }
+    // Message is collapsed by default. If it was never shown before we want
+    // to expand it
+    if (
+      !this.protectionsPanelMessageSeen &&
+      container.hasAttribute("disabled")
+    ) {
+      toggleMessage(message);
+    }
+    // Save state that we displayed the message
+    if (!this.protectionsPanelMessageSeen) {
+      Services.prefs.setBoolPref(
+        "browser.protections_panel.infoMessage.seen",
+        true
+      );
+    }
+    // Collapse the message after the panel is hidden so we don't get the
+    // animation when opening the panel
+    panelContainer.addEventListener(
+      "popuphidden",
+      () => {
+        if (
+          this.protectionsPanelMessageSeen &&
+          !container.hasAttribute("disabled")
+        ) {
+          toggleMessage(message);
+        }
+      },
+      {
+        once: true,
+      }
+    );
+  },
+
+  _createElement(doc, elem, options = {}) {
+    const node = doc.createElementNS("http://www.w3.org/1999/xhtml", elem);
+    if (options.classList) {
+      node.classList.add(options.classList);
+    }
+    if (options.content) {
+      doc.l10n.setAttributes(node, options.content.string_id);
+    }
+    return node;
+  },
+
+  _createHeroElement(doc, message) {
+    const messageEl = this._createElement(doc, "div");
+    messageEl.setAttribute("id", "protections-popup-message");
+    messageEl.classList.add("protections-hero-message");
+    const wrapperEl = this._createElement(doc, "div");
+    wrapperEl.classList.add("protections-popup-message-body");
+    messageEl.appendChild(wrapperEl);
+
+    wrapperEl.appendChild(
+      this._createElement(doc, "h2", {
+        classList: "protections-popup-message-title",
+        content: message.content.title,
+      })
     );
 
-    this._protectionsPopupTrackersCounterDescription.setAttribute(
-      "tooltiptext",
-      tooltipStr
+    wrapperEl.appendChild(
+      this._createElement(doc, "p", { content: message.content.body })
     );
+
+    if (message.content.link_text) {
+      let linkEl = this._createElement(doc, "a", {
+        classList: "text-link",
+        content: message.content.link_text,
+      });
+
+      linkEl.disabled = true;
+      wrapperEl.appendChild(linkEl);
+      this._attachCommandListener(linkEl, message);
+    } else {
+      this._attachCommandListener(wrapperEl, message);
+    }
+
+    return messageEl;
   },
 };

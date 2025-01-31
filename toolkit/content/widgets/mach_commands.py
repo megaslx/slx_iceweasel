@@ -28,11 +28,6 @@ export default class {class_name} extends MozLitElement {{
     variant: {{ type: String }},
   }};
 
-  // Use a relative URL in storybook to get faster reloads on style changes.
-  static stylesheetUrl = window.IS_STORYBOOK
-    ? "./{element_name}/{element_name}.css"
-    : "chrome://global/content/elements/{element_name}.css";
-
   constructor() {{
     super();
     this.variant = "default";
@@ -40,7 +35,7 @@ export default class {class_name} extends MozLitElement {{
 
   render() {{
     return html`
-      <link rel="stylesheet" href=${{this.constructor.stylesheetUrl}} />
+      <link rel="stylesheet" href="chrome://global/content/elements/{element_name}.css" />
       <div>Variant type: ${{this.variant}}</div>
     `;
   }}
@@ -50,7 +45,6 @@ customElements.define("{element_name}", {class_name});
 
 STORY_HEADER = """{license}
 {html_lit_import}
-// eslint-disable-next-line import/no-unassigned-import
 {fixme_comment}import "{element_path}";
 
 export default {{
@@ -211,3 +205,16 @@ def addstory(command_context, name, project_name, path):
                 html_lit_import=html_lit_import,
             )
         )
+
+
+@Command(
+    "buildtokens",
+    category="misc",
+    description="Build the design tokens CSS files",
+)
+def buildtokens(command_context):
+    run_mach(
+        command_context,
+        "npm",
+        args=["run", "build", "--prefix=toolkit/themes/shared/design-system"],
+    )

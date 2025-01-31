@@ -96,7 +96,7 @@ nsresult SVGFEGaussianBlurElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feGaussianBlur);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFEGaussianBlurElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -105,12 +105,12 @@ nsresult SVGFEGaussianBlurElement::BindToTree(BindContext& aCtx,
 SVGElement::NumberPairAttributesInfo
 SVGFEGaussianBlurElement::GetNumberPairInfo() {
   return NumberPairAttributesInfo(mNumberPairAttributes, sNumberPairInfo,
-                                  ArrayLength(sNumberPairInfo));
+                                  std::size(sNumberPairInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFEGaussianBlurElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom

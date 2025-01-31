@@ -7,7 +7,6 @@ const WIDGET_ID = "search-container";
 
 registerCleanupFunction(() => {
   CustomizableUI.reset();
-  Services.prefs.clearUserPref("browser.search.widget.inNavBar");
 });
 
 add_task(async function test_syncPreferenceWithWidget() {
@@ -22,8 +21,9 @@ add_task(async function test_syncPreferenceWithWidget() {
   container.style.width = `${width}px`;
 
   // Stuff shouldn't overflow.
-  ok(
-    container.getBoundingClientRect().width < window.innerWidth,
+  Assert.less(
+    container.getBoundingClientRect().width,
+    window.innerWidth,
     "Searchbar shouldn't overflow"
   );
 });

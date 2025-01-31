@@ -14,6 +14,7 @@
 #include "GLTypes.h"  // for GLenum
 #include "nsISupportsImpl.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/Hal.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/Maybe.h"
@@ -44,6 +45,7 @@ typedef MozPromise<MemoryReport, bool, true> MemoryReportPromise;
 
 class RendererOGL;
 class RenderTextureHost;
+class RenderTextureHostUsageInfo;
 class RenderThread;
 
 /// A rayon thread pool that is shared by all WebRender instances within a
@@ -67,6 +69,22 @@ class WebRenderThreadPool {
 
  protected:
   wr::WrThreadPool* mThreadPool;
+};
+
+/// An optional dedicated thread for glyph rasterization shared by all WebRender
+/// instances within a process.
+class MaybeWebRenderGlyphRasterThread {
+ public:
+  explicit MaybeWebRenderGlyphRasterThread(bool aEnabled);
+
+  ~MaybeWebRenderGlyphRasterThread();
+
+  bool IsEnabled() const { return mThread != nullptr; }
+
+  const wr::WrGlyphRasterThread* Raw() { return mThread; }
+
+ protected:
+  wr::WrGlyphRasterThread* mThread;
 };
 
 class WebRenderProgramCache final {
@@ -110,8 +128,12 @@ class WebRenderPipelineInfo final {
 /// messages to preserve ordering.
 class RendererEvent {
  public:
+  RendererEvent() : mCreationTimeStamp(TimeStamp::Now()) {}
   virtual ~RendererEvent() = default;
   virtual void Run(RenderThread& aRenderThread, wr::WindowId aWindow) = 0;
+  virtual const char* Name() = 0;
+
+  const TimeStamp mCreationTimeStamp;
 };
 
 /// The render thread is where WebRender issues all of its GPU work, and as much
@@ -187,10 +209,11 @@ class RenderThread final {
                        const Maybe<gfx::IntSize>& aReadbackSize,
                        const Maybe<wr::ImageFormat>& aReadbackFormat,
                        const Maybe<Range<uint8_t>>& aReadbackBuffer,
-                       bool* aNeedsYFlip = nullptr);
+                       RendererStats* aStats, bool* aNeedsYFlip = nullptr);
 
   void Pause(wr::WindowId aWindowId);
   bool Resume(wr::WindowId aWindowId);
+  void NotifyIdle();
 
   /// Can be called from any thread.
   void RegisterExternalImage(const wr::ExternalImageId& aExternalImageId,
@@ -214,6 +237,11 @@ class RenderThread final {
 
   void HandleRenderTextureOps();
 
+  /// Can be called from any thread.
+  RefPtr<RenderTextureHostUsageInfo> GetOrMergeUsageInfo(
+      const wr::ExternalImageId& aExternalImageId,
+      RefPtr<RenderTextureHostUsageInfo> aUsageInfo);
+
   /// Can only be called from the render thread.
   void UnregisterExternalImageDuringShutdown(
       const wr::ExternalImageId& aExternalImageId);
@@ -221,6 +249,10 @@ class RenderThread final {
   /// Can only be called from the render thread.
   RenderTextureHost* GetRenderTexture(
       const wr::ExternalImageId& aExternalImageId);
+
+  /// Can only be called from the render thread.
+  std::tuple<RenderTextureHost*, RefPtr<RenderTextureHostUsageInfo>>
+  GetRenderTextureAndUsageInfo(const wr::ExternalImageId& aExternalImageId);
 
   /// Can be called from any thread.
   bool IsDestroyed(wr::WindowId aWindowId);
@@ -249,6 +281,15 @@ class RenderThread final {
   /// Can be called from any thread.
   WebRenderThreadPool& ThreadPoolLP() { return mThreadPoolLP; }
 
+  /// A pool of large memory chunks used by the per-frame allocators.
+  WrChunkPool* MemoryChunkPool() { return mChunkPool; }
+
+  /// Optional global glyph raster thread.
+  /// Can be called from any thread.
+  MaybeWebRenderGlyphRasterThread& GlyphRasterThread() {
+    return mGlyphRasterThread;
+  }
+
   /// Returns the cache used to serialize shader programs to disk, if enabled.
   ///
   /// Can only be called from the render thread.
@@ -274,7 +315,8 @@ class RenderThread final {
   RefPtr<layers::ShaderProgramOGLsHolder> GetProgramsForCompositorOGL();
 
   /// Can only be called from the render thread.
-  void HandleDeviceReset(const char* aWhere, GLenum aReason);
+  void HandleDeviceReset(gfx::DeviceResetDetectPlace aPlace,
+                         gfx::DeviceResetReason aReason);
   /// Can only be called from the render thread.
   bool IsHandlingDeviceReset();
   /// Can be called from any thread.
@@ -292,7 +334,8 @@ class RenderThread final {
   bool SyncObjectNeeded();
 
   size_t RendererCount() const;
-  size_t ActiveRendererCount() const;
+  size_t ActiveRendererCount() const { return sActiveRendererCount; };
+  void UpdateActiveRendererCount();
 
   void BeginRecordingForWindow(wr::WindowId aWindowId,
                                const TimeStamp& aRecordingStart,
@@ -302,7 +345,13 @@ class RenderThread final {
 
   static void MaybeEnableGLDebugMessage(gl::GLContext* aGLContext);
 
+  void SetBatteryInfo(const hal::BatteryInformation& aBatteryInfo);
+  bool GetPowerIsCharging();
+
  private:
+  static size_t sRendererCount;
+  static size_t sActiveRendererCount;
+
   enum class RenderTextureOp {
     PrepareForUse,
     NotifyForUse,
@@ -388,7 +437,8 @@ class RenderThread final {
   void InitDeviceTask();
   void HandleFrameOneDoc(wr::WindowId aWindowId, bool aRender,
                          bool aTrackedFrame, Maybe<FramePublishId> aPublishId);
-  void RunEvent(wr::WindowId aWindowId, UniquePtr<RendererEvent> aEvent);
+  void RunEvent(wr::WindowId aWindowId, UniquePtr<RendererEvent> aEvent,
+                bool aViaWebRender);
   void PostRunnable(already_AddRefed<nsIRunnable> aRunnable);
 
   void DoAccumulateMemoryReport(MemoryReport,
@@ -420,6 +470,8 @@ class RenderThread final {
 
   WebRenderThreadPool mThreadPool;
   WebRenderThreadPool mThreadPoolLP;
+  WrChunkPool* mChunkPool;
+  MaybeWebRenderGlyphRasterThread mGlyphRasterThread;
 
   UniquePtr<WebRenderProgramCache> mProgramCache;
   UniquePtr<WebRenderShaders> mShaders;
@@ -433,6 +485,8 @@ class RenderThread final {
   RefPtr<layers::SurfacePool> mSurfacePool;
 
   std::map<wr::WindowId, UniquePtr<RendererOGL>> mRenderers;
+
+  DataMutex<Maybe<hal::BatteryInformation>> mBatteryInfo;
 
   struct PendingFrameInfo {
     TimeStamp mStartTime;
@@ -459,26 +513,35 @@ class RenderThread final {
     }
   };
 
-  Mutex mRenderTextureMapLock MOZ_UNANNOTATED;
+  Mutex mRenderTextureMapLock;
   std::unordered_map<wr::ExternalImageId, RefPtr<RenderTextureHost>,
                      ExternalImageIdHashFn>
-      mRenderTextures;
+      mRenderTextures MOZ_GUARDED_BY(mRenderTextureMapLock);
   std::unordered_map<wr::ExternalImageId, RefPtr<RenderTextureHost>,
                      ExternalImageIdHashFn>
-      mSyncObjectNeededRenderTextures;
+      mSyncObjectNeededRenderTextures MOZ_GUARDED_BY(mRenderTextureMapLock);
   std::list<std::pair<RenderTextureOp, RefPtr<RenderTextureHost>>>
-      mRenderTextureOps;
+      mRenderTextureOps MOZ_GUARDED_BY(mRenderTextureMapLock);
 
   // Used to remove all RenderTextureHost that are going to be removed by
   // a deferred callback and remove them right away without waiting for the
   // callback. On device reset we have to remove all GL related resources right
   // away.
-  std::list<RefPtr<RenderTextureHost>> mRenderTexturesDeferred;
+  std::list<RefPtr<RenderTextureHost>> mRenderTexturesDeferred
+      MOZ_GUARDED_BY(mRenderTextureMapLock);
 
-  RefPtr<nsIRunnable> mRenderTextureOpsRunnable;
+  RefPtr<nsIRunnable> mRenderTextureOpsRunnable
+      MOZ_GUARDED_BY(mRenderTextureMapLock);
 
+#ifdef DEBUG
+  // used for tests only to ensure render textures don't increase
+  int32_t mRenderTexturesLastTime MOZ_GUARDED_BY(mRenderTextureMapLock) = -1;
+#endif
+
+  // Set from MainThread, read from either MainThread or RenderThread
   bool mHasShutdown;
 
+  // Only accessed from the RenderThread
   bool mHandlingDeviceReset;
   bool mHandlingWebRenderError;
 };

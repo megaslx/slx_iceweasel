@@ -1,11 +1,11 @@
-// |jit-test| --no-threads; --no-ion; --no-baseline; skip-if: !('gczeal' in this)
+// |jit-test| --no-threads; --no-ion; --no-baseline
 
 gczeal(2);
 (function() {
     evaluate(cacheEntry((function() {
         return "(new String(\"\"))"
     })()), Object.create({ global: newGlobal({ cloneSingletons: true }) }, {
-        saveIncrementalBytecode: {
+        saveBytecodeWithDelazifications: {
             value: true
         }
     }))

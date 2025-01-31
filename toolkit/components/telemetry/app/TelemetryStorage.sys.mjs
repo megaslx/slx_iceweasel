@@ -406,17 +406,6 @@ export var TelemetryStorage = {
   },
 
   /**
-   * Add a ping to the saved pings directory so that it gets saved
-   * and sent along with other pings.
-   *
-   * @param {Object} pingData The ping object.
-   * @return {Promise} A promise resolved when the ping is saved to the pings directory.
-   */
-  addPendingPing(pingData) {
-    return TelemetryStorageImpl.addPendingPing(pingData);
-  },
-
-  /**
    * Remove the file for a ping
    *
    * @param {object} ping The ping.
@@ -675,10 +664,10 @@ var TelemetryStorageImpl = {
     let promise = this._saveArchivedPingTask(ping);
     this._activelyArchiving.add(promise);
     promise.then(
-      r => {
+      () => {
         this._activelyArchiving.delete(promise);
       },
-      e => {
+      () => {
         this._activelyArchiving.delete(promise);
       }
     );
@@ -809,7 +798,6 @@ var TelemetryStorageImpl = {
         `_saveSessionData - Failed to write session data to ${filePath}`,
         e
       );
-      Telemetry.getHistogramById("TELEMETRY_SESSIONDATA_FAILED_SAVE").add(1);
     }
   },
 
@@ -833,7 +821,6 @@ var TelemetryStorageImpl = {
       content = await IOUtils.readUTF8(dataFile);
     } catch (ex) {
       this._log.info("_loadSessionData - can not load session data file", ex);
-      Telemetry.getHistogramById("TELEMETRY_SESSIONDATA_FAILED_LOAD").add(1);
       return null;
     }
 
@@ -842,7 +829,6 @@ var TelemetryStorageImpl = {
       data = JSON.parse(content);
     } catch (ex) {
       this._log.error("_loadSessionData - failed to parse session data", ex);
-      Telemetry.getHistogramById("TELEMETRY_SESSIONDATA_FAILED_PARSE").add(1);
       return null;
     }
 
@@ -1058,7 +1044,7 @@ var TelemetryStorageImpl = {
           ping.id,
           ping.timestampCreated,
           ping.type
-        ).catch(e =>
+        ).catch(() =>
           this._log.error(
             "_enforceArchiveQuota - failed to remove archived ping" + ping.id
           )
@@ -1468,18 +1454,6 @@ var TelemetryStorageImpl = {
     let file = pingFilePath(ping);
     await this.savePingToFile(ping, file, overwrite);
     return file;
-  },
-
-  /**
-   * Add a ping to the saved pings directory so that it gets saved
-   * and sent along with other pings.
-   * Note: that the original ping file will not be modified.
-   *
-   * @param {Object} ping The ping object.
-   * @return {Promise} A promise resolved when the ping is saved to the pings directory.
-   */
-  addPendingPing(ping) {
-    return this.savePendingPing(ping);
   },
 
   /**

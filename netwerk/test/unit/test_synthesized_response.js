@@ -4,7 +4,7 @@ const { HttpServer } = ChromeUtils.importESModule(
   "resource://testing-common/httpd.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpServer.identity.primaryPort;
 });
 
@@ -45,10 +45,10 @@ function make_channel(url, body, cb) {
     getInterface(iid) {
       return this.QueryInterface(iid);
     },
-    onProgress(request, progress, progressMax) {
+    onProgress() {
       gotOnProgress = true;
     },
-    onStatus(request, status, statusArg) {
+    onStatus() {
       gotOnStatus = true;
     },
     shouldPrepareForIntercept() {
@@ -62,7 +62,7 @@ function make_channel(url, body, cb) {
         var synthesized = Cc[
           "@mozilla.org/io/string-input-stream;1"
         ].createInstance(Ci.nsIStringInputStream);
-        synthesized.data = body;
+        synthesized.setByteStringData(body);
 
         channel.startSynthesizedResponse(synthesized, null, null, "", false);
         channel.finishSynthesizedResponse();
@@ -118,8 +118,8 @@ function handle_remote_response(request, buffer) {
 
 // hit the network instead of synthesizing
 add_test(function () {
-  var chan = make_channel(URL + "/body", null, function (chan) {
-    chan.resetInterception(false);
+  var chan = make_channel(URL + "/body", null, function (channel) {
+    channel.resetInterception(false);
   });
   chan.asyncOpen(new ChannelListener(handle_remote_response, null));
 });
@@ -135,8 +135,8 @@ add_test(function () {
 // hit the network instead of synthesizing, to test that no previous synthesized
 // cache entry is used.
 add_test(function () {
-  var chan = make_channel(URL + "/body", null, function (chan) {
-    chan.resetInterception(false);
+  var chan = make_channel(URL + "/body", null, function (channel) {
+    channel.resetInterception(false);
   });
   chan.asyncOpen(new ChannelListener(handle_remote_response, null));
 });
@@ -160,7 +160,7 @@ add_test(function () {
       var synthesized = Cc[
         "@mozilla.org/io/string-input-stream;1"
       ].createInstance(Ci.nsIStringInputStream);
-      synthesized.data = NON_REMOTE_BODY;
+      synthesized.setByteStringData(NON_REMOTE_BODY);
       channel.synthesizeHeader("Content-Length", NON_REMOTE_BODY.length);
       channel.startSynthesizedResponse(synthesized, null, null, "", false);
       channel.finishSynthesizedResponse();
@@ -171,9 +171,9 @@ add_test(function () {
 
 // ensure that the channel waits for a decision
 add_test(function () {
-  var chan = make_channel(URL + "/body", null, function (chan) {
+  var chan = make_channel(URL + "/body", null, function (channel) {
     do_timeout(100, function () {
-      chan.resetInterception(false);
+      channel.resetInterception(false);
     });
   });
   chan.asyncOpen(new ChannelListener(handle_remote_response, null));
@@ -185,7 +185,7 @@ add_test(function () {
     var synthesized = Cc[
       "@mozilla.org/io/string-input-stream;1"
     ].createInstance(Ci.nsIStringInputStream);
-    synthesized.data = NON_REMOTE_BODY;
+    synthesized.setByteStringData(NON_REMOTE_BODY);
 
     // set the content-type to ensure that the stream converter doesn't hold up notifications
     // and cause the test to fail
@@ -212,12 +212,12 @@ add_test(function () {
 
 // ensure that the channel can't be cancelled via nsIInterceptedChannel after making a decision
 add_test(function () {
-  var chan = make_channel(URL + "/body", null, function (chan) {
-    chan.resetInterception(false);
+  var chan = make_channel(URL + "/body", null, function (channel) {
+    channel.resetInterception(false);
     do_timeout(0, function () {
       var gotexception = false;
       try {
-        chan.cancelInterception();
+        channel.cancelInterception();
       } catch (x) {
         gotexception = true;
       }
@@ -233,7 +233,7 @@ add_test(function () {
     var synthesized = Cc[
       "@mozilla.org/io/string-input-stream;1"
     ].createInstance(Ci.nsIStringInputStream);
-    synthesized.data = NON_REMOTE_BODY;
+    synthesized.setByteStringData(NON_REMOTE_BODY);
 
     let channel = intercepted.channel;
     intercepted.startSynthesizedResponse(synthesized, null, null, "", false);
@@ -255,7 +255,7 @@ add_test(function () {
     var synthesized = Cc[
       "@mozilla.org/io/string-input-stream;1"
     ].createInstance(Ci.nsIStringInputStream);
-    synthesized.data = NON_REMOTE_BODY;
+    synthesized.setByteStringData(NON_REMOTE_BODY);
 
     intercepted.channel.cancel(Cr.NS_BINDING_ABORTED);
 
@@ -277,7 +277,7 @@ add_test(function () {
 // In this case we should automatically ResetInterception() and complete the
 // network request.
 add_test(function () {
-  var chan = make_channel(URL + "/body", null, function (chan) {
+  var chan = make_channel(URL + "/body", null, function () {
     throw new Error("boom");
   });
   chan.asyncOpen(new ChannelListener(handle_remote_response, null));

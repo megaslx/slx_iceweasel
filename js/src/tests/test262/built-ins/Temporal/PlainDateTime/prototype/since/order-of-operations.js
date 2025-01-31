@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -12,29 +12,6 @@ features: [Temporal]
 const expected = [
   // ToTemporalDateTime
   "get other.calendar",
-  "has other.calendar.dateAdd",
-  "has other.calendar.dateFromFields",
-  "has other.calendar.dateUntil",
-  "has other.calendar.day",
-  "has other.calendar.dayOfWeek",
-  "has other.calendar.dayOfYear",
-  "has other.calendar.daysInMonth",
-  "has other.calendar.daysInWeek",
-  "has other.calendar.daysInYear",
-  "has other.calendar.fields",
-  "has other.calendar.id",
-  "has other.calendar.inLeapYear",
-  "has other.calendar.mergeFields",
-  "has other.calendar.month",
-  "has other.calendar.monthCode",
-  "has other.calendar.monthDayFromFields",
-  "has other.calendar.monthsInYear",
-  "has other.calendar.weekOfYear",
-  "has other.calendar.year",
-  "has other.calendar.yearMonthFromFields",
-  "has other.calendar.yearOfWeek",
-  "get other.calendar.fields",
-  "call other.calendar.fields",
   "get other.day",
   "get other.day.valueOf",
   "call other.day.valueOf",
@@ -65,45 +42,28 @@ const expected = [
   "get other.year",
   "get other.year.valueOf",
   "call other.year.valueOf",
-  "get other.calendar.dateFromFields",
-  "call other.calendar.dateFromFields",
-  // CalendarEquals
-  "get this.calendar.id",
-  "get other.calendar.id",
-  // CopyDataProperties
-  "ownKeys options",
-  "getOwnPropertyDescriptor options.roundingIncrement",
-  "get options.roundingIncrement",
-  "getOwnPropertyDescriptor options.roundingMode",
-  "get options.roundingMode",
-  "getOwnPropertyDescriptor options.largestUnit",
-  "get options.largestUnit",
-  "getOwnPropertyDescriptor options.smallestUnit",
-  "get options.smallestUnit",
-  "getOwnPropertyDescriptor options.additional",
-  "get options.additional",
   // GetDifferenceSettings
+  "get options.largestUnit",
   "get options.largestUnit.toString",
   "call options.largestUnit.toString",
+  "get options.roundingIncrement",
   "get options.roundingIncrement.valueOf",
   "call options.roundingIncrement.valueOf",
+  "get options.roundingMode",
   "get options.roundingMode.toString",
   "call options.roundingMode.toString",
+  "get options.smallestUnit",
   "get options.smallestUnit.toString",
   "call options.smallestUnit.toString",
-  // CalendarDateUntil
-  "get this.calendar.dateUntil",
-  "call this.calendar.dateUntil",
 ];
 const actual = [];
 
-const ownCalendar = TemporalHelpers.calendarObserver(actual, "this.calendar");
-const instance = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 987, 654, 321, ownCalendar);
+const instance = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 987, 654, 321, "iso8601");
 
 const otherDateTimePropertyBag = TemporalHelpers.propertyBagObserver(actual, {
   year: 2001,
-  month: 5,
-  monthCode: "M05",
+  month: 6,
+  monthCode: "M06",
   day: 2,
   hour: 1,
   minute: 46,
@@ -111,13 +71,11 @@ const otherDateTimePropertyBag = TemporalHelpers.propertyBagObserver(actual, {
   millisecond: 250,
   microsecond: 500,
   nanosecond: 750,
-  calendar: TemporalHelpers.calendarObserver(actual, "other.calendar"),
-}, "other");
+  calendar: "iso8601",
+}, "other", ["calendar"]);
 
 function createOptionsObserver({ smallestUnit = "nanoseconds", largestUnit = "auto", roundingMode = "halfExpand", roundingIncrement = 1 } = {}) {
   return TemporalHelpers.propertyBagObserver(actual, {
-    // order is significant, due to iterating through properties in order to
-    // copy them to an internal null-prototype object:
     roundingIncrement,
     roundingMode,
     largestUnit,
@@ -126,46 +84,9 @@ function createOptionsObserver({ smallestUnit = "nanoseconds", largestUnit = "au
   }, "options");
 }
 
-// clear any observable things that happened while constructing the objects
-actual.splice(0);
-
-// basic order of observable operations, without rounding:
-instance.since(otherDateTimePropertyBag, createOptionsObserver());
+// basic order of observable operations with calendar call, without rounding:
+instance.since(otherDateTimePropertyBag, createOptionsObserver({ largestUnit: "years" }));
 assert.compareArray(actual, expected, "order of operations");
 actual.splice(0); // clear
-
-// code path through RoundDuration that rounds to the nearest year:
-const expectedOpsForYearRounding = expected.concat([
-  "get this.calendar.dateAdd",     // 9.b
-  "call this.calendar.dateAdd",    // 9.c
-  "call this.calendar.dateAdd",    // 9.e
-  "call this.calendar.dateAdd",    // 9.j
-  "get this.calendar.dateUntil",   // 9.m
-  "call this.calendar.dateUntil",  // 9.m
-  "call this.calendar.dateAdd",    // 9.r
-  "call this.calendar.dateAdd",    // 9.w MoveRelativeDate
-]);
-instance.since(otherDateTimePropertyBag, createOptionsObserver({ smallestUnit: "years" }));
-assert.compareArray(actual, expectedOpsForYearRounding, "order of operations with smallestUnit = years");
-actual.splice(0); // clear
-
-// code path through RoundDuration that rounds to the nearest month:
-const expectedOpsForMonthRounding = expected.concat([
-  "get this.calendar.dateAdd",     // 10.b
-  "call this.calendar.dateAdd",    // 10.c
-  "call this.calendar.dateAdd",    // 10.e
-  "call this.calendar.dateAdd",    // 10.k MoveRelativeDate
-]);  // (10.n.iii MoveRelativeDate not called because weeks == 0)
-instance.since(otherDateTimePropertyBag, createOptionsObserver({ smallestUnit: "months" }));
-assert.compareArray(actual, expectedOpsForMonthRounding, "order of operations with smallestUnit = months");
-actual.splice(0); // clear
-
-// code path through RoundDuration that rounds to the nearest week:
-const expectedOpsForWeekRounding = expected.concat([
-  "get this.calendar.dateAdd",   // 11.c
-  "call this.calendar.dateAdd",  // 11.d MoveRelativeDate
-]);  // (11.g.iii MoveRelativeDate not called because days already balanced)
-instance.since(otherDateTimePropertyBag, createOptionsObserver({ smallestUnit: "weeks" }));
-assert.compareArray(actual.slice(expected.length), expectedOpsForWeekRounding.slice(expected.length), "order of operations with smallestUnit = weeks");
 
 reportCompare(0, 0);

@@ -22,6 +22,8 @@ import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Region;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.print.PrintDocumentAdapter;
@@ -32,6 +34,7 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.util.TypedValue;
 import android.view.DisplayCutout;
+import android.view.DragEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -53,10 +56,12 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import java.io.InputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
+import java.util.HashMap;
 import java.util.Objects;
 import org.mozilla.gecko.AndroidGamepadManager;
 import org.mozilla.gecko.EventDispatcher;
@@ -68,6 +73,10 @@ import org.mozilla.gecko.util.ThreadUtils;
 public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfaceProvider {
   private static final String LOGTAG = "GeckoView";
   private static final boolean DEBUG = false;
+  private static final String KEYBOARD_WINDOW_INSETS_LISTENER = "KEYBOARD_WINDOW_INSETS_LISTENER";
+  private final HashMap<String, androidx.core.view.OnApplyWindowInsetsListener>
+      mWindowInsetsListeners =
+          new HashMap<String, androidx.core.view.OnApplyWindowInsetsListener>();
 
   protected final @NonNull Display mDisplay = new Display();
 
@@ -92,7 +101,8 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
   private @Nullable ActivityContextDelegate mActivityDelegate;
   private GeckoSession.PrintDelegate mPrintDelegate;
 
-  private class Display implements SurfaceViewWrapper.Listener {
+  private class Display
+      implements SurfaceViewWrapper.Listener, androidx.core.view.OnApplyWindowInsetsListener {
     private final int[] mOrigin = new int[2];
 
     private GeckoDisplay mDisplay;
@@ -191,8 +201,17 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
       }
     }
 
+    @Override // OnApplyWindowInsetsListener
+    public WindowInsetsCompat onApplyWindowInsets(
+        @NonNull final View view, @NonNull final WindowInsetsCompat insets) {
+      if (mDisplay != null) {
+        mDisplay.windowInsetsChanged(insets);
+      }
+      return insets;
+    }
+
     public boolean shouldPinOnScreen() {
-      return mDisplay != null ? mDisplay.shouldPinOnScreen() : false;
+      return mDisplay != null && mDisplay.shouldPinOnScreen();
     }
 
     public void setVerticalClipping(final int clippingHeight) {
@@ -267,6 +286,14 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
     // We are adding descendants to this LayerView, but we don't want the
     // descendants to affect the way LayerView retains its focus.
     setDescendantFocusability(FOCUS_BLOCK_DESCENDANTS);
+
+    // When GeckoView.requestFocus() is called with hardware keyboard, the focused state color
+    // might be applied on this view. But we don't want to apply it as default.
+    final StateListDrawable drawable = new StateListDrawable();
+    drawable.addState(
+        new int[] {android.R.attr.state_focused, -android.R.attr.state_focused},
+        new ColorDrawable(Color.WHITE));
+    setBackground(drawable);
 
     // This will stop PropertyAnimator from creating a drawing cache (i.e. a
     // bitmap) from a SurfaceView, which is just not possible (the bitmap will be
@@ -538,11 +565,7 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
             new Runnable() {
               @Override
               public void run() {
-                if (Build.VERSION.SDK_INT >= 16) {
-                  GeckoView.this.postInvalidateOnAnimation();
-                } else {
-                  GeckoView.this.postInvalidateDelayed(10);
-                }
+                GeckoView.this.postInvalidateOnAnimation();
               }
             });
 
@@ -605,6 +628,74 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
     return mSession.getPanZoomController();
   }
 
+  /**
+   * Register an internal windowInsetsListener that will forward its calls to the listeners
+   * registered in {@link GeckoView#mWindowInsetsListeners}
+   *
+   * @param activity The target Activity to observe.
+   */
+  private void attachWindowInsetsListener(final @NonNull Activity activity) {
+    try {
+      final View rootView = activity.getWindow().getDecorView().getRootView();
+      ViewCompat.setOnApplyWindowInsetsListener(
+          rootView,
+          (view, insets) -> {
+            WindowInsetsCompat updatedInsets =
+                WindowInsetsCompat.toWindowInsetsCompat(
+                    view.onApplyWindowInsets(insets.toWindowInsets()));
+
+            for (final androidx.core.view.OnApplyWindowInsetsListener listener :
+                mWindowInsetsListeners.values()) {
+              updatedInsets = listener.onApplyWindowInsets(view, updatedInsets);
+            }
+            return updatedInsets;
+          });
+    } catch (final Exception e) {
+      Log.e(LOGTAG, "Failed to attach WindowInsetsListener: ", e);
+    }
+  }
+
+  /**
+   * Unregister the internal WindowInsetsListener attached to the Activity's root view and clear the
+   * listeners that were attached through {@link GeckoView#addWindowInsetsListener(String,
+   * androidx.core.view.OnApplyWindowInsetsListener) }
+   *
+   * @param activity The target Activity to stop observing.
+   */
+  private void detachWindowInsetsListener(final @NonNull Activity activity) {
+    try {
+      final View rootView = activity.getWindow().getDecorView().getRootView();
+      ViewCompat.setOnApplyWindowInsetsListener(rootView, null);
+    } catch (final Exception e) {
+      Log.e(LOGTAG, "Failed to detach WindowInsetsListener: ", e);
+    }
+  }
+
+  /**
+   * Add an OnApplyWindowInsetsListener to observe the root view WindowInsets changes.
+   *
+   * @param key The key associated to the listener.
+   * @param listener The OnApplyWindowInsetsListener to be invoked.
+   */
+  @UiThread
+  public void addWindowInsetsListener(
+      final @NonNull String key,
+      final @Nullable androidx.core.view.OnApplyWindowInsetsListener listener) {
+    ThreadUtils.assertOnUiThread();
+    mWindowInsetsListeners.put(key, listener);
+  }
+
+  /**
+   * Remove the OnApplyWindowInsetsListener to stop observing WindowInsets changed.
+   *
+   * @param key The key associated to the listener to remove.
+   */
+  @UiThread
+  public void removeWindowInsetsListener(final @NonNull String key) {
+    ThreadUtils.assertOnUiThread();
+    mWindowInsetsListeners.remove(key);
+  }
+
   @Override
   public void onAttachedToWindow() {
     if (mIsSessionPoisoned) {
@@ -622,11 +713,20 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
     }
 
     super.onAttachedToWindow();
+
+    // This needs to be called after the `super.onAttachedToWindow()`.
+    addWindowInsetsListener(KEYBOARD_WINDOW_INSETS_LISTENER, mDisplay);
+    attachWindowInsetsListener(getActivityFromContext(getContext()));
   }
 
   @Override
   public void onDetachedFromWindow() {
     super.onDetachedFromWindow();
+
+    removeWindowInsetsListener(KEYBOARD_WINDOW_INSETS_LISTENER);
+    if (mWindowInsetsListeners.isEmpty()) {
+      detachWindowInsetsListener(getActivityFromContext(getContext()));
+    }
 
     if (mSession == null) {
       return;
@@ -643,15 +743,7 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
     if (mSession != null) {
       final GeckoRuntime runtime = mSession.getRuntime();
       if (runtime != null) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1) {
-          // onConfigurationChanged is not called for 180 degree orientation changes,
-          // we will miss such rotations and the screen orientation will not be
-          // updated.
-          //
-          // If API is 17+, we use DisplayManager API to detect all degree
-          // orientation change.
-          runtime.orientationChanged(newConfig.orientation);
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
           // If API is 31+, DisplayManager API may report previous information.
           // So we have to report it again. But since Configuration.orientation may still have
           // previous information even if onConfigurationChanged is called, we have to calculate it
@@ -778,12 +870,18 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
     if (super.onKeyUp(keyCode, event)) {
       return true;
     }
+    if (AndroidGamepadManager.handleKeyEvent(event)) {
+      return true;
+    }
     return mSession != null && mSession.getTextInput().onKeyUp(keyCode, event);
   }
 
   @Override
   public boolean onKeyDown(final int keyCode, final KeyEvent event) {
     if (super.onKeyDown(keyCode, event)) {
+      return true;
+    }
+    if (AndroidGamepadManager.handleKeyEvent(event)) {
       return true;
     }
     return mSession != null && mSession.getTextInput().onKeyDown(keyCode, event);
@@ -1244,5 +1342,14 @@ public class GeckoView extends FrameLayout implements GeckoDisplay.NewSurfacePro
             mSurfaceWrapper.getView().setVisibility(View.VISIBLE);
           }
         });
+  }
+
+  /** Handle drag and drop event */
+  @Override
+  public boolean onDragEvent(final DragEvent event) {
+    if (mSession == null) {
+      return false;
+    }
+    return mSession.getPanZoomController().onDragEvent(event);
   }
 }

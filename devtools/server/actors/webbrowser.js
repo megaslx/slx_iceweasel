@@ -52,7 +52,7 @@ const lazy = {};
 loader.lazyGetter(lazy, "AddonManager", () => {
   return ChromeUtils.importESModule(
     "resource://gre/modules/AddonManager.sys.mjs",
-    { loadInDevToolsLoader: false }
+    { global: "shared" }
   ).AddonManager;
 });
 
@@ -568,8 +568,7 @@ BrowserTabList.prototype.handleEvent = DevToolsUtils.makeInfallible(function (
       break;
     }
   }
-},
-"BrowserTabList.prototype.handleEvent");
+}, "BrowserTabList.prototype.handleEvent");
 
 /*
  * If |shouldListen| is true, ensure we've registered a listener with the
@@ -633,8 +632,7 @@ BrowserTabList.prototype.onOpenWindow = DevToolsUtils.makeInfallible(function (
     .getInterface(Ci.nsIDOMWindow);
 
   window.addEventListener("load", handleLoad);
-},
-"BrowserTabList.prototype.onOpenWindow");
+}, "BrowserTabList.prototype.onOpenWindow");
 
 BrowserTabList.prototype.onCloseWindow = DevToolsUtils.makeInfallible(function (
   window
@@ -666,8 +664,7 @@ BrowserTabList.prototype.onCloseWindow = DevToolsUtils.makeInfallible(function (
       }
     }, "BrowserTabList.prototype.onCloseWindow's delayed body")
   );
-},
-"BrowserTabList.prototype.onCloseWindow");
+}, "BrowserTabList.prototype.onCloseWindow");
 
 exports.BrowserTabList = BrowserTabList;
 
@@ -710,35 +707,35 @@ Object.defineProperty(BrowserAddonList.prototype, "onListChanged", {
 /**
  * AddonManager listener must implement onDisabled.
  */
-BrowserAddonList.prototype.onDisabled = function (addon) {
+BrowserAddonList.prototype.onDisabled = function () {
   this._onAddonManagerUpdated();
 };
 
 /**
  * AddonManager listener must implement onEnabled.
  */
-BrowserAddonList.prototype.onEnabled = function (addon) {
+BrowserAddonList.prototype.onEnabled = function () {
   this._onAddonManagerUpdated();
 };
 
 /**
  * AddonManager listener must implement onInstalled.
  */
-BrowserAddonList.prototype.onInstalled = function (addon) {
+BrowserAddonList.prototype.onInstalled = function () {
   this._onAddonManagerUpdated();
 };
 
 /**
  * AddonManager listener must implement onOperationCancelled.
  */
-BrowserAddonList.prototype.onOperationCancelled = function (addon) {
+BrowserAddonList.prototype.onOperationCancelled = function () {
   this._onAddonManagerUpdated();
 };
 
 /**
  * AddonManager listener must implement onUninstalling.
  */
-BrowserAddonList.prototype.onUninstalling = function (addon) {
+BrowserAddonList.prototype.onUninstalling = function () {
   this._onAddonManagerUpdated();
 };
 
@@ -750,7 +747,7 @@ BrowserAddonList.prototype.onUninstalled = function (addon) {
   this._onAddonManagerUpdated();
 };
 
-BrowserAddonList.prototype._onAddonManagerUpdated = function (addon) {
+BrowserAddonList.prototype._onAddonManagerUpdated = function () {
   this._notifyListChanged();
   this._adjustListener();
 };

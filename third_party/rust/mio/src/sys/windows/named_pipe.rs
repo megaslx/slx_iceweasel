@@ -1,19 +1,29 @@
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
-use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::{fmt, mem, slice};
 
-use miow::iocp::{CompletionPort, CompletionStatus};
-use miow::pipe;
-use winapi::shared::winerror::{ERROR_BROKEN_PIPE, ERROR_PIPE_LISTENING};
-use winapi::um::ioapiset::CancelIoEx;
-use winapi::um::minwinbase::{OVERLAPPED, OVERLAPPED_ENTRY};
+use windows_sys::Win32::Foundation::{
+    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
+    ERROR_PIPE_LISTENING, HANDLE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+};
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES,
+};
+use windows_sys::Win32::System::IO::{
+    CancelIoEx, GetOverlappedResult, OVERLAPPED, OVERLAPPED_ENTRY,
+};
 
 use crate::event::Source;
-use crate::sys::windows::{Event, Overlapped};
+use crate::sys::windows::iocp::{CompletionPort, CompletionStatus};
+use crate::sys::windows::{Event, Handle, Overlapped};
 use crate::Registry;
 use crate::{Interest, Token};
 
@@ -74,8 +84,9 @@ struct Inner {
     connect: Overlapped,
     read: Overlapped,
     write: Overlapped,
+    event: Overlapped,
     // END NOTE.
-    handle: pipe::NamedPipe,
+    handle: Handle,
     connecting: AtomicBool,
     io: Mutex<Io>,
     pool: Mutex<BufferPool>,
@@ -100,8 +111,201 @@ impl Inner {
 
     /// Same as [`ptr_from_conn_overlapped`] but for `Inner.write`.
     unsafe fn ptr_from_write_overlapped(ptr: *mut OVERLAPPED) -> *const Inner {
-        // `read` is after `connect: Overlapped` and `read: Overlapped`.
+        // `write` is after `connect: Overlapped` and `read: Overlapped`.
         (ptr as *mut Overlapped).wrapping_sub(2) as *const Inner
+    }
+
+    /// Same as [`ptr_from_conn_overlapped`] but for `Inner.event`.
+    unsafe fn ptr_from_event_overlapped(ptr: *mut OVERLAPPED) -> *const Inner {
+        // `event` is after `connect: Overlapped`, `read: Overlapped`, and `write: Overlapped`.
+        (ptr as *mut Overlapped).wrapping_sub(3) as *const Inner
+    }
+
+    /// Issue a connection request with the specified overlapped operation.
+    ///
+    /// This function will issue a request to connect a client to this server,
+    /// returning immediately after starting the overlapped operation.
+    ///
+    /// If this function immediately succeeds then `Ok(true)` is returned. If
+    /// the overlapped operation is enqueued and pending, then `Ok(false)` is
+    /// returned. Otherwise an error is returned indicating what went wrong.
+    ///
+    /// # Unsafety
+    ///
+    /// This function is unsafe because the kernel requires that the
+    /// `overlapped` pointer is valid until the end of the I/O operation. The
+    /// kernel also requires that `overlapped` is unique for this I/O operation
+    /// and is not in use for any other I/O.
+    ///
+    /// To safely use this function callers must ensure that this pointer is
+    /// valid until the I/O operation is completed, typically via completion
+    /// ports and waiting to receive the completion notification on the port.
+    pub unsafe fn connect_overlapped(&self, overlapped: *mut OVERLAPPED) -> io::Result<bool> {
+        if ConnectNamedPipe(self.handle.raw(), overlapped) != 0 {
+            return Ok(true);
+        }
+
+        let err = io::Error::last_os_error();
+
+        match err.raw_os_error().map(|e| e as u32) {
+            Some(ERROR_PIPE_CONNECTED) => Ok(true),
+            Some(ERROR_NO_DATA) => Ok(true),
+            Some(ERROR_IO_PENDING) => Ok(false),
+            _ => Err(err),
+        }
+    }
+
+    /// Disconnects this named pipe from any connected client.
+    pub fn disconnect(&self) -> io::Result<()> {
+        if unsafe { DisconnectNamedPipe(self.handle.raw()) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Issues an overlapped read operation to occur on this pipe.
+    ///
+    /// This function will issue an asynchronous read to occur in an overlapped
+    /// fashion, returning immediately. The `buf` provided will be filled in
+    /// with data and the request is tracked by the `overlapped` function
+    /// provided.
+    ///
+    /// If the operation succeeds immediately, `Ok(Some(n))` is returned where
+    /// `n` is the number of bytes read. If an asynchronous operation is
+    /// enqueued, then `Ok(None)` is returned. Otherwise if an error occurred
+    /// it is returned.
+    ///
+    /// When this operation completes (or if it completes immediately), another
+    /// mechanism must be used to learn how many bytes were transferred (such as
+    /// looking at the filed in the IOCP status message).
+    ///
+    /// # Unsafety
+    ///
+    /// This function is unsafe because the kernel requires that the `buf` and
+    /// `overlapped` pointers to be valid until the end of the I/O operation.
+    /// The kernel also requires that `overlapped` is unique for this I/O
+    /// operation and is not in use for any other I/O.
+    ///
+    /// To safely use this function callers must ensure that the pointers are
+    /// valid until the I/O operation is completed, typically via completion
+    /// ports and waiting to receive the completion notification on the port.
+    pub unsafe fn read_overlapped(
+        &self,
+        buf: &mut [u8],
+        overlapped: *mut OVERLAPPED,
+    ) -> io::Result<Option<usize>> {
+        let len = std::cmp::min(buf.len(), u32::MAX as usize) as u32;
+        let res = ReadFile(
+            self.handle.raw(),
+            buf.as_mut_ptr() as *mut _,
+            len,
+            std::ptr::null_mut(),
+            overlapped,
+        );
+        if res == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(err);
+            }
+        }
+
+        let mut bytes = 0;
+        let res = GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0);
+        if res == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        } else {
+            Ok(Some(bytes as usize))
+        }
+    }
+
+    /// Issues an overlapped write operation to occur on this pipe.
+    ///
+    /// This function will issue an asynchronous write to occur in an overlapped
+    /// fashion, returning immediately. The `buf` provided will be filled in
+    /// with data and the request is tracked by the `overlapped` function
+    /// provided.
+    ///
+    /// If the operation succeeds immediately, `Ok(Some(n))` is returned where
+    /// `n` is the number of bytes written. If an asynchronous operation is
+    /// enqueued, then `Ok(None)` is returned. Otherwise if an error occurred
+    /// it is returned.
+    ///
+    /// When this operation completes (or if it completes immediately), another
+    /// mechanism must be used to learn how many bytes were transferred (such as
+    /// looking at the filed in the IOCP status message).
+    ///
+    /// # Unsafety
+    ///
+    /// This function is unsafe because the kernel requires that the `buf` and
+    /// `overlapped` pointers to be valid until the end of the I/O operation.
+    /// The kernel also requires that `overlapped` is unique for this I/O
+    /// operation and is not in use for any other I/O.
+    ///
+    /// To safely use this function callers must ensure that the pointers are
+    /// valid until the I/O operation is completed, typically via completion
+    /// ports and waiting to receive the completion notification on the port.
+    pub unsafe fn write_overlapped(
+        &self,
+        buf: &[u8],
+        overlapped: *mut OVERLAPPED,
+    ) -> io::Result<Option<usize>> {
+        let len = std::cmp::min(buf.len(), u32::MAX as usize) as u32;
+        let res = WriteFile(
+            self.handle.raw(),
+            buf.as_ptr() as *const _,
+            len,
+            std::ptr::null_mut(),
+            overlapped,
+        );
+        if res == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(err);
+            }
+        }
+
+        let mut bytes = 0;
+        let res = GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0);
+        if res == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        } else {
+            Ok(Some(bytes as usize))
+        }
+    }
+
+    /// Calls the `GetOverlappedResult` function to get the result of an
+    /// overlapped operation for this handle.
+    ///
+    /// This function takes the `OVERLAPPED` argument which must have been used
+    /// to initiate an overlapped I/O operation, and returns either the
+    /// successful number of bytes transferred during the operation or an error
+    /// if one occurred.
+    ///
+    /// # Unsafety
+    ///
+    /// This function is unsafe as `overlapped` must have previously been used
+    /// to execute an operation for this handle, and it must also be a valid
+    /// pointer to an `Overlapped` instance.
+    #[inline]
+    unsafe fn result(&self, overlapped: *mut OVERLAPPED) -> io::Result<usize> {
+        let mut transferred = 0;
+        let r = GetOverlappedResult(self.handle.raw(), overlapped, &mut transferred, 0);
+        if r == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(transferred as usize)
+        }
     }
 }
 
@@ -158,10 +362,30 @@ impl NamedPipe {
     /// Creates a new named pipe at the specified `addr` given a "reasonable
     /// set" of initial configuration options.
     pub fn new<A: AsRef<OsStr>>(addr: A) -> io::Result<NamedPipe> {
-        let pipe = pipe::NamedPipe::new(addr)?;
-        // Safety: nothing actually unsafe about this. The trait fn includes
-        // `unsafe`.
-        Ok(unsafe { NamedPipe::from_raw_handle(pipe.into_raw_handle()) })
+        use std::os::windows::ffi::OsStrExt;
+        let name: Vec<_> = addr.as_ref().encode_wide().chain(Some(0)).collect();
+
+        // Safety: syscall
+        let h = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE,
+                PIPE_UNLIMITED_INSTANCES,
+                65536,
+                65536,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if h == INVALID_HANDLE_VALUE {
+            Err(io::Error::last_os_error())
+        } else {
+            // Safety: nothing actually unsafe about this. The trait fn includes
+            // `unsafe`.
+            Ok(unsafe { Self::from_raw_handle(h as RawHandle) })
+        }
     }
 
     /// Attempts to call `ConnectNamedPipe`, if possible.
@@ -196,7 +420,7 @@ impl NamedPipe {
         // internal state accordingly.
         let res = unsafe {
             let overlapped = self.inner.connect.as_ptr() as *mut _;
-            self.inner.handle.connect_overlapped(overlapped)
+            self.inner.connect_overlapped(overlapped)
         };
 
         match res {
@@ -248,7 +472,7 @@ impl NamedPipe {
     /// After a `disconnect` is issued, then a `connect` may be called again to
     /// connect to another client.
     pub fn disconnect(&self) -> io::Result<()> {
-        self.inner.handle.disconnect()
+        self.inner.disconnect()
     }
 }
 
@@ -256,14 +480,12 @@ impl FromRawHandle for NamedPipe {
     unsafe fn from_raw_handle(handle: RawHandle) -> NamedPipe {
         NamedPipe {
             inner: Arc::new(Inner {
-                // Safety: not really unsafe
-                handle: pipe::NamedPipe::from_raw_handle(handle),
-                // transmutes to straddle winapi versions (mio 0.6 is on an
-                // older winapi)
+                handle: Handle::new(handle as HANDLE),
                 connect: Overlapped::new(connect_done),
                 connecting: AtomicBool::new(false),
                 read: Overlapped::new(read_done),
                 write: Overlapped::new(write_done),
+                event: Overlapped::new(event_done),
                 io: Mutex::new(Io {
                     cp: None,
                     token: None,
@@ -401,10 +623,7 @@ impl Source for NamedPipe {
             io.cp = Some(selector.clone_port());
 
             let inner_token = NEXT_TOKEN.fetch_add(2, Relaxed) + 2;
-            selector
-                .inner
-                .cp
-                .add_handle(inner_token, &self.inner.handle)?;
+            selector.inner.cp.add_handle(inner_token, self)?;
         }
 
         io.token = Some(token);
@@ -447,7 +666,7 @@ impl Source for NamedPipe {
 
 impl AsRawHandle for NamedPipe {
     fn as_raw_handle(&self) -> RawHandle {
-        self.inner.handle.as_raw_handle()
+        self.inner.handle.raw() as RawHandle
     }
 }
 
@@ -494,7 +713,7 @@ impl Inner {
         let e = unsafe {
             let overlapped = me.read.as_ptr() as *mut _;
             let slice = slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.capacity());
-            me.handle.read_overlapped(slice, overlapped)
+            me.read_overlapped(slice, overlapped)
         };
 
         match e {
@@ -513,7 +732,7 @@ impl Inner {
             // out the error.
             Err(e) => {
                 io.read = State::Err(e);
-                io.notify_readable(events);
+                io.notify_readable(me, events);
                 true
             }
         }
@@ -533,7 +752,7 @@ impl Inner {
         // Very similar to `schedule_read` above, just done for the write half.
         let e = unsafe {
             let overlapped = me.write.as_ptr() as *mut _;
-            me.handle.write_overlapped(&buf[pos..], overlapped)
+            me.write_overlapped(&buf[pos..], overlapped)
         };
 
         // See `connect` above for the rationale behind `forget`
@@ -576,7 +795,7 @@ impl Inner {
             Ok(None) => (),
             Err(e) => {
                 io.write = State::Err(e);
-                io.notify_writable(events);
+                io.notify_writable(me, events);
             }
         }
     }
@@ -586,7 +805,7 @@ impl Inner {
         #[allow(clippy::needless_option_as_deref)]
         if Inner::schedule_read(me, &mut io, events.as_deref_mut()) {
             if let State::None = io.write {
-                io.notify_writable(events);
+                io.notify_writable(me, events);
             }
         }
     }
@@ -600,8 +819,8 @@ impl Inner {
     }
 }
 
-unsafe fn cancel<T: AsRawHandle>(handle: &T, overlapped: &Overlapped) -> io::Result<()> {
-    let ret = CancelIoEx(handle.as_raw_handle(), overlapped.as_ptr() as *mut _);
+unsafe fn cancel(handle: &Handle, overlapped: &Overlapped) -> io::Result<()> {
+    let ret = CancelIoEx(handle.raw(), overlapped.as_ptr());
     // `CancelIoEx` returns 0 on error:
     // https://docs.microsoft.com/en-us/windows/win32/fileio/cancelioex-func
     if ret == 0 {
@@ -626,7 +845,7 @@ fn connect_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     // Stash away our connect error if one happened
     debug_assert_eq!(status.bytes_transferred(), 0);
     unsafe {
-        match me.handle.result(status.overlapped()) {
+        match me.result(status.overlapped()) {
             Ok(n) => debug_assert_eq!(n, 0),
             Err(e) => me.io.lock().unwrap().connect_error = Some(e),
         }
@@ -652,7 +871,7 @@ fn read_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
         _ => unreachable!(),
     };
     unsafe {
-        match me.handle.result(status.overlapped()) {
+        match me.result(status.overlapped()) {
             Ok(n) => {
                 debug_assert_eq!(status.bytes_transferred() as usize, n);
                 buf.set_len(status.bytes_transferred() as usize);
@@ -666,7 +885,7 @@ fn read_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     }
 
     // Flag our readiness that we've got data.
-    io.notify_readable(events);
+    io.notify_readable(&me, events);
 }
 
 fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
@@ -684,7 +903,7 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
         // `Ok` here means, that the operation was completed immediately
         // `bytes_transferred` is already reported to a client
         State::Ok(..) => {
-            io.notify_writable(events);
+            io.notify_writable(&me, events);
             return;
         }
         State::Pending(buf, pos) => (buf, pos),
@@ -692,13 +911,13 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     };
 
     unsafe {
-        match me.handle.result(status.overlapped()) {
+        match me.result(status.overlapped()) {
             Ok(n) => {
                 debug_assert_eq!(status.bytes_transferred() as usize, n);
                 let new_pos = pos + (status.bytes_transferred() as usize);
                 if new_pos == buf.len() {
                     me.put_buffer(buf);
-                    io.notify_writable(events);
+                    io.notify_writable(&me, events);
                 } else {
                     Inner::schedule_write(&me, buf, new_pos, &mut io, events);
                 }
@@ -706,8 +925,34 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
             Err(e) => {
                 debug_assert_eq!(status.bytes_transferred(), 0);
                 io.write = State::Err(e);
-                io.notify_writable(events);
+                io.notify_writable(&me, events);
             }
+        }
+    }
+}
+
+fn event_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
+    let status = CompletionStatus::from_entry(status);
+
+    // Acquire the `Arc<Inner>`. Note that we should be guaranteed that
+    // the refcount is available to us due to the `mem::forget` in
+    // `schedule_write` above.
+    let me = unsafe { Arc::from_raw(Inner::ptr_from_event_overlapped(status.overlapped())) };
+
+    let io = me.io.lock().unwrap();
+
+    // Make sure the I/O handle is still registered with the selector
+    if io.token.is_some() {
+        // This method is also called during `Selector::drop` to perform
+        // cleanup. In this case, `events` is `None` and we don't need to track
+        // the event.
+        if let Some(events) = events {
+            let mut ev = Event::from_completion_status(&status);
+            // Reverse the `.data` alteration done in `schedule_event`. This
+            // alteration was done so the selector recognized the event as one from
+            // a named pipe.
+            ev.data >>= 1;
+            events.push(ev);
         }
     }
 }
@@ -727,7 +972,7 @@ impl Io {
         }
     }
 
-    fn notify_readable(&self, events: Option<&mut Vec<Event>>) {
+    fn notify_readable(&self, me: &Arc<Inner>, events: Option<&mut Vec<Event>>) {
         if let Some(token) = self.token {
             let mut ev = Event::new(token);
             ev.set_readable();
@@ -735,12 +980,12 @@ impl Io {
             if let Some(events) = events {
                 events.push(ev);
             } else {
-                let _ = self.cp.as_ref().unwrap().post(ev.to_completion_status());
+                self.schedule_event(me, ev);
             }
         }
     }
 
-    fn notify_writable(&self, events: Option<&mut Vec<Event>>) {
+    fn notify_writable(&self, me: &Arc<Inner>, events: Option<&mut Vec<Event>>) {
         if let Some(token) = self.token {
             let mut ev = Event::new(token);
             ev.set_writable();
@@ -748,7 +993,32 @@ impl Io {
             if let Some(events) = events {
                 events.push(ev);
             } else {
-                let _ = self.cp.as_ref().unwrap().post(ev.to_completion_status());
+                self.schedule_event(me, ev);
+            }
+        }
+    }
+
+    fn schedule_event(&self, me: &Arc<Inner>, mut event: Event) {
+        // Alter the token so that the selector will identify the IOCP event as
+        // one for a named pipe. This will be reversed in `event_done`
+        //
+        // `data` for named pipes is an auto-incrementing counter. Because
+        // `data` is `u64` we do not risk losing the most-significant bit
+        // (unless a user creates 2^62 named pipes during the lifetime of the
+        // process).
+        event.data <<= 1;
+        event.data += 1;
+
+        let completion_status =
+            event.to_completion_status_with_overlapped(me.event.as_ptr() as *mut _);
+
+        match self.cp.as_ref().unwrap().post(completion_status) {
+            Ok(_) => {
+                // Increase the ref count of `Inner` for the completion event.
+                mem::forget(me.clone());
+            }
+            Err(_) => {
+                // Nothing to do here
             }
         }
     }

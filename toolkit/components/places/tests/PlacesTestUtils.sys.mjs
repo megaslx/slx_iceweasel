@@ -1,5 +1,6 @@
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   TestUtils: "resource://testing-common/TestUtils.sys.mjs",
 });
@@ -64,6 +65,9 @@ export var PlacesTestUtils = Object.freeze({
       let info = { url: place.uri || place.url };
       let spec =
         info.url instanceof Ci.nsIURI ? info.url.spec : new URL(info.url).href;
+      info.exposableURI = Services.io.createExposableURI(
+        Services.io.newURI(spec)
+      );
       info.title = "title" in place ? place.title : "test visit for " + spec;
       let visitDate = place.visitDate;
       if (visitDate) {
@@ -107,7 +111,7 @@ export var PlacesTestUtils = Object.freeze({
     }
     if (lastStoredVisit) {
       await lazy.TestUtils.waitForCondition(
-        () => lazy.PlacesUtils.history.fetch(lastStoredVisit.url),
+        () => lazy.PlacesUtils.history.fetch(lastStoredVisit.exposableURI),
         "Ensure history has been updated and is visible to read-only connections"
       );
     }
@@ -131,26 +135,141 @@ export var PlacesTestUtils = Object.freeze({
       if (!val) {
         throw new Error("URL does not exist");
       }
+
+      let uri = Services.io.newURI(key);
+      let faviconURI = Services.io.newURI(val);
+      if (!faviconURI.schemeIs("data")) {
+        throw new Error(`Favicon URL should be data URL [${faviconURI.spec}]`);
+      }
+
       faviconPromises.push(
-        new Promise((resolve, reject) => {
-          let uri = Services.io.newURI(key);
-          let faviconURI = Services.io.newURI(val);
-          try {
-            lazy.PlacesUtils.favicons.setAndFetchFaviconForPage(
-              uri,
-              faviconURI,
-              false,
-              lazy.PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-              resolve,
-              Services.scriptSecurityManager.getSystemPrincipal()
-            );
-          } catch (ex) {
-            reject(ex);
-          }
-        })
+        lazy.PlacesUtils.favicons.setFaviconForPage(uri, faviconURI, faviconURI)
       );
     }
     await Promise.all(faviconPromises);
+  },
+
+  /*
+   * Helper function to call PlacesUtils.favicons.setFaviconForPage() and waits
+   * finishing setting. This function throws an error if the status of
+   * PlacesUtils.favicons.setFaviconForPage() is not success.
+   *
+   * @param {string or nsIURI} pageURI
+   * @param {string or nsIURI} faviconURI
+   * @param {string or nsIURI} faviconDataURL
+   * @param {Number} [optional] expiration
+   * @return {Promise} waits for finishing setting
+   */
+  setFaviconForPage(
+    pageURI,
+    faviconURI,
+    faviconDataURL,
+    expiration = 0,
+    isRichIcon = false
+  ) {
+    return lazy.PlacesUtils.favicons.setFaviconForPage(
+      pageURI instanceof Ci.nsIURI ? pageURI : Services.io.newURI(pageURI),
+      faviconURI instanceof Ci.nsIURI
+        ? faviconURI
+        : Services.io.newURI(faviconURI),
+      faviconDataURL instanceof Ci.nsIURI
+        ? faviconDataURL
+        : Services.io.newURI(faviconDataURL),
+      expiration,
+      isRichIcon
+    );
+  },
+
+  /**
+   * Get favicon data for given URL from database.
+   *
+   * @param {nsIURI} faviconURI
+   *        nsIURI for the favicon
+   * @return {nsIURI} data URL
+   */
+  async getFaviconDataURLFromDB(faviconURI) {
+    const db = await lazy.PlacesUtils.promiseDBConnection();
+    const rows = await db.executeCached(
+      `SELECT data, width
+       FROM moz_icons
+       WHERE fixed_icon_url_hash = hash(fixup_url(:url))
+       AND icon_url = :url
+       ORDER BY width DESC`,
+      { url: faviconURI.spec }
+    );
+
+    if (!rows.length) {
+      return null;
+    }
+
+    const row = rows[0];
+    const data = row.getResultByName("data");
+    if (!data.length) {
+      return null;
+    }
+
+    const UINT64_MAX = 65535;
+    const width = row.getResultByName("width");
+    const contentType = width === UINT64_MAX ? "image/svg+xml" : "image/png";
+
+    return await PlacesTestUtils.fileDataToDataURL(data, contentType);
+  },
+
+  /**
+   * Get favicon data for given URL from network.
+   *
+   * @param {nsIURI} faviconURI
+   *        nsIURI for the favicon.
+   * @param {nsIPrincipal} [optional] loadingPrincipal
+   *        The principal to load from network. If no, use system principal.
+   * @return {nsIURI} data URL
+   *
+   * @note This fetching code is for test-code only and should not be copied to
+   *       production code, as a proper principal and loadGroup, or ohttp, should
+   *       be used by the browser when fetching from the network.
+   */
+  async getFaviconDataURLFromNetwork(
+    faviconURI,
+    loadingPrincipal = Services.scriptSecurityManager.getSystemPrincipal()
+  ) {
+    if (faviconURI.schemeIs("data")) {
+      return faviconURI;
+    }
+
+    let channel = lazy.NetUtil.newChannel({
+      uri: faviconURI,
+      loadingPrincipal,
+      securityFlags:
+        Ci.nsILoadInfo.SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT |
+        Ci.nsILoadInfo.SEC_ALLOW_CHROME |
+        Ci.nsILoadInfo.SEC_DISALLOW_SCRIPT,
+      contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_IMAGE_FAVICON,
+    });
+
+    let resolver = Promise.withResolvers();
+
+    lazy.NetUtil.asyncFetch(channel, async (input, status, request) => {
+      if (!Components.isSuccessCode(status)) {
+        resolver.reject(status);
+        return;
+      }
+
+      try {
+        let data = lazy.NetUtil.readInputStream(input, input.available());
+        let contentType = request.QueryInterface(Ci.nsIChannel).contentType;
+        input.close();
+
+        let dataURL = await PlacesTestUtils.fileDataToDataURL(
+          data,
+          contentType
+        );
+        resolver.resolve(dataURL);
+      } catch (e) {
+        resolver.reject(e);
+      }
+    });
+
+    return resolver.promise;
   },
 
   /**
@@ -164,6 +283,28 @@ export var PlacesTestUtils = Object.freeze({
       }, "places-favicons-expired");
       lazy.PlacesUtils.favicons.expireAllFavicons();
     });
+  },
+
+  /**
+   * Converts the given data to the data URL.
+   *
+   * @param data
+   *        The file data.
+   * @param mimeType
+   *        The mime type of the file content.
+   * @return Promise that retunes data URL.
+   */
+  async fileDataToDataURL(data, mimeType) {
+    const dataURL = await new Promise(resolve => {
+      const buffer = new Uint8ClampedArray(data);
+      const blob = new Blob([buffer], { type: mimeType });
+      const reader = new FileReader();
+      reader.onload = e => {
+        resolve(Services.io.newURI(e.target.result));
+      };
+      reader.readAsDataURL(blob);
+    });
+    return dataURL;
   },
 
   /**
@@ -554,14 +695,16 @@ export var PlacesTestUtils = Object.freeze({
    * on the given conditions.
    * @param {string} table - The name of the database table to query.
    * @param {string} field - The name of the field to retrieve a value from.
-   * @param {Object} conditions - An object containing the conditions to filter
-   * the query results. The keys represent the names of the columns to filter
-   * by, and the values represent the filter values.
+   * @param {Object} [conditions] - An object containing the conditions to
+   * filter the query results. The keys represent the names of the columns to
+   * filter by, and the values represent the filter values.  It's possible to
+   * pass an array as value where the first element is an operator
+   * (e.g. "<", ">") and the second element is the actual value.
    * @return {Promise} A Promise that resolves to the value of the specified
    * field from the database table, or null if the query returns no results.
    * @throws If more than one result is found for the given conditions.
    */
-  async getDatabaseValue(table, field, conditions) {
+  async getDatabaseValue(table, field, conditions = {}) {
     let { fragment: where, params } = this._buildWhereClause(table, conditions);
     let query = `SELECT ${field} FROM ${table} ${where}`;
     let conn = await lazy.PlacesUtils.promiseDBConnection();
@@ -571,7 +714,7 @@ export var PlacesTestUtils = Object.freeze({
         "getDatabaseValue doesn't support returning multiple results"
       );
     }
-    return rows[0]?.getResultByName(field);
+    return rows[0]?.getResultByIndex(0);
   },
 
   /**
@@ -579,9 +722,11 @@ export var PlacesTestUtils = Object.freeze({
    * conditions.
    * @param {string} table - The name of the database table to add to.
    * @param {string} fields - an object with field, value pairs
-   * @param {Object} [conditions] - An object containing the conditions to filter
-   * the query results. The keys represent the names of the columns to filter
-   * by, and the values represent the filter values.
+   * @param {Object} [conditions] - An object containing the conditions to
+   * filter the query results. The keys represent the names of the columns to
+   * filter by, and the values represent the filter values. It's possible to
+   * pass an array as value where the first element is an operator
+   * (e.g. "<", ">") and the second element is the actual value.
    * @return {Promise} A Promise that resolves to the number of affected rows.
    * @throws If no rows were affected.
    */
@@ -636,6 +781,11 @@ export var PlacesTestUtils = Object.freeze({
       }
       if (column == "url" && table == "moz_places") {
         fragments.push("url_hash = hash(:url) AND url = :url");
+      } else if (Array.isArray(value)) {
+        // First element is the operator, second element is the value.
+        let [op, actualValue] = value;
+        fragments.push(`${column} ${op} :${column}`);
+        value = actualValue;
       } else {
         fragments.push(`${column} = :${column}`);
       }

@@ -498,7 +498,7 @@ async function promiseNativeTouchpadPanEventAndWaitForObserver(
 
   return new Promise(resolve => {
     var observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         if (aTopic == "touchpadpanevent") {
           resolve();
         }
@@ -557,7 +557,7 @@ function promiseNativePanGestureEventAndWaitForObserver(
 ) {
   return new Promise(resolve => {
     var observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         if (aTopic == "mousescrollevent") {
           resolve();
         }
@@ -588,7 +588,7 @@ function promiseNativeWheelAndWaitForObserver(
 ) {
   return new Promise(resolve => {
     var observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         if (aTopic == "mousescrollevent") {
           resolve();
         }
@@ -614,7 +614,7 @@ function promiseNativeWheelAndWaitForWheelEvent(
     var targetWindow = windowForTarget(aTarget);
     targetWindow.addEventListener(
       "wheel",
-      function (e) {
+      function () {
         setTimeout(resolve, 0);
       },
       { once: true }
@@ -782,7 +782,16 @@ async function synthesizeNativeTouch(
     target: aTarget,
   });
   var utils = utilsForTarget(aTarget);
-  utils.sendNativeTouchPoint(aTouchId, aType, pt.x, pt.y, 1, 90, aObserver);
+  utils.sendNativeTouchPoint(
+    aTouchId,
+    aType,
+    pt.x,
+    pt.y,
+    1,
+    90,
+    aObserver,
+    aTarget instanceof Element ? aTarget : null
+  );
   return true;
 }
 
@@ -794,11 +803,21 @@ function sendBasicNativePointerInput(
   aX,
   aY,
   aObserver,
+  aElement,
   { pressure = 1, twist = 0, tiltX = 0, tiltY = 0, button = 0 } = {}
 ) {
   switch (aPointerType) {
     case "touch":
-      utils.sendNativeTouchPoint(aId, aState, aX, aY, pressure, 90, aObserver);
+      utils.sendNativeTouchPoint(
+        aId,
+        aState,
+        aX,
+        aY,
+        pressure,
+        90,
+        aObserver,
+        aElement
+      );
       break;
     case "pen":
       utils.sendNativePenInput(
@@ -811,7 +830,8 @@ function sendBasicNativePointerInput(
         tiltX,
         tiltY,
         button,
-        aObserver
+        aObserver,
+        aElement
       );
       break;
     default:
@@ -842,6 +862,7 @@ async function promiseNativePointerInput(
       pt.x,
       pt.y,
       resolve,
+      aTarget instanceof Element ? aTarget : null,
       options
     );
   });
@@ -942,6 +963,7 @@ async function synthesizeNativePointerSequences(
             currentPositions[j].x,
             currentPositions[j].y,
             observer,
+            aTarget instanceof Element ? aTarget : null,
             options
           );
           currentPositions[j] = null;
@@ -955,6 +977,7 @@ async function synthesizeNativePointerSequences(
           aPositions[i][j].x,
           aPositions[i][j].y,
           null,
+          aTarget instanceof Element ? aTarget : null,
           options
         );
         currentPositions[j] = aPositions[i][j];
@@ -1547,8 +1570,7 @@ function promiseTopic(aTopic) {
         SpecialPowers.Services.obs.removeObserver(observer, topic);
         reject(ex);
       }
-    },
-    aTopic);
+    }, aTopic);
   });
 }
 
@@ -1566,7 +1588,7 @@ function promiseScrollend(aTarget = window) {
 function promiseTouchEnd(element, count = 1) {
   return new Promise(resolve => {
     var eventCount = 0;
-    var counterFunction = function (e) {
+    var counterFunction = function () {
       eventCount++;
       if (eventCount == count) {
         element.removeEventListener("touchend", counterFunction, {
@@ -1816,7 +1838,7 @@ async function panRightToLeftUpdate(aElement, aX, aY, aMultiplier) {
   );
 }
 
-async function panRightToLeftEnd(aElement, aX, aY, aMultiplier) {
+async function panRightToLeftEnd(aElement, aX, aY) {
   await NativePanHandler.promiseNativePanEvent(
     aElement,
     aX,
@@ -1869,7 +1891,7 @@ async function panLeftToRightUpdate(aElement, aX, aY, aMultiplier) {
   );
 }
 
-async function panLeftToRightEnd(aElement, aX, aY, aMultiplier) {
+async function panLeftToRightEnd(aElement, aX, aY) {
   await NativePanHandler.promiseNativePanEvent(
     aElement,
     aX,
@@ -1909,4 +1931,95 @@ async function closeContextMenu() {
   });
 
   await contextmenuClosedPromise;
+}
+
+// Get a list of prefs which should be used for a subtest which wants to
+// generate a smooth scroll animation using an input event. The smooth
+// scroll animation is slowed down so the test can perform other actions
+// while it's still in progress.
+function getSmoothScrollPrefs(aInputType, aMsdPhysics) {
+  let result = [["apz.test.logging_enabled", true]];
+  // Some callers just want the default and don't pass in aMsdPhysics.
+  if (aMsdPhysics !== undefined) {
+    result.push(["general.smoothScroll.msdPhysics.enabled", aMsdPhysics]);
+  } else {
+    aMsdPhysics = SpecialPowers.getBoolPref(
+      "general.smoothScroll.msdPhysics.enabled"
+    );
+  }
+  if (aInputType == "wheel") {
+    // We want to test real wheel events rather than pan events.
+    result.push(["apz.test.mac.synth_wheel_input", true]);
+  } /* keyboard input */ else {
+    // The default verticalScrollDistance (which is 3) is too small for native
+    // keyboard scrolling, it sometimes produces same scroll offsets in the early
+    // stages of the smooth animation.
+    result.push(["toolkit.scrollbox.verticalScrollDistance", 5]);
+  }
+  // Use a longer animation duration to avoid the situation that the
+  // animation stops accidentally in between each arrow input event.
+  // If the situation happens, scroll offsets will not change at the moment.
+  if (aMsdPhysics) {
+    // Prefs for MSD physics (applicable to any input type).
+    result.push(
+      ...[
+        ["general.smoothScroll.msdPhysics.motionBeginSpringConstant", 20],
+        ["general.smoothScroll.msdPhysics.regularSpringConstant", 20],
+        ["general.smoothScroll.msdPhysics.slowdownMinDeltaRatio", 0.1],
+        ["general.smoothScroll.msdPhysics.slowdownSpringConstant", 20],
+      ]
+    );
+  } else if (aInputType == "wheel") {
+    // Prefs for Bezier physics with wheel input.
+    result.push(
+      ...[
+        ["general.smoothScroll.mouseWheel.durationMaxMS", 1500],
+        ["general.smoothScroll.mouseWheel.durationMinMS", 1500],
+      ]
+    );
+  } else {
+    // Prefs for Bezier physics with keyboard input.
+    result.push(
+      ...[
+        ["general.smoothScroll.lines.durationMaxMS", 1500],
+        ["general.smoothScroll.lines.durationMinMS", 1500],
+      ]
+    );
+  }
+  return result;
+}
+
+function buildRelativeScrollSmoothnessVariants(aInputType, aScrollMethods) {
+  let subtests = [];
+  for (let scrollMethod of aScrollMethods) {
+    subtests.push({
+      file: `helper_relative_scroll_smoothness.html?input-type=${aInputType}&scroll-method=${scrollMethod}&strict=true`,
+      prefs: getSmoothScrollPrefs(aInputType, /* Bezier physics */ false),
+    });
+    // For MSD physics, run the test with strict=false. The shape of the
+    // animation curve is highly timing dependent, and we can't guarantee
+    // that an animation will run long enough until the next input event
+    // arrives.
+    subtests.push({
+      file: `helper_relative_scroll_smoothness.html?input-type=${aInputType}&scroll-method=${scrollMethod}&strict=false`,
+      prefs: getSmoothScrollPrefs(aInputType, /* MSD physics */ true),
+    });
+  }
+  return subtests;
+}
+
+// Right now this is only meaningful on Linux.
+async function getWindowProtocol() {
+  if (getPlatform() != "linux") {
+    return "";
+  }
+
+  return await SpecialPowers.spawnChrome([], () => {
+    try {
+      return Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo)
+        .windowProtocol;
+    } catch {
+      return "";
+    }
+  });
 }

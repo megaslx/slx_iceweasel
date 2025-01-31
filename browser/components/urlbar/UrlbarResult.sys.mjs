@@ -13,10 +13,8 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  BrowserUIUtils: "resource:///modules/BrowserUIUtils.sys.mjs",
   JsonSchemaValidator:
     "resource://gre/modules/components-utils/JsonSchemaValidator.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
   UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
 });
 
@@ -60,14 +58,8 @@ export class UrlbarResult {
     // source filters in the ProvidersManager, that otherwise may skip them.
     this.heuristic = false;
 
-    // Exposure specific properties. These allow us to track the exposure
-    // of a result through the query process.
-    // A non-zero value here indicates that this result's exposure should be
-    // recorded in the exposure event.
-    this.exposureResultType = "";
-
-    // Determines if the exposure result should be hidden from the view.
-    this.exposureResultHidden = false;
+    // Allows us to track the exposure of a result through the query process.
+    this.exposureTelemetry = lazy.UrlbarUtils.EXPOSURE_TELEMETRY.NONE;
 
     // The payload contains result data. Some of the data is common across
     // multiple types, but most of it will vary.
@@ -178,6 +170,17 @@ export class UrlbarResult {
   }
 
   /**
+   * Convenience getter that returns whether the result's exposure telemetry
+   * indicates it should be hidden.
+   *
+   * @returns {boolean}
+   *   Whether the result should be hidden.
+   */
+  get isHiddenExposure() {
+    return this.exposureTelemetry == lazy.UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN;
+  }
+
+  /**
    * Returns the given payload if it's valid or throws an error if it's not.
    * The schemas in UrlbarUtils.RESULT_PAYLOAD_SCHEMA are used for validation.
    *
@@ -252,24 +255,16 @@ export class UrlbarResult {
         lazy.UrlbarUtils.HIGHLIGHT.TYPED,
       ];
       try {
-        payloadInfo.title[0] = new URL(payloadInfo.url[0]).host;
+        payloadInfo.title[0] = new URL(payloadInfo.url[0]).URI.displayHostPort;
       } catch (e) {}
     }
 
     if (payloadInfo.url) {
       // For display purposes we need to unescape the url.
-      payloadInfo.displayUrl = [...payloadInfo.url];
-      let url = payloadInfo.displayUrl[0];
-      if (url && lazy.UrlbarPrefs.get("trimURLs")) {
-        url = lazy.BrowserUIUtils.removeSingleTrailingSlashFromURL(url);
-        if (url.startsWith("https://")) {
-          url = url.substring(8);
-          if (url.startsWith("www.")) {
-            url = url.substring(4);
-          }
-        }
-      }
-      payloadInfo.displayUrl[0] = lazy.UrlbarUtils.unEscapeURIForUI(url);
+      payloadInfo.displayUrl = [
+        lazy.UrlbarUtils.prepareUrlForDisplay(payloadInfo.url[0]),
+        payloadInfo.url[1],
+      ];
     }
 
     // For performance reasons limit excessive string lengths, to reduce the

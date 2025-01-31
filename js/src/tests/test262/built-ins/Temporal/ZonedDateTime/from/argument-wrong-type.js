@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -10,7 +10,7 @@ description: >
 features: [BigInt, Symbol, Temporal]
 ---*/
 
-const rangeErrorTests = [
+const primitiveTests = [
   [undefined, "undefined"],
   [null, "null"],
   [true, "boolean"],
@@ -20,8 +20,12 @@ const rangeErrorTests = [
   [1n, "bigint"],
 ];
 
-for (const [arg, description] of rangeErrorTests) {
-  assert.throws(RangeError, () => Temporal.ZonedDateTime.from(arg), `${description} does not convert to a valid ISO string`);
+for (const [arg, description] of primitiveTests) {
+  assert.throws(
+    typeof arg === 'string' ? RangeError : TypeError,
+    () => Temporal.ZonedDateTime.from(arg),
+    `${description} does not convert to a valid ISO string`
+  );
 }
 
 const typeErrorTests = [

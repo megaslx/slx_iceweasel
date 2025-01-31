@@ -1,17 +1,7 @@
 /**
- * Copyright 2023 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2023 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import assert from 'assert';
@@ -25,6 +15,7 @@ const FILENAME = __filename.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&');
 const parseStackTrace = (stack: string): string => {
   stack = stack.replace(new RegExp(FILENAME, 'g'), '<filename>');
   stack = stack.replace(/<filename>:(\d+):(\d+)/g, '<filename>:<line>:<col>');
+  stack = stack.replace(/<anonymous>:(\d+):(\d+)/g, '<anonymous>:<line>:<col>');
   return stack;
 };
 
@@ -51,7 +42,7 @@ describe('Stack trace', function () {
     ).toMatchObject({
       ...[
         'Error: Test',
-        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:1:18)',
+        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
       ],
     });
   });
@@ -75,7 +66,7 @@ describe('Stack trace', function () {
     ).toMatchObject({
       ...[
         'Error: Test',
-        'evaluateHandle (evaluateHandle at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:1:18)',
+        'evaluateHandle (evaluateHandle at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
       ],
     });
   });
@@ -83,7 +74,7 @@ describe('Stack trace', function () {
   it('should work with contiguous evaluation', async () => {
     const {page} = await getTestState();
 
-    const thrower = await page.evaluateHandle(() => {
+    using thrower = await page.evaluateHandle(() => {
       return () => {
         throw new Error('Test');
       };
@@ -104,8 +95,8 @@ describe('Stack trace', function () {
     ).toMatchObject({
       ...[
         'Error: Test',
-        'evaluateHandle (evaluateHandle at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:2:22)',
-        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:1:12)',
+        'evaluateHandle (evaluateHandle at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
+        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
       ],
     });
   });
@@ -141,11 +132,11 @@ describe('Stack trace', function () {
     ).toMatchObject({
       ...[
         'Error: Test',
-        'a (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:2:22)',
-        'b (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:5:16)',
-        'c (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:8:16)',
-        'd (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:11:16)',
-        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:13:12)',
+        'a (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
+        'b (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
+        'c (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
+        'd (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
+        'evaluate (evaluate at Context.<anonymous> (<filename>:<line>:<col>), <anonymous>:<line>:<col>)',
       ],
     });
   });

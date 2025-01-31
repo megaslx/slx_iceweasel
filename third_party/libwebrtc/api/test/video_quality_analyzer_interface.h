@@ -11,16 +11,19 @@
 #ifndef API_TEST_VIDEO_QUALITY_ANALYZER_INTERFACE_H_
 #define API_TEST_VIDEO_QUALITY_ANALYZER_INTERFACE_H_
 
-#include <memory>
+#include <cstdint>
+#include <optional>
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "api/array_view.h"
+#include "api/scoped_refptr.h"
+#include "api/stats/rtc_stats_report.h"
 #include "api/test/stats_observer_interface.h"
 #include "api/video/encoded_image.h"
 #include "api/video/video_frame.h"
 #include "api/video_codecs/video_encoder.h"
+#include "rtc_base/checks.h"
 
 namespace webrtc {
 
@@ -70,7 +73,9 @@ class VideoQualityAnalyzerInterface
     std::string decoder_name = "unknown";
     // Decode time provided by decoder itself. If decoder doesn’t produce such
     // information can be omitted.
-    absl::optional<int32_t> decode_time_ms = absl::nullopt;
+    std::optional<int32_t> decode_time_ms = std::nullopt;
+    // Decoder quantizer value.
+    std::optional<uint8_t> qp = std::nullopt;
   };
 
   ~VideoQualityAnalyzerInterface() override = default;
@@ -150,13 +155,15 @@ class VideoQualityAnalyzerInterface
   // call.
   virtual void UnregisterParticipantInCall(absl::string_view peer_name) {}
 
-  // Informs analyzer that peer `receiver_peer_name` shouldn't receive all
-  // streams from sender `sender_peer_name`.
+  // Informs analyzer that peer `receiver_peer_name` should not receive any
+  // stream from sender `sender_peer_name`.
+  // This method is a no-op if the sender or the receiver does not exist.
   virtual void OnPauseAllStreamsFrom(absl::string_view sender_peer_name,
                                      absl::string_view receiver_peer_name) {}
 
   // Informs analyzer that peer `receiver_peer_name` is expected to receive all
   // streams from `sender_peer_name`.
+  // This method is a no-op if the sender or the receiver does not exist.
   virtual void OnResumeAllStreamsFrom(absl::string_view sender_peer_name,
                                       absl::string_view receiver_peer_name) {}
 
@@ -168,6 +175,13 @@ class VideoQualityAnalyzerInterface
   // frame ids space wraps around, then stream label for frame id may change.
   // It will crash, if the specified `frame_id` wasn't captured.
   virtual std::string GetStreamLabel(uint16_t frame_id) = 0;
+
+  // Returns the sender peer name of the last stream where this frame was
+  // captured. The sender for this frame id may change when the frame ids wrap
+  // around. Also it will crash, if the specified `frame_id` wasn't captured.
+  virtual std::string GetSenderPeerName(uint16_t frame_id) const {
+    RTC_CHECK(false) << "Not implemented.";
+  }
 };
 
 }  // namespace webrtc

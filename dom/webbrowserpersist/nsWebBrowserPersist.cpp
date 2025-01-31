@@ -15,7 +15,6 @@
 #include "nsNetUtil.h"
 #include "nsIClassOfService.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsILoadContext.h"
 #include "nsIPrivateBrowsingChannel.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIStorageStream.h"
@@ -26,9 +25,7 @@
 #include "nsICacheInfoChannel.h"
 #include "nsIFileChannel.h"
 #include "nsEscape.h"
-#include "nsUnicharUtils.h"
 #include "nsIStringEnumerator.h"
-#include "nsContentCID.h"
 #include "nsStreamUtils.h"
 
 #include "nsCExternalHandlerService.h"
@@ -38,7 +35,6 @@
 #include "nsIWebProgressListener.h"
 #include "nsIAuthPrompt.h"
 #include "nsIPrompt.h"
-#include "nsIFormControl.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsContentUtils.h"
 
@@ -50,8 +46,7 @@
 
 #include "nsIContent.h"
 #include "nsIMIMEInfo.h"
-#include "mozilla/dom/HTMLInputElement.h"
-#include "mozilla/dom/HTMLSharedElement.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Printf.h"
@@ -1082,6 +1077,9 @@ nsWebBrowserPersist::OnDataAvailable(nsIRequest* request,
 
 NS_IMETHODIMP nsWebBrowserPersist::CheckListenerChain() { return NS_OK; }
 
+NS_IMETHODIMP
+nsWebBrowserPersist::OnDataFinished(nsresult) { return NS_OK; }
+
 //*****************************************************************************
 // nsWebBrowserPersist::nsIProgressEventSink
 //*****************************************************************************
@@ -1412,31 +1410,11 @@ nsresult nsWebBrowserPersist::SaveURIInternal(
 
     // Headers
     if (aExtraHeaders) {
-      nsAutoCString oneHeader;
-      nsAutoCString headerName;
-      nsAutoCString headerValue;
-      int32_t crlf = 0;
-      int32_t colon = 0;
-      const char* kWhitespace = "\b\t\r\n ";
-      nsAutoCString extraHeaders(aExtraHeaders);
-      while (true) {
-        crlf = extraHeaders.Find("\r\n");
-        if (crlf == -1) break;
-        extraHeaders.Mid(oneHeader, 0, crlf);
-        extraHeaders.Cut(0, crlf + 2);
-        colon = oneHeader.Find(":");
-        if (colon == -1) break;  // Should have a colon
-        oneHeader.Left(headerName, colon);
-        colon++;
-        oneHeader.Mid(headerValue, colon, oneHeader.Length() - colon);
-        headerName.Trim(kWhitespace);
-        headerValue.Trim(kWhitespace);
-        // Add the header (merging if required)
-        rv = httpChannel->SetRequestHeader(headerName, headerValue, true);
-        if (NS_FAILED(rv)) {
-          EndDownload(NS_ERROR_FAILURE);
-          return NS_ERROR_FAILURE;
-        }
+      rv = mozilla::net::AddExtraHeaders(httpChannel,
+                                         nsDependentCString(aExtraHeaders));
+      if (NS_FAILED(rv)) {
+        EndDownload(NS_ERROR_FAILURE);
+        return NS_ERROR_FAILURE;
       }
     }
   }
@@ -1709,7 +1687,7 @@ nsWebBrowserPersist::OnWalk::VisitBrowsingContext(
     return NS_ERROR_FAILURE;
   }
 
-  UniquePtr<WebBrowserPersistDocumentParent> actor(
+  RefPtr<WebBrowserPersistDocumentParent> actor(
       new WebBrowserPersistDocumentParent());
 
   nsCOMPtr<nsIWebBrowserPersistDocumentReceiver> receiver =
@@ -1721,7 +1699,7 @@ nsWebBrowserPersist::OnWalk::VisitBrowsingContext(
 
   bool ok =
       context->GetContentParent()->SendPWebBrowserPersistDocumentConstructor(
-          actor.release(), browserParent, context);
+          actor, browserParent, context);
 
   if (NS_WARN_IF(!ok)) {
     // (The actor will be destroyed on constructor failure.)

@@ -76,7 +76,6 @@ add_task(async function test_save_doorhanger_not_shown() {
 
     await BrowserTestUtils.withNewTab(EMPTY_URL, async function (browser) {
       await SpecialPowers.spawn(browser, [TEST.document], doc => {
-        // eslint-disable-next-line no-unsanitized/property
         content.document.body.innerHTML = doc;
       });
 
@@ -87,7 +86,7 @@ add_task(async function test_save_doorhanger_not_shown() {
         newValues: TEST.formValue,
       });
 
-      await ensureNoDoorhanger(browser);
+      await ensureNoDoorhanger();
     });
   }
 });

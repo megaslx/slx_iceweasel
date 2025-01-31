@@ -24,7 +24,7 @@
   white-space: normal !important;
 }
 
-.videocontrols[flipped="true"] {
+.videocontrols[flipped] {
   transform: scaleX(-1);
 }
 
@@ -254,7 +254,7 @@
   border-radius: 50%;
   /* this is a foreground element even though it is implemented as a background */
   background-color: currentColor;
-  filter: drop-shadow(0px 0px 2px rgba(0,0,0,0.65));
+  filter: drop-shadow(0 0 2px rgba(0,0,0,0.65));
 }
 
 .volumeControl,
@@ -583,4 +583,9 @@
   left: -10000px;
   width: 100px;
   height: 100px;
+}
+
+:host::cue {
+  font-size: var(--cue-font-size);
+  writing-mode: var(--cue-writing-mode, inherit);
 }

@@ -13,7 +13,7 @@ Custom pings can be submitted from JavaScript using:
 - ``type`` - a ``string`` that is the type of the ping, limited to ``/^[a-z0-9][a-z0-9-]+[a-z0-9]$/i``.
 - ``payload`` - the actual payload data for the ping, has to be a JSON style object.
 - ``options`` - optional, an object containing additional options:
-   - ``addClientId``- whether to add the client id to the ping, defaults to ``false``
+   - ``addClientId``- whether to add the client id and profile group id to the ping, defaults to ``false``
    - ``addEnvironment`` - whether to add the environment data to the ping, defaults to ``false``
    - ``overrideEnvironment`` - a JSON style object that overrides the environment data
 
@@ -77,4 +77,4 @@ In addition to the `data collection review <https://wiki.mozilla.org/Firefox/Dat
    - Does the submitted data answer the posed product questions?
    - Does the shape of the data allow to answer the questions efficiently?
    - Is the data limited to what's needed to answer the questions?
-   - Does the data use common formats? (i.e. can we re-use tooling or analysis know-how)
+   - Does the data use common formats? (i.e. can we reuse tooling or analysis know-how)

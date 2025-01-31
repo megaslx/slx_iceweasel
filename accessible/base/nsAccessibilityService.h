@@ -6,6 +6,7 @@
 #ifndef __nsAccessibilityService_h__
 #define __nsAccessibilityService_h__
 
+#include "mozilla/a11y/CacheConstants.h"
 #include "mozilla/a11y/DocManager.h"
 #include "mozilla/a11y/FocusManager.h"
 #include "mozilla/a11y/Platform.h"
@@ -13,6 +14,7 @@
 #include "mozilla/a11y/SelectionManager.h"
 #include "mozilla/Preferences.h"
 
+#include "nsAtomHashKeys.h"
 #include "nsIContent.h"
 #include "nsIObserver.h"
 #include "nsIAccessibleEvent.h"
@@ -69,14 +71,14 @@ struct MarkupAttrInfo {
 };
 
 struct MarkupMapInfo {
-  const nsStaticAtom* const tag;
+  nsStaticAtom* const tag;
   New_Accessible* new_func;
   a11y::role role;
   MarkupAttrInfo attrs[4];
 };
 
 struct XULMarkupMapInfo {
-  const nsStaticAtom* const tag;
+  nsStaticAtom* const tag;
   New_Accessible* new_func;
 };
 
@@ -101,6 +103,10 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
  public:
   typedef mozilla::a11y::LocalAccessible LocalAccessible;
   typedef mozilla::a11y::DocAccessible DocAccessible;
+
+  static const uint64_t kDefaultCacheDomains =
+      mozilla::a11y::CacheDomain::NameAndDescription |
+      mozilla::a11y::CacheDomain::State;
 
   // nsIListenerChangeListener
   NS_IMETHOD ListenersChanged(nsIArray* aEventChanges) override;
@@ -243,6 +249,19 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
   void NotifyOfDevPixelRatioChange(mozilla::PresShell* aPresShell,
                                    int32_t aAppUnitsPerDevPixel);
 
+  /**
+   * Notify accessibility that an element explicitly set for an attribute is
+   * about to change. See dom::Element::ExplicitlySetAttrElement.
+   */
+  void NotifyAttrElementWillChange(mozilla::dom::Element* aElement,
+                                   nsAtom* aAttr);
+
+  /**
+   * Notify accessibility that an element explicitly set for an attribute has
+   * changed. See dom::Element::ExplicitlySetAttrElement.
+   */
+  void NotifyAttrElementChanged(mozilla::dom::Element* aElement, nsAtom* aAttr);
+
   // nsAccessibiltiyService
 
   /**
@@ -255,6 +274,15 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
    */
   static bool ShouldCreateImgAccessible(mozilla::dom::Element* aElement,
                                         DocAccessible* aDocument);
+
+  /*
+   * Set the currently-active cache domains.
+   */
+  void SetCacheDomains(uint64_t aCacheDomains);
+
+  bool CacheDomainIsActive(uint64_t aCacheDomain) const {
+    return (gCacheDomains & aCacheDomain) != mozilla::a11y::CacheDomain::None;
+  }
 
   /**
    * Creates an accessible for the given DOM node.
@@ -283,7 +311,7 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
     const mozilla::a11y::MarkupMapInfo* markupMap =
         GetMarkupMapInfoFor(aSource);
     if (markupMap) {
-      for (size_t i = 0; i < mozilla::ArrayLength(markupMap->attrs); i++) {
+      for (size_t i = 0; i < std::size(markupMap->attrs); i++) {
         const mozilla::a11y::MarkupAttrInfo* info = markupMap->attrs + i;
         if (info->name == aAtom) {
           return info->value;
@@ -317,6 +345,8 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
     ePlatformAPI = 1 << 2,
   };
 
+  static uint64_t GetActiveCacheDomains() { return gCacheDomains; }
+
 #if defined(ANDROID)
   static mozilla::Monitor& GetAndroidMonitor();
 #endif
@@ -332,7 +362,7 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
   /**
    * Initialize accessibility service.
    */
-  bool Init();
+  bool Init(uint64_t aCacheDomains = kDefaultCacheDomains);
 
   /**
    * Shutdowns accessibility service.
@@ -381,8 +411,13 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
    */
   static uint32_t gConsumers;
 
-  using MarkupMap = nsTHashMap<nsPtrHashKey<const nsAtom>,
-                               const mozilla::a11y::MarkupMapInfo*>;
+  /**
+   * Contains the currently active cache domains.
+   */
+  static uint64_t gCacheDomains;
+
+  // Can be weak because all atoms are known static
+  using MarkupMap = nsTHashMap<nsAtom*, const mozilla::a11y::MarkupMapInfo*>;
   MarkupMap mHTMLMarkupMap;
   MarkupMap mMathMLMarkupMap;
 
@@ -403,11 +438,10 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
   const mozilla::a11y::MarkupMapInfo* GetMarkupMapInfoFor(
       mozilla::a11y::Accessible* aAcc) const;
 
-  nsTHashMap<nsPtrHashKey<const nsAtom>, const mozilla::a11y::XULMarkupMapInfo*>
-      mXULMarkupMap;
+  nsTHashMap<nsAtom*, const mozilla::a11y::XULMarkupMapInfo*> mXULMarkupMap;
 
   friend nsAccessibilityService* GetAccService();
-  friend nsAccessibilityService* GetOrCreateAccService(uint32_t);
+  friend nsAccessibilityService* GetOrCreateAccService(uint32_t, uint64_t);
   friend void MaybeShutdownAccService(uint32_t);
   friend void mozilla::a11y::PrefChanged(const char*, void*);
   friend mozilla::a11y::FocusManager* mozilla::a11y::FocusMgr();
@@ -429,7 +463,8 @@ inline nsAccessibilityService* GetAccService() {
  * Return accessibility service instance; creating one if necessary.
  */
 nsAccessibilityService* GetOrCreateAccService(
-    uint32_t aNewConsumer = nsAccessibilityService::ePlatformAPI);
+    uint32_t aNewConsumer = nsAccessibilityService::ePlatformAPI,
+    uint64_t aCacheDomains = nsAccessibilityService::GetActiveCacheDomains());
 
 /**
  * Shutdown accessibility service if needed.
@@ -481,13 +516,13 @@ static const char kEventTypeNames[][40] = {
     "window minimize",           // EVENT_WINDOW_MINIMIZE
     "window restore",            // EVENT_WINDOW_RESTORE
     "object attribute changed",  // EVENT_OBJECT_ATTRIBUTE_CHANGED
-    "virtual cursor changed",    // EVENT_VIRTUALCURSOR_CHANGED
     "text value change",         // EVENT_TEXT_VALUE_CHANGE
     "scrolling",                 // EVENT_SCROLLING
     "announcement",              // EVENT_ANNOUNCEMENT
     "live region added",         // EVENT_LIVE_REGION_ADDED
     "live region removed",       // EVENT_LIVE_REGION_REMOVED
     "inner reorder",             // EVENT_INNER_REORDER
+    "live region changed",       // EVENT_LIVE_REGION_CHANGED
 };
 
 #endif

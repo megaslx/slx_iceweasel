@@ -191,6 +191,7 @@ const TEST_EVENTS = {
 const UPDATE_PROPS = [
   "method",
   "url",
+  "earlyHintsStatus",
   "remotePort",
   "remoteAddress",
   "status",
@@ -236,6 +237,8 @@ const UPDATE_PROPS = [
   "proxyHttpVersion",
   "proxyStatus",
   "proxyStatusText",
+  "fromCache",
+  "fromServiceWorker",
 ];
 
 const PANELS = {
@@ -455,10 +458,9 @@ const REQUESTS_WATERFALL = {
   BACKGROUND_TICKS_OPACITY_MIN: 32,
   BACKGROUND_TICKS_OPACITY_ADD: 32,
   // Colors for timing markers (theme colors, see variables.css)
-  DOMCONTENTLOADED_TICKS_COLOR: "highlight-blue",
-  LOAD_TICKS_COLOR: "highlight-red",
-  // Opacity for the timing markers
-  TICKS_COLOR_OPACITY: 192,
+  DOMCONTENTLOADED_TICKS_COLOR: "--timing-marker-dom-content-loaded-color",
+  LOAD_TICKS_COLOR: "--timing-marker-load-color",
+
   HEADER_TICKS_MULTIPLE: 5, // ms
   HEADER_TICKS_SPACING_MIN: 60, // px
   // Reserve extra space for rendering waterfall time label
@@ -485,6 +487,7 @@ const DEFAULT_COLUMN_WIDTH = 8; // in %
 const SUPPORTED_HTTP_CODES = [
   "100",
   "101",
+  "103",
   "200",
   "201",
   "202",
@@ -573,6 +576,16 @@ const BLOCKED_REASON_MESSAGES = {
   6000: "Blocked By Extension",
 };
 
+/** @see {@link https://searchfox.org/mozilla-central/rev/d7a8eadc28298c31381119cbf25c8ba14b8712b3/netwerk/protocol/websocket/nsIWebSocketEventService.idl#30-38} */
+const WEB_SOCKET_OPCODE = {
+  CONTINUATION: 0,
+  TEXT: 1,
+  BINARY: 2,
+  CLOSE: 8,
+  PING: 9,
+  PONG: 10,
+};
+
 const general = {
   ACTIVITY_TYPE,
   EVENTS,
@@ -595,6 +608,7 @@ const general = {
   AUTO_EXPAND_MAX_LEVEL: 7,
   AUTO_EXPAND_MAX_NODES: 50,
   CHANNEL_TYPE,
+  WEB_SOCKET_OPCODE,
 };
 
 // flatten constants

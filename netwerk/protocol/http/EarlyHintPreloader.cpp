@@ -10,6 +10,7 @@
 #include "HttpChannelParent.h"
 #include "MainThreadUtils.h"
 #include "NeckoCommon.h"
+#include "gfxPlatform.h"
 #include "mozilla/CORSMode.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/nsCSPContext.h"
@@ -24,7 +25,6 @@
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Telemetry.h"
 #include "nsAttrValue.h"
-#include "nsAttrValueInlines.h"
 #include "nsCOMPtr.h"
 #include "nsContentPolicyUtils.h"
 #include "nsContentSecurityManager.h"
@@ -36,6 +36,7 @@
 #include "nsIContentSecurityPolicy.h"
 #include "nsIHttpChannel.h"
 #include "nsIInputStream.h"
+#include "nsILoadContext.h"
 #include "nsILoadInfo.h"
 #include "nsIParentChannel.h"
 #include "nsIReferrerInfo.h"
@@ -43,8 +44,6 @@
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "nsStreamUtils.h"
-#include "nsStringStream.h"
 #include "ParentChannelListener.h"
 #include "nsIChannel.h"
 #include "nsInterfaceRequestorAgg.h"
@@ -125,7 +124,6 @@ EarlyHintPreloader::~EarlyHintPreloader() {
     mTimer->Cancel();
     mTimer = nullptr;
   }
-  Telemetry::Accumulate(Telemetry::EH_STATE_OF_PRELOAD_REQUEST, mState);
 }
 
 /* static */
@@ -201,22 +199,26 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     nsIURI* aBaseURI, nsIPrincipal* aPrincipal,
     nsICookieJarSettings* aCookieJarSettings,
     const nsACString& aResponseReferrerPolicy, const nsACString& aCSPHeader,
-    uint64_t aBrowsingContextID, nsIInterfaceRequestor* aCallbacks,
+    uint64_t aBrowsingContextID,
+    dom::CanonicalBrowsingContext* aLoadingBrowsingContext,
     bool aIsModulepreload) {
   nsAttrValue as;
   ParseAsValue(aLinkHeader.mAs, as);
 
   ASDestination destination = static_cast<ASDestination>(as.GetEnumValue());
-  CollectResourcesTypeTelemetry(destination);
 
-  if (!StaticPrefs::network_early_hints_enabled() ||
-      !StaticPrefs::network_preload()) {
+  if (!StaticPrefs::network_early_hints_enabled()) {
     return;
   }
 
   if (destination == ASDestination::DESTINATION_INVALID && !aIsModulepreload) {
     // return early when it's definitly not an asset type we preload
     // would be caught later as well, e.g. when creating the PreloadHashKey
+    return;
+  }
+
+  if (destination == ASDestination::DESTINATION_FONT &&
+      !gfxPlatform::GetPlatform()->DownloadableFontsEnabled()) {
     return;
   }
 
@@ -285,6 +287,8 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
 
   RefPtr<EarlyHintPreloader> earlyHintPreloader = new EarlyHintPreloader();
 
+  earlyHintPreloader->mLoadContext = aLoadingBrowsingContext;
+
   // Security flags for modulepreload's request mode are computed here directly
   // until full support for worker destinations can be added.
   //
@@ -324,7 +328,7 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     // directives to it
     nsCOMPtr<nsIContentSecurityPolicy> csp = new nsCSPContext();
     nsresult rv = csp->SetRequestContextWithPrincipal(
-        aPrincipal, aBaseURI, u""_ns, 0 /* aInnerWindowId */);
+        aPrincipal, aBaseURI, ""_ns, 0 /* aInnerWindowId */);
     NS_ENSURE_SUCCESS_VOID(rv);
     rv = CSP_AppendCSPFromHeader(csp, NS_ConvertUTF8toUTF16(aCSPHeader),
                                  false /* report only */);
@@ -348,8 +352,9 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     mozilla::ipc::PrincipalInfo principalInfo;
     rv = PrincipalToPrincipalInfo(aPrincipal, &principalInfo);
     NS_ENSURE_SUCCESS_VOID(rv);
-    dom::ClientInfo clientInfo(nsID::GenerateUUID(), dom::ClientType::Window,
-                               principalInfo, TimeStamp::Now());
+    dom::ClientInfo clientInfo(nsID::GenerateUUID(), Nothing(),
+                               dom::ClientType::Window, principalInfo,
+                               TimeStamp::Now(), ""_ns, dom::FrameType::None);
 
     // Our newly-created CSP is set on the ClientInfo via the indirect route of
     // first serializing to CSPInfo
@@ -364,9 +369,8 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
   }
 
   int16_t shouldLoad = nsIContentPolicy::ACCEPT;
-  nsresult rv =
-      NS_CheckContentLoadPolicy(uri, secCheckLoadInfo, ""_ns, &shouldLoad,
-                                nsContentUtils::GetContentPolicy());
+  nsresult rv = NS_CheckContentLoadPolicy(uri, secCheckLoadInfo, &shouldLoad,
+                                          nsContentUtils::GetContentPolicy());
 
   if (NS_FAILED(rv) || NS_CP_REJECTED(shouldLoad)) {
     return;
@@ -374,7 +378,7 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
 
   NS_ENSURE_SUCCESS_VOID(earlyHintPreloader->OpenChannel(
       uri, aPrincipal, securityFlags, contentPolicyType, referrerInfo,
-      aCookieJarSettings, aBrowsingContextID, aCallbacks));
+      aCookieJarSettings, aBrowsingContextID));
 
   earlyHintPreloader->SetLinkHeader(aLinkHeader);
 
@@ -386,8 +390,7 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
 nsresult EarlyHintPreloader::OpenChannel(
     nsIURI* aURI, nsIPrincipal* aPrincipal, nsSecurityFlags aSecurityFlags,
     nsContentPolicyType aContentPolicyType, nsIReferrerInfo* aReferrerInfo,
-    nsICookieJarSettings* aCookieJarSettings, uint64_t aBrowsingContextID,
-    nsIInterfaceRequestor* aCallbacks) {
+    nsICookieJarSettings* aCookieJarSettings, uint64_t aBrowsingContextID) {
   MOZ_ASSERT(aContentPolicyType == nsContentPolicyType::TYPE_IMAGE ||
              aContentPolicyType ==
                  nsContentPolicyType::TYPE_INTERNAL_FETCH_PRELOAD ||
@@ -395,15 +398,12 @@ nsresult EarlyHintPreloader::OpenChannel(
              aContentPolicyType == nsContentPolicyType::TYPE_STYLESHEET ||
              aContentPolicyType == nsContentPolicyType::TYPE_FONT);
 
-  nsCOMPtr<nsIInterfaceRequestor> wrappedCallbacks;
-  NS_NewInterfaceRequestorAggregation(this, aCallbacks,
-                                      getter_AddRefs(wrappedCallbacks));
   nsresult rv =
       NS_NewChannel(getter_AddRefs(mChannel), aURI, aPrincipal, aSecurityFlags,
                     aContentPolicyType, aCookieJarSettings,
                     /* aPerformanceStorage */ nullptr,
                     /* aLoadGroup */ nullptr,
-                    /* aCallbacks */ wrappedCallbacks, nsIRequest::LOAD_NORMAL);
+                    /* aCallbacks */ this, nsIRequest::LOAD_NORMAL);
 
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -427,6 +427,11 @@ nsresult EarlyHintPreloader::OpenChannel(
   mParentListener = new ParentChannelListener(this, nullptr);
 
   PriorizeAsPreload();
+
+  if (nsCOMPtr<nsIRaceCacheWithNetwork> rcwn = do_QueryInterface(httpChannel)) {
+    // Since this is an early hint, we should consult the cache first.
+    rcwn->SetAllowRacing(false);
+  }
 
   rv = mChannel->AsyncOpen(mParentListener);
   if (NS_FAILED(rv)) {
@@ -578,7 +583,7 @@ void EarlyHintPreloader::InvokeStreamListenerFunctions() {
   nsTArray<StreamListenerFunction> streamListenerFunctions =
       std::move(mStreamListenerFunctions);
 
-  ForwardStreamListenerFunctions(streamListenerFunctions, mParent);
+  ForwardStreamListenerFunctions(std::move(streamListenerFunctions), mParent);
 
   // We don't expect to get new stream listener functions added
   // via re-entrancy. If this ever happens, we should understand
@@ -692,8 +697,8 @@ EarlyHintPreloader::OnDataAvailable(nsIRequest* aRequest,
   nsresult rv = NS_ReadInputStreamToString(aInputStream, data, aCount);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mStreamListenerFunctions.AppendElement(
-      AsVariant(OnDataAvailableParams{aRequest, data, aOffset, aCount}));
+  mStreamListenerFunctions.AppendElement(AsVariant(
+      OnDataAvailableParams{aRequest, std::move(data), aOffset, aCount}));
 
   return NS_OK;
 }
@@ -792,6 +797,9 @@ EarlyHintPreloader::Notify(nsITimer* timer) {
       mChannel->Resume();
     }
     mChannel->CancelWithReason(NS_ERROR_ABORT, "parent-connect-timeout"_ns);
+#ifndef ANDROID
+    glean::netwerk::parent_connect_timeout.Add(1);
+#endif
     mChannel = nullptr;
   }
   SetState(ePreloaderTimeout);
@@ -817,23 +825,12 @@ EarlyHintPreloader::GetInterface(const nsIID& aIID, void** aResult) {
     return NS_OK;
   }
 
-  return NS_ERROR_NO_INTERFACE;
-}
-
-void EarlyHintPreloader::CollectResourcesTypeTelemetry(
-    ASDestination aASDestination) {
-  if (aASDestination == ASDestination::DESTINATION_FONT) {
-    glean::netwerk::early_hints.Get("font"_ns).Add(1);
-  } else if (aASDestination == ASDestination::DESTINATION_SCRIPT) {
-    glean::netwerk::early_hints.Get("script"_ns).Add(1);
-  } else if (aASDestination == ASDestination::DESTINATION_STYLE) {
-    glean::netwerk::early_hints.Get("stylesheet"_ns).Add(1);
-  } else if (aASDestination == ASDestination::DESTINATION_IMAGE) {
-    glean::netwerk::early_hints.Get("image"_ns).Add(1);
-  } else if (aASDestination == ASDestination::DESTINATION_FETCH) {
-    glean::netwerk::early_hints.Get("fetch"_ns).Add(1);
-  } else {
-    glean::netwerk::early_hints.Get("other"_ns).Add(1);
+  if (aIID.Equals(NS_GET_IID(nsILoadContext)) && mLoadContext != nullptr) {
+    nsCOMPtr<nsILoadContext> loadContext = mLoadContext;
+    loadContext.forget(aResult);
+    return NS_OK;
   }
+
+  return NS_ERROR_NO_INTERFACE;
 }
 }  // namespace mozilla::net

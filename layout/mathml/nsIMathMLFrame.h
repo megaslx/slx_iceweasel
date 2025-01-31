@@ -3,7 +3,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-// #define SHOW_BOUNDING_BOX 1
 #ifndef nsIMathMLFrame_h___
 #define nsIMathMLFrame_h___
 
@@ -291,48 +290,30 @@ struct nsPresentationData {
 // feature setting.
 #define NS_MATHML_DTLS 0x00000080U
 
-// This bit is set when the frame cannot be formatted due to an
-// error (e.g., invalid markup such as a <msup> without an overscript).
-// When set, a visual feedback will be provided to the user.
-#define NS_MATHML_ERROR 0x80000000U
-
 // a bit used for debug
 #define NS_MATHML_STRETCH_DONE 0x20000000U
-
-// This bit is used for visual debug. When set, the bounding box
-// of your frame is painted. This visual debug enable to ensure that
-// you have properly filled your mReference and mBoundingMetrics in
-// Place().
-#define NS_MATHML_SHOW_BOUNDING_METRICS 0x10000000U
 
 // Macros that retrieve those bits
 
 #define NS_MATHML_IS_COMPRESSED(_flags) \
-  (NS_MATHML_COMPRESSED == ((_flags)&NS_MATHML_COMPRESSED))
+  (NS_MATHML_COMPRESSED == ((_flags) & NS_MATHML_COMPRESSED))
 
 #define NS_MATHML_WILL_STRETCH_ALL_CHILDREN_VERTICALLY(_flags) \
   (NS_MATHML_STRETCH_ALL_CHILDREN_VERTICALLY ==                \
-   ((_flags)&NS_MATHML_STRETCH_ALL_CHILDREN_VERTICALLY))
+   ((_flags) & NS_MATHML_STRETCH_ALL_CHILDREN_VERTICALLY))
 
 #define NS_MATHML_WILL_STRETCH_ALL_CHILDREN_HORIZONTALLY(_flags) \
   (NS_MATHML_STRETCH_ALL_CHILDREN_HORIZONTALLY ==                \
-   ((_flags)&NS_MATHML_STRETCH_ALL_CHILDREN_HORIZONTALLY))
+   ((_flags) & NS_MATHML_STRETCH_ALL_CHILDREN_HORIZONTALLY))
 
 #define NS_MATHML_IS_SPACE_LIKE(_flags) \
-  (NS_MATHML_SPACE_LIKE == ((_flags)&NS_MATHML_SPACE_LIKE))
+  (NS_MATHML_SPACE_LIKE == ((_flags) & NS_MATHML_SPACE_LIKE))
 
 #define NS_MATHML_IS_DTLS_SET(_flags) \
-  (NS_MATHML_DTLS == ((_flags)&NS_MATHML_DTLS))
-
-#define NS_MATHML_HAS_ERROR(_flags) \
-  (NS_MATHML_ERROR == ((_flags)&NS_MATHML_ERROR))
+  (NS_MATHML_DTLS == ((_flags) & NS_MATHML_DTLS))
 
 #define NS_MATHML_STRETCH_WAS_DONE(_flags) \
-  (NS_MATHML_STRETCH_DONE == ((_flags)&NS_MATHML_STRETCH_DONE))
-
-#define NS_MATHML_PAINT_BOUNDING_METRICS(_flags) \
-  (NS_MATHML_SHOW_BOUNDING_METRICS ==            \
-   ((_flags)&NS_MATHML_SHOW_BOUNDING_METRICS))
+  (NS_MATHML_STRETCH_DONE == ((_flags) & NS_MATHML_STRETCH_DONE))
 
 // ==========================================================================
 // Bits used for the embellish flags -- these bits are set
@@ -366,26 +347,27 @@ struct nsPresentationData {
 // Macros that retrieve those bits
 
 #define NS_MATHML_IS_EMBELLISH_OPERATOR(_flags) \
-  (NS_MATHML_EMBELLISH_OPERATOR == ((_flags)&NS_MATHML_EMBELLISH_OPERATOR))
+  (NS_MATHML_EMBELLISH_OPERATOR == ((_flags) & NS_MATHML_EMBELLISH_OPERATOR))
 
 #define NS_MATHML_EMBELLISH_IS_MOVABLELIMITS(_flags) \
   (NS_MATHML_EMBELLISH_MOVABLELIMITS ==              \
-   ((_flags)&NS_MATHML_EMBELLISH_MOVABLELIMITS))
+   ((_flags) & NS_MATHML_EMBELLISH_MOVABLELIMITS))
 
 #define NS_MATHML_EMBELLISH_IS_ACCENT(_flags) \
-  (NS_MATHML_EMBELLISH_ACCENT == ((_flags)&NS_MATHML_EMBELLISH_ACCENT))
+  (NS_MATHML_EMBELLISH_ACCENT == ((_flags) & NS_MATHML_EMBELLISH_ACCENT))
 
 #define NS_MATHML_EMBELLISH_IS_ACCENTOVER(_flags) \
-  (NS_MATHML_EMBELLISH_ACCENTOVER == ((_flags)&NS_MATHML_EMBELLISH_ACCENTOVER))
+  (NS_MATHML_EMBELLISH_ACCENTOVER ==              \
+   ((_flags) & NS_MATHML_EMBELLISH_ACCENTOVER))
 
 #define NS_MATHML_EMBELLISH_IS_ACCENTUNDER(_flags) \
   (NS_MATHML_EMBELLISH_ACCENTUNDER ==              \
-   ((_flags)&NS_MATHML_EMBELLISH_ACCENTUNDER))
+   ((_flags) & NS_MATHML_EMBELLISH_ACCENTUNDER))
 
 #define NS_MATHML_EMBELLISH_IS_FENCE(_flags) \
-  (NS_MATHML_EMBELLISH_FENCE == ((_flags)&NS_MATHML_EMBELLISH_FENCE))
+  (NS_MATHML_EMBELLISH_FENCE == ((_flags) & NS_MATHML_EMBELLISH_FENCE))
 
 #define NS_MATHML_EMBELLISH_IS_SEPARATOR(_flags) \
-  (NS_MATHML_EMBELLISH_SEPARATOR == ((_flags)&NS_MATHML_EMBELLISH_SEPARATOR))
+  (NS_MATHML_EMBELLISH_SEPARATOR == ((_flags) & NS_MATHML_EMBELLISH_SEPARATOR))
 
 #endif /* nsIMathMLFrame_h___ */

@@ -11,13 +11,13 @@
 # copy of ICU has been updated.
 
 import glob
-import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 
+from mozbuild.util import cpu_count
 from mozpack import path as mozpath
 
 # The following files have been determined to be dead/unused by a
@@ -46,7 +46,6 @@ UNUSED_SOURCES = set(
         "intl/icu/source/common/unorm.cpp",
         "intl/icu/source/common/usc_impl.cpp",
         "intl/icu/source/common/ustr_wcs.cpp",
-        "intl/icu/source/common/util_props.cpp",
         "intl/icu/source/i18n/anytrans.cpp",
         "intl/icu/source/i18n/brktrans.cpp",
         "intl/icu/source/i18n/casetrn.cpp",
@@ -116,6 +115,28 @@ UNUSED_SOURCES = set(
         "intl/icu/source/i18n/alphaindex.cpp",
         "intl/icu/source/i18n/ulocdata.cpp",
     ]
+    +
+    # We use the version of double-conversion vendored in mfbt instead
+    [
+        "intl/icu/source/i18n/double-conversion-bignum-dtoa.cpp",
+        "intl/icu/source/i18n/double-conversion-bignum-dtoa.h",
+        "intl/icu/source/i18n/double-conversion-bignum.cpp",
+        "intl/icu/source/i18n/double-conversion-bignum.h",
+        "intl/icu/source/i18n/double-conversion-cached-powers.cpp",
+        "intl/icu/source/i18n/double-conversion-cached-powers.h",
+        "intl/icu/source/i18n/double-conversion-diy-fp.h",
+        "intl/icu/source/i18n/double-conversion-double-to-string.cpp",
+        "intl/icu/source/i18n/double-conversion-double-to-string.h",
+        "intl/icu/source/i18n/double-conversion-fast-dtoa.cpp",
+        "intl/icu/source/i18n/double-conversion-fast-dtoa.h",
+        "intl/icu/source/i18n/double-conversion-ieee.h",
+        "intl/icu/source/i18n/double-conversion-string-to-double.cpp",
+        "intl/icu/source/i18n/double-conversion-string-to-double.h",
+        "intl/icu/source/i18n/double-conversion-strtod.cpp",
+        "intl/icu/source/i18n/double-conversion-strtod.h",
+        "intl/icu/source/i18n/double-conversion-utils.h",
+        "intl/icu/source/i18n/double-conversion.h",
+    ]
 )
 
 
@@ -153,7 +174,7 @@ def write_sources(mozbuild, sources, headers):
         def write_list(name, content):
             if content:
                 f.write("%s %s [\n" % (name, "=" if name.islower() else "+="))
-                f.write("".join("   '/%s',\n" % s for s in content))
+                f.write("".join('    "/%s",\n' % s for s in content))
                 f.write("]\n")
 
         write_list("sources", [s for s in sources if s not in UNUSED_SOURCES])
@@ -215,12 +236,14 @@ def update_data_file(topsrcdir):
         {
             "CPPFLAGS": (
                 "-DU_NO_DEFAULT_INCLUDE_UTF_HEADERS=1 "
-                + "-DU_HIDE_OBSOLETE_UTF_OLD_H=1"
+                + "-DU_HIDE_OBSOLETE_UTF_OLD_H=1 "
                 + "-DUCONFIG_NO_LEGACY_CONVERSION "
                 + "-DUCONFIG_NO_TRANSLITERATION "
                 + "-DUCONFIG_NO_REGULAR_EXPRESSIONS "
                 + "-DUCONFIG_NO_BREAK_ITERATION "
-                + "-DU_CHARSET_IS_UTF8"
+                + "-DUCONFIG_NO_BREAK_IDNA "
+                + "-DUCONFIG_NO_MF2 "
+                + "-DU_CHARSET_IS_UTF8 "
             )
         }
     )
@@ -255,7 +278,7 @@ def update_data_file(topsrcdir):
     print("Running ICU make...")
     if not try_run(
         "icu-make",
-        ["make", "--jobs=%d" % multiprocessing.cpu_count(), "--output-sync"],
+        ["make", "--jobs=%d" % cpu_count(), "--output-sync"],
         cwd=objdir,
     ):
         return False

@@ -41,18 +41,35 @@ void AbortSignalImpl::GetReason(JSContext* aCx,
 
 JS::Value AbortSignalImpl::RawReason() const { return mReason.get(); }
 
-// https://dom.spec.whatwg.org/#abortsignal-signal-abort steps 1-4
+// https://dom.spec.whatwg.org/#abortsignal-signal-abort
 void AbortSignalImpl::SignalAbort(JS::Handle<JS::Value> aReason) {
-  // Step 1.
+  // Step 1: If signal is aborted, then return.
   if (mAborted) {
     return;
   }
 
-  // Step 2.
-  mAborted = true;
-  mReason = aReason;
+  // Step 2: Set signal’s abort reason to reason if it is given; otherwise to a
+  // new "AbortError" DOMException.
+  //
+  // (But given AbortSignalImpl is supposed to run without JS context, the
+  // DOMException creation is deferred to the getter.)
+  SetAborted(aReason);
 
-  // Step 3.
+  // Step 3 - 6
+  SignalAbortWithDependents();
+}
+
+void AbortSignalImpl::SignalAbortWithDependents() {
+  // AbortSignalImpl cannot have dependents, so just run abort steps for itself.
+  RunAbortSteps();
+}
+
+// https://dom.spec.whatwg.org/#run-the-abort-steps
+// This skips event firing as AbortSignalImpl is not supposed to be exposed to
+// JS. It's done instead in AbortSignal::RunAbortSteps.
+void AbortSignalImpl::RunAbortSteps() {
+  // Step 1: For each algorithm of signal’s abort algorithms: run algorithm.
+  //
   // When there are multiple followers, the follower removal algorithm
   // https://dom.spec.whatwg.org/#abortsignal-remove could be invoked in an
   // earlier algorithm to remove a later algorithm, so |mFollowers| must be a
@@ -62,8 +79,13 @@ void AbortSignalImpl::SignalAbort(JS::Handle<JS::Value> aReason) {
     follower->RunAbortAlgorithm();
   }
 
-  // Step 4.
+  // Step 2: Empty signal’s abort algorithms.
   UnlinkFollowers();
+}
+
+void AbortSignalImpl::SetAborted(JS::Handle<JS::Value> aReason) {
+  mAborted = true;
+  mReason = aReason;
 }
 
 void AbortSignalImpl::Traverse(AbortSignalImpl* aSignal,
@@ -109,11 +131,13 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(AbortSignal)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(AbortSignal,
                                                   DOMEventTargetHelper)
   AbortSignalImpl::Traverse(static_cast<AbortSignalImpl*>(tmp), cb);
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDependentSignals)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(AbortSignal,
                                                 DOMEventTargetHelper)
   AbortSignalImpl::Unlink(static_cast<AbortSignalImpl*>(tmp));
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mDependentSignals)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(AbortSignal)
@@ -129,7 +153,9 @@ NS_IMPL_RELEASE_INHERITED(AbortSignal, DOMEventTargetHelper)
 
 AbortSignal::AbortSignal(nsIGlobalObject* aGlobalObject, bool aAborted,
                          JS::Handle<JS::Value> aReason)
-    : DOMEventTargetHelper(aGlobalObject), AbortSignalImpl(aAborted, aReason) {
+    : DOMEventTargetHelper(aGlobalObject),
+      AbortSignalImpl(aAborted, aReason),
+      mDependent(false) {
   mozilla::HoldJSObjects(this);
 }
 
@@ -200,9 +226,11 @@ static void SetTimeoutForGlobal(GlobalObject& aGlobal, TimeoutHandler& aHandler,
     }
 
     int32_t handle;
-    nsresult rv = innerWindow->TimeoutManager().SetTimeout(
-        &aHandler, timeout, /* aIsInterval */ false,
-        Timeout::Reason::eAbortSignalTimeout, &handle);
+    nsresult rv =
+        nsGlobalWindowInner::Cast(innerWindow)
+            ->GetTimeoutManager()
+            ->SetTimeout(&aHandler, timeout, /* aIsInterval */ false,
+                         Timeout::Reason::eAbortSignalTimeout, &handle);
     if (NS_FAILED(rv)) {
       aRv.Throw(rv);
       return;
@@ -250,6 +278,86 @@ already_AddRefed<AbortSignal> AbortSignal::Timeout(GlobalObject& aGlobal,
   return signal.forget();
 }
 
+// https://dom.spec.whatwg.org/#create-a-dependent-abort-signal
+already_AddRefed<AbortSignal> AbortSignal::Any(
+    GlobalObject& aGlobal,
+    const Sequence<OwningNonNull<AbortSignal>>& aSignals) {
+  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
+  mozilla::Span span{aSignals.Elements(), aSignals.Length()};
+  return Any(global, span);
+}
+
+already_AddRefed<AbortSignal> AbortSignal::Any(
+    nsIGlobalObject* aGlobal,
+    const Span<const OwningNonNull<AbortSignal>>& aSignals) {
+  // Step 1. Let resultSignal be a new object implementing AbortSignal using
+  // realm
+  RefPtr<AbortSignal> resultSignal =
+      new AbortSignal(aGlobal, false, JS::UndefinedHandleValue);
+
+  if (!aSignals.IsEmpty()) {
+    // (Prepare for step 2 which uses the reason of this. Cannot use
+    // RawReason because that can cause constructing new DOMException for each
+    // dependent signal instead of sharing the single one.)
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(aGlobal)) {
+      return nullptr;
+    }
+    JSContext* cx = jsapi.cx();
+
+    // Step 2. For each signal of signals: if signal is aborted, then set
+    // resultSignal's abort reason to signal's abort reason and return
+    // resultSignal.
+    for (const auto& signal : aSignals) {
+      if (signal->Aborted()) {
+        JS::Rooted<JS::Value> reason(cx);
+        signal->GetReason(cx, &reason);
+        resultSignal->SetAborted(reason);
+        return resultSignal.forget();
+      }
+    }
+  }
+
+  // Step 3. Set resultSignal's dependent to true
+  resultSignal->mDependent = true;
+
+  // Step 4. For each signal of signals
+  for (const auto& signal : aSignals) {
+    if (!signal->Dependent()) {
+      // Step 4.1. If signal is not dependent, make resultSignal dependent on it
+      resultSignal->MakeDependentOn(signal);
+    } else {
+      // Step 4.2. Otherwise, make resultSignal dependent on its source signals
+      for (const auto& sourceSignal : signal->mSourceSignals) {
+        if (!sourceSignal) {
+          // Bug 1908466, sourceSignal might have been garbage collected.
+          // As signal is not aborted, sourceSignal also wasn't.
+          // Thus do not depend on it, as it cannot be aborted anymore.
+          continue;
+        }
+        MOZ_ASSERT(!sourceSignal->Aborted() && !sourceSignal->Dependent());
+        resultSignal->MakeDependentOn(sourceSignal);
+      }
+    }
+  }
+
+  // Step 5. Return resultSignal.
+  return resultSignal.forget();
+}
+
+void AbortSignal::MakeDependentOn(AbortSignal* aSignal) {
+  MOZ_ASSERT(mDependent);
+  MOZ_ASSERT(aSignal);
+  // append only if not already contained in list
+  // https://infra.spec.whatwg.org/#set-append
+  if (!mSourceSignals.Contains(aSignal)) {
+    mSourceSignals.AppendElement(aSignal);
+  }
+  if (!aSignal->mDependentSignals.Contains(this)) {
+    aSignal->mDependentSignals.AppendElement(this);
+  }
+}
+
 // https://dom.spec.whatwg.org/#dom-abortsignal-throwifaborted
 void AbortSignal::ThrowIfAborted(JSContext* aCx, ErrorResult& aRv) {
   aRv.MightThrowJSException();
@@ -261,17 +369,56 @@ void AbortSignal::ThrowIfAborted(JSContext* aCx, ErrorResult& aRv) {
   }
 }
 
-// https://dom.spec.whatwg.org/#abortsignal-signal-abort
-void AbortSignal::SignalAbort(JS::Handle<JS::Value> aReason) {
-  // Step 1, in case "signal abort" algorithm is called directly
-  if (Aborted()) {
-    return;
+// Step 3 - 6 of https://dom.spec.whatwg.org/#abortsignal-signal-abort
+void AbortSignal::SignalAbortWithDependents() {
+  // Step 3: Let dependentSignalsToAbort be a new list.
+  nsTArray<RefPtr<AbortSignal>> dependentSignalsToAbort;
+
+  // mDependentSignals can go away after this function.
+  nsTArray<RefPtr<AbortSignal>> dependentSignals = std::move(mDependentSignals);
+
+  if (!dependentSignals.IsEmpty()) {
+    // (Prepare for step 4.1.1 which uses the reason of this. Cannot use
+    // RawReason because that can cause constructing new DOMException for each
+    // dependent signal instead of sharing the single one.)
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(GetParentObject())) {
+      return;
+    }
+    JSContext* cx = jsapi.cx();
+    JS::Rooted<JS::Value> reason(cx);
+    GetReason(cx, &reason);
+
+    // Step 4. For each dependentSignal of signal’s dependent signals:
+    for (const auto& dependentSignal : dependentSignals) {
+      MOZ_ASSERT(dependentSignal->mSourceSignals.Contains(this));
+      // Step 4.1: If dependentSignal is not aborted, then:
+      if (!dependentSignal->Aborted()) {
+        // Step 4.1.1: Set dependentSignal’s abort reason to signal’s abort
+        // reason.
+        dependentSignal->SetAborted(reason);
+        // Step 4.1.2: Append dependentSignal to dependentSignalsToAbort.
+        dependentSignalsToAbort.AppendElement(dependentSignal);
+      }
+    }
   }
 
-  // Steps 1-4.
-  AbortSignalImpl::SignalAbort(aReason);
+  // Step 5: Run the abort steps for signal.
+  RunAbortSteps();
 
-  // Step 5.
+  // Step 6: For each dependentSignal of dependentSignalsToAbort, run the abort
+  // steps for dependentSignal.
+  for (const auto& dependentSignal : dependentSignalsToAbort) {
+    dependentSignal->RunAbortSteps();
+  }
+}
+
+// https://dom.spec.whatwg.org/#run-the-abort-steps
+void AbortSignal::RunAbortSteps() {
+  // Step 1 - 2:
+  AbortSignalImpl::RunAbortSteps();
+
+  // Step 3. Fire an event named abort at this signal.
   EventInit init;
   init.mBubbles = false;
   init.mCancelable = false;
@@ -282,10 +429,7 @@ void AbortSignal::SignalAbort(JS::Handle<JS::Value> aReason) {
   DispatchEvent(*event);
 }
 
-void AbortSignal::RunAbortAlgorithm() {
-  JS::Rooted<JS::Value> reason(RootingCx(), Signal()->RawReason());
-  SignalAbort(reason);
-}
+bool AbortSignal::Dependent() const { return mDependent; }
 
 AbortSignal::~AbortSignal() { mozilla::DropJSObjects(this); }
 

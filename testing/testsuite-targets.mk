@@ -40,10 +40,10 @@ REMOTE_REFTEST = rm -f ./$@.log && $(PYTHON3) _tests/reftest/remotereftest.py \
 
 ifeq ($(OS_ARCH),WINNT) #{
 # GPU-rendered shadow layers are unsupported here
-OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=browser.tabs.remote.autostart=true --setpref=layers.acceleration.disabled=true
+OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=layers.acceleration.disabled=true
 GPU_RENDERING =
 else
-OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=browser.tabs.remote.autostart=true
+OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true
 GPU_RENDERING = --setpref=layers.acceleration.force-enabled=true
 endif #}
 
@@ -77,8 +77,6 @@ jstestbrowser:
 	$(MAKE) stage-jstests
 	$(call RUN_REFTEST,'$(DIST)/$(TESTS_PATH)/jstests.list' --extra-profile-file=$(DIST)/test-stage/jsreftest/tests/user.js)
 	$(CHECK_TEST_ERROR)
-
-GARBAGE += $(addsuffix .log,$(MOCHITESTS) reftest crashtest jstestbrowser)
 
 REMOTE_CPPUNITTESTS = \
 	$(PYTHON3) -u $(topsrcdir)/testing/remotecppunittests.py \
@@ -215,6 +213,7 @@ ifdef STRIP_COMPILED_TESTS
 else
 	cp -RL $(DIST)/bin/gtest $(PKG_STAGE)/gtest/gtest_bin
 endif
+	cp -RL $(DIST)/bin/gtest/*buildid.* $(PKG_STAGE)/gtest/gtest_bin/gtest
 	cp -RL $(DEPTH)/_tests/gtest $(PKG_STAGE)
 	cp $(topsrcdir)/testing/gtest/rungtests.py $(PKG_STAGE)/gtest
 	cp $(topsrcdir)/testing/gtest/remotegtests.py $(PKG_STAGE)/gtest

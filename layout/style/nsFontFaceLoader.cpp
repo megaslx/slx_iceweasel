@@ -101,16 +101,10 @@ void nsFontFaceLoader::StartedLoading(nsIStreamLoader* aStreamLoader) {
   }
 
   if (loadTimeout > 0) {
-    nsIEventTarget* target;
-    auto* doc = mFontFaceSet->GetDocument();
-    if (doc) {
-      target = doc->EventTargetFor(TaskCategory::Other);
-    } else {
-      target = GetMainThreadSerialEventTarget();
-    }
-    NS_NewTimerWithFuncCallback(
-        getter_AddRefs(mLoadTimer), LoadTimerCallback, static_cast<void*>(this),
-        loadTimeout, nsITimer::TYPE_ONE_SHOT, "LoadTimerCallback", target);
+    NS_NewTimerWithFuncCallback(getter_AddRefs(mLoadTimer), LoadTimerCallback,
+                                static_cast<void*>(this), loadTimeout,
+                                nsITimer::TYPE_ONE_SHOT, "LoadTimerCallback",
+                                GetMainThreadSerialEventTarget());
   } else {
     mUserFontEntry->mFontDataLoadingState = gfxUserFontEntry::LOADING_SLOWLY;
   }
@@ -197,11 +191,12 @@ void nsFontFaceLoader::LoadTimerCallback(nsITimer* aTimer, void* aClosure) {
   // before, we mark this entry as "loading slowly", so the fallback
   // font will be used in the meantime, and tell the context to refresh.
   if (updateUserFontSet) {
-    nsTArray<RefPtr<gfxUserFontSet>> fontSets;
+    // FIXME(emilio): This is basically the same as FontLoadComplete... Also
+    // shouldn't this increment the generation for worker font sets?
+    AutoTArray<RefPtr<gfxUserFontSet>, 4> fontSets;
     ufe->GetUserFontSets(fontSets);
     for (gfxUserFontSet* fontSet : fontSets) {
-      nsPresContext* ctx = FontFaceSetImpl::GetPresContextFor(fontSet);
-      if (ctx) {
+      if (nsPresContext* ctx = FontFaceSetImpl::GetPresContextFor(fontSet)) {
         fontSet->IncrementGeneration();
         ctx->UserFontSetUpdated(ufe);
         LOG(("userfonts (%p) timeout reflow for pres context %p display %d\n",
@@ -309,22 +304,11 @@ nsresult nsFontFaceLoader::FontLoadComplete() {
   }
 
   // when new font loaded, need to reflow
-  nsTArray<RefPtr<gfxUserFontSet>> fontSets;
-  mUserFontEntry->GetUserFontSets(fontSets);
-  for (gfxUserFontSet* fontSet : fontSets) {
-    nsPresContext* ctx = FontFaceSetImpl::GetPresContextFor(fontSet);
-    if (ctx) {
-      // Update layout for the presence of the new font.  Since this is
-      // asynchronous, reflows will coalesce.
-      ctx->UserFontSetUpdated(mUserFontEntry);
-      LOG(("userfonts (%p) reflow for pres context %p\n", this, ctx));
-    }
-  }
+  mUserFontEntry->FontLoadComplete();
 
   MOZ_DIAGNOSTIC_ASSERT(mFontFaceSet);
   mFontFaceSet->RemoveLoader(this);
-  auto* doc = mFontFaceSet->GetDocument();
-  if (doc) {
+  if (auto* doc = mFontFaceSet->GetDocument()) {
     doc->UnblockOnload(false);
   }
   mFontFaceSet = nullptr;
@@ -378,9 +362,6 @@ void nsFontFaceLoader::Cancel() {
 }
 
 StyleFontDisplay nsFontFaceLoader::GetFontDisplay() {
-  if (!StaticPrefs::layout_css_font_display_enabled()) {
-    return StyleFontDisplay::Auto;
-  }
   return mUserFontEntry->GetFontDisplay();
 }
 

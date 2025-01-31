@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -11,7 +11,7 @@
 
 #include <climits>
 #include <vector>
-#include "third_party/googletest/src/googletest/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 #include "test/codec_factory.h"
 #include "test/encode_test_driver.h"
 #include "test/i420_video_source.h"
@@ -24,16 +24,13 @@ class BordersTestLarge
       public ::libaom_test::EncoderTest {
  protected:
   BordersTestLarge() : EncoderTest(GET_PARAM(0)) {}
-  virtual ~BordersTestLarge() {}
+  ~BordersTestLarge() override = default;
 
-  virtual void SetUp() {
-    InitializeConfig();
-    SetMode(GET_PARAM(1));
-  }
+  void SetUp() override { InitializeConfig(GET_PARAM(1)); }
 
-  virtual void PreEncodeFrameHook(::libaom_test::VideoSource *video,
-                                  ::libaom_test::Encoder *encoder) {
-    if (video->frame() == 1) {
+  void PreEncodeFrameHook(::libaom_test::VideoSource *video,
+                          ::libaom_test::Encoder *encoder) override {
+    if (video->frame() == 0) {
       encoder->Control(AOME_SET_CPUUSED, 1);
       encoder->Control(AOME_SET_ENABLEAUTOALTREF, 1);
       encoder->Control(AOME_SET_ARNR_MAXFRAMES, 7);
@@ -41,7 +38,7 @@ class BordersTestLarge
     }
   }
 
-  virtual void FramePktHook(const aom_codec_cx_pkt_t *pkt) {
+  void FramePktHook(const aom_codec_cx_pkt_t *pkt) override {
     if (pkt->data.frame.flags & AOM_FRAME_IS_KEY) {
     }
   }
@@ -80,6 +77,6 @@ TEST_P(BordersTestLarge, TestLowBitrate) {
   ASSERT_NO_FATAL_FAILURE(RunLoop(&video));
 }
 
-AV1_INSTANTIATE_TEST_CASE(BordersTestLarge,
-                          ::testing::Values(::libaom_test::kTwoPassGood));
+AV1_INSTANTIATE_TEST_SUITE(BordersTestLarge,
+                           ::testing::Values(::libaom_test::kTwoPassGood));
 }  // namespace

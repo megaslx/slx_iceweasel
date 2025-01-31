@@ -3,6 +3,123 @@
 
 All notable changes to this program are documented in this file.
 
+## 0.35.0 (2024-08-06, `9f0a0036bea4`)
+
+### Known problems
+
+- _Startup hang with Firefox running in a container (e.g. snap, flatpak):_
+
+  When Firefox is packaged inside a container (like the default Firefox browser
+  shipped with Ubuntu 22.04), it may see a different filesystem to the host.
+  This can affect access to the generated profile directory, which may result
+  in a hang when starting Firefox. Workarounds are listed in the geckodriver
+  [usage documentation].
+
+### Added
+
+- Support for [Permissions] that allow controlling permission prompts
+  within the browser. This enables automated tests to handle scenarios
+  involving permissions like `geolocation`, `notifications`, and more.
+
+- The command line flag `--enable-crash-reporter` has been added, to allow
+  the crash reporter in Firefox to automatically submit crash reports to
+  Mozilla's crash reporting system if a tab or the browser itself crashes.
+
+  Note that this feature is disabled by default and should only be used when a
+  crash situation needs to be investigated. See our documentation for
+  [crash reports] in how to share these with us.
+
+  Implemented by [Razvan Cojocaru].
+
+### Changed
+
+- The validation of the `unhandledPromptBehavior` capability has been enhanced
+  to support finer configuration options for the [User Prompt Handler] which
+  are particularly used by [WebDriver BiDi].
+
+### Fixed
+
+- The [Switch To Frame] command now correctly raises an "invalid argument"
+  error when the `id` parameter is missing.
+
+  Implemented by [James Hendry].
+
+### Removed
+
+- Removed support for session negotiation using the deprecated
+  `desiredCapabilities` and `requiredCapabilities`.
+
+  Implemented by [James Hendry].
+
+- Removed support for the `moz:useNonSpecCompliantPointerOrigin` capability,
+  which has not been supported since Firefox 116.
+
+## 0.34.0 (2024-01-03, `c44f0d09630a`)
+
+### Known problems
+
+- _Startup hang with Firefox running in a container (e.g. snap, flatpak):_
+
+  When Firefox is packaged inside a container (like the default Firefox browser
+  shipped with Ubuntu 22.04), it may see a different filesystem to the host.
+  This can affect access to the generated profile directory, which may result
+  in a hang when starting Firefox. Workarounds are listed in the geckodriver
+  [usage documentation].
+
+### Added
+
+- Support for [Virtual Authenticators]
+
+  [Virtual Authenticators] serve as a WebDriver Extension designed to simulate
+  user authentication (WebAuthn) on web applications during automated testing.
+  This functionality encompasses a range of methods, including passwords,
+  biometrics, and security keys.
+
+  Geckodriver supports all available commands:
+
+  - [Add Virtual Authenticator]
+  - [Remove Virtual Authenticator]
+  - [Add Credential]
+  - [Get Credentials]
+  - [Remove Credential]
+  - [Remove All Credentials]
+  - [Set User Verified]
+
+- Support for using a page range as integer for the [Print] command.
+
+  Implemented by [Mitesh Gulecha].
+
+### Changed
+
+- The error handling has undergone refactoring, now utilizing the
+  [anyhow](https://docs.rs/anyhow) and [thiserror](https://docs.rs/thiserror)
+  crates.
+
+  Implemented by [James Hendry].
+
+- Specifying `--port=0` as an argument allows geckodriver to dynamically find
+  and use an available free port on the system.
+
+- Updated dependencies (base64, clap, rust-url)
+
+### Fixed
+
+- While searching for a default Firefox installation on the system, geckodriver
+  used the `Contents/MacOS/firefox-bin` executable instead of the binary
+  specified in the app bundle's `info.plist` file. This behavior resulted in a
+  malfunction due to a regression in Firefox, particularly affecting the Firefox 121 release.
+
+- The Firefox version check has been extended to enable the execution of
+  distributions with custom prefixes for the application name.
+
+  Implemented by [Razvan Cojocaru].
+
+### Removed
+
+- Removed the `unknown path` error which is not part of the WebDriver specification.
+
+  Implemented by [James Hendry].
+
 ## 0.33.0  (2023-04-03, `a80e5fd61076`)
 
 ### Known problems
@@ -277,7 +394,7 @@ All notable changes to this program are documented in this file.
 
 ### Added
 
-- Support for WebDriver clients to opt in to WebDriver BiDi.
+- Support for WebDriver clients to opt in to [WebDriver BiDi].
 
   Introduced the new boolean capability [`webSocketUrl`] that can be used by
   WebDriver clients to opt in to a bidirectional connection. A string capability
@@ -316,7 +433,7 @@ All notable changes to this program are documented in this file.
   - Arguments as specified in [`moz:firefoxOptions`] are now used when starting
     Firefox.
 
-  - Port forwards set for Marionette and the WebSocket server (WebDriver BiDi)
+  - Port forwards set for Marionette and the WebSocket server ([WebDriver BiDi])
     are now correctly removed when geckodriver exits.
 
   - The test root folder is now removed when geckodriver exists.
@@ -1726,7 +1843,7 @@ and greater.
 
 - Fix Get Element Rect command to return floats instead of integers
 
-- Fix passing of web elements to Switch To Frame command
+- Fix passing of web elements to [Switch To Frame] command
 
 - Fix serialisation of script commands
 
@@ -1740,6 +1857,7 @@ and greater.
 - Squash compile warnings
 
 [README]: https://github.com/mozilla/geckodriver/blob/master/README.md
+[crash reports]: <https://firefox-source-docs.mozilla.org/testing/geckodriver/CrashReports.html>
 [usage documentation]: <https://firefox-source-docs.mozilla.org/testing/geckodriver/Usage.html#Running-Firefox-in-an-container-based-package>
 [Browser Toolbox]: https://developer.mozilla.org/en-US/docs/Tools/Browser_Toolbox
 [WebDriver conformance]: https://wpt.fyi/results/webdriver/tests?label=experimental
@@ -1813,18 +1931,36 @@ and greater.
 [Set Timeouts]: https://w3c.github.io/webdriver/webdriver-spec.html#set-timeouts
 [Set Window Rect]: https://w3c.github.io/webdriver/webdriver-spec.html#set-window-rect
 [Status]: https://w3c.github.io/webdriver/webdriver-spec.html#status
+[Switch to Frame]: https://w3c.github.io/webdriver/#dfn-switch-to-frame
 [Take Element Screenshot]: https://w3c.github.io/webdriver/webdriver-spec.html#take-element-screenshot
+[User Prompt Handler]: https://w3c.github.io/webdriver/#user-prompt-handler
 [WebDriver errors]: https://w3c.github.io/webdriver/webdriver-spec.html#handling-errors
+
+[WebDriver BiDi]: https://w3c.github.io/webdriver-bidi/
+
+[Permissions]: https://www.w3.org/TR/permissions/#automation-webdriver-bidi
+
+[Virtual Authenticators]: https://www.w3.org/TR/webauthn-2/#sctn-automation
+[Add Credential]: https://www.w3.org/TR/webauthn-2/#add-credential
+[Add Virtual Authenticator]: https://www.w3.org/TR/webauthn-2/#add-virtual-authenticator
+[Get Credentials]: https://www.w3.org/TR/webauthn-2/#get-credentials
+[Remove All Credentials]: https://www.w3.org/TR/webauthn-2/#remove-all-credentials
+[Remove Credential]: https://www.w3.org/TR/webauthn-2/#remove-credential
+[Remove Virtual Authenticator]: https://www.w3.org/TR/webauthn-2/#remove-virtual-authenticator
+[Set User Verified]: https://www.w3.org/TR/webauthn-2/#set-user-verified
 
 [Bastien Orivel]: https://github.com/Eijebong
 [David Burns]: https://github.com/AutomatedTester
+[James Hendry]: https://bugzilla.mozilla.org/user_profile?user_id=720249
 [Jason Juang]: https://github.com/juangj
 [Jeremy Lempereur]: https://github.com/o0Ignition0o
 [Kalpesh Krishna]: https://github.com/martiansideofthemoon
 [Kriti Singh]: https://github.com/kritisingh1
+[Mitesh Gulecha]: https://github.com/mickyg03
 [Mike Pennisi]: https://github.com/jugglinmike
 [Nupur Baghel]: https://github.com/nupurbaghel
 [Peter Major]: https://github.com/aldaris
+[Razvan Cojocaru]: https://github.com/rzvncj
 [Shivam Singhal]: https://github.com/championshuttler
 [Sven Jost]: https://github/mythsunwind
 [Vlad Filippov]: https://github.com/vladikoff

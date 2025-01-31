@@ -1,32 +1,23 @@
-From: Jan-Ivar Bruaroey <jib@mozilla.com>
-Date: Wed, 28 Jun 2023 20:45:00 -0400
-Subject: Bug 1839451 - (fix-0f43da2248) Keep mozilla's
- RTCPReceiver::RemoteRTCPSenderInfo function working.
+From: Michael Froman <mfroman@mozilla.com>
+Date: Tue, 17 Sep 2024 13:33:00 -0500
+Subject: Bug 1918268 - (fix-96c1b9c5ea) provide template arg for optional to
+ fix compile error
 
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/154c9cdb386d0f50c5e1549270e1af6ab4969602
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/ca2211dbb0dd8864768cdcce1ea146bdbb0faeda
 ---
- modules/rtp_rtcp/source/rtcp_receiver.cc | 8 ++++----
- 1 file changed, 4 insertions(+), 4 deletions(-)
+ video/video_send_stream_impl.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/modules/rtp_rtcp/source/rtcp_receiver.cc b/modules/rtp_rtcp/source/rtcp_receiver.cc
-index e00761726c..3cbbb915fe 100644
---- a/modules/rtp_rtcp/source/rtcp_receiver.cc
-+++ b/modules/rtp_rtcp/source/rtcp_receiver.cc
-@@ -399,10 +399,10 @@ void RTCPReceiver::RemoteRTCPSenderInfo(uint32_t* packet_count,
-                                         int64_t* ntp_timestamp_ms,
-                                         int64_t* remote_ntp_timestamp_ms) const {
-   MutexLock lock(&rtcp_receiver_lock_);
--  *packet_count = remote_sender_packet_count_;
--  *octet_count = remote_sender_octet_count_;
--  *ntp_timestamp_ms = last_received_sr_ntp_.ToMs();
--  *remote_ntp_timestamp_ms = remote_sender_ntp_time_.ToMs();
-+  *packet_count = remote_sender_.packets_sent;
-+  *octet_count = remote_sender_.bytes_sent;
-+  *ntp_timestamp_ms = remote_sender_.last_arrival_timestamp.ToMs();
-+  *remote_ntp_timestamp_ms = remote_sender_.last_remote_timestamp.ToMs();
+diff --git a/video/video_send_stream_impl.cc b/video/video_send_stream_impl.cc
+index 77f40f9001..0514ee9456 100644
+--- a/video/video_send_stream_impl.cc
++++ b/video/video_send_stream_impl.cc
+@@ -782,7 +782,7 @@ MediaStreamAllocationConfig VideoSendStreamImpl::GetAllocationConfig() const {
+       !config_.suspend_below_min_bitrate,
+       encoder_bitrate_priority_,
+       (content_type_ == VideoEncoderConfig::ContentType::kRealtimeVideo)
+-          ? std::optional(TrackRateElasticity::kCanConsumeExtraRate)
++          ? std::optional<TrackRateElasticity>(TrackRateElasticity::kCanConsumeExtraRate)
+           : std::nullopt};
  }
  
- std::vector<ReportBlockData> RTCPReceiver::GetLatestReportBlockData() const {
--- 
-2.34.1
-

@@ -1,39 +1,38 @@
 use super::get_info::AuthenticatorInfo;
 use super::{
-    Command, CommandError, PinUvAuthCommand, Request, RequestCtap1, RequestCtap2, Retryable,
-    StatusCode,
+    Command, CommandError, CtapResponse, PinUvAuthCommand, PinUvAuthResult, RequestCtap1,
+    RequestCtap2, Retryable, StatusCode,
 };
 use crate::consts::{
     PARAMETER_SIZE, U2F_AUTHENTICATE, U2F_DONT_ENFORCE_USER_PRESENCE_AND_SIGN,
     U2F_REQUEST_USER_PRESENCE,
 };
 use crate::crypto::{COSEKey, CryptoError, PinUvAuthParam, PinUvAuthToken, SharedSecret};
-use crate::ctap2::attestation::{AuthenticatorData, AuthenticatorDataFlags};
+use crate::ctap2::attestation::{AuthenticatorData, AuthenticatorDataFlags, HmacSecretResponse};
 use crate::ctap2::client_data::ClientDataHash;
-use crate::ctap2::commands::client_pin::Pin;
 use crate::ctap2::commands::get_next_assertion::GetNextAssertion;
 use crate::ctap2::commands::make_credentials::UserVerification;
 use crate::ctap2::server::{
-    PublicKeyCredentialDescriptor, RelyingPartyWrapper, RpIdHash, User, UserVerificationRequirement,
+    AuthenticationExtensionsClientInputs, AuthenticationExtensionsClientOutputs,
+    AuthenticationExtensionsPRFInputs, AuthenticationExtensionsPRFOutputs, AuthenticatorAttachment,
+    PublicKeyCredentialDescriptor, PublicKeyCredentialUserEntity, RelyingParty, RpIdHash,
+    UserVerificationRequirement,
 };
+use crate::ctap2::utils::{read_be_u32, read_byte};
 use crate::errors::AuthenticatorError;
 use crate::transport::errors::{ApduErrorStatus, HIDError};
-use crate::transport::FidoDevice;
+use crate::transport::{FidoDevice, VirtualFidoDevice};
 use crate::u2ftypes::CTAP1RequestAPDU;
-use nom::{
-    error::VerboseError,
-    number::complete::{be_u32, be_u8},
-    sequence::tuple,
-};
 use serde::{
     de::{Error as DesError, MapAccess, Visitor},
-    ser::{Error as SerError, SerializeMap},
+    ser::Error as SerError,
     Deserialize, Deserializer, Serialize, Serializer,
 };
 use serde_bytes::ByteBuf;
 use serde_cbor::{de::from_slice, ser, Value};
+use std::convert::TryFrom;
 use std::fmt;
-use std::io;
+use std::io::Cursor;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
@@ -69,18 +68,97 @@ impl UserVerification for GetAssertionOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CalculatedHmacSecretExtension {
     pub public_key: COSEKey,
     pub salt_enc: Vec<u8>,
     pub salt_auth: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Wrapper type recording whether the hmac-secret input originally came from the hmacGetSecret or the prf client extension input.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HmacGetSecretOrPrf {
+    /// hmac-secret inputs set by the hmacGetSecret client extension input.
+    HmacGetSecret(HmacSecretExtension),
+    /// hmac-secret input is to be calculated from PRF inputs, but we haven't yet identified which eval or evalByCredential entry to use.
+    PrfUninitialized(AuthenticationExtensionsPRFInputs),
+    /// prf client input with no eval or matching evalByCredential entry.
+    PrfUnmatched,
+    /// hmac-secret inputs set by the prf client extension input.
+    Prf(HmacSecretExtension),
+}
+
+impl HmacGetSecretOrPrf {
+    fn skip_serializing(value: &Option<Self>) -> bool {
+        matches!(value, None | Some(Self::PrfUnmatched))
+    }
+
+    /// Calculate the appropriate hmac-secret or PRF salt inputs from the given inputs.
+    ///
+    /// - If this is a `HmacGetSecret` instance,
+    ///   this returns a new `HmacGetSecret` instance with `calculated_hmac` set, paired with [None].
+    /// - If this is a `PrfUninitialized` instance,
+    ///   this attempts to select a PRF input to calculate salts from.
+    ///   If an input is found, this returns a `Prf` instance with `calculated_hmac` set.
+    ///   If the selected input came from `eval_by_credential`,
+    ///   then this is paired with a [Some] referencing the matching element of `allow_credentials`.
+    ///   If the selected input was `eval`, then this is paired with [None].
+    ///   If no input is found, this returns `PrfUnmatched` and [None].
+    /// - If this is a `Prf` or `PrfUnmatched` instance, this panics.
+    ///
+    /// If the [Option] return value is [Some], the caller SHOULD set `allowCredentials`
+    /// to contain only that [PublicKeyCredentialDescriptor] value.
+    ///
+    /// # Panics
+    /// If this is a `Prf` or `PrfUnmatched` instance.
+    pub fn calculate<'allow_cred>(
+        self,
+        secret: &SharedSecret,
+        allow_credentials: &'allow_cred [PublicKeyCredentialDescriptor],
+        puat: Option<&PinUvAuthToken>,
+    ) -> Result<(Self, Option<&'allow_cred PublicKeyCredentialDescriptor>), CryptoError> {
+        Ok(match self {
+            Self::HmacGetSecret(mut extension) => {
+                extension.calculate(secret, puat)?;
+                (Self::HmacGetSecret(extension), None)
+            }
+
+            Self::PrfUninitialized(prf) => match prf.calculate(secret, allow_credentials, puat)? {
+                Some((hmac_secret, selected_credential)) => {
+                    (Self::Prf(hmac_secret), selected_credential)
+                }
+                None => (Self::PrfUnmatched, None),
+            },
+
+            Self::Prf(_) | Self::PrfUnmatched => {
+                unreachable!("hmac-secret inputs from PRF already initialized")
+            }
+        })
+    }
+}
+
+impl Serialize for HmacGetSecretOrPrf {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::HmacGetSecret(ext) => ext.serialize(s),
+            Self::PrfUninitialized(_) => Err(serde::ser::Error::custom(
+                "PrfUninitialized must be replaced with Prf or PrfUnmatched before serializing",
+            )),
+            Self::PrfUnmatched => unreachable!("PrfUnmatched serialization should be skipped"),
+            Self::Prf(ext) => ext.serialize(s),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct HmacSecretExtension {
     pub salt1: Vec<u8>,
     pub salt2: Option<Vec<u8>>,
     calculated_hmac: Option<CalculatedHmacSecretExtension>,
+    pin_protocol: Option<u64>,
 }
 
 impl HmacSecretExtension {
@@ -89,22 +167,44 @@ impl HmacSecretExtension {
             salt1,
             salt2,
             calculated_hmac: None,
+            pin_protocol: None,
         }
     }
 
-    pub fn calculate(&mut self, secret: &SharedSecret) -> Result<(), AuthenticatorError> {
-        if self.salt1.len() < 32 {
-            return Err(CryptoError::WrongSaltLength.into());
+    #[cfg(test)]
+    pub fn new_test(
+        salt1: Vec<u8>,
+        salt2: Option<Vec<u8>>,
+        calculated_hmac: CalculatedHmacSecretExtension,
+        pin_protocol: Option<u64>,
+    ) -> Self {
+        HmacSecretExtension {
+            salt1,
+            salt2,
+            calculated_hmac: Some(calculated_hmac),
+            pin_protocol,
         }
-        let salt_enc = match &self.salt2 {
-            Some(salt2) => {
-                if salt2.len() < 32 {
-                    return Err(CryptoError::WrongSaltLength.into());
-                }
-                let salts = [&self.salt1[..32], &salt2[..32]].concat(); // salt1 || salt2
-                secret.encrypt(&salts)
+    }
+
+    /// Calculate inputs for the `hmac-secret` extension.
+    /// See "authenticatorGetAssertion additional behaviors"
+    /// in https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#sctn-hmac-secret-extension
+    pub fn calculate(
+        &mut self,
+        secret: &SharedSecret,
+        puat: Option<&PinUvAuthToken>,
+    ) -> Result<(), CryptoError> {
+        let salt_enc = match (
+            <[u8; 32]>::try_from(self.salt1.as_slice()),
+            self.salt2.as_deref().map(<[u8; 32]>::try_from),
+        ) {
+            (Ok(salt1), None) => secret.encrypt(&salt1),
+            (Ok(salt1), Some(Ok(salt2))) => secret.encrypt(&[salt1, salt2].concat()),
+            (Err(_), _) | (_, Some(Err(_))) => {
+                debug!("Invalid hmac-secret salt length(s): salt1: {}, salt2: {:?} (expected 32 and 32|None)",
+                       self.salt1.len(), self.salt2.as_ref().map(Vec::len));
+                Err(CryptoError::WrongSaltLength)
             }
-            None => secret.encrypt(&self.salt1[..32]),
         }?;
         let salt_auth = secret.authenticate(&salt_enc)?;
         let public_key = secret.client_input().clone();
@@ -113,6 +213,11 @@ impl HmacSecretExtension {
             salt_enc,
             salt_auth,
         });
+
+        // CTAP2.1 platforms MUST include this parameter if the value of pinUvAuthProtocol is not 1.
+        self.pin_protocol = puat
+            .map(|puat| puat.pin_protocol.id())
+            .filter(|id| *id != 1);
 
         Ok(())
     }
@@ -124,11 +229,13 @@ impl Serialize for HmacSecretExtension {
         S: Serializer,
     {
         if let Some(calc) = &self.calculated_hmac {
-            let mut map = serializer.serialize_map(Some(3))?;
-            map.serialize_entry(&1, &calc.public_key)?;
-            map.serialize_entry(&2, serde_bytes::Bytes::new(&calc.salt_enc))?;
-            map.serialize_entry(&3, serde_bytes::Bytes::new(&calc.salt_auth))?;
-            map.end()
+            serialize_map_optional! {
+                serializer,
+                &1 => Some(&calc.public_key),
+                &2 => Some(serde_bytes::Bytes::new(&calc.salt_enc)),
+                &3 => Some(serde_bytes::Bytes::new(&calc.salt_auth)),
+                &4 => &self.pin_protocol,
+            }
         } else {
             Err(SerError::custom(
                 "hmac secret has not been calculated before being serialized",
@@ -137,33 +244,48 @@ impl Serialize for HmacSecretExtension {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct GetAssertionExtensions {
-    pub hmac_secret: Option<HmacSecretExtension>,
+    #[serde(skip_serializing)]
+    pub app_id: Option<String>,
+    #[serde(
+        rename = "hmac-secret",
+        skip_serializing_if = "HmacGetSecretOrPrf::skip_serializing"
+    )]
+    pub hmac_secret: Option<HmacGetSecretOrPrf>,
 }
 
-impl Serialize for GetAssertionExtensions {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry(&"hmac-secret", &self.hmac_secret)?;
-        map.end()
+impl From<AuthenticationExtensionsClientInputs> for GetAssertionExtensions {
+    fn from(input: AuthenticationExtensionsClientInputs) -> Self {
+        let prf = input.prf;
+        Self {
+            app_id: input.app_id,
+            hmac_secret: input
+                .hmac_get_secret
+                .map(|hmac_secret| {
+                    HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        hmac_secret.salt1.into(),
+                        hmac_secret.salt2.map(|salt2| salt2.into()),
+                    ))
+                })
+                .or_else(
+                    || prf.map(HmacGetSecretOrPrf::PrfUninitialized), // Cannot calculate hmac-secret inputs here because we don't yet know which eval or evalByCredential entry to use
+                ),
+        }
     }
 }
 
 impl GetAssertionExtensions {
-    fn has_extensions(&self) -> bool {
+    fn has_content(&self) -> bool {
         self.hmac_secret.is_some()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct GetAssertion {
-    pub(crate) client_data_hash: ClientDataHash,
-    pub(crate) rp: RelyingPartyWrapper,
-    pub(crate) allow_list: Vec<PublicKeyCredentialDescriptor>,
+    pub client_data_hash: ClientDataHash,
+    pub rp: RelyingParty,
+    pub allow_list: Vec<PublicKeyCredentialDescriptor>,
 
     // https://www.w3.org/TR/webauthn/#client-extension-input
     // The client extension input, which is a value that can be encoded in JSON,
@@ -171,24 +293,18 @@ pub struct GetAssertion {
     // create() call, while the CBOR authenticator extension input is passed
     // from the client to the authenticator for authenticator extensions during
     // the processing of these calls.
-    pub(crate) extensions: GetAssertionExtensions,
-    pub(crate) options: GetAssertionOptions,
-    pub(crate) pin: Option<Pin>,
-    pub(crate) pin_uv_auth_param: Option<PinUvAuthParam>,
-
-    // This is used to implement the FIDO AppID extension.
-    pub(crate) alternate_rp_id: Option<String>,
+    pub extensions: GetAssertionExtensions,
+    pub options: GetAssertionOptions,
+    pub pin_uv_auth_param: Option<PinUvAuthParam>,
 }
 
 impl GetAssertion {
     pub fn new(
         client_data_hash: ClientDataHash,
-        rp: RelyingPartyWrapper,
+        rp: RelyingParty,
         allow_list: Vec<PublicKeyCredentialDescriptor>,
         options: GetAssertionOptions,
         extensions: GetAssertionExtensions,
-        pin: Option<Pin>,
-        alternate_rp_id: Option<String>,
     ) -> Self {
         Self {
             client_data_hash,
@@ -196,22 +312,130 @@ impl GetAssertion {
             allow_list,
             extensions,
             options,
-            pin,
             pin_uv_auth_param: None,
-            alternate_rp_id,
+        }
+    }
+
+    pub fn process_hmac_secret_and_prf_extension(
+        mut self,
+        shared_secret: Option<(&SharedSecret, &PinUvAuthResult)>,
+    ) -> Result<Self, AuthenticatorError> {
+        let (new_hmac_secret, new_allow_list) = self
+            .extensions
+            .hmac_secret
+            .take()
+            .and_then(|hmac_get_secret_or_prf| {
+                if let Some((secret, pin_uv_auth_result)) = shared_secret {
+                    Some(hmac_get_secret_or_prf.calculate(
+                        secret,
+                        &self.allow_list,
+                        pin_uv_auth_result.get_pin_uv_auth_token().as_ref(),
+                    ))
+                } else {
+                    debug!(
+                        "Shared secret not available - will not send hmac-secret extension input: {:?}",
+                        hmac_get_secret_or_prf
+                    );
+                    match hmac_get_secret_or_prf {
+                        HmacGetSecretOrPrf::HmacGetSecret(_) => None,
+                        HmacGetSecretOrPrf::PrfUninitialized(_)
+                        | HmacGetSecretOrPrf::PrfUnmatched
+                        | HmacGetSecretOrPrf::Prf(_) => {
+                            Some(Ok((HmacGetSecretOrPrf::PrfUnmatched, None)))
+                        }
+                    }
+                }
+            })
+            .transpose()
+            .map_err(|err| match err {
+                CryptoError::WrongSaltLength => AuthenticatorError::InvalidRelyingPartyInput,
+                e => e.into(),
+            })?
+            .map(|(nhs, nal)| (Some(nhs), nal))
+            .unwrap_or((None, None));
+
+        (self.extensions.hmac_secret, self.allow_list) = (
+            new_hmac_secret,
+            new_allow_list
+                .map(|selected_credential| vec![selected_credential.clone()])
+                .unwrap_or(self.allow_list),
+        );
+
+        Ok(self)
+    }
+
+    pub fn finalize_result<Dev: FidoDevice>(&self, dev: &Dev, result: &mut GetAssertionResult) {
+        result.attachment = match dev.get_authenticator_info() {
+            Some(info) if info.options.platform_device => AuthenticatorAttachment::Platform,
+            Some(_) => AuthenticatorAttachment::CrossPlatform,
+            None => AuthenticatorAttachment::Unknown,
+        };
+
+        // Handle extensions whose outputs are not encoded in the authenticator data.
+        // 1. appId
+        if let Some(app_id) = &self.extensions.app_id {
+            result.extensions.app_id =
+                Some(result.assertion.auth_data.rp_id_hash == RelyingParty::from(app_id).hash());
+        }
+
+        // 2. prf
+        //      If the prf extension was requested and hmac-secret returned secrets,
+        //      we need to decrypt and output them as prf client outputs.
+        match self.extensions.hmac_secret {
+            Some(HmacGetSecretOrPrf::HmacGetSecret(_)) => {
+                result.extensions.hmac_get_secret =
+                    if let Some(hmac_response @ HmacSecretResponse::Secret(_)) =
+                        &result.assertion.auth_data.extensions.hmac_secret
+                    {
+                        dev.get_shared_secret()
+                            .and_then(|shared_secret| hmac_response.decrypt_secrets(shared_secret))
+                            .and_then(|result| match result {
+                                Ok(ok) => Some(ok),
+                                Err(err) => {
+                                    debug!("Failed to decrypt hmac-secret response: {:?}", err);
+                                    None
+                                }
+                            })
+                    } else {
+                        None
+                    };
+            }
+            Some(HmacGetSecretOrPrf::PrfUninitialized(_)) => {
+                unreachable!("Reached GetAssertion.finalize_result without replacing PrfUninitialized instance with Prf")
+            }
+            Some(HmacGetSecretOrPrf::PrfUnmatched) => {
+                result.extensions.prf = Some(AuthenticationExtensionsPRFOutputs {
+                    enabled: None,
+                    results: None,
+                });
+            }
+            Some(HmacGetSecretOrPrf::Prf(_)) => {
+                result.extensions.prf = Some(AuthenticationExtensionsPRFOutputs {
+                    enabled: None,
+                    results: if let Some(hmac_response @ HmacSecretResponse::Secret(_)) =
+                        &result.assertion.auth_data.extensions.hmac_secret
+                    {
+                        dev.get_shared_secret()
+                            .and_then(|shared_secret| hmac_response.decrypt_secrets(shared_secret))
+                            .and_then(|result| match result {
+                                Ok(ok) => Some(ok),
+                                Err(err) => {
+                                    debug!("Failed to decrypt hmac-secret response: {:?}", err);
+                                    None
+                                }
+                            })
+                            .map(|outputs| outputs.into())
+                    } else {
+                        None
+                    },
+                });
+            }
+            None => {}
         }
     }
 }
 
 impl PinUvAuthCommand for GetAssertion {
-    fn pin(&self) -> &Option<Pin> {
-        &self.pin
-    }
-
-    fn set_pin(&mut self, pin: Option<Pin>) {
-        self.pin = pin;
-    }
-
     fn set_pin_uv_auth_param(
         &mut self,
         pin_uv_auth_token: Option<PinUvAuthToken>,
@@ -232,12 +456,8 @@ impl PinUvAuthCommand for GetAssertion {
         self.options.user_verification = uv;
     }
 
-    fn get_uv_option(&mut self) -> Option<bool> {
-        self.options.user_verification
-    }
-
-    fn get_rp(&self) -> &RelyingPartyWrapper {
-        &self.rp
+    fn get_rp_id(&self) -> Option<&String> {
+        Some(&self.rp.id)
     }
 
     fn can_skip_user_verification(
@@ -264,56 +484,24 @@ impl Serialize for GetAssertion {
     where
         S: Serializer,
     {
-        // Need to define how many elements are going to be in the map
-        // beforehand
-        let mut map_len = 2;
-        if !self.allow_list.is_empty() {
-            map_len += 1;
+        serialize_map_optional! {
+            serializer,
+            &1 => Some(&self.rp.id),
+            &2 => Some(&self.client_data_hash),
+            &3 => (!&self.allow_list.is_empty()).then_some(&self.allow_list),
+            &4 => self.extensions.has_content().then_some(&self.extensions),
+            &5 => self.options.has_some().then_some(&self.options),
+            &6 => &self.pin_uv_auth_param,
+            &7 => self.pin_uv_auth_param.as_ref().map(|p| p.pin_protocol.id()),
         }
-        if self.extensions.has_extensions() {
-            map_len += 1;
-        }
-        if self.options.has_some() {
-            map_len += 1;
-        }
-        if self.pin_uv_auth_param.is_some() {
-            map_len += 2;
-        }
-
-        let mut map = serializer.serialize_map(Some(map_len))?;
-        match self.rp {
-            RelyingPartyWrapper::Data(ref d) => {
-                map.serialize_entry(&1, &d.id)?;
-            }
-            _ => {
-                return Err(S::Error::custom(
-                    "Can't serialize a RelyingParty::Hash for CTAP2",
-                ));
-            }
-        }
-
-        map.serialize_entry(&2, &self.client_data_hash)?;
-        if !self.allow_list.is_empty() {
-            map.serialize_entry(&3, &self.allow_list)?;
-        }
-        if self.extensions.has_extensions() {
-            map.serialize_entry(&4, &self.extensions)?;
-        }
-        if self.options.has_some() {
-            map.serialize_entry(&5, &self.options)?;
-        }
-        if let Some(pin_uv_auth_param) = &self.pin_uv_auth_param {
-            map.serialize_entry(&6, &pin_uv_auth_param)?;
-            map.serialize_entry(&7, &pin_uv_auth_param.pin_protocol.id())?;
-        }
-        map.end()
     }
 }
 
-impl Request<GetAssertionResult> for GetAssertion {}
+type GetAssertionOutput = Vec<GetAssertionResult>;
+impl CtapResponse for GetAssertionOutput {}
 
 impl RequestCtap1 for GetAssertion {
-    type Output = GetAssertionResult;
+    type Output = Vec<GetAssertionResult>;
     type AdditionalInfo = PublicKeyCredentialDescriptor;
 
     fn ctap1_format(&self) -> Result<(Vec<u8>, Self::AdditionalInfo), HIDError> {
@@ -351,8 +539,9 @@ impl RequestCtap1 for GetAssertion {
         Ok((apdu, key_handle.clone()))
     }
 
-    fn handle_response_ctap1(
+    fn handle_response_ctap1<Dev: FidoDevice>(
         &self,
+        dev: &mut Dev,
         status: Result<(), ApduErrorStatus>,
         input: &[u8],
         add_info: &PublicKeyCredentialDescriptor,
@@ -364,16 +553,29 @@ impl RequestCtap1 for GetAssertion {
             return Err(Retryable::Error(HIDError::ApduStatus(err)));
         }
 
-        GetAssertionResult::from_ctap1(input, &self.rp.hash(), add_info)
-            .map_err(HIDError::Command)
-            .map_err(Retryable::Error)
+        let mut result = GetAssertionResult::from_ctap1(input, &self.rp.hash(), add_info)
+            .map_err(|e| Retryable::Error(HIDError::Command(e)))?;
+        self.finalize_result(dev, &mut result);
+        // Although there's only one result, we return a vector for consistency with CTAP2.
+        Ok(vec![result])
+    }
+
+    fn send_to_virtual_device<Dev: VirtualFidoDevice>(
+        &self,
+        dev: &mut Dev,
+    ) -> Result<Self::Output, HIDError> {
+        let mut results = dev.get_assertion(self)?;
+        for result in results.iter_mut() {
+            self.finalize_result(dev, result);
+        }
+        Ok(results)
     }
 }
 
 impl RequestCtap2 for GetAssertion {
-    type Output = GetAssertionResult;
+    type Output = Vec<GetAssertionResult>;
 
-    fn command() -> Command {
+    fn command(&self) -> Command {
         Command::GetAssertion
     }
 
@@ -381,14 +583,11 @@ impl RequestCtap2 for GetAssertion {
         Ok(ser::to_vec(&self).map_err(CommandError::Serializing)?)
     }
 
-    fn handle_response_ctap2<Dev>(
+    fn handle_response_ctap2<Dev: FidoDevice>(
         &self,
         dev: &mut Dev,
         input: &[u8],
-    ) -> Result<Self::Output, HIDError>
-    where
-        Dev: FidoDevice + io::Read + io::Write + fmt::Debug,
-    {
+    ) -> Result<Self::Output, HIDError> {
         if input.is_empty() {
             return Err(CommandError::InputTooSmall.into());
         }
@@ -399,31 +598,55 @@ impl RequestCtap2 for GetAssertion {
             status,
             &input[1..]
         );
-        if input.len() > 1 {
+        if input.len() == 1 {
             if status.is_ok() {
-                let assertion: GetAssertionResponse =
-                    from_slice(&input[1..]).map_err(CommandError::Deserializing)?;
-                let number_of_credentials = assertion.number_of_credentials.unwrap_or(1);
-                let mut assertions = Vec::with_capacity(number_of_credentials);
-                assertions.push(assertion.into());
-
-                let msg = GetNextAssertion;
-                // We already have one, so skipping 0
-                for _ in 1..number_of_credentials {
-                    let new_cred = dev.send_cbor(&msg)?;
-                    assertions.push(new_cred.into());
-                }
-
-                Ok(GetAssertionResult(assertions))
-            } else {
-                let data: Value = from_slice(&input[1..]).map_err(CommandError::Deserializing)?;
-                Err(CommandError::StatusCode(status, Some(data)).into())
+                return Err(CommandError::InputTooSmall.into());
             }
-        } else if status.is_ok() {
-            Err(CommandError::InputTooSmall.into())
-        } else {
-            Err(CommandError::StatusCode(status, None).into())
+            return Err(CommandError::StatusCode(status, None).into());
         }
+
+        if status.is_ok() {
+            let assertion: GetAssertionResponse =
+                from_slice(&input[1..]).map_err(CommandError::Deserializing)?;
+            let number_of_credentials = assertion.number_of_credentials.unwrap_or(1);
+
+            let mut results = Vec::with_capacity(number_of_credentials);
+            results.push(GetAssertionResult {
+                assertion: assertion.into(),
+                attachment: AuthenticatorAttachment::Unknown,
+                extensions: Default::default(),
+            });
+
+            let msg = GetNextAssertion;
+            // We already have one, so skipping 0
+            for _ in 1..number_of_credentials {
+                let assertion = dev.send_cbor(&msg)?;
+                results.push(GetAssertionResult {
+                    assertion: assertion.into(),
+                    attachment: AuthenticatorAttachment::Unknown,
+                    extensions: Default::default(),
+                });
+            }
+
+            for result in results.iter_mut() {
+                self.finalize_result(dev, result);
+            }
+            Ok(results)
+        } else {
+            let data: Value = from_slice(&input[1..]).map_err(CommandError::Deserializing)?;
+            Err(CommandError::StatusCode(status, Some(data)).into())
+        }
+    }
+
+    fn send_to_virtual_device<Dev: VirtualFidoDevice>(
+        &self,
+        dev: &mut Dev,
+    ) -> Result<Self::Output, HIDError> {
+        let mut results = dev.get_assertion(self)?;
+        for result in results.iter_mut() {
+            self.finalize_result(dev, result);
+        }
+        Ok(results)
     }
 }
 
@@ -433,7 +656,7 @@ pub struct Assertion {
                                                              * mandatory in CTAP2.1 */
     pub auth_data: AuthenticatorData,
     pub signature: Vec<u8>,
-    pub user: Option<User>,
+    pub user: Option<PublicKeyCredentialUserEntity>,
 }
 
 impl From<GetAssertionResponse> for Assertion {
@@ -448,7 +671,11 @@ impl From<GetAssertionResponse> for Assertion {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct GetAssertionResult(pub Vec<Assertion>);
+pub struct GetAssertionResult {
+    pub assertion: Assertion,
+    pub attachment: AuthenticatorAttachment,
+    pub extensions: AuthenticationExtensionsClientOutputs,
+}
 
 impl GetAssertionResult {
     pub fn from_ctap1(
@@ -456,17 +683,11 @@ impl GetAssertionResult {
         rp_id_hash: &RpIdHash,
         key_handle: &PublicKeyCredentialDescriptor,
     ) -> Result<GetAssertionResult, CommandError> {
-        let parse_authentication = |input| {
-            // Parsing an u8, then a u32, and the rest is the signature
-            let (rest, (user_presence, counter)) = tuple((be_u8, be_u32))(input)?;
-            let signature = Vec::from(rest);
-            Ok((user_presence, counter, signature))
-        };
-        let (user_presence, counter, signature) =
-            parse_authentication(input).map_err(|e: nom::Err<VerboseError<_>>| {
-                error!("error while parsing authentication: {:?}", e);
-                CommandError::Deserializing(DesError::custom("unable to parse authentication"))
-            })?;
+        let mut data = Cursor::new(input);
+        let user_presence = read_byte(&mut data).map_err(CommandError::Deserializing)?;
+        let counter = read_be_u32(&mut data).map_err(CommandError::Deserializing)?;
+        // Remaining data is signature (Note: `data.remaining_slice()` is not yet stabilized)
+        let signature = Vec::from(&data.get_ref()[data.position() as usize..]);
 
         // Step 5 of Section 10.3 of CTAP2.1: "Copy bits 0 (the UP bit) and bit 1 from the
         // CTAP2/U2F response user presence byte to bits 0 and 1 of the CTAP2 flags, respectively.
@@ -487,30 +708,24 @@ impl GetAssertionResult {
             auth_data,
         };
 
-        Ok(GetAssertionResult(vec![assertion]))
-    }
-
-    pub fn u2f_sign_data(&self) -> Vec<u8> {
-        if let Some(first) = self.0.first() {
-            let mut res = Vec::new();
-            res.push(first.auth_data.flags.bits());
-            res.extend(first.auth_data.counter.to_be_bytes());
-            res.extend(&first.signature);
-            res
-            // first.signature.clone()
-        } else {
-            Vec::new()
-        }
+        Ok(GetAssertionResult {
+            assertion,
+            attachment: AuthenticatorAttachment::Unknown,
+            extensions: Default::default(),
+        })
     }
 }
 
-pub(crate) struct GetAssertionResponse {
-    credentials: Option<PublicKeyCredentialDescriptor>,
-    auth_data: AuthenticatorData,
-    signature: Vec<u8>,
-    user: Option<User>,
-    number_of_credentials: Option<usize>,
+#[derive(Debug, PartialEq)]
+pub struct GetAssertionResponse {
+    pub credentials: Option<PublicKeyCredentialDescriptor>,
+    pub auth_data: AuthenticatorData,
+    pub signature: Vec<u8>,
+    pub user: Option<PublicKeyCredentialUserEntity>,
+    pub number_of_credentials: Option<usize>,
 }
+
+impl CtapResponse for GetAssertionResponse {}
 
 impl<'de> Deserialize<'de> for GetAssertionResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -593,6 +808,7 @@ impl<'de> Deserialize<'de> for GetAssertionResponse {
 
 #[cfg(test)]
 pub mod test {
+
     use super::{
         Assertion, CommandError, GetAssertion, GetAssertionOptions, GetAssertionResult, HIDError,
         StatusCode,
@@ -601,23 +817,32 @@ pub mod test {
         Capability, HIDCmd, SW_CONDITIONS_NOT_SATISFIED, SW_NO_ERROR, U2F_CHECK_IS_REGISTERED,
         U2F_REQUEST_USER_PRESENCE,
     };
+    use crate::crypto::{COSEAlgorithm, COSEEC2Key, COSEKey, COSEKeyType, Curve, PinUvAuthParam};
     use crate::ctap2::attestation::{AAGuid, AuthenticatorData, AuthenticatorDataFlags};
-    use crate::ctap2::client_data::{Challenge, CollectedClientData, TokenBinding, WebauthnType};
+    use crate::ctap2::client_data::{
+        Challenge, ClientDataHash, CollectedClientData, TokenBinding, WebauthnType,
+    };
+    use crate::ctap2::commands::client_pin::PinUvAuthTokenPermission;
+    use crate::ctap2::commands::get_assertion::{
+        CalculatedHmacSecretExtension, GetAssertionExtensions, HmacGetSecretOrPrf,
+        HmacSecretExtension,
+    };
     use crate::ctap2::commands::get_info::tests::AAGUID_RAW;
     use crate::ctap2::commands::get_info::{
         AuthenticatorInfo, AuthenticatorOptions, AuthenticatorVersion,
     };
-    use crate::ctap2::commands::RequestCtap1;
+    use crate::ctap2::commands::{RequestCtap1, RequestCtap2};
     use crate::ctap2::preflight::{
         do_credential_list_filtering_ctap1, do_credential_list_filtering_ctap2,
     };
     use crate::ctap2::server::{
-        PublicKeyCredentialDescriptor, RelyingParty, RelyingPartyWrapper, RpIdHash, Transport, User,
+        AuthenticationExtensionsPRFInputs, AuthenticatorAttachment, PublicKeyCredentialDescriptor,
+        PublicKeyCredentialUserEntity, RelyingParty, RpIdHash, Transport,
     };
     use crate::transport::device_selector::Device;
     use crate::transport::hid::HIDDevice;
-    use crate::transport::FidoDevice;
-    use crate::u2ftypes::{U2FDevice, U2FDeviceInfo};
+    use crate::transport::{FidoDevice, FidoDeviceIO, FidoProtocol};
+    use crate::u2ftypes::U2FDeviceInfo;
     use rand::{thread_rng, RngCore};
 
     #[test]
@@ -631,11 +856,7 @@ pub mod test {
         };
         let assertion = GetAssertion::new(
             client_data.hash().expect("failed to serialize client data"),
-            RelyingPartyWrapper::Data(RelyingParty {
-                id: String::from("example.com"),
-                name: Some(String::from("Acme")),
-                icon: None,
-            }),
+            RelyingParty::from("example.com"),
             vec![PublicKeyCredentialDescriptor {
                 id: vec![
                     0x3E, 0xBD, 0x89, 0xBF, 0x77, 0xEC, 0x50, 0x97, 0x55, 0xEE, 0x9C, 0x26, 0x35,
@@ -651,10 +872,9 @@ pub mod test {
                 user_verification: None,
             },
             Default::default(),
-            None,
-            None,
         );
         let mut device = Device::new("commands/get_assertion").unwrap();
+        assert_eq!(device.get_protocol(), FidoProtocol::CTAP2);
         let mut cid = [0u8; 4];
         thread_rng().fill_bytes(&mut cid);
         device.set_cid(cid);
@@ -705,7 +925,7 @@ pub mod test {
 
         // fido response
         let mut msg = cid.to_vec();
-        msg.extend([HIDCmd::Cbor.into(), 0x1, 0x5c]); // cmd + bcnt
+        msg.extend([HIDCmd::Cbor.into(), 0x1, 0x2a]); // cmd + bcnt
         msg.extend(&GET_ASSERTION_SAMPLE_RESPONSE_CTAP2[..57]);
         device.add_read(&msg, 0);
 
@@ -764,22 +984,212 @@ pub mod test {
                 0x47, 0xf1, 0x8d, 0xb4, 0x74, 0xc7, 0x47, 0x90, 0xea, 0xab, 0xb1, 0x44, 0x11, 0xe7,
                 0xa0,
             ],
-            user: Some(User {
+            user: Some(PublicKeyCredentialUserEntity {
                 id: vec![
                     0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02,
                     0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xa0, 0x03, 0x02, 0x01, 0x02,
                     0x30, 0x82, 0x01, 0x93, 0x30, 0x82,
                 ],
-                icon: Some("https://pics.example.com/00/p/aBjjjpqPb.png".to_string()),
                 name: Some("johnpsmith@example.com".to_string()),
                 display_name: Some("John P. Smith".to_string()),
             }),
             auth_data: expected_auth_data,
         };
 
-        let expected = GetAssertionResult(vec![expected_assertion]);
+        let expected = vec![GetAssertionResult {
+            assertion: expected_assertion,
+            attachment: AuthenticatorAttachment::Unknown,
+            extensions: Default::default(),
+        }];
         let response = device.send_cbor(&assertion).unwrap();
         assert_eq!(response, expected);
+    }
+
+    #[test]
+    fn test_serialize_get_assertion_ctap2() {
+        let client_data = CollectedClientData {
+            webauthn_type: WebauthnType::Create,
+            challenge: Challenge::from(vec![0x00, 0x01, 0x02, 0x03]),
+            origin: String::from("example.com"),
+            cross_origin: false,
+            token_binding: Some(TokenBinding::Present(String::from("AAECAw"))),
+        };
+        let assertion = GetAssertion {
+            client_data_hash: client_data.hash().expect("failed to serialize client data"),
+            rp: RelyingParty::from("example.com"),
+            allow_list: vec![PublicKeyCredentialDescriptor {
+                id: vec![
+                    0x3E, 0xBD, 0x89, 0xBF, 0x77, 0xEC, 0x50, 0x97, 0x55, 0xEE, 0x9C, 0x26, 0x35,
+                    0xEF, 0xAA, 0xAC, 0x7B, 0x2B, 0x9C, 0x5C, 0xEF, 0x17, 0x36, 0xC3, 0x71, 0x7D,
+                    0xA4, 0x85, 0x34, 0xC8, 0xC6, 0xB6, 0x54, 0xD7, 0xFF, 0x94, 0x5F, 0x50, 0xB5,
+                    0xCC, 0x4E, 0x78, 0x05, 0x5B, 0xDD, 0x39, 0x6B, 0x64, 0xF7, 0x8D, 0xA2, 0xC5,
+                    0xF9, 0x62, 0x00, 0xCC, 0xD4, 0x15, 0xCD, 0x08, 0xFE, 0x42, 0x00, 0x38,
+                ],
+                transports: vec![Transport::USB],
+            }],
+            extensions: GetAssertionExtensions {
+                app_id: Some("https://example.com".to_string()),
+                hmac_secret: Some(HmacGetSecretOrPrf::HmacGetSecret(
+                    HmacSecretExtension::new_test(
+                        vec![32; 32],
+                        None,
+                        CalculatedHmacSecretExtension {
+                            public_key: COSEKey {
+                                alg: COSEAlgorithm::ECDH_ES_HKDF256,
+                                key: COSEKeyType::EC2(COSEEC2Key {
+                                    curve: Curve::SECP256R1,
+                                    x: vec![],
+                                    y: vec![],
+                                }),
+                            },
+                            salt_enc: vec![7; 32],
+                            salt_auth: vec![8; 16],
+                        },
+                        None,
+                    ),
+                )),
+            },
+            options: GetAssertionOptions {
+                user_presence: Some(true),
+                user_verification: None,
+            },
+            pin_uv_auth_param: Some(PinUvAuthParam::create_empty()),
+        };
+        let req_serialized = assertion
+            .wire_format()
+            .expect("Failed to serialize GetAssertion request");
+        assert_eq!(
+            req_serialized,
+            [
+                // Value copied from test failure output as regression test snapshot
+                167, 1, 107, 101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 2, 88, 32, 117, 53,
+                53, 125, 73, 110, 51, 200, 24, 127, 234, 141, 17, 50, 100, 170, 164, 82, 62, 19,
+                64, 20, 159, 190, 0, 63, 16, 135, 84, 195, 45, 128, 3, 129, 162, 98, 105, 100, 88,
+                64, 62, 189, 137, 191, 119, 236, 80, 151, 85, 238, 156, 38, 53, 239, 170, 172, 123,
+                43, 156, 92, 239, 23, 54, 195, 113, 125, 164, 133, 52, 200, 198, 182, 84, 215, 255,
+                148, 95, 80, 181, 204, 78, 120, 5, 91, 221, 57, 107, 100, 247, 141, 162, 197, 249,
+                98, 0, 204, 212, 21, 205, 8, 254, 66, 0, 56, 100, 116, 121, 112, 101, 106, 112,
+                117, 98, 108, 105, 99, 45, 107, 101, 121, 4, 161, 107, 104, 109, 97, 99, 45, 115,
+                101, 99, 114, 101, 116, 163, 1, 165, 1, 2, 3, 56, 24, 32, 1, 33, 64, 34, 64, 2, 88,
+                32, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 3, 80, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 5, 161,
+                98, 117, 112, 245, 6, 64, 7, 1
+            ]
+        );
+    }
+
+    #[test]
+    fn test_serialize_get_assertion_ctap2_pin_protocol_2() {
+        let assertion = GetAssertion {
+            client_data_hash: ClientDataHash([0; 32]),
+            rp: RelyingParty::from("example.com"),
+            allow_list: vec![],
+            extensions: GetAssertionExtensions {
+                app_id: None,
+                hmac_secret: Some(HmacGetSecretOrPrf::HmacGetSecret(
+                    HmacSecretExtension::new_test(
+                        vec![32; 32],
+                        None,
+                        CalculatedHmacSecretExtension {
+                            public_key: COSEKey {
+                                alg: COSEAlgorithm::ECDH_ES_HKDF256,
+                                key: COSEKeyType::EC2(COSEEC2Key {
+                                    curve: Curve::SECP256R1,
+                                    x: vec![],
+                                    y: vec![],
+                                }),
+                            },
+                            salt_enc: vec![7; 32],
+                            salt_auth: vec![8; 16],
+                        },
+                        Some(2),
+                    ),
+                )),
+            },
+            options: GetAssertionOptions {
+                user_presence: None,
+                user_verification: None,
+            },
+            pin_uv_auth_param: Some(PinUvAuthParam::create_test(
+                2,
+                vec![9; 4],
+                PinUvAuthTokenPermission::GetAssertion,
+            )),
+        };
+        let req_serialized = assertion
+            .wire_format()
+            .expect("Failed to serialize GetAssertion request");
+        assert_eq!(
+            req_serialized,
+            [
+                // Value copied from test failure output as regression test snapshot
+                165, 1, 107, 101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 2, 88, 32, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 4, 161, 107, 104, 109, 97, 99, 45, 115, 101, 99, 114, 101, 116, 164, 1, 165, 1,
+                2, 3, 56, 24, 32, 1, 33, 64, 34, 64, 2, 88, 32, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 3, 80, 8, 8, 8, 8, 8,
+                8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 2, 6, 68, 9, 9, 9, 9, 7, 2
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "PrfUninitialized must be replaced with Prf or PrfUnmatched before serializing"
+    )]
+    fn test_serialize_prf_uninitialized() {
+        let assertion = GetAssertion {
+            client_data_hash: ClientDataHash([0; 32]),
+            rp: RelyingParty::from("example.com"),
+            allow_list: vec![],
+            extensions: GetAssertionExtensions {
+                app_id: None,
+                hmac_secret: Some(HmacGetSecretOrPrf::PrfUninitialized(
+                    AuthenticationExtensionsPRFInputs {
+                        eval: None,
+                        eval_by_credential: None,
+                    },
+                )),
+            },
+            options: GetAssertionOptions {
+                user_presence: None,
+                user_verification: None,
+            },
+            pin_uv_auth_param: None,
+        };
+        assertion
+            .wire_format()
+            .expect("Failed to serialize GetAssertion request");
+    }
+
+    #[test]
+    fn test_serialize_prf_unmatched() {
+        let assertion = GetAssertion {
+            client_data_hash: ClientDataHash([0; 32]),
+            rp: RelyingParty::from("example.com"),
+            allow_list: vec![],
+            extensions: GetAssertionExtensions {
+                app_id: None,
+                hmac_secret: Some(HmacGetSecretOrPrf::PrfUnmatched),
+            },
+            options: GetAssertionOptions {
+                user_presence: None,
+                user_verification: None,
+            },
+            pin_uv_auth_param: None,
+        };
+        let req_serialized = assertion
+            .wire_format()
+            .expect("Failed to serialize GetAssertion request");
+        assert_eq!(
+            req_serialized,
+            [
+                // Value copied from test failure output as regression test snapshot
+                163, 1, 107, 101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 2, 88, 32, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 4, 160
+            ]
+        );
     }
 
     fn fill_device_ctap1(device: &mut Device, cid: [u8; 4], flags: u8, answer_status: [u8; 2]) {
@@ -841,22 +1251,18 @@ pub mod test {
         };
         let mut assertion = GetAssertion::new(
             client_data.hash().expect("failed to serialize client data"),
-            RelyingPartyWrapper::Data(RelyingParty {
-                id: String::from("example.com"),
-                name: Some(String::from("Acme")),
-                icon: None,
-            }),
+            RelyingParty::from("example.com"),
             vec![allowed_key.clone()],
             GetAssertionOptions {
                 user_presence: Some(true),
                 user_verification: None,
             },
             Default::default(),
-            None,
-            None,
         );
         let mut device = Device::new("commands/get_assertion").unwrap(); // not really used (all functions ignore it)
                                                                          // channel id
+        device.downgrade_to_ctap1();
+        assert_eq!(device.get_protocol(), FidoProtocol::CTAP1);
         let mut cid = [0u8; 4];
         thread_rng().fill_bytes(&mut cid);
 
@@ -910,8 +1316,11 @@ pub mod test {
             auth_data: expected_auth_data,
         };
 
-        let expected = GetAssertionResult(vec![expected_assertion]);
-
+        let expected = vec![GetAssertionResult {
+            assertion: expected_assertion,
+            attachment: AuthenticatorAttachment::Unknown,
+            extensions: Default::default(),
+        }];
         assert_eq!(response, expected);
     }
 
@@ -931,23 +1340,19 @@ pub mod test {
         };
         let mut assertion = GetAssertion::new(
             client_data.hash().expect("failed to serialize client data"),
-            RelyingPartyWrapper::Data(RelyingParty {
-                id: String::from("example.com"),
-                name: Some(String::from("Acme")),
-                icon: None,
-            }),
+            RelyingParty::from("example.com"),
             vec![too_long_key_handle.clone()],
             GetAssertionOptions {
                 user_presence: Some(true),
                 user_verification: None,
             },
             Default::default(),
-            None,
-            None,
         );
 
         let mut device = Device::new("commands/get_assertion").unwrap(); // not really used (all functions ignore it)
                                                                          // channel id
+        device.downgrade_to_ctap1();
+        assert_eq!(device.get_protocol(), FidoProtocol::CTAP1);
         let mut cid = [0u8; 4];
         thread_rng().fill_bytes(&mut cid);
 
@@ -1053,8 +1458,11 @@ pub mod test {
             auth_data: expected_auth_data,
         };
 
-        let expected = GetAssertionResult(vec![expected_assertion]);
-
+        let expected = vec![GetAssertionResult {
+            assertion: expected_assertion,
+            attachment: AuthenticatorAttachment::Unknown,
+            extensions: Default::default(),
+        }];
         assert_eq!(response, expected);
     }
 
@@ -1069,11 +1477,7 @@ pub mod test {
         };
         let assertion = GetAssertion::new(
             client_data.hash().expect("failed to serialize client data"),
-            RelyingPartyWrapper::Data(RelyingParty {
-                id: String::from("example.com"),
-                name: Some(String::from("Acme")),
-                icon: None,
-            }),
+            RelyingParty::from("example.com"),
             vec![
                 // This should never be tested, because it gets pre-filtered, since it is too long
                 // (see max_credential_id_length)
@@ -1123,10 +1527,9 @@ pub mod test {
                 user_verification: None,
             },
             Default::default(),
-            None,
-            None,
         );
         let mut device = Device::new("commands/get_assertion").unwrap();
+        assert_eq!(device.get_protocol(), FidoProtocol::CTAP2);
         let mut cid = [0u8; 4];
         thread_rng().fill_bytes(&mut cid);
         device.set_cid(cid);
@@ -1152,7 +1555,7 @@ pub mod test {
                 ..Default::default()
             },
             max_msg_size: Some(1200),
-            pin_protocols: vec![1],
+            pin_protocols: Some(vec![1]),
             max_credential_count_in_list: None,
             max_credential_id_length: Some(80),
             transports: None,
@@ -1172,7 +1575,7 @@ pub mod test {
 
         // Sending first GetAssertion with first allow_list-entry, that will return an error
         let mut msg = cid.to_vec();
-        msg.extend(vec![HIDCmd::Cbor.into(), 0x00, 0x94]);
+        msg.extend(vec![HIDCmd::Cbor.into(), 0x00, 0x90]);
         msg.extend(vec![0x2]); // u2f command
         msg.extend(vec![
             0xa4, // map(4)
@@ -1208,10 +1611,7 @@ pub mod test {
             0x6a, // text(10)
             0x70, 0x75, 0x62, 0x6C, 0x69, 0x63, 0x2D, 0x6B, 0x65, 0x79, // public-key
             0x5,  // options
-            0xa2, // map(2)
-            0x62, // text(2)
-            0x75, 0x76, // uv
-            0xf4, // false
+            0xa1, // map(1)
             0x62, // text(2)
             0x75, 0x70, // up
             0xf4, // false
@@ -1227,7 +1627,7 @@ pub mod test {
 
         // Sending second GetAssertion with first allow_list-entry, that will return a success
         let mut msg = cid.to_vec();
-        msg.extend(vec![HIDCmd::Cbor.into(), 0x00, 0x94]);
+        msg.extend(vec![HIDCmd::Cbor.into(), 0x00, 0x90]);
         msg.extend(vec![0x2]); // u2f command
         msg.extend(vec![
             0xa4, // map(4)
@@ -1263,10 +1663,7 @@ pub mod test {
             0x6a, // text(10)
             0x70, 0x75, 0x62, 0x6C, 0x69, 0x63, 0x2D, 0x6B, 0x65, 0x79, // public-key
             0x5,  // options
-            0xa2, // map(2)
-            0x62, // text(2)
-            0x75, 0x76, // uv
-            0xf4, // false
+            0xa1, // map(1)
             0x62, // text(2)
             0x75, 0x70, // up
             0xf4, // false
@@ -1274,7 +1671,7 @@ pub mod test {
         device.add_write(&msg, 0);
 
         let mut msg = cid.to_vec();
-        msg.extend([HIDCmd::Cbor.into(), 0x1, 0x5c]); // cmd + bcnt
+        msg.extend([HIDCmd::Cbor.into(), 0x1, 0x2a]); // cmd + bcnt
         msg.extend(&GET_ASSERTION_SAMPLE_RESPONSE_CTAP2[..57]);
         device.add_read(&msg, 0);
 
@@ -1327,7 +1724,7 @@ pub mod test {
         let resp = GetAssertionResult::from_ctap1(&sample, &rp_hash, &add_info)
             .expect("could not handle response");
         assert_eq!(
-            resp.0[0].auth_data.flags,
+            resp.assertion.auth_data.flags,
             AuthenticatorDataFlags::USER_PRESENT | AuthenticatorDataFlags::RESERVED_1
         );
     }
@@ -1444,7 +1841,7 @@ pub mod test {
         0xF5, 0xF6, 0xAF, 0xA3, 0x5A, 0xAD, 0x53, 0x73, 0x85, 0x8E,
     ];
 
-    const GET_ASSERTION_SAMPLE_RESPONSE_CTAP2: [u8; 348] = [
+    const GET_ASSERTION_SAMPLE_RESPONSE_CTAP2: [u8; 298] = [
         0x00, // status == success
         0xA5, // map(5)
         0x01, // unsigned(1)
@@ -1474,20 +1871,13 @@ pub mod test {
         0x33, 0x82, 0x1C, 0x6E, 0x7F, 0x5E, 0xF9, 0xDA, 0xAE, 0x94, 0xAB, 0x47, 0xF1, 0x8D, 0xB4,
         0x74, 0xC7, 0x47, 0x90, 0xEA, 0xAB, 0xB1, 0x44, 0x11, 0xE7, 0xA0, // end: signature
         0x04, // unsigned(4)
-        0xA4, // map(4)
+        0xA3, // map(3)
         0x62, // text(2)
         0x69, 0x64, // "id"
         0x58, 0x20, // bytes(0x32, ) user_id
         0x30, 0x82, 0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xA0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82,
         0x01, 0x93, 0x30, 0x82, 0x01, 0x38, 0xA0, 0x03, 0x02, 0x01, 0x02, 0x30, 0x82, 0x01, 0x93,
         0x30, 0x82, // end: user_id
-        0x64, // text(4)
-        0x69, 0x63, 0x6F, 0x6E, // "icon"
-        0x78, 0x2B, // text(0x43, )
-        0x68, 0x74, 0x74, 0x70, 0x73, 0x3A, 0x2F, 0x2F, 0x70, 0x69, 0x63, 0x73, 0x2E, 0x65, 0x78,
-        0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x63, 0x6F, 0x6D, 0x2F, 0x30, 0x30, 0x2F, 0x70, 0x2F,
-        0x61, 0x42, 0x6A, 0x6A, 0x6A, 0x70, 0x71, 0x50, 0x62, 0x2E, 0x70, 0x6E,
-        0x67, // "https://pics.example.com/0x00, /p/aBjjjpqPb.png"
         0x64, // text(4)
         0x6E, 0x61, 0x6D, 0x65, // "name"
         0x76, // text(0x22, )
@@ -1501,4 +1891,1071 @@ pub mod test {
         0x05, // unsigned(5)
         0x01, // unsigned(1)
     ];
+
+    mod hmac_secret {
+        use std::convert::TryFrom;
+
+        use crate::{
+            crypto::{
+                COSEAlgorithm, COSEEC2Key, COSEKey, COSEKeyType, Curve, PinUvAuthProtocol,
+                SharedSecret,
+            },
+            ctap2::{
+                attestation::{
+                    AuthenticatorData, AuthenticatorDataFlags, Extension, HmacSecretResponse,
+                },
+                client_data::ClientDataHash,
+                commands::{
+                    get_assertion::{
+                        CalculatedHmacSecretExtension, GetAssertion, GetAssertionExtensions,
+                        HmacGetSecretOrPrf, HmacSecretExtension,
+                    },
+                    CommandError,
+                },
+                server::{
+                    AuthenticationExtensionsClientOutputs, AuthenticationExtensionsPRFOutputs,
+                    AuthenticatorAttachment, RelyingParty, RpIdHash,
+                },
+            },
+            transport::platform::device::Device,
+            Assertion, AuthenticatorInfo, FidoDevice, GetAssertionResult,
+        };
+
+        fn make_test_secret_without_puat(
+            pin_protocol: u64,
+        ) -> Result<(SharedSecret, COSEKey), CommandError> {
+            let fake_client_key = COSEKey {
+                alg: COSEAlgorithm::ECDH_ES_HKDF256,
+                key: COSEKeyType::EC2(COSEEC2Key {
+                    curve: Curve::SECP256R1,
+                    x: vec![1],
+                    y: vec![2],
+                }),
+            };
+            let fake_peer_key = COSEKey {
+                alg: COSEAlgorithm::ECDH_ES_HKDF256,
+                key: COSEKeyType::EC2(COSEEC2Key {
+                    curve: Curve::SECP256R1,
+                    x: vec![3],
+                    y: vec![4],
+                }),
+            };
+
+            let pin_protocol = PinUvAuthProtocol::try_from(&AuthenticatorInfo {
+                pin_protocols: Some(vec![pin_protocol]),
+                ..Default::default()
+            })?;
+
+            let key = {
+                let aes_key = 0..32;
+                let hmac_key = 32..64;
+                match pin_protocol.id() {
+                    1 => aes_key.collect(),
+                    2 => hmac_key.chain(aes_key).collect(),
+                    _ => unimplemented!(),
+                }
+            };
+
+            let shared_secret =
+                SharedSecret::new_test(pin_protocol, key, fake_client_key.clone(), fake_peer_key);
+
+            Ok((shared_secret, fake_client_key))
+        }
+
+        #[cfg(not(feature = "crypto_dummy"))]
+        mod requires_crypto {
+            use sha2::{Digest, Sha256};
+
+            use super::*;
+            use crate::{
+                crypto::{CryptoError, PinUvAuthToken},
+                ctap2::{
+                    client_data::ClientDataHash,
+                    commands::{
+                        client_pin::PinUvAuthTokenPermission,
+                        get_assertion::{
+                            CalculatedHmacSecretExtension, GetAssertion, GetAssertionExtensions,
+                            HmacGetSecretOrPrf, HmacSecretExtension,
+                        },
+                        PinUvAuthResult,
+                    },
+                    server::{
+                        AuthenticationExtensionsPRFInputs, AuthenticationExtensionsPRFValues,
+                        PublicKeyCredentialDescriptor, RelyingParty,
+                    },
+                },
+                errors::AuthenticatorError,
+            };
+
+            fn make_test_secret(
+                pin_protocol: u64,
+            ) -> Result<(SharedSecret, COSEKey, PinUvAuthToken), CommandError> {
+                let (shared_secret, fake_client_key) = make_test_secret_without_puat(pin_protocol)?;
+                let puat = shared_secret.decrypt_pin_token(
+                    PinUvAuthTokenPermission::empty(),
+                    &shared_secret.encrypt(&[0x03; 32])?,
+                )?;
+
+                Ok((shared_secret, fake_client_key, puat))
+            }
+
+            fn get_assertion_process_hmac_secret(
+                secret_available: bool,
+                allow_list: Vec<PublicKeyCredentialDescriptor>,
+                hmac_secret: Option<HmacGetSecretOrPrf>,
+            ) -> Result<GetAssertion, AuthenticatorError> {
+                let (shared_secret, _, puat) = make_test_secret(1)?;
+                GetAssertion::new(
+                    ClientDataHash([0x01; 32]),
+                    RelyingParty::from("example.com"),
+                    allow_list,
+                    Default::default(),
+                    GetAssertionExtensions {
+                        hmac_secret,
+                        ..Default::default()
+                    },
+                )
+                .process_hmac_secret_and_prf_extension(
+                    secret_available
+                        .then_some((&shared_secret, &PinUvAuthResult::SuccessGetPinToken(puat))),
+                )
+            }
+
+            #[test]
+            fn get_assertion_hmac_secret_and_prf_absent_uses_no_input() {
+                let get_assertion = get_assertion_process_hmac_secret(true, vec![], None).unwrap();
+                assert_matches!(get_assertion.extensions.hmac_secret, None);
+            }
+
+            #[test]
+            fn get_assertion_prf_no_input_uses_unmatched_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: None,
+                            eval_by_credential: None,
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::PrfUnmatched)
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_no_secret_uses_unmatched_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    false,
+                    vec![],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: Some(AuthenticationExtensionsPRFValues {
+                                first: vec![1, 2, 3, 4],
+                                second: None,
+                            }),
+                            eval_by_credential: None,
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::PrfUnmatched)
+                );
+            }
+
+            #[test]
+            fn get_assertion_hmac_get_secret_uses_hmac_get_secret_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![],
+                    Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        vec![0x01; 32],
+                        None,
+                    ))),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension {
+                        calculated_hmac: Some(_),
+                        ..
+                    }))
+                );
+            }
+
+            #[test]
+            fn get_assertion_hmac_get_secret_bad_length_returns_invalid_input_error() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![],
+                    Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        vec![0x01; 31],
+                        None,
+                    ))),
+                );
+                assert_matches!(
+                    get_assertion,
+                    Err(AuthenticatorError::InvalidRelyingPartyInput)
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_eval_uses_eval_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: Some(AuthenticationExtensionsPRFValues {
+                                first: vec![1, 2, 3, 4],
+                                second: None,
+                            }),
+                            eval_by_credential: None,
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        salt1,
+                        ..
+                    })) if salt1 == Sha256::new_with_prefix(b"WebAuthn PRF")
+                    .chain_update([0x00].iter())
+                    .chain_update([1, 2, 3, 4].iter())
+                    .finalize()
+                    .to_vec()
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_eval_by_credential_unmatched_uses_unmatched_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![PublicKeyCredentialDescriptor {
+                        id: vec![1, 2, 3, 4],
+                        transports: vec![],
+                    }],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: None,
+                            eval_by_credential: Some(
+                                [(
+                                    vec![5, 6, 7, 8],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![9, 10, 11, 12],
+                                        second: None,
+                                    },
+                                )]
+                                .into(),
+                            ),
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::PrfUnmatched)
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_eval_by_credential_matched_uses_eval_by_credential_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![PublicKeyCredentialDescriptor {
+                        id: vec![1, 2, 3, 4],
+                        transports: vec![],
+                    }],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: None,
+                            eval_by_credential: Some(
+                                [(
+                                    vec![1, 2, 3, 4],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![9, 10, 11, 12],
+                                        second: None,
+                                    },
+                                )]
+                                .into(),
+                            ),
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        salt1,
+                        ..
+                    })) if salt1 == Sha256::new_with_prefix(b"WebAuthn PRF")
+                    .chain_update([0x00].iter())
+                    .chain_update([9, 10, 11, 12].iter())
+                    .finalize()
+                    .to_vec()
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_eval_and_eval_by_credential_unmatched_uses_eval_input() {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![PublicKeyCredentialDescriptor {
+                        id: vec![1, 2, 3, 4],
+                        transports: vec![],
+                    }],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: Some(AuthenticationExtensionsPRFValues {
+                                first: vec![13, 14, 15, 16],
+                                second: None,
+                            }),
+                            eval_by_credential: Some(
+                                [(
+                                    vec![5, 6, 7, 8],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![9, 10, 11, 12],
+                                        second: None,
+                                    },
+                                )]
+                                .into(),
+                            ),
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        salt1,
+                        ..
+                    })) if salt1 == Sha256::new_with_prefix(b"WebAuthn PRF")
+                    .chain_update([0x00].iter())
+                    .chain_update([13, 14, 15, 16].iter())
+                    .finalize()
+                    .to_vec()
+                );
+            }
+
+            #[test]
+            fn get_assertion_prf_eval_and_eval_by_credential_matched_uses_eval_by_credential_input()
+            {
+                let get_assertion = get_assertion_process_hmac_secret(
+                    true,
+                    vec![PublicKeyCredentialDescriptor {
+                        id: vec![1, 2, 3, 4],
+                        transports: vec![],
+                    }],
+                    Some(HmacGetSecretOrPrf::PrfUninitialized(
+                        AuthenticationExtensionsPRFInputs {
+                            eval: Some(AuthenticationExtensionsPRFValues {
+                                first: vec![13, 14, 15, 16],
+                                second: None,
+                            }),
+                            eval_by_credential: Some(
+                                [(
+                                    vec![1, 2, 3, 4],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![9, 10, 11, 12],
+                                        second: None,
+                                    },
+                                )]
+                                .into(),
+                            ),
+                        },
+                    )),
+                )
+                .unwrap();
+                assert_matches!(
+                    get_assertion.extensions.hmac_secret,
+                    Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        salt1,
+                        ..
+                    })) if salt1 == Sha256::new_with_prefix(b"WebAuthn PRF")
+                    .chain_update([0x00].iter())
+                    .chain_update([9, 10, 11, 12].iter())
+                    .finalize()
+                    .to_vec()
+                );
+            }
+
+            #[test]
+            fn calculate_hmac_get_secret_pin_protocol_1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, client_key, puat) = make_test_secret(1)?;
+                let extension = HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                    vec![0x01; 32],
+                    Some(vec![0x02; 32]),
+                ));
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &[], Some(&puat))?;
+
+                assert_eq!(selected_cred, None);
+                assert_eq!(
+                    extension,
+                    HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension {
+                        salt1: vec![0x01; 32],
+                        salt2: Some(vec![0x02; 32]),
+                        calculated_hmac: Some(CalculatedHmacSecretExtension {
+                            public_key: client_key,
+                            salt_enc: vec![
+                                117, 226, 8, 41, 23, 33, 18, 187, 242, 160, 77, 61, 43, 18, 67, 61,
+                                170, 97, 245, 245, 17, 42, 232, 186, 255, 190, 82, 1, 81, 152, 175,
+                                39, 113, 130, 62, 169, 215, 202, 143, 80, 116, 195, 117, 22, 39,
+                                64, 79, 110, 216, 117, 7, 144, 87, 73, 144, 75, 255, 173, 169, 201,
+                                122, 160, 48, 157
+                            ],
+                            salt_auth: vec![
+                                36, 74, 81, 146, 64, 28, 73, 44, 75, 111, 14, 79, 173, 146, 212,
+                                227
+                            ],
+                        }),
+                        pin_protocol: None,
+                    }),
+                );
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_hmac_get_secret_wrong_length_salt1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, _, puat) = make_test_secret(1)?;
+                for len in [0, 1, 31, 33, 64] {
+                    let extension = HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        vec![0x01; len],
+                        None,
+                    ));
+                    let result = extension.calculate(&shared_secret, &[], Some(&puat));
+                    assert_eq!(
+                        result,
+                        Err(CryptoError::WrongSaltLength),
+                        "At salt1 length: {}",
+                        len,
+                    );
+                }
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_hmac_get_secret_wrong_length_salt2() -> Result<(), AuthenticatorError> {
+                let (shared_secret, _, puat) = make_test_secret(1)?;
+                for len in [0, 1, 31, 33, 64] {
+                    let extension = HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        vec![0x01; 32],
+                        Some(vec![0x02; len]),
+                    ));
+                    let result = extension.calculate(&shared_secret, &[], Some(&puat));
+                    assert_eq!(
+                        result,
+                        Err(CryptoError::WrongSaltLength),
+                        "At salt2 length: {}",
+                        len,
+                    );
+                }
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_eval_pin_protocol_1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, client_key, puat) = make_test_secret(1)?;
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: Some(AuthenticationExtensionsPRFValues {
+                            first: vec![0x01; 8],
+                            second: Some(vec![0x02; 8]),
+                        }),
+                        eval_by_credential: None,
+                    });
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &[], Some(&puat))?;
+
+                assert_eq!(selected_cred, None);
+                assert_eq!(
+                    extension,
+                    HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        // JS: salt1 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(1)])))
+                        salt1: vec![
+                            5, 240, 179, 178, 62, 126, 205, 172, 176, 105, 211, 13, 86, 210, 48,
+                            210, 225, 219, 234, 248, 16, 182, 52, 219, 92, 135, 97, 119, 107, 245,
+                            30, 226
+                        ],
+                        // JS: salt2 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(2)])))
+                        salt2: Some(vec![
+                            96, 107, 65, 234, 77, 176, 251, 24, 193, 188, 98, 23, 59, 240, 212, 6,
+                            104, 176, 40, 242, 104, 190, 32, 124, 226, 244, 19, 160, 8, 105, 253,
+                            106
+                        ]),
+                        calculated_hmac: Some(CalculatedHmacSecretExtension {
+                            public_key: client_key,
+                            // JS: aesKey = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "AES-CBC" }, false, ["encrypt"])
+                            // JS: salt_enc = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, aesKey, new Uint8Array([...salt1, ...salt2]))).slice(0, 64)
+                            // (Need to strip trailing padding block inserted by WebCrypto)
+                            salt_enc: vec![
+                                23, 99, 220, 93, 59, 246, 109, 157, 247, 33, 138, 91, 142, 40, 203,
+                                234, 96, 212, 26, 15, 56, 160, 191, 142, 138, 106, 2, 207, 219,
+                                180, 39, 31, 155, 232, 119, 179, 0, 65, 9, 37, 184, 194, 135, 173,
+                                187, 197, 51, 38, 68, 57, 197, 68, 249, 41, 143, 197, 46, 53, 72,
+                                60, 109, 33, 112, 175
+                            ],
+                            // JS: hmacKeyP1 = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+                            // JS: salt_auth = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKeyP1, salt_enc)).slice(0, 16)
+                            salt_auth: vec![
+                                27, 222, 224, 22, 170, 39, 171, 5, 98, 207, 176, 58, 23, 108, 223,
+                                174
+                            ],
+                        }),
+                        pin_protocol: None,
+                    }),
+                );
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_eval_by_cred_fallback_to_eval_pin_protocol_1(
+            ) -> Result<(), AuthenticatorError> {
+                let (shared_secret, client_key, puat) = make_test_secret(1)?;
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: Some(AuthenticationExtensionsPRFValues {
+                            first: vec![0x01; 8],
+                            second: Some(vec![0x02; 8]),
+                        }),
+                        eval_by_credential: Some(
+                            [(
+                                vec![1, 2, 3, 4],
+                                AuthenticationExtensionsPRFValues {
+                                    first: vec![0x04; 8],
+                                    second: Some(vec![0x05; 8]),
+                                },
+                            )]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        ),
+                    });
+                let allow_list = [PublicKeyCredentialDescriptor {
+                    id: vec![5, 6, 7, 8],
+                    transports: vec![],
+                }];
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &allow_list, Some(&puat))?;
+
+                assert_eq!(selected_cred, None);
+                assert_eq!(
+                    extension,
+                    HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        // JS: salt1 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(1)])))
+                        salt1: vec![
+                            5, 240, 179, 178, 62, 126, 205, 172, 176, 105, 211, 13, 86, 210, 48,
+                            210, 225, 219, 234, 248, 16, 182, 52, 219, 92, 135, 97, 119, 107, 245,
+                            30, 226
+                        ],
+                        // JS: salt2 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(2)])))
+                        salt2: Some(vec![
+                            96, 107, 65, 234, 77, 176, 251, 24, 193, 188, 98, 23, 59, 240, 212, 6,
+                            104, 176, 40, 242, 104, 190, 32, 124, 226, 244, 19, 160, 8, 105, 253,
+                            106
+                        ]),
+                        calculated_hmac: Some(CalculatedHmacSecretExtension {
+                            public_key: client_key,
+                            // JS: aesKey = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "AES-CBC" }, false, ["encrypt"])
+                            // JS: salt_enc = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, aesKey, new Uint8Array([...salt1, ...salt2]))).slice(0, 64)
+                            // (Need to strip trailing padding block inserted by WebCrypto)
+                            salt_enc: vec![
+                                23, 99, 220, 93, 59, 246, 109, 157, 247, 33, 138, 91, 142, 40, 203,
+                                234, 96, 212, 26, 15, 56, 160, 191, 142, 138, 106, 2, 207, 219,
+                                180, 39, 31, 155, 232, 119, 179, 0, 65, 9, 37, 184, 194, 135, 173,
+                                187, 197, 51, 38, 68, 57, 197, 68, 249, 41, 143, 197, 46, 53, 72,
+                                60, 109, 33, 112, 175
+                            ],
+                            // JS: hmacKeyP1 = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+                            // JS: salt_auth = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKeyP1, salt_enc)).slice(0, 16)
+                            salt_auth: vec![
+                                27, 222, 224, 22, 170, 39, 171, 5, 98, 207, 176, 58, 23, 108, 223,
+                                174
+                            ],
+                        }),
+                        pin_protocol: None,
+                    }),
+                );
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_eval_by_cred_pin_protocol_1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, client_key, puat) = make_test_secret(1)?;
+                let cred_id = PublicKeyCredentialDescriptor {
+                    id: vec![1, 2, 3, 4],
+                    transports: vec![],
+                };
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: Some(AuthenticationExtensionsPRFValues {
+                            first: vec![0x01; 8],
+                            second: Some(vec![0x02; 8]),
+                        }),
+                        eval_by_credential: Some(
+                            [
+                                (
+                                    vec![9, 10, 11, 12],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![0x06; 8],
+                                        second: Some(vec![0x07; 8]),
+                                    },
+                                ),
+                                (
+                                    cred_id.id.clone(),
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![0x04; 8],
+                                        second: Some(vec![0x05; 8]),
+                                    },
+                                ),
+                            ]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        ),
+                    });
+                let allow_list = [
+                    PublicKeyCredentialDescriptor {
+                        id: vec![5, 6, 7, 8],
+                        transports: vec![],
+                    },
+                    cred_id,
+                    PublicKeyCredentialDescriptor {
+                        id: vec![9, 10, 11, 12],
+                        transports: vec![],
+                    },
+                ];
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &allow_list, Some(&puat))?;
+
+                assert_eq!(selected_cred, Some(&allow_list[1]));
+                assert_eq!(
+                    extension,
+                    HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        // JS: salt1 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(4)])))
+                        salt1: vec![
+                            141, 49, 215, 240, 110, 193, 84, 27, 113, 153, 129, 108, 71, 59, 98, 5,
+                            209, 45, 190, 142, 47, 4, 72, 78, 217, 85, 99, 243, 192, 217, 232, 88
+                        ],
+                        // JS: salt2 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(5)])))
+                        salt2: Some(vec![
+                            156, 88, 127, 151, 204, 90, 145, 200, 207, 201, 106, 124, 19, 60, 29,
+                            115, 145, 197, 27, 148, 117, 72, 18, 4, 78, 187, 161, 122, 144, 245,
+                            67, 1
+                        ]),
+                        calculated_hmac: Some(CalculatedHmacSecretExtension {
+                            public_key: client_key,
+                            // JS: aesKey = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "AES-CBC" }, false, ["encrypt"])
+                            // JS: salt_enc = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, aesKey, new Uint8Array([...salt1, ...salt2]))).slice(0, 64)
+                            // (Need to strip trailing padding block inserted by WebCrypto)
+                            salt_enc: vec![
+                                191, 228, 209, 183, 255, 132, 169, 88, 82, 9, 102, 239, 99, 201,
+                                47, 15, 174, 24, 191, 30, 80, 230, 67, 237, 178, 112, 105, 243, 53,
+                                209, 25, 189, 32, 51, 75, 255, 176, 160, 82, 113, 250, 141, 83,
+                                130, 69, 156, 230, 91, 95, 17, 149, 11, 81, 40, 23, 42, 24, 33, 25,
+                                167, 210, 241, 238, 237
+                            ],
+                            // JS: hmacKeyP1 = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+                            // JS: salt_auth = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKeyP1, salt_enc)).slice(0, 16)
+                            salt_auth: vec![
+                                211, 87, 229, 38, 186, 254, 65, 2, 69, 166, 122, 30, 84, 77, 116,
+                                232
+                            ],
+                        }),
+                        pin_protocol: None,
+                    }),
+                );
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_only_eval_by_cred_pin_protocol_1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, client_key, puat) = make_test_secret(1)?;
+                let cred_id = PublicKeyCredentialDescriptor {
+                    id: vec![1, 2, 3, 4],
+                    transports: vec![],
+                };
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: None,
+                        eval_by_credential: Some(
+                            [
+                                (
+                                    vec![9, 10, 11, 12],
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![0x06; 8],
+                                        second: Some(vec![0x07; 8]),
+                                    },
+                                ),
+                                (
+                                    cred_id.id.clone(),
+                                    AuthenticationExtensionsPRFValues {
+                                        first: vec![0x04; 8],
+                                        second: Some(vec![0x05; 8]),
+                                    },
+                                ),
+                            ]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        ),
+                    });
+                let allow_list = [
+                    PublicKeyCredentialDescriptor {
+                        id: vec![5, 6, 7, 8],
+                        transports: vec![],
+                    },
+                    cred_id,
+                    PublicKeyCredentialDescriptor {
+                        id: vec![9, 10, 11, 12],
+                        transports: vec![],
+                    },
+                ];
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &allow_list, Some(&puat))?;
+
+                assert_eq!(selected_cred, Some(&allow_list[1]));
+                assert_eq!(
+                    extension,
+                    HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                        // JS: salt1 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(4)])))
+                        salt1: vec![
+                            141, 49, 215, 240, 110, 193, 84, 27, 113, 153, 129, 108, 71, 59, 98, 5,
+                            209, 45, 190, 142, 47, 4, 72, 78, 217, 85, 99, 243, 192, 217, 232, 88
+                        ],
+                        // JS: salt2 = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("WebAuthn PRF"), 0, ...new Uint8Array(8).fill(5)])))
+                        salt2: Some(vec![
+                            156, 88, 127, 151, 204, 90, 145, 200, 207, 201, 106, 124, 19, 60, 29,
+                            115, 145, 197, 27, 148, 117, 72, 18, 4, 78, 187, 161, 122, 144, 245,
+                            67, 1
+                        ]),
+                        calculated_hmac: Some(CalculatedHmacSecretExtension {
+                            public_key: client_key,
+                            // JS: aesKey = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "AES-CBC" }, false, ["encrypt"])
+                            // JS: salt_enc = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, aesKey, new Uint8Array([...salt1, ...salt2]))).slice(0, 64)
+                            // (Need to strip trailing padding block inserted by WebCrypto)
+                            salt_enc: vec![
+                                191, 228, 209, 183, 255, 132, 169, 88, 82, 9, 102, 239, 99, 201,
+                                47, 15, 174, 24, 191, 30, 80, 230, 67, 237, 178, 112, 105, 243, 53,
+                                209, 25, 189, 32, 51, 75, 255, 176, 160, 82, 113, 250, 141, 83,
+                                130, 69, 156, 230, 91, 95, 17, 149, 11, 81, 40, 23, 42, 24, 33, 25,
+                                167, 210, 241, 238, 237
+                            ],
+                            // JS: hmacKeyP1 = await crypto.subtle.importKey("raw", new Uint8Array(32).map((b, i) => i), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+                            // JS: salt_auth = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKeyP1, salt_enc)).slice(0, 16)
+                            salt_auth: vec![
+                                211, 87, 229, 38, 186, 254, 65, 2, 69, 166, 122, 30, 84, 77, 116,
+                                232
+                            ],
+                        }),
+                        pin_protocol: None,
+                    }),
+                );
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_unmatched_pin_protocol_1() -> Result<(), AuthenticatorError> {
+                let (shared_secret, _, puat) = make_test_secret(1)?;
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: None,
+                        eval_by_credential: Some(
+                            [(
+                                vec![1, 2, 3, 4],
+                                AuthenticationExtensionsPRFValues {
+                                    first: vec![0x04; 8],
+                                    second: Some(vec![0x05; 8]),
+                                },
+                            )]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        ),
+                    });
+                let allow_list = [PublicKeyCredentialDescriptor {
+                    id: vec![5, 6, 7, 8],
+                    transports: vec![],
+                }];
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &allow_list, Some(&puat))?;
+
+                assert_eq!(selected_cred, None);
+                assert_eq!(extension, HmacGetSecretOrPrf::PrfUnmatched);
+
+                Ok(())
+            }
+
+            #[test]
+            fn calculate_prf_unmatched_pin_protocol_2() -> Result<(), AuthenticatorError> {
+                let (shared_secret, _, puat) = make_test_secret(2)?;
+                let extension =
+                    HmacGetSecretOrPrf::PrfUninitialized(AuthenticationExtensionsPRFInputs {
+                        eval: None,
+                        eval_by_credential: Some(
+                            [(
+                                vec![1, 2, 3, 4],
+                                AuthenticationExtensionsPRFValues {
+                                    first: vec![0x04; 8],
+                                    second: Some(vec![0x05; 8]),
+                                },
+                            )]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        ),
+                    });
+                let allow_list = [PublicKeyCredentialDescriptor {
+                    id: vec![5, 6, 7, 8],
+                    transports: vec![],
+                }];
+                let (extension, selected_cred) =
+                    extension.calculate(&shared_secret, &allow_list, Some(&puat))?;
+
+                assert_eq!(selected_cred, None);
+                assert_eq!(extension, HmacGetSecretOrPrf::PrfUnmatched);
+
+                Ok(())
+            }
+
+            #[test]
+            fn finalize_result_hmac_get_secret_input_with_secret_output_becomes_client_output() {
+                let result = finalize_result_with_hmac_secret_input_and_output(
+                    Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                        vec![],
+                        None,
+                    ))),
+                    Some(HmacSecretResponse::Secret(vec![0x01; ONE_OUTPUT_LEN_PP2])),
+                )
+                .expect("Failed to run test");
+                assert_matches!(
+                    result.extensions,
+                    AuthenticationExtensionsClientOutputs {
+                        hmac_get_secret: Some(_),
+                        prf: None,
+                        ..
+                    }
+                );
+            }
+
+            #[test]
+            fn finalize_result_prf_input_with_secret_output_becomes_results_output() {
+                let result = finalize_result_with_hmac_secret_input_and_output(
+                    Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension::new(
+                        vec![],
+                        None,
+                    ))),
+                    Some(HmacSecretResponse::Secret(vec![0x01; ONE_OUTPUT_LEN_PP2])),
+                )
+                .expect("Failed to run test");
+                assert_matches!(
+                    result.extensions,
+                    AuthenticationExtensionsClientOutputs {
+                        hmac_get_secret: None,
+                        prf: Some(AuthenticationExtensionsPRFOutputs {
+                            enabled: None,
+                            results: Some(_),
+                        }),
+                        ..
+                    }
+                );
+            }
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "unreachable code: hmac-secret inputs from PRF already initialized"
+        )]
+        fn calculate_prf_conflict_1() {
+            let (shared_secret, _) = make_test_secret_without_puat(2).unwrap();
+            let extension = HmacGetSecretOrPrf::PrfUnmatched;
+            extension.calculate(&shared_secret, &[], None).unwrap();
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "unreachable code: hmac-secret inputs from PRF already initialized"
+        )]
+        fn calculate_prf_conflict_2() {
+            let (shared_secret, client_key) = make_test_secret_without_puat(2).unwrap();
+            let extension = HmacGetSecretOrPrf::Prf(HmacSecretExtension {
+                salt1: vec![],
+                salt2: Some(vec![]),
+                calculated_hmac: Some(CalculatedHmacSecretExtension {
+                    public_key: client_key,
+                    salt_enc: vec![],
+                    salt_auth: vec![],
+                }),
+                pin_protocol: None,
+            });
+            extension.calculate(&shared_secret, &[], None).unwrap();
+        }
+
+        fn finalize_result_with_hmac_secret_input_and_output(
+            hmac_secret_input: Option<HmacGetSecretOrPrf>,
+            hmac_secret_response: Option<HmacSecretResponse>,
+        ) -> Result<GetAssertionResult, CommandError> {
+            let get_assertion = GetAssertion::new(
+                ClientDataHash([0x01; 32]),
+                RelyingParty::from("example.com"),
+                vec![],
+                Default::default(),
+                GetAssertionExtensions {
+                    hmac_secret: hmac_secret_input,
+                    ..Default::default()
+                },
+            );
+            let mut result = GetAssertionResult {
+                assertion: Assertion {
+                    credentials: None,
+                    auth_data: AuthenticatorData {
+                        rp_id_hash: RpIdHash([0x01; 32]),
+                        flags: AuthenticatorDataFlags::empty(),
+                        counter: 0,
+                        credential_data: None,
+                        extensions: Extension {
+                            cred_protect: None,
+                            hmac_secret: hmac_secret_response,
+                            min_pin_length: None,
+                        },
+                    },
+                    signature: vec![],
+                    user: None,
+                },
+                attachment: AuthenticatorAttachment::Unknown,
+                extensions: AuthenticationExtensionsClientOutputs::default(),
+            };
+
+            let mut dev = Device::new_skipping_serialization("commands/get_assertion")
+                .expect("Failed to create mock Device");
+            let (shared_secret, _) = make_test_secret_without_puat(2)?;
+            dev.set_shared_secret(shared_secret);
+            get_assertion.finalize_result(&dev, &mut result);
+            Ok(result)
+        }
+
+        /// Encrypted salt output for pin protocol 2: iv || ct
+        const ONE_OUTPUT_LEN_PP2: usize = 16 + 32;
+
+        #[test]
+        fn finalize_result_no_input_with_no_output_becomes_no_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(None, None)
+                .expect("Failed to run test");
+            assert_matches!(result.extensions.hmac_get_secret, None);
+        }
+
+        #[test]
+        fn finalize_result_no_input_with_secret_output_becomes_no_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(
+                None,
+                Some(HmacSecretResponse::Secret(vec![0x01; ONE_OUTPUT_LEN_PP2])),
+            )
+            .expect("Failed to run test");
+            assert_matches!(
+                result.extensions,
+                AuthenticationExtensionsClientOutputs {
+                    hmac_get_secret: None,
+                    prf: None,
+                    ..
+                }
+            );
+        }
+
+        #[test]
+        fn finalize_result_hmac_get_secret_input_with_no_output_becomes_no_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(
+                Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                    vec![],
+                    None,
+                ))),
+                None,
+            )
+            .expect("Failed to run test");
+            assert_matches!(
+                result.extensions,
+                AuthenticationExtensionsClientOutputs {
+                    hmac_get_secret: None,
+                    prf: None,
+                    ..
+                }
+            );
+        }
+
+        #[test]
+        fn finalize_result_hmac_get_secret_input_with_confirmed_output_becomes_no_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(
+                Some(HmacGetSecretOrPrf::HmacGetSecret(HmacSecretExtension::new(
+                    vec![],
+                    None,
+                ))),
+                Some(HmacSecretResponse::Confirmed(true)),
+            )
+            .expect("Failed to run test");
+            assert_matches!(
+                result.extensions,
+                AuthenticationExtensionsClientOutputs {
+                    hmac_get_secret: None,
+                    prf: None,
+                    ..
+                }
+            );
+        }
+
+        #[test]
+        fn finalize_result_prf_input_with_no_output_becomes_empty_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(
+                Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension::new(
+                    vec![],
+                    None,
+                ))),
+                None,
+            )
+            .expect("Failed to run test");
+            assert_matches!(
+                result.extensions,
+                AuthenticationExtensionsClientOutputs {
+                    hmac_get_secret: None,
+                    prf: Some(AuthenticationExtensionsPRFOutputs {
+                        enabled: None,
+                        results: None,
+                    }),
+                    ..
+                }
+            );
+        }
+
+        #[test]
+        fn finalize_result_prf_input_with_confirmed_output_becomes_empty_client_output() {
+            let result = finalize_result_with_hmac_secret_input_and_output(
+                Some(HmacGetSecretOrPrf::Prf(HmacSecretExtension::new(
+                    vec![],
+                    None,
+                ))),
+                Some(HmacSecretResponse::Confirmed(true)),
+            )
+            .expect("Failed to run test");
+            assert_matches!(
+                result.extensions,
+                AuthenticationExtensionsClientOutputs {
+                    hmac_get_secret: None,
+                    prf: Some(AuthenticationExtensionsPRFOutputs {
+                        enabled: None,
+                        results: None,
+                    }),
+                    ..
+                }
+            );
+        }
+    }
 }

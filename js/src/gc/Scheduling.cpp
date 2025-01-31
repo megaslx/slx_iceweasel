@@ -28,7 +28,6 @@ using mozilla::Maybe;
 using mozilla::Nothing;
 using mozilla::Some;
 using mozilla::TimeDuration;
-using mozilla::TimeStamp;
 
 /*
  * We may start to collect a zone before its trigger threshold is reached if
@@ -226,6 +225,9 @@ void GCSchedulingTunables::resetParameter(JSGCParamKey key) {
 }
 
 void GCSchedulingTunables::maintainInvariantsAfterUpdate(JSGCParamKey updated) {
+  // Check whether a change to parameter |updated| has broken an invariant in
+  // relation to another parameter. If it has, adjust that other parameter to
+  // restore the invariant.
   switch (updated) {
     case JSGC_MIN_NURSERY_BYTES:
       if (gcMaxNurseryBytes_ < gcMinNurseryBytes_) {
@@ -257,6 +259,16 @@ void GCSchedulingTunables::maintainInvariantsAfterUpdate(JSGCParamKey updated) {
         highFrequencySmallHeapGrowth_ = highFrequencyLargeHeapGrowth_;
       }
       break;
+    case JSGC_SMALL_HEAP_INCREMENTAL_LIMIT:
+      if (smallHeapIncrementalLimit_ < largeHeapIncrementalLimit_) {
+        largeHeapIncrementalLimit_ = smallHeapIncrementalLimit_;
+      }
+      break;
+    case JSGC_LARGE_HEAP_INCREMENTAL_LIMIT:
+      if (largeHeapIncrementalLimit_ > smallHeapIncrementalLimit_) {
+        smallHeapIncrementalLimit_ = largeHeapIncrementalLimit_;
+      }
+      break;
     default:
       break;
   }
@@ -279,25 +291,30 @@ void GCSchedulingTunables::checkInvariants() {
   MOZ_ASSERT(highFrequencyLargeHeapGrowth_ <= highFrequencySmallHeapGrowth_);
   MOZ_ASSERT(highFrequencyLargeHeapGrowth_ >= MinHeapGrowthFactor);
   MOZ_ASSERT(highFrequencySmallHeapGrowth_ <= MaxHeapGrowthFactor);
+
+  MOZ_ASSERT(smallHeapIncrementalLimit_ >= largeHeapIncrementalLimit_);
 }
 
-void GCSchedulingState::updateHighFrequencyMode(
-    const mozilla::TimeStamp& lastGCTime, const mozilla::TimeStamp& currentTime,
+void GCSchedulingState::updateHighFrequencyModeOnGCStart(
+    JS::GCOptions options, const mozilla::TimeStamp& lastGCTime,
+    const mozilla::TimeStamp& currentTime,
     const GCSchedulingTunables& tunables) {
-  if (js::SupportDifferentialTesting()) {
-    return;
-  }
-
-  inHighFrequencyGCMode_ =
-      !lastGCTime.IsNull() &&
-      lastGCTime + tunables.highFrequencyThreshold() > currentTime;
+  // Set high frequency mode based on the time between collections.
+  TimeDuration timeSinceLastGC = currentTime - lastGCTime;
+  inHighFrequencyGCMode_ = !js::SupportDifferentialTesting() &&
+                           options == JS::GCOptions::Normal &&
+                           timeSinceLastGC < tunables.highFrequencyThreshold();
 }
 
-void GCSchedulingState::updateHighFrequencyModeForReason(JS::GCReason reason) {
-  // These reason indicate that the embedding isn't triggering GC slices often
-  // enough and allocation rate is high.
-  if (reason == JS::GCReason::ALLOC_TRIGGER ||
-      reason == JS::GCReason::TOO_MUCH_MALLOC) {
+void GCSchedulingState::updateHighFrequencyModeOnSliceStart(
+    JS::GCOptions options, JS::GCReason reason) {
+  MOZ_ASSERT_IF(options != JS::GCOptions::Normal, !inHighFrequencyGCMode_);
+
+  // Additionally set high frequency mode for reasons that indicate that slices
+  // aren't being triggered often enough and the allocation rate is high.
+  if (options == JS::GCOptions::Normal &&
+      (reason == JS::GCReason::ALLOC_TRIGGER ||
+       reason == JS::GCReason::TOO_MUCH_MALLOC)) {
     inHighFrequencyGCMode_ = true;
   }
 }

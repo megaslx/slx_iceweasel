@@ -52,7 +52,6 @@ function handleRequest(request, response) {
         "Requested Range Not Satisfiable"
       );
       response.setHeader("Content-Range", `*/${TOTAL_LEN}`, false);
-      response.finish();
       return;
     }
 
@@ -76,7 +75,7 @@ function handleRequest(request, response) {
     try {
       response.finish();
     } catch (e) {
-      // This will throw, but we don't care at this point.
+      // This can throw, but we don't care at this point.
     }
   });
 }
@@ -414,7 +413,7 @@ add_task(async function test_cancel() {
   equal(msg.result[0].paused, false, "download.paused is correct");
   equal(
     msg.result[0].estimatedEndTime,
-    null,
+    undefined,
     "download.estimatedEndTime is correct"
   );
   equal(msg.result[0].canResume, false, "download.canResume is correct");
@@ -498,7 +497,7 @@ add_task(async function test_pauseresume() {
   equal(msg.result[0].paused, true, "download.paused is correct");
   equal(
     msg.result[0].estimatedEndTime,
-    null,
+    undefined,
     "download.estimatedEndTime is correct"
   );
   equal(msg.result[0].canResume, true, "download.canResume is correct");
@@ -569,7 +568,7 @@ add_task(async function test_pauseresume() {
   equal(msg.result[0].paused, false, "download.paused is correct");
   equal(
     msg.result[0].estimatedEndTime,
-    null,
+    undefined,
     "download.estimatedEndTime is correct"
   );
   equal(msg.result[0].canResume, false, "download.canResume is correct");
@@ -652,7 +651,7 @@ add_task(async function test_pausecancel() {
   equal(msg.result[0].paused, true, "download.paused is correct");
   equal(
     msg.result[0].estimatedEndTime,
-    null,
+    undefined,
     "download.estimatedEndTime is correct"
   );
   equal(msg.result[0].canResume, true, "download.canResume is correct");
@@ -702,7 +701,7 @@ add_task(async function test_pausecancel() {
   equal(msg.result[0].paused, false, "download.paused is correct");
   equal(
     msg.result[0].estimatedEndTime,
-    null,
+    undefined,
     "download.estimatedEndTime is correct"
   );
   equal(msg.result[0].canResume, false, "download.canResume is correct");
@@ -1066,7 +1065,7 @@ add_task(async function test_getFileIcon() {
   let docShell = webNav.docShell;
 
   let system = Services.scriptSecurityManager.getSystemPrincipal();
-  docShell.createAboutBlankContentViewer(system, system);
+  docShell.createAboutBlankDocumentViewer(system, system);
 
   let img = webNav.document.createElement("img");
 
@@ -1139,7 +1138,11 @@ add_task(async function test_estimatedendtime() {
   equal(msg.status, "success", "search() succeeded");
   equal(msg.result.length, 1, "search() found 1 download");
   ok(msg.result[0].estimatedEndTime, "download.estimatedEndTime is correct");
-  ok(msg.result[0].bytesReceived > 0, "download.bytesReceived is correct");
+  Assert.greater(
+    msg.result[0].bytesReceived,
+    0,
+    "download.bytesReceived is correct"
+  );
 
   msg = await runInExtension("cancel", id);
 

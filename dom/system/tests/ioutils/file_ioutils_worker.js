@@ -5,7 +5,7 @@
 // Copyright (c) 2009 Thomas Robinson <280north.com>
 // MIT license: http://opensource.org/licenses/MIT
 
-/* eslint-env mozilla/chrome-worker, node */
+/* eslint-env worker */
 
 "use strict";
 
@@ -14,7 +14,7 @@ importScripts("chrome://mochikit/content/tests/SimpleTest/WorkerSimpleTest.js");
 
 importScripts("file_ioutils_test_fixtures.js");
 
-self.onmessage = async function (msg) {
+self.onmessage = async function () {
   const tmpDir = await PathUtils.getTempDir();
 
   // IOUtils functionality is the same when called from the main thread, or a

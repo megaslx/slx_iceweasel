@@ -4,19 +4,21 @@
 
 //! Backend-agnostic askama filters
 
-use crate::interface::{CallbackInterface, ComponentInterface, Enum, Function, Object, Record};
+use crate::interface::{
+    AsType, CallbackInterface, ComponentInterface, Enum, FfiType, Function, Object, Record,
+};
 use askama::Result;
 use std::fmt;
 
 // Need to define an error that implements std::error::Error, which neither String nor
 // anyhow::Error do.
 #[derive(Debug)]
-struct UniFFIError {
+pub struct UniFFIError {
     message: String,
 }
 
 impl UniFFIError {
-    fn new(message: String) -> Self {
+    pub fn new(message: String) -> Self {
         Self { message }
     }
 }
@@ -66,4 +68,9 @@ pub fn get_callback_interface_definition<'a>(
 ) -> Result<&'a CallbackInterface> {
     ci.get_callback_interface_definition(name)
         .ok_or_else(|| lookup_error!("callback interface {name} not found"))
+}
+
+/// Get the FfiType for a Type
+pub fn ffi_type(type_: &impl AsType) -> Result<FfiType, askama::Error> {
+    Ok(type_.as_type().into())
 }

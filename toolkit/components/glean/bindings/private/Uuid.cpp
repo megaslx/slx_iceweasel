@@ -6,14 +6,13 @@
 
 #include "mozilla/glean/bindings/Uuid.h"
 
-#include "Common.h"
 #include "jsapi.h"
-#include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/dom/GleanMetricsBinding.h"
 #include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
-#include "nsIClassInfoImpl.h"
 #include "nsString.h"
+#include "GIFFTFwd.h"
 
 namespace mozilla::glean {
 
@@ -22,7 +21,7 @@ namespace impl {
 void UuidMetric::Set(const nsACString& aValue) const {
   auto scalarId = ScalarIdForMetric(mId);
   if (scalarId) {
-    Telemetry::ScalarSet(scalarId.extract(), NS_ConvertUTF8toUTF16(aValue));
+    TelemetryScalar::Set(scalarId.extract(), NS_ConvertUTF8toUTF16(aValue));
   }
   fog_uuid_set(mId, &aValue);
 }
@@ -50,40 +49,29 @@ Result<Maybe<nsCString>, nsCString> UuidMetric::TestGetValue(
 
 }  // namespace impl
 
-NS_IMPL_CLASSINFO(GleanUuid, nullptr, 0, {0})
-NS_IMPL_ISUPPORTS_CI(GleanUuid, nsIGleanUuid)
-
-NS_IMETHODIMP
-GleanUuid::Set(const nsACString& aValue) {
-  mUuid.Set(aValue);
-  return NS_OK;
+/* virtual */
+JSObject* GleanUuid::WrapObject(JSContext* aCx,
+                                JS::Handle<JSObject*> aGivenProto) {
+  return dom::GleanUuid_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMETHODIMP
-GleanUuid::GenerateAndSet() {
-  mUuid.GenerateAndSet();
-  return NS_OK;
-}
+void GleanUuid::Set(const nsACString& aValue) { mUuid.Set(aValue); }
 
-NS_IMETHODIMP
-GleanUuid::TestGetValue(const nsACString& aStorageName, JSContext* aCx,
-                        JS::MutableHandle<JS::Value> aResult) {
-  auto result = mUuid.TestGetValue(aStorageName);
+void GleanUuid::GenerateAndSet() { mUuid.GenerateAndSet(); }
+
+void GleanUuid::TestGetValue(const nsACString& aPingName, nsCString& aResult,
+                             ErrorResult& aRv) {
+  auto result = mUuid.TestGetValue(aPingName);
   if (result.isErr()) {
-    aResult.set(JS::UndefinedValue());
-    LogToBrowserConsole(nsIScriptError::errorFlag,
-                        NS_ConvertUTF8toUTF16(result.unwrapErr()));
-    return NS_ERROR_LOSS_OF_SIGNIFICANT_DATA;
+    aRv.ThrowDataError(result.unwrapErr());
+    return;
   }
   auto optresult = result.unwrap();
-  if (optresult.isNothing()) {
-    aResult.set(JS::UndefinedValue());
+  if (!optresult.isNothing()) {
+    aResult.Assign(optresult.extract());
   } else {
-    const NS_ConvertUTF8toUTF16 str(optresult.value());
-    aResult.set(
-        JS::StringValue(JS_NewUCStringCopyN(aCx, str.Data(), str.Length())));
+    aResult.SetIsVoid(true);
   }
-  return NS_OK;
 }
 
 }  // namespace mozilla::glean

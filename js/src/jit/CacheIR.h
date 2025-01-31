@@ -174,7 +174,7 @@ class TypedOperandId : public OperandId {
   _(GetName)              \
   _(GetPropSuper)         \
   _(GetElemSuper)         \
-  _(GetIntrinsic)         \
+  _(LazyConstant)         \
   _(SetProp)              \
   _(SetElem)              \
   _(BindName)             \
@@ -182,10 +182,12 @@ class TypedOperandId : public OperandId {
   _(HasOwn)               \
   _(CheckPrivateField)    \
   _(TypeOf)               \
+  _(TypeOfEq)             \
   _(ToPropertyKey)        \
   _(InstanceOf)           \
   _(GetIterator)          \
   _(CloseIter)            \
+  _(OptimizeGetIterator)  \
   _(OptimizeSpreadCall)   \
   _(Compare)              \
   _(ToBool)               \
@@ -193,7 +195,8 @@ class TypedOperandId : public OperandId {
   _(UnaryArith)           \
   _(BinaryArith)          \
   _(NewObject)            \
-  _(NewArray)
+  _(NewArray)             \
+  _(Lambda)
 
 enum class CacheKind : uint8_t {
 #define DEFINE_KIND(kind) kind,
@@ -205,10 +208,11 @@ extern const char* const CacheKindNames[];
 
 extern size_t NumInputsForCacheKind(CacheKind kind);
 
-enum class CacheOp {
+enum class CacheOp : uint16_t {
 #define DEFINE_OP(op, ...) op,
   CACHE_IR_OPS(DEFINE_OP)
 #undef DEFINE_OP
+      NumOpcodes,
 };
 
 // CacheIR opcode info that's read in performance-sensitive code. Stored as a
@@ -236,12 +240,12 @@ class StubField {
     RawPointer,
     Shape,
     WeakShape,
-    GetterSetter,
+    WeakGetterSetter,
     JSObject,
     WeakObject,
     Symbol,
     String,
-    BaseScript,
+    WeakBaseScript,
     JitCode,
 
     Id,
@@ -298,7 +302,48 @@ class StubField {
     MOZ_ASSERT(sizeIsInt64());
     return data_;
   }
+  uint64_t rawData() const { return data_; }
 } JS_HAZ_GC_POINTER;
+
+inline const char* StubFieldTypeName(StubField::Type ty) {
+  switch (ty) {
+    case StubField::Type::RawInt32:
+      return "RawInt32";
+    case StubField::Type::RawPointer:
+      return "RawPointer";
+    case StubField::Type::Shape:
+      return "Shape";
+    case StubField::Type::WeakShape:
+      return "WeakShape";
+    case StubField::Type::WeakGetterSetter:
+      return "WeakGetterSetter";
+    case StubField::Type::JSObject:
+      return "JSObject";
+    case StubField::Type::WeakObject:
+      return "WeakObject";
+    case StubField::Type::Symbol:
+      return "Symbol";
+    case StubField::Type::String:
+      return "String";
+    case StubField::Type::WeakBaseScript:
+      return "WeakBaseScript";
+    case StubField::Type::JitCode:
+      return "JitCode";
+    case StubField::Type::Id:
+      return "Id";
+    case StubField::Type::AllocSite:
+      return "AllocSite";
+    case StubField::Type::RawInt64:
+      return "RawInt64";
+    case StubField::Type::Value:
+      return "Value";
+    case StubField::Type::Double:
+      return "Double";
+    case StubField::Type::Limit:
+      return "Limit";
+  }
+  MOZ_CRASH("Unknown StubField::Type");
+}
 
 // This class is used to wrap up information about a call to make it
 // easier to convey from one function to another. (In particular,
@@ -319,6 +364,12 @@ class CallFlags {
 
   CallFlags() = default;
   explicit CallFlags(ArgFormat format) : argFormat_(format) {}
+  CallFlags(ArgFormat format, bool isConstructing, bool isSameRealm,
+            bool needsUninitializedThis)
+      : argFormat_(format),
+        isConstructing_(isConstructing),
+        isSameRealm_(isSameRealm),
+        needsUninitializedThis_(needsUninitializedThis) {}
   CallFlags(bool isConstructing, bool isSpread, bool isSameRealm = false,
             bool needsUninitializedThis = false)
       : argFormat_(isSpread ? Spread : Standard),
@@ -512,9 +563,12 @@ inline int32_t GetIndexOfArgument(ArgumentKind kind, CallFlags flags,
 enum class GuardClassKind : uint8_t {
   Array,
   PlainObject,
-  ArrayBuffer,
-  SharedArrayBuffer,
-  DataView,
+  FixedLengthArrayBuffer,
+  ResizableArrayBuffer,
+  FixedLengthSharedArrayBuffer,
+  GrowableSharedArrayBuffer,
+  FixedLengthDataView,
+  ResizableDataView,
   MappedArguments,
   UnmappedArguments,
   WindowProxy,
@@ -522,7 +576,53 @@ enum class GuardClassKind : uint8_t {
   BoundFunction,
   Set,
   Map,
+  Date,
 };
+
+const JSClass* ClassFor(GuardClassKind kind);
+
+enum class ArrayBufferViewKind : uint8_t {
+  FixedLength,
+  Resizable,
+};
+
+inline const char* GuardClassKindEnumName(GuardClassKind kind) {
+  switch (kind) {
+    case GuardClassKind::Array:
+      return "Array";
+    case GuardClassKind::PlainObject:
+      return "PlainObject";
+    case GuardClassKind::FixedLengthArrayBuffer:
+      return "FixedLengthArrayBuffer";
+    case GuardClassKind::ResizableArrayBuffer:
+      return "ResizableArrayBuffer";
+    case GuardClassKind::FixedLengthSharedArrayBuffer:
+      return "FixedLengthSharedArrayBuffer";
+    case GuardClassKind::GrowableSharedArrayBuffer:
+      return "GrowableSharedArrayBuffer";
+    case GuardClassKind::FixedLengthDataView:
+      return "FixedLengthDataView";
+    case GuardClassKind::ResizableDataView:
+      return "ResizableDataView";
+    case GuardClassKind::MappedArguments:
+      return "MappedArguments";
+    case GuardClassKind::UnmappedArguments:
+      return "UnmappedArguments";
+    case GuardClassKind::WindowProxy:
+      return "WindowProxy";
+    case GuardClassKind::JSFunction:
+      return "JSFunction";
+    case GuardClassKind::BoundFunction:
+      return "BoundFunction";
+    case GuardClassKind::Set:
+      return "Set";
+    case GuardClassKind::Map:
+      return "Map";
+    case GuardClassKind::Date:
+      return "Date";
+  }
+  MOZ_CRASH("Unknown GuardClassKind");
+}
 
 }  // namespace jit
 }  // namespace js

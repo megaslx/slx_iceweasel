@@ -8,25 +8,25 @@ mod datagrams;
 mod negotiation;
 mod sessions;
 mod streams;
+use std::{cell::RefCell, rc::Rc, time::Duration};
+
 use neqo_common::event::Provider;
+use neqo_crypto::AuthenticationStatus;
+use neqo_transport::{ConnectionParameters, Pmtud, StreamId, StreamType};
+use test_fixture::{
+    anti_replay, fixture_init, now, CountingConnectionIdGenerator, DEFAULT_ADDR, DEFAULT_ALPN_H3,
+    DEFAULT_KEYS, DEFAULT_SERVER_NAME,
+};
 
 use crate::{
     features::extended_connect::SessionCloseReason, Error, Header, Http3Client, Http3ClientEvent,
     Http3OrWebTransportStream, Http3Parameters, Http3Server, Http3ServerEvent, Http3State,
-    WebTransportEvent, WebTransportRequest, WebTransportServerEvent,
-    WebTransportSessionAcceptAction,
-};
-use neqo_crypto::AuthenticationStatus;
-use neqo_transport::{ConnectionParameters, StreamId, StreamType};
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use test_fixture::{
-    addr, anti_replay, fixture_init, now, CountingConnectionIdGenerator, DEFAULT_ALPN_H3,
-    DEFAULT_KEYS, DEFAULT_SERVER_NAME,
+    RecvStreamStats, SendStreamStats, WebTransportEvent, WebTransportRequest,
+    WebTransportServerEvent, WebTransportSessionAcceptAction,
 };
 
-const DATAGRAM_SIZE: u64 = 1200;
+// Leave space for large QUIC header.
+const DATAGRAM_SIZE: u64 = Pmtud::default_plpmtu(DEFAULT_ADDR.ip()) as u64 - 40;
 
 pub fn wt_default_parameters() -> Http3Parameters {
     Http3Parameters::default()
@@ -39,8 +39,8 @@ pub fn default_http3_client(client_params: Http3Parameters) -> Http3Client {
     Http3Client::new(
         DEFAULT_SERVER_NAME,
         Rc::new(RefCell::new(CountingConnectionIdGenerator::default())),
-        addr(),
-        addr(),
+        DEFAULT_ADDR,
+        DEFAULT_ADDR,
         client_params,
         now(),
     )
@@ -74,7 +74,7 @@ fn exchange_packets(client: &mut Http3Client, server: &mut Http3Server) {
 // Perform only Quic transport handshake.
 fn connect_with(client: &mut Http3Client, server: &mut Http3Server) {
     assert_eq!(client.state(), Http3State::Initializing);
-    let out = client.process(None, now());
+    let out = client.process_output(now());
     assert_eq!(client.state(), Http3State::Initializing);
 
     let out = server.process(out.dgram(), now());
@@ -97,7 +97,8 @@ fn connect_with(client: &mut Http3Client, server: &mut Http3Server) {
     let out = client.process(out.dgram(), now());
     let out = server.process(out.dgram(), now());
     let out = client.process(out.dgram(), now());
-    std::mem::drop(server.process(out.dgram(), now()));
+    let out = server.process(out.dgram(), now());
+    std::mem::drop(client.process(out.dgram(), now()));
 }
 
 fn connect(
@@ -144,7 +145,7 @@ impl WtTest {
         while let Some(event) = self.server.next_event() {
             match event {
                 Http3ServerEvent::WebTransport(WebTransportServerEvent::NewSession {
-                    mut session,
+                    session,
                     headers,
                 }) => {
                     assert!(
@@ -194,11 +195,16 @@ impl WtTest {
     }
 
     fn exchange_packets(&mut self) {
+        const RTT: Duration = Duration::from_millis(10);
         let mut out = None;
+        let mut now = now();
         loop {
-            out = self.client.process(out, now()).dgram();
-            out = self.server.process(out, now()).dgram();
-            if out.is_none() {
+            now += RTT / 2;
+            out = self.client.process(out, now).dgram();
+            let client_none = out.is_none();
+            now += RTT / 2;
+            out = self.server.process(out, now).dgram();
+            if client_none && out.is_none() {
                 break;
             }
         }
@@ -215,7 +221,7 @@ impl WtTest {
         e: &Http3ClientEvent,
         id: StreamId,
         expected_reason: &SessionCloseReason,
-        expected_headers: &Option<Vec<Header>>,
+        expected_headers: Option<&Vec<Header>>,
     ) -> bool {
         if let Http3ClientEvent::WebTransport(WebTransportEvent::SessionClosed {
             stream_id,
@@ -223,7 +229,7 @@ impl WtTest {
             headers,
         }) = e
         {
-            *stream_id == id && reason == expected_reason && headers == expected_headers
+            *stream_id == id && reason == expected_reason && headers.as_ref() == expected_headers
         } else {
             false
         }
@@ -233,12 +239,12 @@ impl WtTest {
         &mut self,
         wt_session_id: StreamId,
         expected_reason: &SessionCloseReason,
-        expected_headers: &Option<Vec<Header>>,
+        expected_headers: Option<&Vec<Header>>,
     ) {
         let mut event_found = false;
 
         while let Some(event) = self.client.next_event() {
-            event_found = WtTest::session_closed_client(
+            event_found = Self::session_closed_client(
                 &event,
                 wt_session_id,
                 expected_reason,
@@ -251,7 +257,7 @@ impl WtTest {
         assert!(event_found);
     }
 
-    pub fn cancel_session_server(&mut self, wt_session: &mut WebTransportRequest) {
+    pub fn cancel_session_server(&mut self, wt_session: &WebTransportRequest) {
         wt_session.cancel_fetch(Error::HttpNoError.code()).unwrap();
         self.exchange_packets();
     }
@@ -274,12 +280,12 @@ impl WtTest {
     }
 
     pub fn check_session_closed_event_server(
-        &mut self,
-        wt_session: &mut WebTransportRequest,
+        &self,
+        wt_session: &WebTransportRequest,
         expected_reeason: &SessionCloseReason,
     ) {
         let event = self.server.next_event().unwrap();
-        assert!(WtTest::session_closed_server(
+        assert!(Self::session_closed_server(
             &event,
             wt_session.stream_id(),
             expected_reeason
@@ -302,6 +308,14 @@ impl WtTest {
             data.len()
         );
         self.exchange_packets();
+    }
+
+    fn send_stream_stats(&mut self, wt_stream_id: StreamId) -> Result<SendStreamStats, Error> {
+        self.client.webtransport_send_stream_stats(wt_stream_id)
+    }
+
+    fn recv_stream_stats(&mut self, wt_stream_id: StreamId) -> Result<RecvStreamStats, Error> {
+        self.client.webtransport_recv_stream_stats(wt_stream_id)
     }
 
     fn receive_data_client(
@@ -390,7 +404,7 @@ impl WtTest {
         expected_stop_sending_ids: &[StreamId],
         expected_error_stream_stop_sending: Option<u64>,
         expected_local: bool,
-        expected_session_close: &Option<(StreamId, SessionCloseReason)>,
+        expected_session_close: Option<&(StreamId, SessionCloseReason)>,
     ) {
         let mut reset_ids_count = 0;
         let mut stop_sending_ids_count = 0;
@@ -431,13 +445,13 @@ impl WtTest {
     }
 
     fn create_wt_stream_server(
-        wt_server_session: &mut WebTransportRequest,
+        wt_server_session: &WebTransportRequest,
         stream_type: StreamType,
     ) -> Http3OrWebTransportStream {
         wt_server_session.create_stream(stream_type).unwrap()
     }
 
-    fn send_data_server(&mut self, wt_stream: &mut Http3OrWebTransportStream, data: &[u8]) {
+    fn send_data_server(&mut self, wt_stream: &Http3OrWebTransportStream, data: &[u8]) {
         assert_eq!(wt_stream.send_data(data).unwrap(), data.len());
         self.exchange_packets();
     }
@@ -481,26 +495,26 @@ impl WtTest {
         wt_stream.unwrap()
     }
 
-    fn close_stream_sending_server(&mut self, wt_stream: &mut Http3OrWebTransportStream) {
+    fn close_stream_sending_server(&mut self, wt_stream: &Http3OrWebTransportStream) {
         wt_stream.stream_close_send().unwrap();
         self.exchange_packets();
     }
 
-    fn reset_stream_server(&mut self, wt_stream: &mut Http3OrWebTransportStream) {
+    fn reset_stream_server(&mut self, wt_stream: &Http3OrWebTransportStream) {
         wt_stream
             .stream_reset_send(Error::HttpNoError.code())
             .unwrap();
         self.exchange_packets();
     }
 
-    fn stream_stop_sending_server(&mut self, wt_stream: &mut Http3OrWebTransportStream) {
+    fn stream_stop_sending_server(&mut self, wt_stream: &Http3OrWebTransportStream) {
         wt_stream
             .stream_stop_sending(Error::HttpNoError.code())
             .unwrap();
         self.exchange_packets();
     }
 
-    fn receive_reset_server(&mut self, expected_stream_id: StreamId, expected_error: u64) {
+    fn receive_reset_server(&self, expected_stream_id: StreamId, expected_error: u64) {
         let stream_reset = |e| {
             matches!(
                 e,
@@ -513,7 +527,7 @@ impl WtTest {
         assert!(self.server.events().any(stream_reset));
     }
 
-    fn receive_stop_sending_server(&mut self, expected_stream_id: StreamId, expected_error: u64) {
+    fn receive_stop_sending_server(&self, expected_stream_id: StreamId, expected_error: u64) {
         let stop_sending = |e| {
             matches!(
                 e,
@@ -527,12 +541,12 @@ impl WtTest {
     }
 
     fn check_events_after_closing_session_server(
-        &mut self,
+        &self,
         expected_reset_ids: &[StreamId],
         expected_error_stream_reset: Option<u64>,
         expected_stop_sending_ids: &[StreamId],
         expected_error_stream_stop_sending: Option<u64>,
-        expected_session_close: &Option<(StreamId, SessionCloseReason)>,
+        expected_session_close: Option<&(StreamId, SessionCloseReason)>,
     ) {
         let mut reset_ids_count = 0;
         let mut stop_sending_ids_count = 0;
@@ -576,11 +590,7 @@ impl WtTest {
             .unwrap();
     }
 
-    pub fn session_close_frame_server(
-        wt_session: &mut WebTransportRequest,
-        error: u32,
-        message: &str,
-    ) {
+    pub fn session_close_frame_server(wt_session: &WebTransportRequest, error: u32, message: &str) {
         wt_session.close_session(error, message).unwrap();
     }
 
@@ -610,7 +620,7 @@ impl WtTest {
     }
 
     fn check_datagram_received_server(
-        &mut self,
+        &self,
         expected_session: &WebTransportRequest,
         expected_dgram: &[u8],
     ) {
@@ -636,7 +646,7 @@ impl WtTest {
         assert!(!self.client.events().any(wt_datagram_event));
     }
 
-    fn check_no_datagram_received_server(&mut self) {
+    fn check_no_datagram_received_server(&self) {
         let wt_datagram_event = |e| {
             matches!(
                 e,

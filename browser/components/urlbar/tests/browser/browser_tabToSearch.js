@@ -25,6 +25,7 @@ add_setup(async function () {
       // Disable onboarding results for general tests. They are enabled in tests
       // that specifically address onboarding.
       ["browser.urlbar.tabToSearch.onboard.interactionsLeft", 0],
+      ["browser.urlbar.scotchBonnet.enableOverride", false],
     ],
   });
 
@@ -36,7 +37,7 @@ add_setup(async function () {
   for (let i = 0; i < 3; i++) {
     await PlacesTestUtils.addVisits([`https://${TEST_ENGINE_DOMAIN}/`]);
   }
-
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   registerCleanupFunction(async () => {
     await PlacesUtils.history.clear();
   });
@@ -284,14 +285,14 @@ add_task(async function tab_key_race() {
       get type() {
         return UrlbarUtils.PROVIDER_TYPE.PROFILE;
       }
-      isActive(context) {
+      isActive(_context) {
         executeSoon(resolve);
         return false;
       }
-      isRestricting(context) {
+      isRestricting(_context) {
         return false;
       }
-      async startQuery(context, addCallback) {
+      async startQuery(_context, _addCallback) {
         // Nothing to do.
       }
     }
@@ -407,6 +408,12 @@ add_task(async function onboard() {
     ).textContent,
     descriptionOnboarding,
     "The correct description was set."
+  );
+  Assert.ok(
+    BrowserTestUtils.isVisible(
+      onboardingDetails.element.row.querySelector(".urlbarView-title-separator")
+    ),
+    "The title separator should be visible."
   );
 
   // Check that the onboarding result enters search mode.

@@ -88,6 +88,7 @@ DcompSurfaceHandleHost::~DcompSurfaceHandleHost() {
 
 void DcompSurfaceHandleHost::CreateRenderTexture(
     const wr::ExternalImageId& aExternalImageId) {
+  MOZ_ASSERT(mExternalImageId.isSome());
   LOG("DcompSurfaceHandleHost %p CreateRenderTexture, ext-id=%" PRIu64, this,
       wr::AsUint64(aExternalImageId));
   RefPtr<wr::RenderTextureHost> texture =
@@ -124,7 +125,7 @@ void DcompSurfaceHandleHost::PushResourceUpdates(
       this, wr::AsUint64(aExternalImageId),
       policy == TextureHost::NativeTexturePolicy::REQUIRE ? "rect" : "ext");
   (aResources.*method)(aImageKeys[0], descriptor, aExternalImageId, imageType,
-                       0);
+                       0, /* aNormalizedUvs */ false);
 }
 
 void DcompSurfaceHandleHost::PushDisplayItems(

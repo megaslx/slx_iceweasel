@@ -9,7 +9,7 @@
 
 #include "nsString.h"  // Required before 'mozilla/ErrorNames.h'!?
 #include "mozilla/ErrorNames.h"
-#include "mozilla/TimeStamp.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsError.h"
 #include "nsPrintfCString.h"
 
@@ -19,7 +19,12 @@
 // MediaResult const references is recommended.
 namespace mozilla {
 
+namespace dom {
+class Promise;
+}
+
 class CDMProxy;
+class ErrorResult;
 
 class MediaResult {
  public:
@@ -63,11 +68,14 @@ class MediaResult {
 
   CDMProxy* GetCDMProxy() const { return mCDMProxy; }
 
+  void ThrowTo(ErrorResult& aRv) const;
+  void RejectTo(dom::Promise* aPromise) const;
+
  private:
   nsresult mCode;
   nsCString mMessage;
   // It's used when the error is NS_ERROR_DOM_MEDIA_CDM_PROXY_NOT_SUPPORTED_ERR.
-  CDMProxy* mCDMProxy;
+  CDMProxy* mCDMProxy = nullptr;
 };
 
 #ifdef _MSC_VER

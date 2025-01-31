@@ -159,10 +159,6 @@ var PrintUtils = {
    *        The BrowsingContext of the window to print.
    * @param aExistingPreviewBrowser
    *        An existing browser created for printing from window.print().
-   * @param aPrintInitiationTime
-   *        The time the print was initiated (typically by the user) as obtained
-   *        from `Date.now()`.  That is, the initiation time as the number of
-   *        milliseconds since January 1, 1970.
    * @param aPrintSelectionOnly
    *        Whether to print only the active selection of the given browsing
    *        context.
@@ -174,7 +170,6 @@ var PrintUtils = {
   _openTabModalPrint(
     aBrowsingContext,
     aOpenWindowInfo,
-    aPrintInitiationTime,
     aPrintSelectionOnly,
     aPrintFrameOnly
   ) {
@@ -197,7 +192,7 @@ var PrintUtils = {
     });
     let dialogBox = this.getTabDialogBox(sourceBrowser);
     let { closedPromise, dialog } = dialogBox.open(
-      `chrome://global/content/print.html?printInitiationTime=${aPrintInitiationTime}`,
+      `chrome://global/content/print.html`,
       { features: "resizable=no", sizeTo: "available" },
       args
     );
@@ -241,8 +236,6 @@ var PrintUtils = {
    *        {printFrameOnly}      Whether to print the selected frame.
    */
   startPrintWindow(aBrowsingContext, aOptions) {
-    const printInitiationTime = Date.now();
-
     // At most, one of these is set.
     let { printSelectionOnly, printFrameOnly, windowDotPrintOpenWindowInfo } =
       aOptions || {};
@@ -272,7 +265,6 @@ var PrintUtils = {
       return this._openTabModalPrint(
         browsingContext,
         windowDotPrintOpenWindowInfo,
-        printInitiationTime,
         printSelectionOnly,
         printFrameOnly
       );
@@ -321,9 +313,8 @@ var PrintUtils = {
       }
 
       if (useSystemDialog) {
-        const hasSelection = await PrintUtils.checkForSelection(
-          browsingContext
-        );
+        const hasSelection =
+          await PrintUtils.checkForSelection(browsingContext);
 
         // Prompt the user to choose a printer and make any desired print
         // settings changes.
@@ -496,11 +487,7 @@ var PrintUtils = {
       msg
     );
 
-    Services.telemetry.keyedScalarAdd(
-      "printing.error",
-      this._getErrorCodeForNSResult(nsresult),
-      1
-    );
+    Glean.printing.error[this._getErrorCodeForNSResult(nsresult)].add(1);
   },
 
   getPrintSettings(aPrinterName, aDefaultsOnly, aAllowPseudoPrinter = true) {
@@ -588,6 +575,22 @@ var PrintUtils = {
   },
 };
 
+/**
+ * This class implements a custom element that contains a nested <browser>
+ * element. When the user asks to print a document, we create an instance of
+ * this class and ask the platform code to create a static clone of the
+ * document (a snapshot that won't change due to script running, etc.) in the
+ * contained <browser> element.
+ *
+ * To display a print preview to the user, an instance of this element is added
+ * to the tab-modal print preview dialog. As the user changes print preview
+ * settings, we may actually end up with multiple instances: one for a preview
+ * of the original document, one for a preview of the focused frame, and one
+ * for the selected text.
+ *
+ * To print without displaying a print preview, an instance of this class is
+ * appended, hidden, to the end of the top-level chrome browser's document.
+ */
 class PrintPreview extends MozElements.BaseControl {
   constructor({
     sourceBrowsingContext,
@@ -626,6 +629,7 @@ class PrintPreview extends MozElements.BaseControl {
           </vbox>
           <html:printpreview-pagination class="printPreviewNavigation"></html:printpreview-pagination>
         </stack>
+        <html:link rel="stylesheet" href="chrome://global/content/printPreview.css"/>
     `)
     );
     this.stack = this.firstElementChild;

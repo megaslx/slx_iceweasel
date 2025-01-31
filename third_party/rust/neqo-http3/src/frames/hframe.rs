@@ -4,26 +4,39 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::{frames::reader::FrameDecoder, settings::HSettings, Error, Priority, Res};
+use std::{fmt::Debug, io::Write};
+
 use neqo_common::{Decoder, Encoder};
 use neqo_crypto::random;
 use neqo_transport::StreamId;
-use std::fmt::Debug;
-use std::io::Write;
 
-pub(crate) type HFrameType = u64;
+use crate::{frames::reader::FrameDecoder, settings::HSettings, Error, Priority, Res};
 
-pub const H3_FRAME_TYPE_DATA: HFrameType = 0x0;
-pub const H3_FRAME_TYPE_HEADERS: HFrameType = 0x1;
-pub const H3_FRAME_TYPE_CANCEL_PUSH: HFrameType = 0x3;
-pub const H3_FRAME_TYPE_SETTINGS: HFrameType = 0x4;
-pub const H3_FRAME_TYPE_PUSH_PROMISE: HFrameType = 0x5;
-pub const H3_FRAME_TYPE_GOAWAY: HFrameType = 0x7;
-pub const H3_FRAME_TYPE_MAX_PUSH_ID: HFrameType = 0xd;
-pub const H3_FRAME_TYPE_PRIORITY_UPDATE_REQUEST: HFrameType = 0xf0700;
-pub const H3_FRAME_TYPE_PRIORITY_UPDATE_PUSH: HFrameType = 0xf0701;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HFrameType(pub u64);
 
-pub const H3_RESERVED_FRAME_TYPES: &[HFrameType] = &[0x2, 0x6, 0x8, 0x9];
+pub const H3_FRAME_TYPE_DATA: HFrameType = HFrameType(0x0);
+pub const H3_FRAME_TYPE_HEADERS: HFrameType = HFrameType(0x1);
+pub const H3_FRAME_TYPE_CANCEL_PUSH: HFrameType = HFrameType(0x3);
+pub const H3_FRAME_TYPE_SETTINGS: HFrameType = HFrameType(0x4);
+pub const H3_FRAME_TYPE_PUSH_PROMISE: HFrameType = HFrameType(0x5);
+pub const H3_FRAME_TYPE_GOAWAY: HFrameType = HFrameType(0x7);
+pub const H3_FRAME_TYPE_MAX_PUSH_ID: HFrameType = HFrameType(0xd);
+pub const H3_FRAME_TYPE_PRIORITY_UPDATE_REQUEST: HFrameType = HFrameType(0xf0700);
+pub const H3_FRAME_TYPE_PRIORITY_UPDATE_PUSH: HFrameType = HFrameType(0xf0701);
+
+pub const H3_RESERVED_FRAME_TYPES: &[HFrameType] = &[
+    HFrameType(0x2),
+    HFrameType(0x6),
+    HFrameType(0x8),
+    HFrameType(0x9),
+];
+
+impl From<HFrameType> for u64 {
+    fn from(t: HFrameType) -> Self {
+        t.0
+    }
+}
 
 // data for DATA frame is not read into HFrame::Data.
 #[derive(PartialEq, Eq, Debug)]
@@ -74,8 +87,7 @@ impl HFrame {
             Self::PriorityUpdateRequest { .. } => H3_FRAME_TYPE_PRIORITY_UPDATE_REQUEST,
             Self::PriorityUpdatePush { .. } => H3_FRAME_TYPE_PRIORITY_UPDATE_PUSH,
             Self::Grease => {
-                let r = random(7);
-                Decoder::from(&r).decode_uint(7).unwrap() * 0x1f + 0x21
+                HFrameType(Decoder::from(&random::<7>()).decode_uint(7).unwrap() * 0x1f + 0x21)
             }
         }
     }
@@ -119,7 +131,7 @@ impl HFrame {
             }
             Self::Grease => {
                 // Encode some number of random bytes.
-                let r = random(8);
+                let r = random::<8>();
                 enc.encode_vvec(&r[1..usize::from(1 + (r[0] & 0x7))]);
             }
             Self::PriorityUpdateRequest {
@@ -134,7 +146,7 @@ impl HFrame {
                 update_frame.encode_varint(*element_id);
 
                 let mut priority_enc: Vec<u8> = Vec::new();
-                write!(priority_enc, "{}", priority).unwrap();
+                write!(priority_enc, "{priority}").unwrap();
 
                 update_frame.encode(&priority_enc);
                 enc.encode_varint(update_frame.len() as u64);
@@ -144,25 +156,25 @@ impl HFrame {
     }
 }
 
-impl FrameDecoder<HFrame> for HFrame {
-    fn frame_type_allowed(frame_type: u64) -> Res<()> {
+impl FrameDecoder<Self> for HFrame {
+    fn frame_type_allowed(frame_type: HFrameType) -> Res<()> {
         if H3_RESERVED_FRAME_TYPES.contains(&frame_type) {
             return Err(Error::HttpFrameUnexpected);
         }
         Ok(())
     }
 
-    fn decode(frame_type: u64, frame_len: u64, data: Option<&[u8]>) -> Res<Option<HFrame>> {
+    fn decode(frame_type: HFrameType, frame_len: u64, data: Option<&[u8]>) -> Res<Option<Self>> {
         if frame_type == H3_FRAME_TYPE_DATA {
-            Ok(Some(HFrame::Data { len: frame_len }))
+            Ok(Some(Self::Data { len: frame_len }))
         } else if let Some(payload) = data {
             let mut dec = Decoder::from(payload);
             Ok(match frame_type {
                 H3_FRAME_TYPE_DATA => unreachable!("DATA frame has been handled already."),
-                H3_FRAME_TYPE_HEADERS => Some(HFrame::Headers {
+                H3_FRAME_TYPE_HEADERS => Some(Self::Headers {
                     header_block: dec.decode_remainder().to_vec(),
                 }),
-                H3_FRAME_TYPE_CANCEL_PUSH => Some(HFrame::CancelPush {
+                H3_FRAME_TYPE_CANCEL_PUSH => Some(Self::CancelPush {
                     push_id: dec.decode_varint().ok_or(Error::HttpFrame)?,
                 }),
                 H3_FRAME_TYPE_SETTINGS => {
@@ -174,16 +186,16 @@ impl FrameDecoder<HFrame> for HFrame {
                             Error::HttpFrame
                         }
                     })?;
-                    Some(HFrame::Settings { settings })
+                    Some(Self::Settings { settings })
                 }
-                H3_FRAME_TYPE_PUSH_PROMISE => Some(HFrame::PushPromise {
+                H3_FRAME_TYPE_PUSH_PROMISE => Some(Self::PushPromise {
                     push_id: dec.decode_varint().ok_or(Error::HttpFrame)?,
                     header_block: dec.decode_remainder().to_vec(),
                 }),
-                H3_FRAME_TYPE_GOAWAY => Some(HFrame::Goaway {
+                H3_FRAME_TYPE_GOAWAY => Some(Self::Goaway {
                     stream_id: StreamId::new(dec.decode_varint().ok_or(Error::HttpFrame)?),
                 }),
-                H3_FRAME_TYPE_MAX_PUSH_ID => Some(HFrame::MaxPushId {
+                H3_FRAME_TYPE_MAX_PUSH_ID => Some(Self::MaxPushId {
                     push_id: dec.decode_varint().ok_or(Error::HttpFrame)?,
                 }),
                 H3_FRAME_TYPE_PRIORITY_UPDATE_REQUEST | H3_FRAME_TYPE_PRIORITY_UPDATE_PUSH => {
@@ -191,12 +203,12 @@ impl FrameDecoder<HFrame> for HFrame {
                     let priority = dec.decode_remainder();
                     let priority = Priority::from_bytes(priority)?;
                     if frame_type == H3_FRAME_TYPE_PRIORITY_UPDATE_REQUEST {
-                        Some(HFrame::PriorityUpdateRequest {
+                        Some(Self::PriorityUpdateRequest {
                             element_id,
                             priority,
                         })
                     } else {
-                        Some(HFrame::PriorityUpdatePush {
+                        Some(Self::PriorityUpdatePush {
                             element_id,
                             priority,
                         })
@@ -209,7 +221,7 @@ impl FrameDecoder<HFrame> for HFrame {
         }
     }
 
-    fn is_known_type(frame_type: u64) -> bool {
+    fn is_known_type(frame_type: HFrameType) -> bool {
         matches!(
             frame_type,
             H3_FRAME_TYPE_DATA

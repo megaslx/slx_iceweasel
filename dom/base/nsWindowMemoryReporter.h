@@ -7,7 +7,6 @@
 #ifndef nsWindowMemoryReporter_h__
 #define nsWindowMemoryReporter_h__
 
-#include "nsGlobalWindow.h"
 #include "nsIMemoryReporter.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
@@ -19,6 +18,8 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/TimeStamp.h"
+
+class nsGlobalWindowInner;
 
 /**
  * nsWindowMemoryReporter is responsible for the 'explicit/window-objects'
@@ -79,8 +80,8 @@
  *   its own sub-tree, even if multiple tabs are showing the same URI.
  *
  * - <top-uri> is the URI of the top window.  Excepting special windows (such
- *   as browser.xhtml or hiddenWindow.html) it's what the address bar shows for
- *   the tab.
+ *   as browser.xhtml or hiddenWindowMac.xhtml) it's what the address bar shows
+ *   for the tab.
  *
  */
 class nsWindowMemoryReporter final : public nsIMemoryReporter,

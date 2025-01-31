@@ -89,9 +89,6 @@ struct ScratchRegisterScope : public AutoRegisterScope {
 
 class MacroAssembler;
 
-inline Imm32 Imm64::secondHalf() const { return hi(); }
-inline Imm32 Imm64::firstHalf() const { return low(); }
-
 static constexpr uint32_t ABIStackAlignment = 8;
 static constexpr uint32_t CodeAlignment = 16;
 static constexpr uint32_t JitStackAlignment = 8;
@@ -545,6 +542,10 @@ class ABIArgGenerator {
   ABIArg current_;
 };
 
+// Note that nested uses of these are allowed, but the inner calls must imply
+// an area of code which exists only inside the area of code implied by the
+// outermost call.  Otherwise AssemblerBufferWithConstantPools::enterNoPool
+// will assert.
 class BlockTrampolinePoolScope {
  public:
   explicit BlockTrampolinePoolScope(Assembler* assem, int margin)
@@ -559,6 +560,7 @@ class BlockTrampolinePoolScope {
   BlockTrampolinePoolScope(const BlockTrampolinePoolScope&) = delete;
   BlockTrampolinePoolScope& operator=(const BlockTrampolinePoolScope&) = delete;
 };
+
 class UseScratchRegisterScope {
  public:
   explicit UseScratchRegisterScope(Assembler* assembler);

@@ -5,8 +5,8 @@ load(libdir + "asserts.js");
 if (!wasmDebuggingEnabled())
     throw "TestComplete";
 
-// Single-step profiling currently only works in the ARM simulator
-if (!getBuildConfiguration()["arm-simulator"])
+// Single-step profiling currently only works in the ARM/ARM64 simulators
+if (!getBuildConfiguration("arm-simulator") && !getBuildConfiguration("arm64-simulator"))
     throw "TestComplete";
 
 enableGeckoProfiling();
@@ -20,11 +20,11 @@ let module = new WebAssembly.Module(wasmTextToBinary(`
     (module
         (import "a" "b" (func $imp (result i32)))
         (memory 1 1)
-        (table 2 2 anyfunc)
+        (table 2 2 funcref)
         (elem (i32.const 0) $imp $def)
         (func $def (result i32) (i32.load (i32.const 0)))
         (type $v2i (func (result i32)))
-        (func $call (param i32) (result i32) (call_indirect (type $v2i) (get_local 0)))
+        (func $call (param i32) (result i32) (call_indirect (type $v2i) (local.get 0)))
         (export "call" (func $call))
     )
 `));

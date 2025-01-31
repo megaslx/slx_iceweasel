@@ -177,8 +177,8 @@ var gTests = [
   {
     spec: "gopher://mozilla.org/",
     scheme: "gopher",
-    prePath: "gopher:",
-    pathQueryRef: "//mozilla.org/",
+    prePath: "gopher://mozilla.org",
+    pathQueryRef: "/",
     ref: "",
     nsIURL: false,
     nsINestedURI: false,
@@ -493,10 +493,15 @@ function do_test_uri_basic(aTest) {
   do_check_property(aTest, URI, "password");
   do_check_property(aTest, URI, "host");
   do_check_property(aTest, URI, "specIgnoringRef");
-  if ("hasRef" in aTest) {
-    do_info("testing hasref: " + aTest.hasRef + " vs " + URI.hasRef);
-    Assert.equal(aTest.hasRef, URI.hasRef);
-  }
+
+  do_info("testing hasRef");
+  Assert.equal(URI.hasRef, !!aTest.ref, "URI.hasRef is correct");
+  do_info("testing hasUserPass");
+  Assert.equal(
+    URI.hasUserPass,
+    !!aTest.username || !!aTest.password,
+    "URI.hasUserPass is correct"
+  );
 }
 
 // Test that a given URI parses correctly when we add a given ref to the end
@@ -611,7 +616,7 @@ function do_test_uri_with_hash_suffix(aTest, aSuffix) {
     do_check_property(aTest, testURI, "pathQueryRef", function (aStr) {
       return aStr + aSuffix;
     });
-    do_check_property(aTest, testURI, "ref", function (aStr) {
+    do_check_property(aTest, testURI, "ref", function () {
       return aSuffix.substr(1);
     });
   }
@@ -792,6 +797,59 @@ add_task(function check_space_escaping() {
   uri = Services.io.newURI("http://example.com/test%20path#test%20path");
 });
 
+add_task(function check_space_with_query_and_ref() {
+  let url = Services.io.newURI("data:space");
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space ?");
+  Assert.equal(url.spec, "data:space ?");
+  url = Services.io.newURI("data:space #");
+  Assert.equal(url.spec, "data:space #");
+
+  url = Services.io.newURI("data:space?");
+  Assert.equal(url.spec, "data:space?");
+  url = Services.io.newURI("data:space#");
+  Assert.equal(url.spec, "data:space#");
+
+  url = Services.io.newURI("data:space ?query");
+  Assert.equal(url.spec, "data:space ?query");
+  url = url.mutate().setQuery("").finalize();
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space #ref");
+  Assert.equal(url.spec, "data:space #ref");
+  url = url.mutate().setRef("").finalize();
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space?query#ref");
+  Assert.equal(url.spec, "data:space?query#ref");
+  url = url.mutate().setRef("").finalize();
+  Assert.equal(url.spec, "data:space?query");
+  url = url.mutate().setQuery("").finalize();
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space#ref?query");
+  Assert.equal(url.spec, "data:space#ref?query");
+  url = url.mutate().setQuery("").finalize();
+  Assert.equal(url.spec, "data:space#ref?query");
+  url = url.mutate().setRef("").finalize();
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space ?query#ref");
+  Assert.equal(url.spec, "data:space ?query#ref");
+  url = url.mutate().setRef("").finalize();
+  Assert.equal(url.spec, "data:space ?query");
+  url = url.mutate().setQuery("").finalize();
+  Assert.equal(url.spec, "data:space");
+
+  url = Services.io.newURI("data:space #ref?query");
+  Assert.equal(url.spec, "data:space #ref?query");
+  url = url.mutate().setQuery("").finalize();
+  Assert.equal(url.spec, "data:space #ref?query");
+  url = url.mutate().setRef("").finalize();
+  Assert.equal(url.spec, "data:space");
+});
+
 add_task(function check_schemeIsNull() {
   let uri = Services.io.newURI("data:text/plain,aaa");
   Assert.ok(!uri.schemeIs(null));
@@ -951,10 +1009,102 @@ add_task(function test_jarURI_serialization() {
 });
 
 add_task(async function round_trip_invalid_ace_label() {
-  let uri = Services.io.newURI("http://xn--xn--d--fg4n-5y45d/");
-  Assert.equal(uri.spec, "http://xn--xn--d--fg4n-5y45d/");
+  // This is well-formed punycode, but an invalid ACE label due to hyphens in
+  // positions 3 & 4 and trailing hyphen. (Punycode-decode yields "xn--d淾-")
+  let uri = Services.io.newURI("http://xn--xn--d--fg4n/");
+  Assert.equal(uri.spec, "http://xn--xn--d--fg4n/");
 
+  // Entirely invalid punycode will throw a MALFORMED error.
   Assert.throws(() => {
     uri = Services.io.newURI("http://a.b.c.XN--pokxncvks");
   }, /NS_ERROR_MALFORMED_URI/);
+});
+
+add_task(async function test_bug1875119() {
+  let uri1 = Services.io.newURI("file:///path");
+  let uri2 = Services.io.newURI("resource://test/bla");
+  // type of uri2 is still SubstitutingURL which overrides the implementation of EnsureFile,
+  // but it's scheme is now file.
+  // See https://bugzilla.mozilla.org/show_bug.cgi?id=1876483 to disallow this
+  uri2 = uri2.mutate().setSpec("file:///path2").finalize();
+  // NOTE: this test was originally expecting `uri1.equals(uri2)` to be throwing
+  // a NS_NOINTERFACE error (instead of hitting a crash) when the new test landed
+  // as part of Bug 1875119, then as a side-effect of the fix applied by Bug 1926106
+  // the expected behavior is for the call to not raise an NS_NOINTERFACE error anymore
+  // but to be returning false instead (and so the test has been adjusted accordingly).
+  Assert.ok(!uri1.equals(uri2), "Expect uri1.equals(uri2) to be false");
+});
+
+add_task(async function test_bug1843717() {
+  // Make sure file path normalization on windows
+  // doesn't affect the hash of the URL.
+  let base = Services.io.newURI("file:///abc\\def/");
+  let uri = Services.io.newURI("foo\\bar#x\\y", null, base);
+  Assert.equal(uri.spec, "file:///abc/def/foo/bar#x\\y");
+  uri = Services.io.newURI("foo\\bar#xy", null, base);
+  Assert.equal(uri.spec, "file:///abc/def/foo/bar#xy");
+  uri = Services.io.newURI("foo\\bar#", null, base);
+  Assert.equal(uri.spec, "file:///abc/def/foo/bar#");
+});
+
+add_task(async function test_bug1874118() {
+  let base = Services.io.newURI("file:///tmp/mock/path");
+  let uri = Services.io.newURI("file:c:\\\\foo\\\\bar.html", null, base);
+  Assert.equal(uri.spec, "file:///c://foo//bar.html");
+
+  base = Services.io.newURI("file:///tmp/mock/path");
+  uri = Services.io.newURI("file:c|\\\\foo\\\\bar.html", null, base);
+  Assert.equal(uri.spec, "file:///c://foo//bar.html");
+
+  base = Services.io.newURI("file:///C:/");
+  uri = Services.io.newURI("..", null, base);
+  Assert.equal(uri.spec, "file:///C:/");
+
+  base = Services.io.newURI("file:///");
+  uri = Services.io.newURI("C|/hello/../../", null, base);
+  Assert.equal(uri.spec, "file:///C:/");
+
+  base = Services.io.newURI("file:///");
+  uri = Services.io.newURI("/C:/../../", null, base);
+  Assert.equal(uri.spec, "file:///C:/");
+
+  base = Services.io.newURI("file:///");
+  uri = Services.io.newURI("/C://../../", null, base);
+  Assert.equal(uri.spec, "file:///C:/");
+
+  base = Services.io.newURI("file:///tmp/mock/path");
+  uri = Services.io.newURI("C|/foo/bar", null, base);
+  Assert.equal(uri.spec, "file:///C:/foo/bar");
+
+  base = Services.io.newURI("file:///tmp/mock/path");
+  uri = Services.io.newURI("/C|/foo/bar", null, base);
+  Assert.equal(uri.spec, "file:///C:/foo/bar");
+});
+
+add_task(async function test_bug1911529() {
+  let testcases = [
+    [
+      "https://github.com/coder/coder/edit/main/docs/./enterprise.md",
+      "https://github.com/coder/coder/edit/main/docs/enterprise.md",
+      "enterprise",
+    ],
+    ["https://domain.com/.", "https://domain.com/", ""],
+    ["https://domain.com/%2e", "https://domain.com/", ""],
+    ["https://domain.com/%2e%2E", "https://domain.com/", ""],
+    ["https://domain.com/%2e%2E/.", "https://domain.com/", ""],
+    ["https://domain.com/./test.md", "https://domain.com/test.md", "test"],
+    [
+      "https://domain.com/dir/sub/%2e%2e/%2e/test.md",
+      "https://domain.com/dir/test.md",
+      "test",
+    ],
+    ["https://domain.com/dir/..", "https://domain.com/", ""],
+  ];
+
+  for (let t of testcases) {
+    let uri = Services.io.newURI(t[0]);
+    let uri2 = Services.io.newURI(t[1]);
+    Assert.ok(uri.equals(uri2), `${uri} must equal ${uri2}`);
+    Assert.equal(t[2], uri.QueryInterface(Ci.nsIURL).fileBaseName);
+  }
 });

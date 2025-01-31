@@ -36,15 +36,14 @@ class ModuleLoader {
                                       HandleValue referencingPrivate,
                                       HandleObject moduleRequest,
                                       HandleObject promise);
-  static bool GetSupportedImportAssertions(JSContext* cx,
-                                           JS::ImportAssertionVector& values);
 
   static bool DynamicImportDelayFulfilled(JSContext* cx, unsigned argc,
                                           Value* vp);
   static bool DynamicImportDelayRejected(JSContext* cx, unsigned argc,
                                          Value* vp);
 
-  bool loadAndExecute(JSContext* cx, HandleString path, MutableHandleValue);
+  bool loadAndExecute(JSContext* cx, HandleString path,
+                      HandleObject moduleRequestArg, MutableHandleValue);
   JSObject* resolveImportedModule(JSContext* cx, HandleValue referencingPrivate,
                                   HandleObject moduleRequest);
   bool populateImportMeta(JSContext* cx, HandleValue privateValue,
@@ -60,11 +59,12 @@ class ModuleLoader {
   bool tryDynamicImport(JSContext* cx, HandleValue referencingPrivate,
                         HandleObject moduleRequest, HandleObject promise,
                         MutableHandleValue rval);
-  JSObject* loadAndParse(JSContext* cx, HandleString path);
-  bool lookupModuleInRegistry(JSContext* cx, HandleString path,
-                              MutableHandleObject moduleOut);
-  bool addModuleToRegistry(JSContext* cx, HandleString path,
-                           HandleObject module);
+  JSObject* loadAndParse(JSContext* cx, HandleString path,
+                         HandleObject moduleRequestArg);
+  bool lookupModuleInRegistry(JSContext* cx, JS::ModuleType moduleType,
+                              HandleString path, MutableHandleObject moduleOut);
+  bool addModuleToRegistry(JSContext* cx, JS::ModuleType moduleType,
+                           HandleString path, HandleObject module);
   JSLinearString* resolve(JSContext* cx, HandleObject moduleRequestArg,
                           HandleValue referencingInfo);
   JSLinearString* resolve(JSContext* cx, HandleString specifier,
@@ -72,7 +72,7 @@ class ModuleLoader {
   bool getScriptPath(JSContext* cx, HandleValue privateValue,
                      MutableHandle<JSLinearString*> pathOut);
   JSLinearString* normalizePath(JSContext* cx, Handle<JSLinearString*> path);
-  JSObject* getOrCreateModuleRegistry(JSContext* cx);
+  JSObject* getOrCreateModuleRegistry(JSContext* cx, JS::ModuleType moduleType);
   JSString* fetchSource(JSContext* cx, Handle<JSLinearString*> path);
 
   // The following are used for pinned atoms which do not need rooting.

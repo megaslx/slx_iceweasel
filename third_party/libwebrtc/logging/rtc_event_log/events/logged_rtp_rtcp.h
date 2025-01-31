@@ -11,7 +11,9 @@
 #ifndef LOGGING_RTC_EVENT_LOG_EVENTS_LOGGED_RTP_RTCP_H_
 #define LOGGING_RTC_EVENT_LOG_EVENTS_LOGGED_RTP_RTCP_H_
 
-#include <string>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "absl/strings/string_view.h"
@@ -47,6 +49,8 @@ struct LoggedRtpPacket {
   Timestamp timestamp;
   // TODO(terelius): This allocates space for 15 CSRCs even if none are used.
   RTPHeader header;
+  // RTPHeader::extension is a mess, save DD wire format instead.
+  std::vector<uint8_t> dependency_descriptor_wire_format;
   size_t header_length;
   size_t total_length;
 };

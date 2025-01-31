@@ -10,9 +10,9 @@
 #ifndef SBEntries_h__
 #define SBEntries_h__
 
+#include "mozilla/crypto_hash_sha2.h"
 #include "nsTArray.h"
 #include "nsString.h"
-#include "nsICryptoHash.h"
 #include "nsNetUtil.h"
 #include "nsIOutputStream.h"
 #include "nsClassHashtable.h"
@@ -39,27 +39,10 @@ struct SafebrowsingHash {
     // From the protocol doc:
     // Each entry in the chunk is composed
     // of the SHA 256 hash of a suffix/prefix expression.
-    nsresult rv;
-    nsCOMPtr<nsICryptoHash> hash =
-        do_CreateInstance(NS_CRYPTO_HASH_CONTRACTID, &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    rv = hash->Init(nsICryptoHash::SHA256);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    rv = hash->Update(
-        reinterpret_cast<const uint8_t*>(aPlainText.BeginReading()),
-        aPlainText.Length());
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    nsAutoCString hashed;
-    rv = hash->Finish(false, hashed);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    NS_ASSERTION(hashed.Length() >= sHashSize,
-                 "not enough characters in the hash");
-
-    memcpy(buf, hashed.BeginReading(), sHashSize);
+    uint8_t hash[COMPLETE_SIZE];
+    crypto_hash_sha256(reinterpret_cast<const uint8_t*>(aPlainText.Data()),
+                       aPlainText.Length(), hash);
+    memcpy(buf, hash, sHashSize);
 
     return NS_OK;
   }
@@ -266,28 +249,11 @@ typedef FallibleTArray<SubComplete> SubCompleteArray;
 typedef FallibleTArray<Prefix> MissPrefixArray;
 
 /**
- * Compares chunks by their add chunk, then their prefix.
- */
-template <class T>
-class EntryCompare {
- public:
-  typedef T elem_type;
-  static int Compare(const void* e1, const void* e2) {
-    const elem_type* a = static_cast<const elem_type*>(e1);
-    const elem_type* b = static_cast<const elem_type*>(e2);
-    return a->Compare(*b);
-  }
-};
-
-/**
- * Sort an array of store entries.  nsTArray::Sort uses Equal/LessThan
- * to sort, this does a single Compare so it's a bit quicker over the
- * large sorts we do.
+ * Sort an array of store entries.
  */
 template <class T, class Alloc>
 void EntrySort(nsTArray_Impl<T, Alloc>& aArray) {
-  qsort(aArray.Elements(), aArray.Length(), sizeof(T),
-        EntryCompare<T>::Compare);
+  aArray.Sort([](const T& aA, const T& aB) { return aA.Compare(aB); });
 }
 
 template <class T, class Alloc>

@@ -86,7 +86,7 @@ def get_release_graph(release):
 
 def get_nightly_graph():
     return find_task_id(
-        "gecko.v2.mozilla-central.latest.taskgraph.decision-nightly-desktop"
+        "gecko.v2.mozilla-central.latest.taskgraph.decision-nightly-all"
     )
 
 
@@ -102,17 +102,19 @@ def get_hg_file(parameters, path):
     session = get_session()
     response = session.get(parameters.file_url(path))
     response.raise_for_status()
-    return response.content
+    return response.text
 
 
 def run(
     task_type,
     release_type,
-    try_config=None,
+    try_config_params=None,
     stage_changes=False,
     dry_run=False,
     message="{msg}",
     closed_tree=False,
+    push_to_lando=False,
+    push_to_vcs=False,
 ):
     if task_type == "list":
         print_available_task_types()
@@ -140,15 +142,9 @@ def run(
         ]
     }
 
-    try_config = try_config or {}
-    task_config = {
-        "version": 2,
-        "parameters": {
-            "existing_tasks": existing_tasks,
-            "try_task_config": try_config,
-            "try_mode": "try_task_config",
-        },
-    }
+    task_config = {"version": 2, "parameters": try_config_params or {}}
+    task_config["parameters"]["optimize_target_tasks"] = True
+    task_config["parameters"]["existing_tasks"] = existing_tasks
     for param in (
         "app_version",
         "build_number",
@@ -160,6 +156,7 @@ def run(
     ):
         task_config["parameters"][param] = previous_parameters[param]
 
+    try_config = task_config["parameters"].setdefault("try_task_config", {})
     try_config["tasks"] = TASK_TYPES[task_type]
     for label in try_config["tasks"]:
         if label in existing_tasks:
@@ -174,4 +171,6 @@ def run(
         closed_tree=closed_tree,
         try_task_config=task_config,
         files_to_change=files_to_change,
+        push_to_lando=push_to_lando,
+        push_to_vcs=push_to_vcs,
     )

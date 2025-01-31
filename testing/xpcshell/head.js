@@ -413,7 +413,7 @@ function _setupDevToolsServer(breakpointFiles, callback) {
         "xpcshell environment.\n" +
         "This can usually be resolved by adding:\n" +
         "  firefox-appdir = browser\n" +
-        "to the xpcshell.ini manifest.\n" +
+        "to the xpcshell.toml manifest.\n" +
         "It is possible for this to alter test behevior by " +
         "triggering additional browser code to run, so check " +
         "test behavior after making this change.\n" +
@@ -434,7 +434,7 @@ function _setupDevToolsServer(breakpointFiles, callback) {
     // Or when devtools are destroyed and we should stop observing.
     "xpcshell-test-devtools-shutdown",
   ];
-  let observe = function (subject, topic, data) {
+  let observe = function (subject, topic) {
     if (topic === "devtools-thread-ready") {
       const threadActor = subject.wrappedJSObject;
       threadActor.setBreakpointOnLoad(breakpointFiles);
@@ -488,11 +488,15 @@ function _initDebugging(port) {
 
   // spin an event loop until the debugger connects.
   const tm = Cc["@mozilla.org/thread-manager;1"].getService();
+  let lastUpdate = Date.now();
   tm.spinEventLoopUntil("Test(xpcshell/head.js:_initDebugging)", () => {
     if (initialized) {
       return true;
     }
-    info("Still waiting for debugger to connect...");
+    if (Date.now() - lastUpdate > 5000) {
+      info("Still waiting for debugger to connect...");
+      lastUpdate = Date.now();
+    }
     return false;
   });
   // NOTE: if you want to debug the harness itself, you can now add a 'debugger'
@@ -741,7 +745,7 @@ function _execute_test() {
  * @param aFiles Array of files to load.
  */
 function _load_files(aFiles) {
-  function load_file(element, index, array) {
+  function load_file(element) {
     try {
       let startTime = Cu.now();
       load(element);
@@ -882,6 +886,9 @@ function _format_stack(stack) {
 // Make a nice display string from an object that behaves
 // like Error
 function _exception_message(ex) {
+  if (ex === undefined) {
+    return "`undefined` exception, maybe from an empty reject()?";
+  }
   let message = "";
   if (ex.name) {
     message = ex.name + ": ";
@@ -909,7 +916,7 @@ function do_report_unexpected_exception(ex, text) {
   _passed = false;
   _testLogger.error(text + "Unexpected exception " + _exception_message(ex), {
     source_file: filename,
-    stack: _format_stack(ex.stack),
+    stack: _format_stack(ex?.stack),
   });
   _do_quit();
   throw Components.Exception("", Cr.NS_ERROR_ABORT);
@@ -919,7 +926,7 @@ function do_note_exception(ex, text) {
   let filename = Components.stack.caller.filename;
   _testLogger.info(text + "Swallowed exception " + _exception_message(ex), {
     source_file: filename,
-    stack: _format_stack(ex.stack),
+    stack: _format_stack(ex?.stack),
   });
 }
 
@@ -1560,7 +1567,7 @@ function add_test(
 }
 
 /**
- * Add a test function which is a Task function.
+ * Add a test function which is an asynchronous function.
  *
  * @param funcOrProperties
  *        An async function to be run or an object represents test properties.
@@ -1570,9 +1577,6 @@ function add_test(
  *          pref_set: An array of preferences to set for the test, reset at end of test.
  * @param func
  *        An async function to be run only if the funcOrProperies is not a function.
- *
- * Task functions are functions fed into Task.jsm's Task.spawn(). They are async
- * functions that emit promises.
  *
  * If an exception is thrown, a do_check_* comparison fails, or if a rejected
  * promise is yielded, the test function aborts immediately and the test is
@@ -1775,10 +1779,30 @@ function run_next_test() {
             );
             _setTaskPrefs(initialPrefsValues);
             try {
+              // Note `ex` at this point could be undefined, for example as
+              // result of a bare call to reject().
               do_report_unexpected_exception(ex);
             } catch (error) {
-              // The above throws NS_ERROR_ABORT and we don't want this to show up
-              // as an unhandled rejection later.
+              // The above throws NS_ERROR_ABORT and we don't want this to show
+              // up as an unhandled rejection later. If any other exception
+              // happened, something went wrong, so we abort.
+              if (error.result != Cr.NS_ERROR_ABORT) {
+                let extra = {};
+                if (error.fileName) {
+                  extra.source_file = error.fileName;
+                  if (error.lineNumber) {
+                    extra.line_number = error.lineNumber;
+                  }
+                } else {
+                  extra.source_file = "xpcshell/head.js";
+                }
+                if (error.stack) {
+                  extra.stack = _format_stack(error.stack);
+                }
+                _testLogger.error(_exception_message(error), extra);
+                _do_quit();
+                throw Components.Exception("", Cr.NS_ERROR_ABORT);
+              }
             }
           }
         );
@@ -1802,7 +1826,7 @@ function run_next_test() {
   }
 
   function frontLoadSetups() {
-    _gTests.sort(([propsA, funcA], [propsB, funcB]) => {
+    _gTests.sort(([propsA], [propsB]) => {
       if (propsB.isSetup === propsA.isSetup) {
         return 0;
       }

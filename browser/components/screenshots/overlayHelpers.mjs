@@ -43,6 +43,73 @@ export function setMaxDetectWidth(maxWidth) {
 }
 
 /**
+ * This function will try to get an element from a given point in the doc.
+ * This function is recursive because when sending a message to the
+ * ScreenshotsHelper, the ScreenshotsHelper will call into this function.
+ * This only occurs when the element at the given point is an iframe.
+ *
+ * If the element is an iframe, we will send a message to the ScreenshotsHelper
+ * actor in the correct context to get the element at the given point.
+ * The message will return the "getBestRectForElement" for the element at the
+ * given point.
+ *
+ * If the element is not an iframe, then we will just return the element.
+ *
+ * @param {Number} x The x coordinate
+ * @param {Number} y The y coordinate
+ * @param {Document} doc The document
+ * @returns {Object}
+ *    ele: The element for a given point (x, y)
+ *    rect: The rect for the given point if ele is an iframe
+ *          otherwise null
+ */
+export async function getElementFromPoint(x, y, doc) {
+  let ele = null;
+  let rect = null;
+  try {
+    ele = doc.elementFromPoint(x, y);
+    // if the element is an iframe, we need to send a message to that browsing context
+    // to get the coordinates of the element in the iframe
+    if (doc.defaultView.HTMLIFrameElement.isInstance(ele)) {
+      let actor =
+        ele.browsingContext.parentWindowContext.windowGlobalChild.getActor(
+          "ScreenshotsHelper"
+        );
+      rect = await actor.sendQuery(
+        "ScreenshotsHelper:GetElementRectFromPoint",
+        {
+          x: x + ele.ownerGlobal.mozInnerScreenX,
+          y: y + ele.ownerGlobal.mozInnerScreenY,
+          bcId: ele.browsingContext.id,
+        }
+      );
+
+      if (rect) {
+        rect = {
+          left: rect.left - ele.ownerGlobal.mozInnerScreenX,
+          right: rect.right - ele.ownerGlobal.mozInnerScreenX,
+          top: rect.top - ele.ownerGlobal.mozInnerScreenY,
+          bottom: rect.bottom - ele.ownerGlobal.mozInnerScreenY,
+        };
+      }
+    } else if (ele.openOrClosedShadowRoot) {
+      while (ele.openOrClosedShadowRoot) {
+        let shadowEle = ele.openOrClosedShadowRoot.elementFromPoint(x, y);
+        if (shadowEle) {
+          ele = shadowEle;
+        } else {
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+
+  return { ele, rect };
+}
+
+/**
  * This function takes an element and finds a suitable rect to draw the hover box on
  * @param {Element} ele The element to find a suitale rect of
  * @param {Document} doc The current document
@@ -248,18 +315,16 @@ export class Region {
     let didShift = false;
     let xDiff = this.right - this.#windowDimensions.scrollWidth;
     if (xDiff > 0) {
-      this.right -= xDiff;
       this.left -= xDiff;
+      this.right -= xDiff;
 
       didShift = true;
     }
 
     let yDiff = this.bottom - this.#windowDimensions.scrollHeight;
     if (yDiff > 0) {
-      let curHeight = this.height;
-
+      this.top -= yDiff;
       this.bottom -= yDiff;
-      this.top = this.bottom - curHeight;
 
       didShift = true;
     }
@@ -292,34 +357,28 @@ export class Region {
     return Math.min(this.#y1, this.#y2);
   }
   set top(val) {
-    this.#y1 = val > 0 ? val : 0;
+    this.#y1 = Math.min(this.#windowDimensions.scrollHeight, Math.max(0, val));
   }
 
   get left() {
     return Math.min(this.#x1, this.#x2);
   }
   set left(val) {
-    this.#x1 = val > 0 ? val : 0;
+    this.#x1 = Math.min(this.#windowDimensions.scrollWidth, Math.max(0, val));
   }
 
   get right() {
     return Math.max(this.#x1, this.#x2);
   }
   set right(val) {
-    this.#x2 =
-      val > this.#windowDimensions.scrollWidth
-        ? this.#windowDimensions.scrollWidth
-        : val;
+    this.#x2 = Math.min(this.#windowDimensions.scrollWidth, Math.max(0, val));
   }
 
   get bottom() {
     return Math.max(this.#y1, this.#y2);
   }
   set bottom(val) {
-    this.#y2 =
-      val > this.#windowDimensions.scrollHeight
-        ? this.#windowDimensions.scrollHeight
-        : val;
+    this.#y2 = Math.min(this.#windowDimensions.scrollHeight, Math.max(0, val));
   }
 
   get width() {
@@ -327,6 +386,19 @@ export class Region {
   }
   get height() {
     return Math.abs(this.#y2 - this.#y1);
+  }
+
+  get x1() {
+    return this.#x1;
+  }
+  get x2() {
+    return this.#x2;
+  }
+  get y1() {
+    return this.#y1;
+  }
+  get y2() {
+    return this.#y2;
   }
 }
 
@@ -339,44 +411,61 @@ export class WindowDimensions {
   #scrollY = null;
   #scrollMinX = null;
   #scrollMinY = null;
+  #scrollMaxX = null;
+  #scrollMaxY = null;
+  #devicePixelRatio = null;
 
   set dimensions(dimensions) {
-    if (dimensions.clientHeight) {
+    if (dimensions.clientHeight != null) {
       this.#clientHeight = dimensions.clientHeight;
     }
-    if (dimensions.clientWidth) {
+    if (dimensions.clientWidth != null) {
       this.#clientWidth = dimensions.clientWidth;
     }
-    if (dimensions.scrollHeight) {
+    if (dimensions.scrollHeight != null) {
       this.#scrollHeight = dimensions.scrollHeight;
     }
-    if (dimensions.scrollWidth) {
+    if (dimensions.scrollWidth != null) {
       this.#scrollWidth = dimensions.scrollWidth;
     }
-    if (dimensions.scrollX) {
+    if (dimensions.scrollX != null) {
       this.#scrollX = dimensions.scrollX;
     }
-    if (dimensions.scrollY) {
+    if (dimensions.scrollY != null) {
       this.#scrollY = dimensions.scrollY;
     }
-    if (dimensions.scrollMinX) {
+    if (dimensions.scrollMinX != null) {
       this.#scrollMinX = dimensions.scrollMinX;
     }
-    if (dimensions.scrollMinY) {
+    if (dimensions.scrollMinY != null) {
       this.#scrollMinY = dimensions.scrollMinY;
+    }
+    if (dimensions.scrollMaxX != null) {
+      this.#scrollMaxX = dimensions.scrollMaxX;
+    }
+    if (dimensions.scrollMaxY != null) {
+      this.#scrollMaxY = dimensions.scrollMaxY;
+    }
+    if (dimensions.devicePixelRatio != null) {
+      this.#devicePixelRatio = dimensions.devicePixelRatio;
     }
   }
 
   get dimensions() {
     return {
-      clientHeight: this.#clientHeight,
-      clientWidth: this.#clientWidth,
-      scrollHeight: this.#scrollHeight,
-      scrollWidth: this.#scrollWidth,
-      scrollX: this.#scrollX,
-      scrollY: this.#scrollY,
-      scrollMinX: this.#scrollMinX,
-      scrollMinY: this.#scrollMinY,
+      clientHeight: this.clientHeight,
+      clientWidth: this.clientWidth,
+      scrollHeight: this.scrollHeight,
+      scrollWidth: this.scrollWidth,
+      scrollX: this.scrollX,
+      scrollY: this.scrollY,
+      pageScrollX: this.pageScrollX,
+      pageScrollY: this.pageScrollY,
+      scrollMinX: this.scrollMinX,
+      scrollMinY: this.scrollMinY,
+      scrollMaxX: this.scrollMaxX,
+      scrollMaxY: this.scrollMaxY,
+      devicePixelRatio: this.devicePixelRatio,
     };
   }
 
@@ -397,10 +486,18 @@ export class WindowDimensions {
   }
 
   get scrollX() {
+    return this.#scrollX - this.scrollMinX;
+  }
+
+  get pageScrollX() {
     return this.#scrollX;
   }
 
   get scrollY() {
+    return this.#scrollY - this.scrollMinY;
+  }
+
+  get pageScrollY() {
     return this.#scrollY;
   }
 
@@ -410,5 +507,45 @@ export class WindowDimensions {
 
   get scrollMinY() {
     return this.#scrollMinY;
+  }
+
+  get scrollMaxX() {
+    return this.#scrollMaxX;
+  }
+
+  get scrollMaxY() {
+    return this.#scrollMaxY;
+  }
+
+  get devicePixelRatio() {
+    return this.#devicePixelRatio;
+  }
+
+  isInViewport(rect) {
+    // eslint-disable-next-line no-shadow
+    let { left, top, right, bottom } = rect;
+
+    if (
+      left > this.scrollX + this.clientWidth ||
+      right < this.scrollX ||
+      top > this.scrollY + this.clientHeight ||
+      bottom < this.scrollY
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  reset() {
+    this.#clientHeight = 0;
+    this.#clientWidth = 0;
+    this.#scrollHeight = 0;
+    this.#scrollWidth = 0;
+    this.#scrollX = 0;
+    this.#scrollY = 0;
+    this.#scrollMinX = 0;
+    this.#scrollMinY = 0;
+    this.#scrollMaxX = 0;
+    this.#scrollMaxY = 0;
   }
 }

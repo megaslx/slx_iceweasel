@@ -9,6 +9,7 @@
 #include "mozilla/dom/Document.h"
 
 #include "mozilla/PresShell.h"
+#include "mozilla/ServoStyleSet.h"
 #include "mozilla/dom/HTMLBodyElement.h"
 #include "nsContentUtils.h"
 #include "nsPresContext.h"
@@ -25,8 +26,10 @@ inline nsPresContext* Document::GetPresContext() const {
   return presShell ? presShell->GetPresContext() : nullptr;
 }
 
-inline HTMLBodyElement* Document::GetBodyElement() {
-  return static_cast<HTMLBodyElement*>(GetHtmlChildElement(nsGkAtoms::body));
+inline HTMLBodyElement* Document::GetBodyElement(
+    const nsIContent* aContentToIgnore) const {
+  return static_cast<HTMLBodyElement*>(
+      GetHtmlChildElement(nsGkAtoms::body, aContentToIgnore));
 }
 
 inline void Document::SetServoRestyleRoot(nsINode* aRoot, uint32_t aDirtyBits) {
@@ -50,6 +53,15 @@ inline void Document::SetServoRestyleRootDirtyBits(uint32_t aDirtyBits) {
              mServoRestyleRootDirtyBits);
   MOZ_ASSERT(mServoRestyleRoot);
   mServoRestyleRootDirtyBits = aDirtyBits;
+}
+
+inline ServoStyleSet& Document::EnsureStyleSet() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mStyleSet) {
+    Document* doc = const_cast<Document*>(this);
+    doc->mStyleSet = MakeUnique<ServoStyleSet>(*doc);
+  }
+  return *(mStyleSet.get());
 }
 
 }  // namespace mozilla::dom

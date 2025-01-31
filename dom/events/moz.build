@@ -11,19 +11,20 @@ with Files("Event*"):
     BUG_COMPONENT = ("Core", "DOM: Events")
 
 BROWSER_CHROME_MANIFESTS += [
-    "test/browser.ini",
-    "test/clipboard/browser.ini",
+    "test/browser.toml",
+    "test/clipboard/browser.toml",
 ]
 
 MOCHITEST_MANIFESTS += [
-    "test/mochitest.ini",
-    "test/pointerevents/mochitest.ini",
+    "test/clipboard/mochitest.toml",
+    "test/mochitest.toml",
+    "test/pointerevents/mochitest.toml",
 ]
 
 MOCHITEST_CHROME_MANIFESTS += [
-    "test/chrome.ini",
-    "test/clipboard/chrome.ini",
-    "test/pointerevents/chrome.ini",
+    "test/chrome.toml",
+    "test/clipboard/chrome.toml",
+    "test/pointerevents/chrome.toml",
 ]
 
 TEST_DIRS += ["test/gtest"]
@@ -78,11 +79,13 @@ EXPORTS.mozilla.dom += [
     "FocusEvent.h",
     "ImageCaptureError.h",
     "InputEvent.h",
+    "InvokeEvent.h",
     "KeyboardEvent.h",
     "MessageEvent.h",
     "MouseEvent.h",
     "MouseScrollEvent.h",
     "MutationEvent.h",
+    "NavigateEvent.h",
     "NotifyPaintEvent.h",
     "PaintRequest.h",
     "PointerEvent.h",
@@ -92,6 +95,7 @@ EXPORTS.mozilla.dom += [
     "SimpleGestureEvent.h",
     "StorageEvent.h",
     "TextClause.h",
+    "TextEvent.h",
     "Touch.h",
     "TouchEvent.h",
     "TransitionEvent.h",
@@ -132,6 +136,7 @@ UNIFIED_SOURCES += [
     "IMEContentObserver.cpp",
     "IMEStateManager.cpp",
     "InputEvent.cpp",
+    "InvokeEvent.cpp",
     "JSEventHandler.cpp",
     "KeyboardEvent.cpp",
     "KeyEventHandler.cpp",
@@ -139,6 +144,7 @@ UNIFIED_SOURCES += [
     "MouseEvent.cpp",
     "MouseScrollEvent.cpp",
     "MutationEvent.cpp",
+    "NavigateEvent.cpp",
     "NotifyPaintEvent.cpp",
     "PaintRequest.cpp",
     "PointerEvent.cpp",
@@ -151,6 +157,7 @@ UNIFIED_SOURCES += [
     "StorageEvent.cpp",
     "TextClause.cpp",
     "TextComposition.cpp",
+    "TextEvent.cpp",
     "Touch.cpp",
     "TouchEvent.cpp",
     "TransitionEvent.cpp",

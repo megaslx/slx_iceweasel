@@ -15,6 +15,9 @@ const { threadSpec } = require("resource://devtools/shared/specs/thread.js");
 const {
   createValueGrip,
 } = require("resource://devtools/server/actors/object/utils.js");
+const {
+  ObjectActorPool,
+} = require("resource://devtools/server/actors/object/ObjectActorPool.js");
 const DevToolsUtils = require("resource://devtools/shared/DevToolsUtils.js");
 const Debugger = require("Debugger");
 const { assert, dumpn, reportException } = DevToolsUtils;
@@ -32,6 +35,7 @@ const {
 const {
   logEvent,
 } = require("resource://devtools/server/actors/utils/logEvent.js");
+const Targets = require("devtools/server/actors/targets/index");
 
 loader.lazyRequireGetter(
   this,
@@ -43,12 +47,6 @@ loader.lazyRequireGetter(
   this,
   "BreakpointActorMap",
   "resource://devtools/server/actors/utils/breakpoint-actor-map.js",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "PauseScopedObjectActor",
-  "resource://devtools/server/actors/pause-scoped.js",
   true
 );
 loader.lazyRequireGetter(
@@ -169,24 +167,23 @@ class ThreadActor extends Actor {
    *
    * ThreadActors manage execution/inspection of debuggees.
    *
-   * @param parent TargetActor
-   *        This |ThreadActor|'s parent actor. i.e. one of the many Target actors.
-   * @param aGlobal object [optional]
-   *        An optional (for content debugging only) reference to the content
-   *        window.
+   * @param {TargetActor} targetActor
+   *        This `ThreadActor`'s parent actor. i.e. one of the many Target actors.
    */
-  constructor(parent, global) {
-    super(parent.conn, threadSpec);
+  constructor(targetActor) {
+    super(targetActor.conn, threadSpec);
+
+    // This attribute is used by various other actors to find the target actor
+    this.targetActor = targetActor;
 
     this._state = STATES.DETACHED;
-    this._parent = parent;
-    this.global = global;
     this._options = {
       skipBreakpoints: false,
     };
     this._gripDepth = 0;
-    this._parentClosed = false;
+    this._targetActorClosed = false;
     this._observingNetwork = false;
+    this._shouldShowPauseOverlay = true;
     this._frameActors = [];
     this._xhrBreakpoints = [];
 
@@ -223,8 +220,6 @@ class ThreadActor extends Actor {
     this.createCompletionGrip = this.createCompletionGrip.bind(this);
     this.onDebuggerStatement = this.onDebuggerStatement.bind(this);
     this.onNewScript = this.onNewScript.bind(this);
-    this.objectGrip = this.objectGrip.bind(this);
-    this.pauseObjectGrip = this.pauseObjectGrip.bind(this);
     this._onOpeningRequest = this._onOpeningRequest.bind(this);
     this._onNewDebuggee = this._onNewDebuggee.bind(this);
     this._onExceptionUnwind = this._onExceptionUnwind.bind(this);
@@ -233,9 +228,9 @@ class ThreadActor extends Actor {
     this._onWillNavigate = this._onWillNavigate.bind(this);
     this._onNavigate = this._onNavigate.bind(this);
 
-    this._parent.on("window-ready", this._onWindowReady);
-    this._parent.on("will-navigate", this._onWillNavigate);
-    this._parent.on("navigate", this._onNavigate);
+    this.targetActor.on("window-ready", this._onWindowReady);
+    this.targetActor.on("will-navigate", this._onWillNavigate);
+    this.targetActor.on("navigate", this._onNavigate);
 
     this._firstStatementBreakpoint = null;
     this._debuggerNotificationObserver = new DebuggerNotificationObserver();
@@ -246,7 +241,7 @@ class ThreadActor extends Actor {
 
   get dbg() {
     if (!this._dbg) {
-      this._dbg = this._parent.dbg;
+      this._dbg = this.targetActor.dbg;
       // Keep the debugger disabled until a client attaches.
       if (this._state === STATES.DETACHED) {
         this._dbg.disable();
@@ -272,9 +267,13 @@ class ThreadActor extends Actor {
     return this.state == STATES.RUNNING || this.state == STATES.PAUSED;
   }
 
+  get pauseLifetimePool() {
+    return this._pausePool;
+  }
+
   get threadLifetimePool() {
     if (!this._threadLifetimePool) {
-      this._threadLifetimePool = new Pool(this.conn, "thread");
+      this._threadLifetimePool = new ObjectActorPool(this, "thread", true);
       this._threadLifetimePool.objectActors = new WeakMap();
     }
     return this._threadLifetimePool;
@@ -284,16 +283,17 @@ class ThreadActor extends Actor {
     return this.threadLifetimePool.objectActors.get(raw);
   }
 
-  createValueGrip(value) {
-    return createValueGrip(value, this.threadLifetimePool, this.objectGrip);
+  promoteObjectToThreadLifetime(objectActor) {
+    this.threadLifetimePool.manage(objectActor);
+    this.threadLifetimePool.objectActors.set(objectActor.obj, objectActor);
   }
 
   get sourcesManager() {
-    return this._parent.sourcesManager;
+    return this.targetActor.sourcesManager;
   }
 
   get breakpoints() {
-    return this._parent.breakpoints;
+    return this.targetActor.breakpoints;
   }
 
   get youngestFrame() {
@@ -360,9 +360,9 @@ class ThreadActor extends Actor {
       } catch (e) {}
     }
 
-    this._parent.off("window-ready", this._onWindowReady);
-    this._parent.off("will-navigate", this._onWillNavigate);
-    this._parent.off("navigate", this._onNavigate);
+    this.targetActor.off("window-ready", this._onWindowReady);
+    this.targetActor.off("will-navigate", this._onWillNavigate);
+    this.targetActor.off("navigate", this._onNavigate);
 
     this.sourcesManager.off("newSource", this.onNewSourceEvent);
     this.clearDebuggees();
@@ -418,12 +418,6 @@ class ThreadActor extends Actor {
     this.alreadyAttached = true;
     this.dbg.enable();
 
-    // Notify the parent that we've finished attaching. If this is a worker
-    // thread which was paused until attaching, this will allow content to
-    // begin executing.
-    if (this._parent.onThreadAttached) {
-      this._parent.onThreadAttached();
-    }
     if (Services.obs) {
       // Set a wrappedJSObject property so |this| can be sent via the observer service
       // for the xpcshell harness.
@@ -443,7 +437,7 @@ class ThreadActor extends Actor {
     }
 
     const env = new HighlighterEnvironment();
-    env.initFromTargetActor(this._parent);
+    env.initFromTargetActor(this.targetActor);
     const highlighter = new PausedDebuggerOverlay(env, {
       resume: () => this.resume(null),
       stepOver: () => this.resume({ type: "next" }),
@@ -453,7 +447,13 @@ class ThreadActor extends Actor {
   }
 
   _canShowOverlay() {
-    const { window } = this._parent;
+    // Only attempt to show on overlay on WindowGlobal targets, which displays a document.
+    // Workers and content processes can't display any overlay.
+    if (this.targetActor.targetType != Targets.TYPES.FRAME) {
+      return false;
+    }
+
+    const { window } = this.targetActor;
 
     // The CanvasFrameAnonymousContentHelper class we're using to create the paused overlay
     // need to have access to a documentElement.
@@ -473,21 +473,22 @@ class ThreadActor extends Actor {
 
   async showOverlay() {
     if (
-      this.isPaused() &&
-      this._canShowOverlay() &&
-      this._parent.on &&
-      this.pauseOverlay
+      !this._shouldShowPauseOverlay ||
+      !this.isPaused() ||
+      !this._canShowOverlay()
     ) {
-      const reason = this._priorPause.why.type;
-      await this.pauseOverlay.isReady;
-
-      // we might not be paused anymore.
-      if (!this.isPaused()) {
-        return;
-      }
-
-      this.pauseOverlay.show(reason);
+      return;
     }
+
+    const reason = this._priorPause.why.type;
+    await this.pauseOverlay.isReady;
+
+    // we might not be paused anymore.
+    if (!this.isPaused()) {
+      return;
+    }
+
+    this.pauseOverlay.show(reason);
   }
 
   hideOverlay() {
@@ -528,6 +529,13 @@ class ThreadActor extends Actor {
   }
 
   async setBreakpoint(location, options) {
+    // Automatically initialize the thread actor if it wasn't yet done.
+    // Note that ideally, it should rather be done via reconfigure/thread configuration.
+    if (this._state === STATES.DETACHED) {
+      this.attach({});
+      this.addAllSources();
+    }
+
     let actor = this.breakpointActorMap.get(location);
     // Avoid resetting the exact same breakpoint twice
     if (actor && JSON.stringify(actor.options) == JSON.stringify(options)) {
@@ -564,6 +572,11 @@ class ThreadActor extends Actor {
     actor.delete();
   }
 
+  removeAllXHRBreakpoints() {
+    this._xhrBreakpoints = [];
+    return this._updateNetworkObserver();
+  }
+
   removeXHRBreakpoint(path, method) {
     const index = this._findXHRBreakpointIndex(path, method);
 
@@ -585,7 +598,7 @@ class ThreadActor extends Actor {
   }
 
   getAvailableEventBreakpoints() {
-    return getAvailableEventBreakpoints(this._parent.window);
+    return getAvailableEventBreakpoints(this.targetActor.targetGlobal);
   }
   getActiveEventBreakpoints() {
     return Array.from(this._activeEventBreakpoints);
@@ -800,12 +813,15 @@ class ThreadActor extends Actor {
     if ("observeWasm" in options) {
       this.dbg.allowUnobservedWasm = !options.observeWasm;
     }
+    if ("pauseOverlay" in options) {
+      this._shouldShowPauseOverlay = !!options.pauseOverlay;
+    }
 
     if (
       "pauseWorkersUntilAttach" in options &&
-      this._parent.pauseWorkersUntilAttach
+      this.targetActor.pauseWorkersUntilAttach
     ) {
-      this._parent.pauseWorkersUntilAttach(options.pauseWorkersUntilAttach);
+      this.targetActor.pauseWorkersUntilAttach(options.pauseWorkersUntilAttach);
     }
 
     if (options.breakpoints) {
@@ -818,6 +834,12 @@ class ThreadActor extends Actor {
       this.setActiveEventBreakpoints(options.eventBreakpoints);
     }
 
+    // Only consider this options if an explicit boolean value is passed.
+    if (typeof this._options.shouldPauseOnDebuggerStatement == "boolean") {
+      this.setPauseOnDebuggerStatement(
+        this._options.shouldPauseOnDebuggerStatement
+      );
+    }
     this.setPauseOnExceptions(this._options.pauseOnExceptions);
   }
 
@@ -966,10 +988,10 @@ class ThreadActor extends Actor {
     // If the parent actor has been closed, terminate the debuggee script
     // instead of continuing. Executing JS after the content window is gone is
     // a bad idea.
-    return this._parentClosed ? null : undefined;
+    return this._targetActorClosed ? null : undefined;
   }
 
-  _makeOnEnterFrame({ pauseAndRespond }) {
+  _makeOnEnterFrame() {
     return frame => {
       if (this._requestedFrameRestart) {
         return null;
@@ -1078,7 +1100,7 @@ class ThreadActor extends Actor {
     return line !== newLocation.line || column !== newLocation.column;
   }
 
-  _makeOnStep({ pauseAndRespond, startFrame, steppingType, completion }) {
+  _makeOnStep({ pauseAndRespond, startFrame, completion }) {
     const thread = this;
     return function () {
       if (thread._validFrameStepOffset(this, startFrame, this.offset)) {
@@ -1122,16 +1144,14 @@ class ThreadActor extends Actor {
       return packet;
     }
 
-    const createGrip = value =>
-      createValueGrip(value, this._pausePool, this.objectGrip);
     packet.why.frameFinished = {};
 
     if (completion.hasOwnProperty("return")) {
-      packet.why.frameFinished.return = createGrip(completion.return);
+      packet.why.frameFinished.return = this.createValueGrip(completion.return);
     } else if (completion.hasOwnProperty("yield")) {
-      packet.why.frameFinished.return = createGrip(completion.yield);
+      packet.why.frameFinished.return = this.createValueGrip(completion.yield);
     } else if (completion.hasOwnProperty("throw")) {
-      packet.why.frameFinished.throw = createGrip(completion.throw);
+      packet.why.frameFinished.throw = this.createValueGrip(completion.throw);
     }
 
     return packet;
@@ -1325,7 +1345,7 @@ class ThreadActor extends Actor {
    * when we do not want to notify the front end of a resume, for example when
    * we are shutting down.
    */
-  doResume({ resumeLimit } = {}) {
+  doResume() {
     this._state = STATES.RUNNING;
 
     // Drop the actors in the pause actor pool.
@@ -1356,6 +1376,21 @@ class ThreadActor extends Actor {
     } else {
       this.dbg.onExceptionUnwind = undefined;
     }
+  }
+
+  /**
+   * Set the debugging hook to pause on debugger statement if configured to do so.
+   *
+   * Note that the thread actor will pause on exception by default.
+   * This method has to be called with a falsy value to disable it.
+   *
+   * @param {Boolean} doPause
+   *        Controls whether we should or should not pause on debugger statement.
+   */
+  setPauseOnDebuggerStatement(doPause) {
+    this.dbg.onDebuggerStatement = doPause
+      ? this.onDebuggerStatement
+      : undefined;
   }
 
   isPauseOnExceptionsEnabled() {
@@ -1494,7 +1529,7 @@ class ThreadActor extends Actor {
     }
   }
 
-  sources(request) {
+  sources() {
     this.addAllSources();
 
     // No need to flush the new source packets here, as we are sending the
@@ -1502,7 +1537,11 @@ class ThreadActor extends Actor {
     // overhead of an RDP packet for every source right now. Let the default
     // timeout flush the buffered packets.
 
-    return this.sourcesManager.iter().map(s => s.form());
+    const forms = [];
+    for (const source of this.sourcesManager.iter()) {
+      forms.push(source.form());
+    }
+    return forms;
   }
 
   /**
@@ -1516,6 +1555,10 @@ class ThreadActor extends Actor {
     for (const bpActor of this.breakpointActorMap.findActors()) {
       bpActor.removeScripts();
     }
+  }
+
+  removeAllBreakpoints() {
+    this.breakpointActorMap.removeAllBreakpoints();
   }
 
   removeAllWatchpoints() {
@@ -1618,7 +1661,7 @@ class ThreadActor extends Actor {
     // Create the actor pool that will hold the pause actor and its
     // children.
     assert(!this._pausePool, "No pause pool should exist yet");
-    this._pausePool = new Pool(this.conn, "pause");
+    this._pausePool = new ObjectActorPool(this, "pause", true);
 
     // Give children of the pause pool a quick link back to the
     // thread...
@@ -1708,78 +1751,27 @@ class ThreadActor extends Actor {
   }
 
   /**
-   * Create a grip for the given debuggee object.
+   * Create a grip for the given debuggee value.
+   * Depdending on if the thread is paused, the object actor may have a different lifetime:
+   *  - when thread is paused, the object actor will be kept alive until the thread is resumed
+   *    (which also happens when we step)
+   *  - when thread is not paused, the object actor will be kept alive until the related target
+   *    is destroyed (thread stops or devtools closes)
    *
-   * @param value Debugger.Object
-   *        The debuggee object value.
-   * @param pool Pool
-   *        The actor pool where the new object actor will be added.
+   * @param value Debugger.Object|any
+   *        A Debugger.Object for all JS objects, or any primitive JS type.
+   * @return The value's grip
+   *        Primitive JS type, Object actor Form JSON object, or a JSON object to describe the value.
    */
-  objectGrip(value, pool) {
-    if (!pool.objectActors) {
-      pool.objectActors = new WeakMap();
-    }
+  createValueGrip(value) {
+    // When the thread is paused, all objects are stored in a transient pool
+    // which will be cleared on resume (which also happens when we step).
+    const pool = this._pausePool || this.threadLifetimePool;
 
-    if (pool.objectActors.has(value)) {
-      return pool.objectActors.get(value).form();
-    }
-
-    if (this.threadLifetimePool.objectActors.has(value)) {
-      return this.threadLifetimePool.objectActors.get(value).form();
-    }
-
-    const actor = new PauseScopedObjectActor(
-      value,
-      {
-        thread: this,
-        getGripDepth: () => this._gripDepth,
-        incrementGripDepth: () => this._gripDepth++,
-        decrementGripDepth: () => this._gripDepth--,
-        createValueGrip: v => {
-          if (this._pausePool) {
-            return createValueGrip(v, this._pausePool, this.pauseObjectGrip);
-          }
-
-          return createValueGrip(v, this.threadLifetimePool, this.objectGrip);
-        },
-        createEnvironmentActor: (e, p) => this.createEnvironmentActor(e, p),
-        promote: () => this.threadObjectGrip(actor),
-        isThreadLifetimePool: () =>
-          actor.getParent() !== this.threadLifetimePool,
-      },
-      this.conn
-    );
-    pool.manage(actor);
-    pool.objectActors.set(value, actor);
-    return actor.form();
+    return createValueGrip(this, value, pool);
   }
 
-  /**
-   * Create a grip for the given debuggee object with a pause lifetime.
-   *
-   * @param value Debugger.Object
-   *        The debuggee object value.
-   */
-  pauseObjectGrip(value) {
-    if (!this._pausePool) {
-      throw new Error("Object grip requested while not paused.");
-    }
-
-    return this.objectGrip(value, this._pausePool);
-  }
-
-  /**
-   * Extend the lifetime of the provided object actor to thread lifetime.
-   *
-   * @param actor object
-   *        The object actor.
-   */
-  threadObjectGrip(actor) {
-    this.threadLifetimePool.manage(actor);
-    this.threadLifetimePool.objectActors.set(actor.obj, actor);
-  }
-
-  _onWindowReady({ isTopLevel, isBFCache, window }) {
+  _onWindowReady({ isTopLevel, isBFCache }) {
     // Note that this code relates to the disabling of Debugger API from will-navigate listener.
     // And should only be triggered when the target actor doesn't follow WindowGlobal lifecycle.
     // i.e. when the Thread Actor manages more than one top level WindowGlobal.
@@ -1787,9 +1779,6 @@ class ThreadActor extends Actor {
       this.sourcesManager.reset();
       this.clearDebuggees();
       this.dbg.enable();
-      // Update the global no matter if the debugger is on or off,
-      // otherwise the global will be wrong when enabled later.
-      this.global = window;
     }
 
     // Refresh the debuggee list when a new window object appears (top window or
@@ -1886,10 +1875,11 @@ class ThreadActor extends Actor {
         message: `DOM Mutation: '${mutationType}'`,
       },
       pkt => {
-        // We have to add this here because `_pausePool` is `null` beforehand.
-        pkt.why.nodeGrip = this.objectGrip(targetObj, this._pausePool);
+        // We have to create the object actors late, from here because `_pausePool` is `null` beforehand,
+        // and the actors created by createValueGrip would otherwise be registered in the thread lifetime pool
+        pkt.why.nodeGrip = this.createValueGrip(targetObj);
         pkt.why.ancestorGrip = ancestorObj
-          ? this.objectGrip(ancestorObj, this._pausePool)
+          ? this.createValueGrip(ancestorObj)
           : null;
         pkt.why.action = action;
         return pkt;
@@ -2013,7 +2003,7 @@ class ThreadActor extends Actor {
 
       packet.why = {
         type: PAUSE_REASONS.EXCEPTION,
-        exception: createValueGrip(value, this._pausePool, this.objectGrip),
+        exception: this.createValueGrip(value),
       };
       this.emit("paused", packet);
 
@@ -2089,7 +2079,7 @@ class ThreadActor extends Actor {
     // when debugging a tab (i.e. browser-element). As we still want to debug them
     // from the browser toolbox.
     if (
-      this._parent.sessionContext.type == "browser-element" &&
+      this.targetActor.sessionContext.type == "browser-element" &&
       source.url.endsWith("ExtensionContent.sys.mjs")
     ) {
       return false;
@@ -2178,7 +2168,7 @@ class ThreadActor extends Actor {
       // HTML files can contain any number of inline sources. We have to find
       // all the inline sources and their start line without running any of the
       // scripts on the page. The approach used here is approximate.
-      if (!this._parent.window) {
+      if (!this.targetActor.window) {
         return;
       }
 
@@ -2224,7 +2214,11 @@ class ThreadActor extends Actor {
           ...content.substring(0, scriptStartOffset).matchAll("\n"),
         ];
         const startLine = 1 + allLineBreaks.length;
+        // NOTE: Debugger.Source.prototype.startColumn is 1-based.
+        //       Create 1-based column here for the following comparison,
+        //       and also the createSource call below.
         const startColumn =
+          1 +
           scriptStartOffset -
           (allLineBreaks.length ? allLineBreaks.at(-1).index - 1 : 0);
 
@@ -2240,6 +2234,7 @@ class ThreadActor extends Actor {
 
         try {
           const global = this.dbg.getDebuggees()[0];
+          // NOTE: Debugger.Object.prototype.createSource takes 1-based column.
           this._addSource(
             global.createSource({
               text,

@@ -9,6 +9,7 @@
 
 #include "apz/src/IAPZHitTester.h"
 #include "mozilla/gfx/CompositorHitTestInfo.h"
+#include "mozilla/layers/LayersTypes.h"
 
 #include <queue>
 
@@ -24,9 +25,14 @@ class MockHitTester final : public IAPZHitTester {
       const RecursiveMutexAutoLock& aProofOfTreeLock) override;
 
   // Queue a hit test result whose target APZC is the APZC
-  // with scroll id |aScrollId|, and the provided hit test flags.
-  void QueueHitResult(ScrollableLayerGuid::ViewID aScrollId,
+  // with guid |aGuid|, and the provided hit test flags.
+  void QueueHitResult(ScrollableLayerGuid aGuid,
                       gfx::CompositorHitTestInfo aHitInfo);
+
+  // Queue a hit test result whose target is the scrollbar of the APZC
+  // with scroll id |aScrollId| in the direction specified by |aDirection|.
+  void QueueScrollbarThumbHitResult(ScrollableLayerGuid::ViewID aScrollId,
+                                    ScrollDirection aDirection);
 
  private:
   std::queue<HitTestResult> mQueuedResults;

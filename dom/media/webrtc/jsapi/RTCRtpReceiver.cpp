@@ -86,7 +86,7 @@ LazyLogModule gReceiverLog("RTCRtpReceiver");
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(RTCRtpReceiver)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(RTCRtpReceiver)
-  // We do not do anything here, we wait for BreakCycles to be called
+  tmp->Unlink();
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(RTCRtpReceiver)
@@ -187,6 +187,8 @@ RTCRtpReceiver::RTCRtpReceiver(
 
   mWatchManager.Watch(mReceiveTrackMute,
                       &RTCRtpReceiver::UpdateReceiveTrackMute);
+
+  mParameters.mCodecs.Construct();
 }
 
 #undef INIT_CANONICAL
@@ -209,6 +211,10 @@ void RTCRtpReceiver::GetCapabilities(
     const GlobalObject&, const nsAString& aKind,
     Nullable<dom::RTCRtpCapabilities>& aResult) {
   PeerConnectionImpl::GetCapabilities(aKind, aResult, sdp::Direction::kRecv);
+}
+
+void RTCRtpReceiver::GetParameters(RTCRtpReceiveParameters& aParameters) const {
+  aParameters = mParameters;
 }
 
 already_AddRefed<Promise> RTCRtpReceiver::GetStats(ErrorResult& aError) {
@@ -250,6 +256,8 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
     mTrack->GetId(recvTrackId);
   }
 
+  std::string mid = mTransceiver->GetMidAscii();
+
   {
     // Add bandwidth estimation stats
     promises.AppendElement(InvokeAsync(
@@ -279,7 +287,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
   promises.AppendElement(
       InvokeAsync(
           mCallThread, __func__,
-          [pipeline = mPipeline, recvTrackId] {
+          [pipeline = mPipeline, recvTrackId, mid = std::move(mid)] {
             auto report = MakeUnique<dom::RTCStatsCollection>();
             auto asAudio = pipeline->mConduit->AsAudioSessionConduit();
             auto asVideo = pipeline->mConduit->AsVideoSessionConduit();
@@ -322,6 +330,9 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
             auto constructCommonInboundRtpStats =
                 [&](RTCInboundRtpStreamStats& aLocal) {
                   aLocal.mTrackIdentifier = recvTrackId;
+                  if (mid != "") {
+                    aLocal.mMid.Construct(NS_ConvertUTF8toUTF16(mid).get());
+                  }
                   aLocal.mTimestamp.Construct(
                       pipeline->GetTimestampMaker().GetNow().ToDom());
                   aLocal.mId.Construct(localId);
@@ -342,7 +353,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                 return;
               }
 
-              if (!audioStats->last_packet_received_timestamp_ms) {
+              if (!audioStats->last_packet_received.has_value()) {
                 // By spec: "The lifetime of all RTP monitored objects starts
                 // when the RTP stream is first used: When the first RTP packet
                 // is sent or received on the SSRC it represents"
@@ -350,14 +361,14 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
               }
 
               // First, fill in remote stat with rtcp sender data, if present.
-              if (audioStats->last_sender_report_timestamp_ms) {
+              if (audioStats->last_sender_report_utc_timestamp_ms) {
                 RTCRemoteOutboundRtpStreamStats remote;
                 constructCommonRemoteOutboundRtpStats(
                     remote,
                     RTCStatsTimestamp::FromNtp(
                         aConduit->GetTimestampMaker(),
                         webrtc::Timestamp::Millis(
-                            *audioStats->last_sender_report_timestamp_ms) +
+                            *audioStats->last_sender_report_utc_timestamp_ms) +
                             webrtc::TimeDelta::Seconds(webrtc::kNtpJan1970))
                         .ToDom());
                 remote.mPacketsSent.Construct(
@@ -365,7 +376,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                 remote.mBytesSent.Construct(
                     audioStats->sender_reports_bytes_sent);
                 remote.mRemoteTimestamp.Construct(
-                    *audioStats->last_sender_report_remote_timestamp_ms);
+                    *audioStats->last_sender_report_remote_utc_timestamp_ms);
                 if (!report->mRemoteOutboundRtpStreamStats.AppendElement(
                         std::move(remote), fallible)) {
                   mozalloc_handle_oom(0);
@@ -378,9 +389,10 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
               constructCommonInboundRtpStats(local);
               local.mJitter.Construct(audioStats->jitter_ms / 1000.0);
               local.mPacketsLost.Construct(audioStats->packets_lost);
-              local.mPacketsReceived.Construct(audioStats->packets_rcvd);
+              local.mPacketsReceived.Construct(audioStats->packets_received);
               local.mPacketsDiscarded.Construct(audioStats->packets_discarded);
-              local.mBytesReceived.Construct(audioStats->payload_bytes_rcvd);
+              local.mBytesReceived.Construct(
+                  audioStats->payload_bytes_received);
               // Always missing from libwebrtc stats
               // if (audioStats->estimated_playout_ntp_timestamp_ms) {
               //   local.mEstimatedPlayoutTimestamp.Construct(
@@ -399,17 +411,17 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
               local.mConcealedSamples.Construct(audioStats->concealed_samples);
               local.mSilentConcealedSamples.Construct(
                   audioStats->silent_concealed_samples);
-              if (audioStats->last_packet_received_timestamp_ms) {
+              if (audioStats->last_packet_received.has_value()) {
                 local.mLastPacketReceivedTimestamp.Construct(
                     RTCStatsTimestamp::FromNtp(
                         aConduit->GetTimestampMaker(),
                         webrtc::Timestamp::Millis(
-                            *audioStats->last_packet_received_timestamp_ms) +
+                            audioStats->last_packet_received->ms()) +
                             webrtc::TimeDelta::Seconds(webrtc::kNtpJan1970))
                         .ToDom());
               }
               local.mHeaderBytesReceived.Construct(
-                  audioStats->header_and_padding_bytes_rcvd);
+                  audioStats->header_and_padding_bytes_received);
               local.mFecPacketsReceived.Construct(
                   audioStats->fec_packets_received);
               local.mFecPacketsDiscarded.Construct(
@@ -443,7 +455,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                 return;
               }
 
-              if (!videoStats->rtp_stats.last_packet_received_timestamp_ms) {
+              if (!videoStats->rtp_stats.last_packet_received.has_value()) {
                 // By spec: "The lifetime of all RTP monitored objects starts
                 // when the RTP stream is first used: When the first RTP packet
                 // is sent or received on the SSRC it represents"
@@ -509,7 +521,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                   videoStats->frame_counts.key_frames +
                   videoStats->frame_counts.delta_frames);
               local.mJitterBufferDelay.Construct(
-                  videoStats->jitter_buffer_delay_seconds);
+                  videoStats->jitter_buffer_delay.seconds<double>());
               local.mJitterBufferEmittedCount.Construct(
                   videoStats->jitter_buffer_emitted_count);
 
@@ -522,13 +534,12 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                   videoStats->total_inter_frame_delay);
               local.mTotalSquaredInterFrameDelay.Construct(
                   videoStats->total_squared_inter_frame_delay);
-              if (videoStats->rtp_stats.last_packet_received_timestamp_ms) {
+              if (videoStats->rtp_stats.last_packet_received.has_value()) {
                 local.mLastPacketReceivedTimestamp.Construct(
                     RTCStatsTimestamp::FromNtp(
                         aConduit->GetTimestampMaker(),
                         webrtc::Timestamp::Millis(
-                            *videoStats->rtp_stats
-                                 .last_packet_received_timestamp_ms) +
+                            videoStats->rtp_stats.last_packet_received->ms()) +
                             webrtc::TimeDelta::Seconds(webrtc::kNtpJan1970))
                         .ToDom());
               }
@@ -668,6 +679,12 @@ void RTCRtpReceiver::BreakCycles() {
   mTrackSource = nullptr;
 }
 
+void RTCRtpReceiver::Unlink() {
+  if (mTransceiver) {
+    mTransceiver->Unlink();
+  }
+}
+
 void RTCRtpReceiver::UpdateTransport() {
   MOZ_ASSERT(NS_IsMainThread());
   if (!mHaveSetupTransport) {
@@ -703,9 +720,9 @@ void RTCRtpReceiver::UpdateTransport() {
     // Add unique payload types as a last-ditch fallback
     auto uniquePts = GetJsepTransceiver()
                          .mRecvTrack.GetNegotiatedDetails()
-                         ->GetUniquePayloadTypes();
+                         ->GetUniqueReceivePayloadTypes();
     for (unsigned char& uniquePt : uniquePts) {
-      filter->AddUniquePT(uniquePt);
+      filter->AddUniqueReceivePT(uniquePt);
     }
   }
 
@@ -850,8 +867,10 @@ void RTCRtpReceiver::UpdateAudioConduit() {
 }
 
 void RTCRtpReceiver::Stop() {
-  MOZ_ASSERT(mTransceiver->Stopped());
+  MOZ_ASSERT(mTransceiver->Stopped() || mTransceiver->Stopping());
   mReceiving = false;
+  GetMainThreadSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
+      __func__, [trackSource = mTrackSource] { trackSource->ForceEnded(); }));
 }
 
 bool RTCRtpReceiver::HasTrack(const dom::MediaStreamTrack* aTrack) const {
@@ -861,6 +880,29 @@ bool RTCRtpReceiver::HasTrack(const dom::MediaStreamTrack* aTrack) const {
 void RTCRtpReceiver::SyncFromJsep(const JsepTransceiver& aJsepTransceiver) {
   if (!mPipeline) {
     return;
+  }
+
+  if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails()) {
+    const auto& details(
+        *GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails());
+    mParameters.mCodecs.Reset();
+    mParameters.mCodecs.Construct();
+    if (details.GetEncodingCount()) {
+      for (const auto& jsepCodec : details.GetEncoding(0).GetCodecs()) {
+        RTCRtpCodecParameters codec;
+        RTCRtpTransceiver::ToDomRtpCodecParameters(*jsepCodec, &codec);
+        Unused << mParameters.mCodecs.Value().AppendElement(codec, fallible);
+        if (jsepCodec->Type() == SdpMediaSection::kVideo) {
+          const JsepVideoCodecDescription& videoJsepCodec =
+              static_cast<JsepVideoCodecDescription&>(*jsepCodec);
+          if (videoJsepCodec.mRtxEnabled) {
+            RTCRtpCodecParameters rtx;
+            RTCRtpTransceiver::ToDomRtpCodecParametersRtx(videoJsepCodec, &rtx);
+            Unused << mParameters.mCodecs.Value().AppendElement(rtx, fallible);
+          }
+        }
+      }
+    }
   }
 
   // Spec says we set [[Receptive]] to true on sLD(sendrecv/recvonly), and to
@@ -876,7 +918,13 @@ void RTCRtpReceiver::SyncFromJsep(const JsepTransceiver& aJsepTransceiver) {
   }
 }
 
-void RTCRtpReceiver::SyncToJsep(JsepTransceiver& aJsepTransceiver) const {}
+void RTCRtpReceiver::SyncToJsep(JsepTransceiver& aJsepTransceiver) const {
+  if (!mTransceiver->GetPreferredCodecs().empty()) {
+    aJsepTransceiver.mRecvTrack.PopulateCodecs(
+        mTransceiver->GetPreferredCodecs(),
+        mTransceiver->GetPreferredCodecsInUse());
+  }
+}
 
 void RTCRtpReceiver::UpdateStreams(StreamAssociationChanges* aChanges) {
   // We don't sort and use set_difference, because we need to report the
@@ -1031,6 +1079,13 @@ void RTCRtpReceiver::RequestKeyFrame() {
   mPipeline->mConduit->AsVideoSessionConduit().apply([&](const auto& conduit) {
     conduit->RequestKeyFrame(&mTransform->GetProxy());
   });
+}
+
+const RTCStatsTimestampMaker* RTCRtpReceiver::GetTimestampMaker() const {
+  if (!mPc) {
+    return nullptr;
+  }
+  return &mPc->GetTimestampMaker();
 }
 
 }  // namespace mozilla::dom

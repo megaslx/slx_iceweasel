@@ -30,7 +30,7 @@ class PrintHelper {
             null,
             true
           );
-          BrowserTestUtils.loadURIString(browser, pageUrl);
+          BrowserTestUtils.startLoadingURIString(browser, pageUrl);
           await loaded;
         }
         await testFn(new PrintHelper(browser));
@@ -60,6 +60,9 @@ class PrintHelper {
   }
 
   static getTestPageUrl(pathName) {
+    if (pathName.startsWith("http://") || pathName.startsWith("file://")) {
+      return pathName;
+    }
     const testPath = getRootDirectory(gTestPath).replace(
       "chrome://mochitests/content",
       "http://example.com"
@@ -68,6 +71,9 @@ class PrintHelper {
   }
 
   static getTestPageUrlHTTPS(pathName) {
+    if (pathName.startsWith("https://") || pathName.startsWith("file://")) {
+      return pathName;
+    }
     const testPath = getRootDirectory(gTestPath).replace(
       "chrome://mochitests/content",
       "https://example.com"
@@ -103,23 +109,6 @@ class PrintHelper {
       },
       paperProperties
     );
-  }
-
-  // This is used only for the old print preview. For tests
-  // involving the newer UI, use waitForPreview instead.
-  static waitForOldPrintPreview(expectedBrowser) {
-    const { PrintingParent } = ChromeUtils.importESModule(
-      "resource://gre/actors/PrintingParent.sys.mjs"
-    );
-
-    return new Promise(resolve => {
-      PrintingParent.setTestListener(browser => {
-        if (browser == expectedBrowser) {
-          PrintingParent.setTestListener(null);
-          resolve();
-        }
-      });
-    });
   }
 
   constructor(sourceBrowser) {
@@ -196,14 +185,15 @@ class PrintHelper {
 
   assertDialogOpen() {
     is(this._dialogs.length, 1, "There is one print dialog");
-    ok(BrowserTestUtils.is_visible(this.dialog._box), "The dialog is visible");
+    ok(BrowserTestUtils.isVisible(this.dialog._box), "The dialog is visible");
   }
 
   assertDialogHidden() {
     is(this._dialogs.length, 1, "There is one print dialog");
-    ok(BrowserTestUtils.is_hidden(this.dialog._box), "The dialog is hidden");
-    ok(
-      this.dialog._box.getBoundingClientRect().width > 0,
+    ok(BrowserTestUtils.isHidden(this.dialog._box), "The dialog is hidden");
+    Assert.greater(
+      this.dialog._box.getBoundingClientRect().width,
+      0,
       "The dialog should still have boxes"
     );
   }
@@ -224,7 +214,7 @@ class PrintHelper {
       50
     );
 
-    ok(file.fileSize > 0, "Target file not empty");
+    Assert.greater(file.fileSize, 0, "Target file not empty");
   }
 
   setupMockPrint() {
@@ -248,11 +238,7 @@ class PrintHelper {
     });
 
     // Mock PrintEventHandler with our Promises.
-    this.win.PrintEventHandler._showPrintDialog = (
-      window,
-      haveSelection,
-      settings
-    ) => {
+    this.win.PrintEventHandler._showPrintDialog = (window, haveSelection) => {
       this.systemDialogOpenedWithSelection = haveSelection;
       return showSystemDialogPromise;
     };
@@ -432,7 +418,7 @@ class PrintHelper {
     if (scroll) {
       el.scrollIntoView();
     }
-    ok(BrowserTestUtils.is_visible(el), "Element must be visible to click");
+    ok(BrowserTestUtils.isVisible(el), "Element must be visible to click");
     EventUtils.synthesizeMouseAtCenter(el, {}, this.win);
   }
 
@@ -537,7 +523,7 @@ class PrintHelper {
   mockFilePickerCancel() {
     if (!pickerMocked) {
       pickerMocked = true;
-      MockFilePicker.init(window);
+      MockFilePicker.init(window.browsingContext);
       registerCleanupFunction(() => MockFilePicker.cleanup());
     }
     MockFilePicker.returnValue = MockFilePicker.returnCancel;
@@ -546,7 +532,7 @@ class PrintHelper {
   mockFilePicker(filename) {
     if (!pickerMocked) {
       pickerMocked = true;
-      MockFilePicker.init(window);
+      MockFilePicker.init(window.browsingContext);
       registerCleanupFunction(() => MockFilePicker.cleanup());
     }
     MockFilePicker.returnValue = MockFilePicker.returnOK;
@@ -565,6 +551,6 @@ class PrintHelper {
 function waitForPreviewVisible() {
   return BrowserTestUtils.waitForCondition(function () {
     let preview = document.querySelector(".printPreviewBrowser");
-    return preview && BrowserTestUtils.is_visible(preview);
+    return preview && BrowserTestUtils.isVisible(preview);
   });
 }

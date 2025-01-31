@@ -108,10 +108,20 @@ static const RedirEntry kRedirMap[] = {
     {"credits", "https://www.mozilla.org/credits/",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_MUST_LOAD_IN_CHILD},
+    {"fingerprintingprotection",
+     "chrome://global/content/usercharacteristics/usercharacteristics.html",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS},
     {"httpsonlyerror", "chrome://global/content/httpsonlyerror/errorpage.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+#if defined(NIGHTLY_BUILD)
+    {"inference", "chrome://global/content/aboutInference.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
+#endif
     {"license", "chrome://global/content/license.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::IS_SECURE_CHROME_UI},
@@ -131,7 +141,11 @@ static const RedirEntry kRedirMap[] = {
          nsIAboutModule::IS_SECURE_CHROME_UI},
     {"mozilla", "chrome://global/content/mozilla.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT},
-    {"neterror", "chrome://global/content/aboutNetError.xhtml",
+#if !defined(ANDROID) && !defined(XP_WIN)
+    {"webauthn", "chrome://global/content/aboutWebauthn.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
+#endif
+    {"neterror", "chrome://global/content/aboutNetError.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
@@ -140,11 +154,6 @@ static const RedirEntry kRedirMap[] = {
     {"performance", "about:processes",
      nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
-#ifndef ANDROID
-    {"plugins", "chrome://global/content/plugins.html",
-     nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
-         nsIAboutModule::IS_SECURE_CHROME_UI},
-#endif
     {"processes", "chrome://global/content/aboutProcesses.html",
      nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     // about:serviceworkers always wants to load in the parent process because
@@ -198,11 +207,12 @@ static const RedirEntry kRedirMap[] = {
     {"crashparent", "about:blank", nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"crashcontent", "about:blank",
      nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD |
          nsIAboutModule::URI_MUST_LOAD_IN_CHILD},
     {"crashgpu", "about:blank", nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"crashextensions", "about:blank", nsIAboutModule::HIDE_FROM_ABOUTABOUT}};
-static const int kRedirTotal = mozilla::ArrayLength(kRedirMap);
+static const int kRedirTotal = std::size(kRedirMap);
 
 NS_IMETHODIMP
 nsAboutRedirector::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
@@ -222,7 +232,8 @@ nsAboutRedirector::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
       path.EqualsASCII("crashgpu") || path.EqualsASCII("crashextensions")) {
     bool isExternal;
     aLoadInfo->GetLoadTriggeredFromExternal(&isExternal);
-    if (isExternal) {
+    if (isExternal || !aLoadInfo->TriggeringPrincipal() ||
+        !aLoadInfo->TriggeringPrincipal()->IsSystemPrincipal()) {
       return NS_ERROR_NOT_AVAILABLE;
     }
 

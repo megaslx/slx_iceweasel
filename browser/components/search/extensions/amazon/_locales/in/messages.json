@@ -6,18 +6,9 @@
     "message": "Amazon.in Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.in/exec/obidos/external-search/"
-  },
-  "searchForm": {
-    "message": "https://www.amazon.in/"
+    "message": "https://www.amazon.in/s"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended&sourceid=Mozilla-search"
-  },
-  "suggestUrl": {
-    "message": "https://completion.amazon.in/search/complete"
-  },
-  "suggestUrlGetParams": {
-    "message": "q={searchTerms}&search-alias=aps&mkt=44571"
+    "message": "k={searchTerms}"
   }
 }

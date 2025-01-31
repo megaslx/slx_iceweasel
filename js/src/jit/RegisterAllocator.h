@@ -109,8 +109,8 @@ struct AllocationIntegrityState {
   Vector<IntegrityItem, 10, SystemAllocPolicy> worklist;
 
   // Set of all items that have already been processed.
-  typedef HashSet<IntegrityItem, IntegrityItem, SystemAllocPolicy>
-      IntegrityItemSet;
+  using IntegrityItemSet =
+      HashSet<IntegrityItem, IntegrityItem, SystemAllocPolicy>;
   IntegrityItemSet seen;
 
   [[nodiscard]] bool checkIntegrity(LBlock* block, LInstruction* ins,
@@ -196,7 +196,7 @@ class InstructionDataMap {
   FixedList<LNode*> insData_;
 
  public:
-  InstructionDataMap() : insData_() {}
+  InstructionDataMap() {}
 
   [[nodiscard]] bool init(MIRGenerator* gen, uint32_t numInstructions) {
     if (!insData_.init(gen->alloc(), numInstructions)) {

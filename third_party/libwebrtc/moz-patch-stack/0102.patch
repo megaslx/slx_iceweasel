@@ -1,38 +1,44 @@
 From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Wed, 17 May 2023 08:25:00 +0000
-Subject: Bug 1830945 - Do not lock in VideoCaptureDS::{Start|Stop}Capture.
- r=padenot
+Date: Mon, 6 May 2024 07:28:00 +0000
+Subject: Bug 1892329 - Invert _captureThread check in
+ VideoCaptureModuleV4L2::StartCapture. r=webrtc-reviewers,mjf
 
-Unclear what they are guarding.
-
-Differential Revision: https://phabricator.services.mozilla.com/D178279
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/fcd48e81c9c2cb68ea2cb3d44b3574281be2154e
+Differential Revision: https://phabricator.services.mozilla.com/D208186
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/6ed6737b8214bf664642eb17cbf66a8c8450e569
 ---
- modules/video_capture/windows/video_capture_ds.cc | 4 ----
- 1 file changed, 4 deletions(-)
+ .../video_capture/linux/video_capture_v4l2.cc | 21 +++++++++++--------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
 
-diff --git a/modules/video_capture/windows/video_capture_ds.cc b/modules/video_capture/windows/video_capture_ds.cc
-index 8695f76245..b13ac074f8 100644
---- a/modules/video_capture/windows/video_capture_ds.cc
-+++ b/modules/video_capture/windows/video_capture_ds.cc
-@@ -122,8 +122,6 @@ int32_t VideoCaptureDS::Init(const char* deviceUniqueIdUTF8) {
+diff --git a/modules/video_capture/linux/video_capture_v4l2.cc b/modules/video_capture/linux/video_capture_v4l2.cc
+index 74af348a6c..29ca864e19 100644
+--- a/modules/video_capture/linux/video_capture_v4l2.cc
++++ b/modules/video_capture/linux/video_capture_v4l2.cc
+@@ -303,16 +303,19 @@ int32_t VideoCaptureModuleV4L2::StartCapture(
+   }
+ 
+   // start capture thread;
+-  if (_captureThread.empty()) {
+-    quit_ = false;
+-    _captureThread = rtc::PlatformThread::SpawnJoinable(
+-        [self = scoped_refptr(this)] {
+-          while (self->CaptureProcess()) {
+-          }
+-        },
+-        "CaptureThread",
+-        rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kHigh));
++  if (!_captureThread.empty()) {
++    return 0;
+   }
++
++  quit_ = false;
++
++  _captureThread = rtc::PlatformThread::SpawnJoinable(
++      [self = scoped_refptr(this)] {
++        while (self->CaptureProcess()) {
++        }
++      },
++      "CaptureThread",
++      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kHigh));
+   return 0;
  }
  
- int32_t VideoCaptureDS::StartCapture(const VideoCaptureCapability& capability) {
--  MutexLock lock(&api_lock_);
--
-   if (capability != _requestedCapability) {
-     DisconnectGraph();
- 
-@@ -146,8 +144,6 @@ int32_t VideoCaptureDS::StartCapture(const VideoCaptureCapability& capability) {
- }
- 
- int32_t VideoCaptureDS::StopCapture() {
--  MutexLock lock(&api_lock_);
--
-   HRESULT hr = _mediaControl->StopWhenReady();
-   if (FAILED(hr)) {
-     RTC_LOG(LS_INFO) << "Failed to stop the capture graph. " << hr;
--- 
-2.34.1
-

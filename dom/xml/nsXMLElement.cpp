@@ -23,12 +23,7 @@ nsresult NS_NewXMLElement(
   return NS_OK;
 }
 
-JSObject* nsXMLElement::WrapNode(JSContext* aCx,
-                                 JS::Handle<JSObject*> aGivenProto) {
-  return Element_Binding::Wrap(aCx, this, aGivenProto);
-}
-
-void nsXMLElement::UnbindFromTree(bool aNullParent) {
+void nsXMLElement::UnbindFromTree(UnbindContext& aContext) {
   nsAtom* property;
   switch (GetPseudoElementType()) {
     case PseudoStyleType::marker:
@@ -48,7 +43,7 @@ void nsXMLElement::UnbindFromTree(bool aNullParent) {
     MOZ_ASSERT(GetParent()->IsElement());
     GetParent()->RemoveProperty(property);
   }
-  Element::UnbindFromTree(aNullParent);
+  Element::UnbindFromTree(aContext);
 }
 
 NS_IMPL_ELEMENT_CLONE(nsXMLElement)

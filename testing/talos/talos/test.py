@@ -112,6 +112,7 @@ class TsBase(Test):
         "gecko_profile_entries",
         "gecko_profile_features",
         "gecko_profile_threads",
+        "gecko_profile_extra_threads",
         "gecko_profile_startup",
         "preferences",
         "xperf_counters",
@@ -176,7 +177,6 @@ class ts_paint(TsBase):
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     tpmozafterpaint = True
     mainthread = False
-    responsiveness = False
     unit = "ms"
 
 
@@ -341,15 +341,14 @@ class PageloaderTest(Test):
         "gecko_profile_entries",
         "gecko_profile_features",
         "gecko_profile_threads",
+        "gecko_profile_extra_threads",
         "tptimeout",
         "win_counters",
-        "w7_counters",
         "linux_counters",
         "mac_counters",
         "tpscrolltest",
         "xperf_counters",
         "timeout",
-        "responsiveness",
         "profile_path",
         "xperf_providers",
         "xperf_user_providers",
@@ -417,11 +416,14 @@ class pdfpaint(PageloaderTest):
     be rendered.
     """
 
+    alert_threshold = 6.0
     tpmanifest = "${talos}/tests/pdfpaint/pdfpaint.manifest"
-    tppagecycles = 20
-    timeout = 600
+    tppagecycles = 1
+    timeout = 2000
+    tptimeout = 60000
     pdfpaint = True
     unit = "ms"
+    subtest_alerts = True
 
 
 @register_test()
@@ -483,15 +485,12 @@ class tabswitch(PageloaderTest):
     extensions = ["${talos}/tests/tabswitch", "${talos}/pageloader"]
     tpmanifest = "${talos}/tests/tabswitch/tabswitch.manifest"
     tppagecycles = 5
-    timeout = 900
+    timeout = 1200
     tploadnocache = True
     preferences = {
         "addon.test.tabswitch.urlfile": os.path.join("${talos}", "tests", "tp5o.html"),
         "addon.test.tabswitch.webserver": "${webserver}",
         "addon.test.tabswitch.maxurls": -1,
-        # Avoid the bookmarks toolbar interfering with our measurements.
-        # See bug 1674053 and bug 1675809 for context.
-        "browser.toolbars.bookmarks.visibility": "never",
     }
     unit = "ms"
 
@@ -543,7 +542,7 @@ class tart(PageloaderTest):
     tploadnocache = True
     tpmozafterpaint = False
     gecko_profile_interval = 10
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    win_counters = linux_counters = mac_counters = None
     """
     ASAP mode
     The recording API is broken with OMTC before ~2013-11-27
@@ -577,7 +576,8 @@ class damp(PageloaderTest):
     tploadnocache = True
     tpmozafterpaint = False
     gecko_profile_interval = 10
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    gecko_profile_extra_threads = "DOM Worker"
+    win_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     preferences = {"devtools.memory.enabled": True}
     unit = "ms"
@@ -604,7 +604,7 @@ class glterrain(PageloaderTest):
     tpchrome = False
     timeout = 600
     gecko_profile_interval = 10
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    win_counters = linux_counters = mac_counters = None
     """ ASAP mode """
     preferences = {
         "layout.frame_rate": 0,
@@ -631,7 +631,306 @@ class glvideo(PageloaderTest):
     tpchrome = False
     timeout = 600
     gecko_profile_interval = 2
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    gecko_profile_extra_threads = "CanvasRenderer,CanvasWorker,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class canvas2dvideo(PageloaderTest):
+    """
+    Canvas2D video texture update with 1080p video.
+    Measures mean tick time across 100 ticks.
+    (each tick is drawImage(<video>)+setTimeout(0))
+    """
+
+    tpmanifest = "${talos}/tests/canvas2d/canvas2dvideo.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,CanvasWorker,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_webgl_h264(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on the main thread with WebCodecs and 1080p H264 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_webgl_h264.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_webgl_vp9(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on the main thread with WebCodecs and 1080p VP9 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_webgl_vp9.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_webgl_av1(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on the main thread with WebCodecs and 1080p AV1 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_webgl_av1.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_webgl_h264(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on a DOM worker thread with WebCodecs and 1080p H264 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_webgl_h264.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "DOM Worker,CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_webgl_vp9(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on a DOM worker thread with WebCodecs and 1080p VP9 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_webgl_vp9.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "DOM Worker,CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_webgl_av1(PageloaderTest):
+    """
+    OffscreenCanvas WebGL video texture update on a DOM worker thread with WebCodecs and 1080p AV1 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs texImage2D(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_webgl_av1.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "DOM Worker,CanvasRenderer,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_2d_h264(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on the main thread with WebCodecs and 1080p H264 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = (
+        "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_2d_h264.manifest"
+    )
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,CanvasWorker,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_2d_vp9(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on the main thread with WebCodecs and 1080p VP9 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = (
+        "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_2d_vp9.manifest"
+    )
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,CanvasWorker,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_main_2d_av1(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on the main thread with WebCodecs and 1080p AV1 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = (
+        "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_main_2d_av1.manifest"
+    )
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = "CanvasRenderer,CanvasWorker,MediaSupervisor"
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_2d_h264(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on a DOM worker thread with WebCodecs and 1080p H264 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_2d_h264.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = (
+        "DOM Worker,CanvasRenderer,CanvasWorker,MediaSupervisor"
+    )
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_2d_vp9(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on a DOM worker thread with WebCodecs and 1080p VP9 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_2d_vp9.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = (
+        "DOM Worker,CanvasRenderer,CanvasWorker,MediaSupervisor"
+    )
+    win_counters = linux_counters = mac_counters = None
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = "ms"
+
+
+@register_test()
+class offscreencanvas_webcodecs_worker_2d_av1(PageloaderTest):
+    """
+    OffscreenCanvas 2D video texture update on a DOM worker thread with WebCodecs and 1080p AV1 video.
+    Measures mean frame time across 100 frames.
+    (decodes each frame and performs drawImage(<videoFrame>))
+    """
+
+    tpmanifest = "${talos}/tests/offscreencanvas/offscreencanvas_webcodecs_worker_2d_av1.manifest"
+    tpcycles = 1
+    tppagecycles = 5
+    tploadnocache = True
+    tpmozafterpaint = False
+    tpchrome = False
+    timeout = 600
+    gecko_profile_interval = 2
+    gecko_profile_extra_threads = (
+        "DOM Worker,CanvasRenderer,CanvasWorker,MediaSupervisor"
+    )
+    win_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     unit = "ms"
 
@@ -656,7 +955,6 @@ class tp5n(PageloaderTest):
     tpmozafterpaint = True
     tptimeout = 10000
     mainthread = True
-    w7_counters = []
     win_counters = []
     linux_counters = []
     mac_counters = []
@@ -710,10 +1008,8 @@ class tp5o(PageloaderTest):
     multidomain = True
     tpmanifest = "${talos}/fis/tp5n/tp5o.manifest"
     win_counters = ["% Processor Time"]
-    w7_counters = ["% Processor Time"]
     linux_counters = ["XRes"]
     mac_counters = []
-    responsiveness = True
     gecko_profile_interval = 2
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
     timeout = 1800
@@ -749,6 +1045,22 @@ class tp5o_scroll(PageloaderTest):
     }
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     unit = "1/FPS"
+
+
+@register_test()
+class tp5o_scroll_paint_skip(tp5o_scroll):
+    """
+    Tests scroll with paint skip (like tscrollx does, including ASAP) but on the tp5o pageset.
+    """
+
+    preferences = {
+        "layout.frame_rate": 0,
+        "docshell.event_starvation_delay_hint": 1,
+        "dom.send_after_paint_to_content": True,
+        "apz.paint_skipping.enabled": True,
+        "layout.css.scroll-behavior.spring-constant": "'10'",
+        "toolkit.framesRecording.bufferSize": 10000,
+    }
 
 
 @register_test()
@@ -914,6 +1226,7 @@ class tsvgx(PageloaderTest):
         "layout.frame_rate": 0,
         "docshell.event_starvation_delay_hint": 1,
         "dom.send_after_paint_to_content": False,
+        "places.history.enabled": False,
     }
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
     unit = "ms"
@@ -979,6 +1292,22 @@ class tscrollx(PageloaderTest):
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
     unit = "ms"
     pine = False
+
+
+@register_test()
+class tscrollx_paint_skip(tscrollx):
+    """
+    This test does some scrolly thing with paint skip.
+    """
+
+    preferences = {
+        "layout.frame_rate": 0,
+        "docshell.event_starvation_delay_hint": 1,
+        "dom.send_after_paint_to_content": True,
+        "apz.paint_skipping.enabled": True,
+        "layout.css.scroll-behavior.spring-constant": "'10'",
+        "toolkit.framesRecording.bufferSize": 10000,
+    }
 
 
 @register_test()
@@ -1108,7 +1437,7 @@ class displaylist_mutate(PageloaderTest):
     tpchrome = False
     timeout = 600
     gecko_profile_interval = 2
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    win_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     """ASAP mode"""
     preferences = {
@@ -1134,7 +1463,7 @@ class rasterflood_svg(PageloaderTest):
     tpchrome = False
     timeout = 600
     gecko_profile_interval = 2
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    win_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     """ASAP mode"""
     preferences = {
@@ -1159,7 +1488,7 @@ class rasterflood_gradient(PageloaderTest):
     tpchrome = False
     timeout = 600
     gecko_profile_interval = 2
-    win_counters = w7_counters = linux_counters = mac_counters = None
+    win_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     """ASAP mode"""
     preferences = {

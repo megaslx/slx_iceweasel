@@ -15,6 +15,10 @@ add_task(async function () {
   clickElement(dbg, "prettyPrintButton");
 
   await waitForSelectedSource(dbg, "math.min.js:formatted");
+  ok(
+    !findElement(dbg, "mappedSourceLink"),
+    "When we are on the pretty printed source, we don't show the link to the minified source"
+  );
   const ppSrc = findSource(dbg, "math.min.js:formatted");
 
   ok(ppSrc, "Pretty-printed source exists");
@@ -27,11 +31,11 @@ add_task(async function () {
   invokeInTab("arithmetic");
   await waitForPaused(dbg);
 
-  assertPausedAtSourceAndLine(dbg, ppSrc.id, 18);
+  await assertPausedAtSourceAndLine(dbg, ppSrc.id, 18);
 
   await stepOver(dbg);
 
-  assertPausedAtSourceAndLine(dbg, ppSrc.id, 39);
+  await assertPausedAtSourceAndLine(dbg, ppSrc.id, 39);
 
   await resume(dbg);
 
@@ -43,6 +47,10 @@ add_task(async function () {
 
   await selectSource(dbg, "math.min.js");
   await waitForSelectedSource(dbg, "math.min.js");
+  ok(
+    !findElement(dbg, "mappedSourceLink"),
+    "When we are on the minified source,  we don't show the link to the pretty printed source"
+  );
 
   ok(
     !findElement(dbg, "prettyPrintButton").disabled,

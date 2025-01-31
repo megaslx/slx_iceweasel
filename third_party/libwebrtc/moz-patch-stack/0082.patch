@@ -1,34 +1,38 @@
-From: Michael Froman <mfroman@mozilla.com>
-Date: Wed, 12 Apr 2023 16:03:00 +0000
-Subject: Bug 1826428 - remove libwebrtc's jvm_android.cc from build
- r=ng,webrtc-reviewers
+From: Byron Campen <docfaraday@gmail.com>
+Date: Thu, 20 Jul 2023 14:24:00 +0000
+Subject: Bug 1838080: Ensure that last ref to transformation_queue_ is not
+ released on itself. r=pehrsons,webrtc-reviewers
 
-Based on info from John Lin and previous try runs, we're almost
-certainly not using this.  Let's try removing it from the build
-and landing it.  If no problems emerge, we'll be able to remove
-our custom changes to upstream code in jvm_android.cc.
-
-Differential Revision: https://phabricator.services.mozilla.com/D174793
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/dca1b97525487ae57d43ced1ebdb4a2d9c9dae89
+Differential Revision: https://phabricator.services.mozilla.com/D181699
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/91d9e8b6a5c430a73561ffd2330865f04fcb1a6d
 ---
- modules/utility/BUILD.gn | 4 ++++
- 1 file changed, 4 insertions(+)
+ .../rtp_sender_video_frame_transformer_delegate.cc       | 9 +++++++++
+ 1 file changed, 9 insertions(+)
 
-diff --git a/modules/utility/BUILD.gn b/modules/utility/BUILD.gn
-index 3fe4ca8c92..46bca17f02 100644
---- a/modules/utility/BUILD.gn
-+++ b/modules/utility/BUILD.gn
-@@ -47,6 +47,10 @@ rtc_source_set("utility") {
-       "../../rtc_base:platform_thread",
-       "../../rtc_base/system:arch",
-     ]
-+
-+    if (build_with_mozilla) {
-+      sources -= [ "source/jvm_android.cc" ]
-+    }
+diff --git a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
+index 04d34eda14..9d18d561d2 100644
+--- a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
++++ b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
+@@ -34,6 +34,7 @@
+ #include "api/video_codecs/video_codec.h"
+ #include "modules/rtp_rtcp/source/rtp_video_header.h"
+ #include "rtc_base/checks.h"
++#include "rtc_base/event.h"
+ #include "rtc_base/synchronization/mutex.h"
+ 
+ namespace webrtc {
+@@ -274,6 +275,14 @@ void RTPSenderVideoFrameTransformerDelegate::Reset() {
+     MutexLock lock(&sender_lock_);
+     sender_ = nullptr;
    }
++  // Wait until all pending tasks are executed, to ensure that the last ref
++  // standing is not on the transformation queue.
++  rtc::Event flush;
++  transformation_queue_->PostTask([this, &flush]() {
++    RTC_DCHECK_RUN_ON(transformation_queue_.get());
++    flush.Set();
++  });
++  flush.Wait(rtc::Event::kForever);
  }
  
--- 
-2.34.1
-
+ std::unique_ptr<TransformableVideoFrameInterface> CloneSenderVideoFrame(

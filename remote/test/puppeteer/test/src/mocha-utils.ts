@@ -1,35 +1,21 @@
 /**
- * Copyright 2020 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2020 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import fs from 'fs';
 import path from 'path';
 
 import {TestServer} from '@pptr/testserver';
-import {Protocol} from 'devtools-protocol';
 import expect from 'expect';
-import * as Mocha from 'mocha';
+import type * as MochaBase from 'mocha';
 import puppeteer from 'puppeteer/lib/cjs/puppeteer/puppeteer.js';
-import {Browser} from 'puppeteer-core/internal/api/Browser.js';
-import {BrowserContext} from 'puppeteer-core/internal/api/BrowserContext.js';
-import {Page} from 'puppeteer-core/internal/api/Page.js';
-import {
-  setLogCapture,
-  getCapturedLogs,
-} from 'puppeteer-core/internal/common/Debug.js';
-import {
+import type {Browser} from 'puppeteer-core/internal/api/Browser.js';
+import type {BrowserContext} from 'puppeteer-core/internal/api/BrowserContext.js';
+import type {Page} from 'puppeteer-core/internal/api/Page.js';
+import type {Cookie} from 'puppeteer-core/internal/common/Cookie.js';
+import type {
   PuppeteerLaunchOptions,
   PuppeteerNode,
 } from 'puppeteer-core/internal/node/PuppeteerNode.js';
@@ -40,16 +26,50 @@ import sinon from 'sinon';
 
 import {extendExpectWithToBeGolden} from './utils.js';
 
-const product =
-  process.env['PRODUCT'] || process.env['PUPPETEER_PRODUCT'] || 'chrome';
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Mocha {
+    export interface SuiteFunction {
+      /**
+       * Use it if you want to capture debug logs for a specitic test suite in CI.
+       * This describe function enables capturing of debug logs and would print them
+       * only if a test fails to reduce the amount of output.
+       */
+      withDebugLogs: (
+        description: string,
+        body: (this: MochaBase.Suite) => void
+      ) => void;
+    }
+    export interface TestFunction {
+      /*
+       * Use to rerun the test and capture logs for the failed attempts
+       * that way we don't push all the logs making it easier to read.
+       */
+      deflake: (
+        repeats: number,
+        title: string,
+        fn: MochaBase.AsyncFunc
+      ) => void;
+      /*
+       * Use to rerun a single test and capture logs for the failed attempts
+       */
+      deflakeOnly: (
+        repeats: number,
+        title: string,
+        fn: MochaBase.AsyncFunc
+      ) => void;
+    }
+  }
+}
 
-const alternativeInstall = process.env['PUPPETEER_ALT_INSTALL'] || false;
+const product =
+  process.env['PRODUCT'] || process.env['PUPPETEER_BROWSER'] || 'chrome';
 
 const headless = (process.env['HEADLESS'] || 'true').trim().toLowerCase() as
   | 'true'
   | 'false'
-  | 'new';
-export const isHeadless = headless === 'true' || headless === 'new';
+  | 'shell';
+export const isHeadless = headless === 'true' || headless === 'shell';
 const isFirefox = product === 'firefox';
 const isChrome = product === 'chrome';
 const protocol = (process.env['PUPPETEER_PROTOCOL'] || 'cdp') as
@@ -73,10 +93,10 @@ const defaultBrowserOptions = Object.assign(
   {
     handleSIGINT: true,
     executablePath: process.env['BINARY'],
-    headless: headless === 'new' ? ('new' as const) : isHeadless,
+    headless: headless === 'shell' ? ('shell' as const) : isHeadless,
     dumpio: !!process.env['DUMPIO'],
     protocol,
-  },
+  } satisfies PuppeteerLaunchOptions,
   extraLaunchOptions
 );
 
@@ -95,8 +115,7 @@ if (defaultBrowserOptions.executablePath) {
 
 const processVariables: {
   product: string;
-  alternativeInstall: string | boolean;
-  headless: 'true' | 'false' | 'new';
+  headless: 'true' | 'false' | 'shell';
   isHeadless: boolean;
   isFirefox: boolean;
   isChrome: boolean;
@@ -104,7 +123,6 @@ const processVariables: {
   defaultBrowserOptions: PuppeteerLaunchOptions;
 } = {
   product,
-  alternativeInstall,
   headless,
   isHeadless,
   isFirefox,
@@ -143,11 +161,36 @@ export const setupTestBrowserHooks = (): void => {
         state.browser = await puppeteer.launch({
           ...processVariables.defaultBrowserOptions,
           timeout: this.timeout() - 1_000,
+          protocolTimeout: this.timeout() * 2,
         });
       }
-    } catch {
+    } catch (error) {
+      console.error(error);
       // Intentionally empty as `getTestState` will throw
       // if browser is not found
+    }
+  });
+
+  after(async () => {
+    if (typeof gc !== 'undefined') {
+      gc();
+      const memory = process.memoryUsage();
+      console.log('Memory stats:');
+      for (const key of Object.keys(memory)) {
+        console.log(
+          key,
+          // @ts-expect-error TS cannot the key type.
+          `${Math.round(((memory[key] / 1024 / 1024) * 100) / 100)} MB`
+        );
+      }
+    }
+  });
+
+  afterEach(async () => {
+    if (state.context) {
+      await state.context.close();
+      state.context = undefined;
+      state.page = undefined;
     }
   });
 };
@@ -173,16 +216,15 @@ export const getTestState = async (
 
   if (!state.browser) {
     throw new Error('Browser was not set-up in time!');
+  } else if (!state.browser.connected) {
+    throw new Error('Browser has disconnected!');
   }
-
   if (state.context) {
-    await state.context.close();
-    state.context = undefined;
-    state.page = undefined;
+    throw new Error('Previous state was not cleared');
   }
 
   if (!skipContextCreation) {
-    state.context = await state.browser!.createIncognitoBrowserContext();
+    state.context = await state.browser.createBrowserContext();
     state.page = await state.context.newPage();
   }
   return state as PuppeteerTestState;
@@ -211,21 +253,10 @@ export interface PuppeteerTestState {
   isFirefox: boolean;
   isChrome: boolean;
   isHeadless: boolean;
-  headless: 'true' | 'false' | 'new';
+  headless: 'true' | 'false' | 'shell';
   puppeteerPath: string;
 }
 const state: Partial<PuppeteerTestState> = {};
-
-export const itOnlyRegularInstall = (
-  description: string,
-  body: Mocha.AsyncFunc
-): Mocha.Test => {
-  if (processVariables.alternativeInstall || process.env['BINARY']) {
-    return it.skip(description, body);
-  } else {
-    return it(description, body);
-  }
-};
 
 if (
   process.env['MOCHA_WORKER_ID'] === undefined ||
@@ -240,17 +271,13 @@ if (
   }
   -> mode: ${
     processVariables.isHeadless
-      ? processVariables.headless === 'new'
+      ? processVariables.headless === 'true'
         ? '--headless=new'
         : '--headless'
       : 'headful'
   }`
   );
 }
-
-process.on('unhandledRejection', reason => {
-  throw reason;
-});
 
 const browserNotClosedError = new Error(
   'A manually launched browser was not closed!'
@@ -353,23 +380,27 @@ expect.extend({
 });
 
 export const expectCookieEquals = async (
-  cookies: Protocol.Network.Cookie[],
-  expectedCookies: Array<Partial<Protocol.Network.Cookie>>
+  cookies: Cookie[],
+  expectedCookies: Array<Partial<Cookie>>
 ): Promise<void> => {
   if (!processVariables.isChrome) {
     // Only keep standard properties when testing on a browser other than Chrome.
     expectedCookies = expectedCookies.map(cookie => {
-      return {
-        domain: cookie.domain,
-        expires: cookie.expires,
-        httpOnly: cookie.httpOnly,
-        name: cookie.name,
-        path: cookie.path,
-        secure: cookie.secure,
-        session: cookie.session,
-        size: cookie.size,
-        value: cookie.value,
-      };
+      return Object.fromEntries(
+        Object.entries(cookie).filter(([key]) => {
+          return [
+            'domain',
+            'expires',
+            'httpOnly',
+            'name',
+            'path',
+            'secure',
+            'session',
+            'size',
+            'value',
+          ].includes(key);
+        })
+      );
     });
   }
 
@@ -377,34 +408,6 @@ export const expectCookieEquals = async (
   for (let i = 0; i < cookies.length; i++) {
     expect(cookies[i]).toMatchObject(expectedCookies[i]!);
   }
-};
-
-/**
- * Use it if you want to capture debug logs for a specitic test suite in CI.
- * This describe function enables capturing of debug logs and would print them
- * only if a test fails to reduce the amount of output.
- */
-export const describeWithDebugLogs = (
-  description: string,
-  body: (this: Mocha.Suite) => void
-): Mocha.Suite | void => {
-  describe(description + '-debug', () => {
-    beforeEach(() => {
-      setLogCapture(true);
-    });
-
-    afterEach(function () {
-      if (this.currentTest?.state === 'failed') {
-        console.log(
-          `\n"${this.currentTest.fullTitle()}" failed. Here is a debug log:`
-        );
-        console.log(getCapturedLogs().join('\n') + '\n');
-      }
-      setLogCapture(false);
-    });
-
-    describe(description, body);
-  });
 };
 
 export const shortWaitForArrayToHaveAtLeastNElements = async (
@@ -459,7 +462,7 @@ const closeLaunched = (storage: Array<() => Promise<void>>) => {
 };
 
 export const launch = async (
-  launchOptions: PuppeteerLaunchOptions,
+  launchOptions: Readonly<PuppeteerLaunchOptions>,
   options: {
     after?: 'each' | 'all';
     createContext?: boolean;
@@ -488,7 +491,7 @@ export const launch = async (
     let context: BrowserContext;
     let page: Page;
     if (createContext) {
-      context = await browser.createIncognitoBrowserContext();
+      context = await browser.createBrowserContext();
       cleanupStorage.push(() => {
         return context.close();
       });

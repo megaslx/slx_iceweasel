@@ -6,6 +6,9 @@ const { TelemetryEvents } = ChromeUtils.importESModule(
 const { TelemetryEnvironment } = ChromeUtils.importESModule(
   "resource://gre/modules/TelemetryEnvironment.sys.mjs"
 );
+const { ExperimentAPI } = ChromeUtils.importESModule(
+  "resource://nimbus/ExperimentAPI.sys.mjs"
+);
 const STUDIES_OPT_OUT_PREF = "app.shield.optoutstudies.enabled";
 const UPLOAD_ENABLED_PREF = "datareporting.healthreport.uploadEnabled";
 
@@ -61,7 +64,8 @@ add_task(async function test_unenroll_opt_out() {
   await manager.store.addEnrollment(experiment);
 
   // Check that there aren't any Glean unenrollment events yet
-  var unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  var unenrollmentEvents =
+    Glean.nimbusEvents.unenrollment.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollmentEvents,
@@ -85,14 +89,13 @@ add_task(async function test_unenroll_opt_out() {
       {
         reason: "studies-opt-out",
         branch: experiment.branch.slug,
-        enrollmentId: experiment.enrollmentId,
       },
     ],
-    "should send an unenrollment ping with the slug, reason, branch slug, and enrollmentId"
+    "should send an unenrollment ping with the slug, reason, and branch slug"
   );
 
   // Check that the Glean unenrollment event was recorded.
-  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue("events");
   // We expect only one event
   Assert.equal(1, unenrollmentEvents.length);
   // And that one event matches the expected enrolled experiment
@@ -110,11 +113,6 @@ add_task(async function test_unenroll_opt_out() {
     "studies-opt-out",
     unenrollmentEvents[0].extra.reason,
     "Glean.nimbusEvents.unenrollment recorded with correct reason"
-  );
-  Assert.equal(
-    experiment.enrollmentId,
-    unenrollmentEvents[0].extra.enrollment_id,
-    "Glean.nimbusEvents.unenrollment recorded with correct enrollment id"
   );
 
   // reset pref
@@ -134,7 +132,8 @@ add_task(async function test_unenroll_rollout_opt_out() {
   await manager.store.addEnrollment(rollout);
 
   // Check that there aren't any Glean unenrollment events yet
-  var unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  var unenrollmentEvents =
+    Glean.nimbusEvents.unenrollment.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollmentEvents,
@@ -158,14 +157,13 @@ add_task(async function test_unenroll_rollout_opt_out() {
       {
         reason: "studies-opt-out",
         branch: rollout.branch.slug,
-        enrollmentId: rollout.enrollmentId,
       },
     ],
-    "should send an unenrollment ping with the slug, reason, branch slug, and enrollmentId"
+    "should send an unenrollment ping with the slug, reason, and branch slug"
   );
 
   // Check that the Glean unenrollment event was recorded.
-  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue("events");
   // We expect only one event
   Assert.equal(1, unenrollmentEvents.length);
   // And that one event matches the expected enrolled experiment
@@ -184,11 +182,6 @@ add_task(async function test_unenroll_rollout_opt_out() {
     unenrollmentEvents[0].extra.reason,
     "Glean.nimbusEvents.unenrollment recorded with correct reason"
   );
-  Assert.equal(
-    rollout.enrollmentId,
-    unenrollmentEvents[0].extra.enrollment_id,
-    "Glean.nimbusEvents.unenrollment recorded with correct enrollment id"
-  );
 
   // reset pref
   Services.prefs.clearUserPref(STUDIES_OPT_OUT_PREF);
@@ -200,7 +193,7 @@ add_task(async function test_unenroll_uploadPref() {
   const recipe = ExperimentFakes.recipe("foo");
 
   await manager.onStartup();
-  await ExperimentFakes.enrollmentHelper(recipe, { manager }).enrollmentPromise;
+  await ExperimentFakes.enrollmentHelper(recipe, { manager });
 
   Assert.equal(
     manager.store.get(recipe.slug).active,
@@ -272,7 +265,8 @@ add_task(async function test_send_unenroll_event() {
   await manager.store.addEnrollment(experiment);
 
   // Check that there aren't any Glean unenrollment events yet
-  var unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  var unenrollmentEvents =
+    Glean.nimbusEvents.unenrollment.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollmentEvents,
@@ -291,14 +285,13 @@ add_task(async function test_send_unenroll_event() {
       {
         reason: "some-reason",
         branch: experiment.branch.slug,
-        enrollmentId: experiment.enrollmentId,
       },
     ],
-    "should send an unenrollment ping with the slug, reason, branch slug, and enrollmentId"
+    "should send an unenrollment ping with the slug, reason, and branch slug"
   );
 
   // Check that the Glean unenrollment event was recorded.
-  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue("events");
   // We expect only one event
   Assert.equal(1, unenrollmentEvents.length);
   // And that one event matches the expected enrolled experiment
@@ -316,11 +309,6 @@ add_task(async function test_send_unenroll_event() {
     "some-reason",
     unenrollmentEvents[0].extra.reason,
     "Glean.nimbusEvents.unenrollment recorded with correct reason"
-  );
-  Assert.equal(
-    experiment.enrollmentId,
-    unenrollmentEvents[0].extra.enrollment_id,
-    "Glean.nimbusEvents.unenrollment recorded with correct enrollment id"
   );
 });
 
@@ -349,7 +337,8 @@ add_task(async function test_undefined_reason() {
   );
 
   // Check that the Glean unenrollment event was recorded.
-  let unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  let unenrollmentEvents =
+    Glean.nimbusEvents.unenrollment.testGetValue("events");
   // We expect only one event
   Assert.equal(1, unenrollmentEvents.length);
   // And that one event reason matches the expected reason
@@ -410,7 +399,8 @@ add_task(async function test_remove_rollout_onFinalize() {
   manager.onFinalize("NimbusTestUtils");
 
   // Check that there aren't any Glean unenroll_failed events
-  var unenrollFailedEvents = Glean.nimbusEvents.unenrollFailed.testGetValue();
+  var unenrollFailedEvents =
+    Glean.nimbusEvents.unenrollFailed.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollFailedEvents,
@@ -440,7 +430,8 @@ add_task(async function test_rollout_telemetry_events() {
   await manager.onStartup();
 
   // Check that there aren't any Glean unenrollment events yet
-  var unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  var unenrollmentEvents =
+    Glean.nimbusEvents.unenrollment.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollmentEvents,
@@ -450,7 +441,8 @@ add_task(async function test_rollout_telemetry_events() {
   manager.onFinalize("NimbusTestUtils");
 
   // Check that there aren't any Glean unenroll_failed events
-  var unenrollFailedEvents = Glean.nimbusEvents.unenrollFailed.testGetValue();
+  var unenrollFailedEvents =
+    Glean.nimbusEvents.unenrollFailed.testGetValue("events");
   Assert.equal(
     undefined,
     unenrollFailedEvents,
@@ -484,7 +476,7 @@ add_task(async function test_rollout_telemetry_events() {
   );
 
   // Check that the Glean unenrollment event was recorded.
-  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue();
+  unenrollmentEvents = Glean.nimbusEvents.unenrollment.testGetValue("events");
   // We expect only one event
   Assert.equal(1, unenrollmentEvents.length);
   // And that one event matches the expected enrolled experiment
@@ -503,11 +495,116 @@ add_task(async function test_rollout_telemetry_events() {
     unenrollmentEvents[0].extra.reason,
     "Glean.nimbusEvents.unenrollment recorded with correct reason"
   );
-  Assert.equal(
-    rollout.enrollmentId,
-    unenrollmentEvents[0].extra.enrollment_id,
-    "Glean.nimbusEvents.unenrollment recorded with correct enrollment id"
+  globalSandbox.restore();
+});
+
+add_task(async function test_check_unseen_enrollments_telemetry_events() {
+  globalSandbox.restore();
+  const store = ExperimentFakes.store();
+  const manager = ExperimentFakes.manager(store);
+  const sandbox = sinon.createSandbox();
+  sandbox.stub(manager, "unenroll").returns();
+  sandbox.stub(ExperimentAPI, "_store").get(() => manager.store);
+  sandbox.stub(ExperimentAPI, "_manager").get(() => manager);
+
+  await manager.onStartup();
+  await manager.store.ready();
+
+  const experiment = ExperimentFakes.recipe("foo", {
+    branches: [
+      {
+        slug: "wsup",
+        ratio: 1,
+        features: [
+          {
+            featureId: "nimbusTelemetry",
+            value: {
+              gleanMetricConfiguration: {
+                metrics_enabled: {
+                  "nimbus_events.enrollment_status": true,
+                },
+              },
+            },
+          },
+        ],
+      },
+    ],
+    bucketConfig: {
+      ...ExperimentFakes.recipe.bucketConfig,
+      count: 1000,
+    },
+  });
+
+  await manager.enroll(experiment, "aaa");
+
+  const source = "test";
+  const slugs = [],
+    experiments = [];
+  for (let i = 0; i < 7; i++) {
+    slugs.push(`slug-${i}`);
+    experiments.push({
+      slug: slugs[i],
+      source,
+      branch: {
+        slug: "control",
+      },
+    });
+  }
+
+  manager.sessions.set(source, new Set([slugs[0]]));
+
+  manager._checkUnseenEnrollments(
+    experiments,
+    source,
+    [slugs[1]],
+    [slugs[2]],
+    new Map([]),
+    new Map([[slugs[3], experiments[3]]]),
+    [slugs[4]],
+    new Map([[slugs[5], experiments[5]]])
   );
 
-  globalSandbox.restore();
+  const events = Glean.nimbusEvents.enrollmentStatus.testGetValue("events");
+
+  Assert.equal(events?.length, 7);
+
+  Assert.equal(events[0].extra.status, "Enrolled");
+  Assert.equal(events[0].extra.reason, "Qualified");
+  Assert.equal(events[0].extra.branch, "control");
+  Assert.equal(events[0].extra.slug, slugs[0]);
+
+  Assert.equal(events[1].extra.status, "Disqualified");
+  Assert.equal(events[1].extra.reason, "NotTargeted");
+  Assert.equal(events[1].extra.branch, "control");
+  Assert.equal(events[1].extra.slug, slugs[1]);
+
+  Assert.equal(events[2].extra.status, "Disqualified");
+  Assert.equal(events[2].extra.reason, "Error");
+  Assert.equal(events[2].extra.error_string, "invalid-recipe");
+  Assert.equal(events[2].extra.branch, "control");
+  Assert.equal(events[2].extra.slug, slugs[2]);
+
+  Assert.equal(events[3].extra.status, "Disqualified");
+  Assert.equal(events[3].extra.reason, "Error");
+  Assert.equal(events[3].extra.error_string, "invalid-branch");
+  Assert.equal(events[3].extra.branch, "control");
+  Assert.equal(events[3].extra.slug, slugs[3]);
+
+  Assert.equal(events[4].extra.status, "Disqualified");
+  Assert.equal(events[4].extra.reason, "Error");
+  Assert.equal(events[4].extra.error_string, "l10n-missing-locale");
+  Assert.equal(events[4].extra.branch, "control");
+  Assert.equal(events[4].extra.slug, slugs[4]);
+
+  Assert.equal(events[5].extra.status, "Disqualified");
+  Assert.equal(events[5].extra.reason, "Error");
+  Assert.equal(events[5].extra.error_string, "l10n-missing-entry");
+  Assert.equal(events[5].extra.branch, "control");
+  Assert.equal(events[5].extra.slug, slugs[5]);
+
+  Assert.equal(events[6].extra.status, "WasEnrolled");
+  Assert.equal(events[6].extra.branch, "control");
+  Assert.equal(events[6].extra.slug, slugs[6]);
+
+  sandbox.restore();
 });

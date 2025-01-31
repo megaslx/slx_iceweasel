@@ -78,7 +78,11 @@ async function testSteps() {
     info(`Testing ${origin.url}`);
 
     try {
-      request = initTemporaryOrigin("default", getPrincipal(origin.url));
+      request = initTemporaryOrigin(
+        "default",
+        getPrincipal(origin.url),
+        /* createIfNonExistent */ true
+      );
       await requestFinished(request);
 
       ok(true, "Should not have thrown");
@@ -88,8 +92,9 @@ async function testSteps() {
 
     let dir = getRelativeFile(basePath + origin.dirName);
     ok(dir.exists(), "Origin was created");
-    ok(
-      origin.dirName === dir.leafName,
+    Assert.strictEqual(
+      origin.dirName,
+      dir.leafName,
       `Origin ${origin.dirName} was created expectedly`
     );
   }

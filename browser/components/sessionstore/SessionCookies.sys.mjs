@@ -62,6 +62,14 @@ var SessionCookiesInternal = {
         );
       }
       if (!exists) {
+        // Enforces isPartitioned if the partitionKey is set. We need to do this
+        // because the session store didn't store the isPartitioned flag.
+        // Otherwise, we'd end up setting partitioned cookies without
+        // isPartitioned flag.
+        let isPartitioned =
+          cookie.isPartitioned ||
+          cookie.originAttributes?.partitionKey?.length > 0;
+
         try {
           Services.cookies.add(
             cookie.host,
@@ -74,7 +82,8 @@ var SessionCookiesInternal = {
             expiry,
             cookie.originAttributes || {},
             cookie.sameSite || Ci.nsICookie.SAMESITE_NONE,
-            cookie.schemeMap || Ci.nsICookie.SCHEME_HTTPS
+            cookie.schemeMap || Ci.nsICookie.SCHEME_HTTPS,
+            isPartitioned
           );
         } catch (ex) {
           console.error(
@@ -91,22 +100,32 @@ var SessionCookiesInternal = {
    * Handles observers notifications that are sent whenever cookies are added,
    * changed, or removed. Ensures that the storage is updated accordingly.
    */
-  observe(subject, topic, data) {
-    switch (data) {
-      case "added":
-        this._addCookie(subject);
+  observe(subject) {
+    let notification = subject.QueryInterface(Ci.nsICookieNotification);
+
+    let {
+      COOKIE_DELETED,
+      COOKIE_ADDED,
+      COOKIE_CHANGED,
+      ALL_COOKIES_CLEARED,
+      COOKIES_BATCH_DELETED,
+    } = Ci.nsICookieNotification;
+
+    switch (notification.action) {
+      case COOKIE_ADDED:
+        this._addCookie(notification.cookie);
         break;
-      case "changed":
-        this._updateCookie(subject);
+      case COOKIE_CHANGED:
+        this._updateCookie(notification.cookie);
         break;
-      case "deleted":
-        this._removeCookie(subject);
+      case COOKIE_DELETED:
+        this._removeCookie(notification.cookie);
         break;
-      case "cleared":
+      case ALL_COOKIES_CLEARED:
         CookieStore.clear();
         break;
-      case "batch-deleted":
-        this._removeCookies(subject);
+      case COOKIES_BATCH_DELETED:
+        this._removeCookies(notification.batchDeletedCookies);
         break;
       default:
         throw new Error("Unhandled session-cookie-changed notification.");
@@ -244,6 +263,10 @@ var CookieStore = {
 
     if (cookie.schemeMap) {
       jscookie.schemeMap = cookie.schemeMap;
+    }
+
+    if (cookie.isPartitioned) {
+      jscookie.isPartitioned = true;
     }
 
     this._entries.set(this._getKeyForCookie(cookie), jscookie);

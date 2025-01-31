@@ -4,11 +4,6 @@
 
 "use strict";
 
-// These are defined on "global" which is used for the same scopes as the other
-// ext-c-*.js files.
-/* exported EventManager */
-/* global EventManager: false */
-
 global.EventManager = ExtensionCommon.EventManager;
 
 extensions.registerModules({
@@ -64,7 +59,7 @@ extensions.registerModules({
   userScripts: {
     url: "chrome://extensions/content/child/ext-userScripts.js",
     scopes: ["addon_child"],
-    paths: [["userScripts"]],
+    paths: [["userScripts", "register"]],
   },
   userScriptsContent: {
     url: "chrome://extensions/content/child/ext-userScripts-content.js",

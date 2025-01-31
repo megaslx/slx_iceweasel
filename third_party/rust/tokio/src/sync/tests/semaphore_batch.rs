@@ -1,7 +1,9 @@
 use crate::sync::batch_semaphore::Semaphore;
 use tokio_test::*;
 
-#[cfg(target_arch = "wasm32")]
+const MAX_PERMITS: usize = crate::sync::Semaphore::MAX_PERMITS;
+
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[test]
@@ -169,11 +171,15 @@ fn poll_acquire_one_zero_permits() {
 }
 
 #[test]
+fn max_permits_doesnt_panic() {
+    Semaphore::new(MAX_PERMITS);
+}
+
+#[test]
 #[should_panic]
-#[cfg(not(target_arch = "wasm32"))] // wasm currently doesn't support unwinding
+#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
 fn validates_max_permits() {
-    use std::usize;
-    Semaphore::new((usize::MAX >> 2) + 1);
+    Semaphore::new(MAX_PERMITS + 1);
 }
 
 #[test]
@@ -251,4 +257,54 @@ fn cancel_acquire_releases_permits() {
 
     assert_eq!(6, s.available_permits());
     assert_ok!(s.try_acquire(6));
+}
+
+#[test]
+fn release_permits_at_drop() {
+    use crate::sync::semaphore::*;
+    use futures::task::ArcWake;
+    use std::future::Future;
+    use std::sync::Arc;
+
+    let sem = Arc::new(Semaphore::new(1));
+
+    struct ReleaseOnDrop(#[allow(dead_code)] Option<OwnedSemaphorePermit>);
+
+    impl ArcWake for ReleaseOnDrop {
+        fn wake_by_ref(_arc_self: &Arc<Self>) {}
+    }
+
+    let mut fut = Box::pin(async {
+        let _permit = sem.acquire().await.unwrap();
+    });
+
+    // Second iteration shouldn't deadlock.
+    for _ in 0..=1 {
+        let waker = futures::task::waker(Arc::new(ReleaseOnDrop(
+            sem.clone().try_acquire_owned().ok(),
+        )));
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+    }
+}
+
+#[test]
+fn forget_permits_basic() {
+    let s = Semaphore::new(10);
+    assert_eq!(s.forget_permits(4), 4);
+    assert_eq!(s.available_permits(), 6);
+    assert_eq!(s.forget_permits(10), 6);
+    assert_eq!(s.available_permits(), 0);
+}
+
+#[test]
+fn update_permits_many_times() {
+    let s = Semaphore::new(5);
+    let mut acquire = task::spawn(s.acquire(7));
+    assert_pending!(acquire.poll());
+    s.release(5);
+    assert_ready_ok!(acquire.poll());
+    assert_eq!(s.available_permits(), 3);
+    assert_eq!(s.forget_permits(3), 3);
+    assert_eq!(s.available_permits(), 0);
 }

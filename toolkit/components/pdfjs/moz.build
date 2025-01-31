@@ -7,13 +7,17 @@
 with Files("**"):
     BUG_COMPONENT = ("Firefox", "PDF Viewer")
 
-BROWSER_CHROME_MANIFESTS += ["test/browser.ini"]
-MOCHITEST_MANIFESTS += ["test/mochitest.ini"]
+BROWSER_CHROME_MANIFESTS += ["test/browser.toml"]
+MOCHITEST_MANIFESTS += ["test/mochitest.toml"]
 
 JAR_MANIFESTS += ["jar.mn"]
 
 EXTRA_JS_MODULES += [
     "pdfjs.sys.mjs",
+]
+
+JS_PREFERENCE_PP_FILES += [
+    "PdfJsDefaultPrefs.js",
 ]
 
 XPCOM_MANIFESTS += [

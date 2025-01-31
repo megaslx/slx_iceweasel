@@ -15,13 +15,12 @@ import threading
 import time
 import traceback
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
+from urllib.parse import unquote, urlsplit
 
 import moznetwork
 from six import ensure_binary, iteritems
-from six.moves.BaseHTTPServer import HTTPServer
-from six.moves.SimpleHTTPServer import SimpleHTTPRequestHandler
-from six.moves.socketserver import ThreadingMixIn
-from six.moves.urllib.parse import unquote, urlsplit
 
 
 class EasyServer(ThreadingMixIn, HTTPServer):
@@ -67,7 +66,6 @@ class Request(object):
 
 
 class RequestHandler(SimpleHTTPRequestHandler):
-
     docroot = os.getcwd()  # current working directory at time of import
     proxy_host_dirs = False
     request_log = []
@@ -94,7 +92,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
                     self.request, *m.groups()
                 )
                 self.send_response(response_code)
-                for (keyword, value) in iteritems(headerdict):
+                for keyword, value in iteritems(headerdict):
                     self.send_header(keyword, value)
                 self.end_headers()
                 self.wfile.write(ensure_binary(data))

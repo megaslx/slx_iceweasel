@@ -58,7 +58,7 @@ struct OriginMetadata : public PrincipalMetadata {
                           aIsPrivate),
         mPersistenceType(aPersistenceType) {}
 
-  OriginMetadata(PrincipalMetadata&& aPrincipalMetadata,
+  OriginMetadata(PrincipalMetadata aPrincipalMetadata,
                  PersistenceType aPersistenceType)
       : PrincipalMetadata(std::move(aPrincipalMetadata)),
         mPersistenceType(aPersistenceType) {}
@@ -77,8 +77,19 @@ struct FullOriginMetadata : OriginMetadata {
         mLastAccessTime(aLastAccessTime) {}
 };
 
+struct OriginUsageMetadata : FullOriginMetadata {
+  uint64_t mUsage;
+
+  OriginUsageMetadata() = default;
+
+  OriginUsageMetadata(FullOriginMetadata aFullOriginMetadata, uint64_t aUsage)
+      : FullOriginMetadata(std::move(aFullOriginMetadata)), mUsage(aUsage) {}
+};
+
 struct ClientMetadata : OriginMetadata {
-  const Client::Type mClientType;
+  Client::Type mClientType;
+
+  ClientMetadata() = default;
 
   ClientMetadata(OriginMetadata aOriginMetadata, Client::Type aClientType)
       : OriginMetadata(std::move(aOriginMetadata)), mClientType(aClientType) {}

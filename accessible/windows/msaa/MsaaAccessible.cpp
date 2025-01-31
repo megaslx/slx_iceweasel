@@ -10,9 +10,11 @@
 #include "ia2AccessibleImage.h"
 #include "ia2AccessibleTable.h"
 #include "ia2AccessibleTableCell.h"
+#include "LocalAccessible-inl.h"
 #include "mozilla/a11y/AccessibleWrap.h"
 #include "mozilla/a11y/Compatibility.h"
 #include "mozilla/a11y/DocAccessibleParent.h"
+#include "mozilla/StaticPrefs_accessibility.h"
 #include "MsaaAccessible.h"
 #include "MsaaDocAccessible.h"
 #include "MsaaRootAccessible.h"
@@ -25,7 +27,6 @@
 #include "sdnTextAccessible.h"
 #include "HyperTextAccessible-inl.h"
 #include "ServiceProvider.h"
-#include "Statistics.h"
 #include "ARIAMap.h"
 #include "mozilla/PresShell.h"
 
@@ -34,7 +35,16 @@ using namespace mozilla::a11y;
 
 static const VARIANT kVarChildIdSelf = {{{VT_I4}}};
 
-MsaaIdGenerator MsaaAccessible::sIDGen;
+// Used internally to safely get an MsaaAccessible from a COM pointer provided
+// to us by a client.
+static const GUID IID_MsaaAccessible = {
+    /* a94aded3-1a9c-4afc-a32c-d6b5c010046b */
+    0xa94aded3,
+    0x1a9c,
+    0x4afc,
+    {0xa3, 0x2c, 0xd6, 0xb5, 0xc0, 0x10, 0x04, 0x6b}};
+
+MOZ_RUNINIT MsaaIdGenerator MsaaAccessible::sIDGen;
 ITypeInfo* MsaaAccessible::gTypeInfo = nullptr;
 
 /* static */
@@ -205,8 +215,10 @@ void MsaaAccessible::FireWinEvent(Accessible* aTarget, uint32_t aEventType) {
                     nsIAccessibleEvent::EVENT_LAST_ENTRY,
                 "MSAA event map skewed");
 
-  NS_ASSERTION(aEventType > 0 && aEventType < ArrayLength(gWinEventMap),
-               "invalid event type");
+  if (aEventType == 0 || aEventType >= std::size(gWinEventMap)) {
+    MOZ_ASSERT_UNREACHABLE("invalid event type");
+    return;
+  }
 
   uint32_t winEvent = gWinEventMap[aEventType];
   if (!winEvent) return;
@@ -470,6 +482,16 @@ MsaaAccessible* MsaaAccessible::GetFrom(Accessible* aAcc) {
   return static_cast<AccessibleWrap*>(aAcc)->GetMsaa();
 }
 
+/* static */
+Accessible* MsaaAccessible::GetAccessibleFrom(IUnknown* aUnknown) {
+  RefPtr<MsaaAccessible> msaa;
+  aUnknown->QueryInterface(IID_MsaaAccessible, getter_AddRefs(msaa));
+  if (!msaa) {
+    return nullptr;
+  }
+  return msaa->Acc();
+}
+
 // IUnknown methods
 STDMETHODIMP
 MsaaAccessible::QueryInterface(REFIID iid, void** ppv) {
@@ -485,10 +507,19 @@ MsaaAccessible::QueryInterface(REFIID iid, void** ppv) {
     return E_NOINTERFACE;
   }
 
+  if (NS_WARN_IF(!NS_IsMainThread())) {
+    // Bug 1896816: JAWS sometimes traverses into Gecko UI from a file dialog
+    // thread. It shouldn't do that, but let's fail gracefully instead of
+    // crashing.
+    return RPC_E_WRONG_THREAD;
+  }
+
   // These interfaces are always available. We can support querying to them
   // even if the Accessible is dead.
   if (IID_IUnknown == iid) {
     *ppv = static_cast<IAccessible*>(this);
+  } else if (IID_MsaaAccessible == iid) {
+    *ppv = static_cast<MsaaAccessible*>(this);
   } else if (IID_IDispatch == iid || IID_IAccessible == iid) {
     *ppv = static_cast<IAccessible*>(this);
   } else if (IID_IServiceProvider == iid) {
@@ -497,6 +528,12 @@ MsaaAccessible::QueryInterface(REFIID iid, void** ppv) {
     HRESULT hr = ia2Accessible::QueryInterface(iid, ppv);
     if (SUCCEEDED(hr)) {
       return hr;
+    }
+    if (StaticPrefs::accessibility_uia_enable()) {
+      hr = uiaRawElmProvider::QueryInterface(iid, ppv);
+      if (SUCCEEDED(hr)) {
+        return hr;
+      }
     }
   }
   if (*ppv) {
@@ -526,7 +563,6 @@ MsaaAccessible::QueryInterface(REFIID iid, void** ppv) {
 
     *ppv = static_cast<ISimpleDOMNode*>(new sdnAccessible(WrapNotNull(this)));
   } else if (iid == IID_ISimpleDOMText && localAcc && localAcc->IsTextLeaf()) {
-    statistics::ISimpleDOMUsed();
     *ppv = static_cast<ISimpleDOMText*>(new sdnTextAccessible(this));
     static_cast<IUnknown*>(*ppv)->AddRef();
     return S_OK;
@@ -580,16 +616,20 @@ MsaaAccessible::get_accChildCount(long __RPC_FAR* pcountChildren) {
 
   if (!mAcc) return CO_E_OBJNOTCONNECTED;
 
-  if (Compatibility::IsA11ySuppressedForClipboardCopy() && mAcc->IsRoot()) {
+  if ((Compatibility::A11ySuppressionReasons() &
+       SuppressionReasons::Clipboard) &&
+      mAcc->IsRoot()) {
     // Bug 1798098: Windows Suggested Actions (introduced in Windows 11 22H2)
-    // might walk the entire a11y tree using UIA whenever anything is copied to
-    // the clipboard. This causes an unacceptable hang, particularly when the
-    // cache is disabled. We prevent this tree walk by returning a 0 child count
-    // for the root window, from which Windows might walk.
+    // might walk the entire a11y tree using UIA whenever anything is copied
+    // to the clipboard. This causes an unacceptable hang, particularly when
+    // the cache is disabled. We prevent this tree walk by returning a 0 child
+    // count for the root window, from which Windows might walk.
     return S_OK;
   }
 
-  if (nsAccUtils::MustPrune(mAcc)) return S_OK;
+  if (nsAccUtils::MustPrune(mAcc)) {
+    return S_OK;
+  }
 
   *pcountChildren = mAcc->ChildCount();
   return S_OK;
@@ -737,7 +777,8 @@ MsaaAccessible::get_accRole(
   uint32_t msaaRole = 0;
 
 #define ROLE(_geckoRole, stringRole, ariaRole, atkRole, macRole, macSubrole, \
-             _msaaRole, ia2Role, androidClass, nameRule)                     \
+             _msaaRole, ia2Role, androidClass, iosIsElement, uiaControlType, \
+             nameRule)                                                       \
   case roles::_geckoRole:                                                    \
     msaaRole = _msaaRole;                                                    \
     break;
@@ -1219,6 +1260,19 @@ MsaaAccessible::accHitTest(
 
   // if we got a child
   if (accessible) {
+    if (accessible != mAcc && accessible->IsTextLeaf()) {
+      Accessible* parent = accessible->Parent();
+      if (parent != mAcc && parent->Role() == roles::LINK) {
+        // Bug 1843832: The UI Automation -> IAccessible2 proxy barfs if we
+        // return the text leaf child of a link when hit testing an ancestor of
+        // the link. Therefore, we return the link instead. MSAA clients which
+        // call AccessibleObjectFromPoint will still get to the text leaf, since
+        // AccessibleObjectFromPoint keeps calling accHitTest until it can't
+        // descend any further. We should remove this tragic hack once we have
+        // a native UIA implementation.
+        accessible = parent;
+      }
+    }
     if (accessible == mAcc) {
       pvarChild->vt = VT_I4;
       pvarChild->lVal = CHILDID_SELF;

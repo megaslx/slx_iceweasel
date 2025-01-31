@@ -18,6 +18,9 @@
 class nsIChannel;
 class nsIURI;
 class nsIInterfaceRequestor;
+namespace mozilla::dom {
+class CanonicalBrowsingContext;
+}
 
 namespace mozilla::net {
 
@@ -31,8 +34,8 @@ class EarlyHintsService {
   void EarlyHint(const nsACString& aLinkHeader, nsIURI* aBaseURI,
                  nsIChannel* aChannel, const nsACString& aReferrerPolicy,
                  const nsACString& aCSPHeader,
-                 nsIInterfaceRequestor* aCallbacks);
-  void FinalResponse(uint32_t aResponseStatus);
+                 dom::CanonicalBrowsingContext* aLoadingBrowsingContext);
+  void Reset();
   void Cancel(const nsACString& aReason);
 
   void RegisterLinksAndGetConnectArgs(
@@ -41,9 +44,6 @@ class EarlyHintsService {
   uint32_t LinkType() const { return mLinkType; }
 
  private:
-  void CollectTelemetry(Maybe<uint32_t> aResponseStatus);
-  void CollectLinkTypeTelemetry(const nsAString& aRel);
-
   Maybe<TimeStamp> mFirstEarlyHint;
   uint32_t mEarlyHintsCount{0};
 

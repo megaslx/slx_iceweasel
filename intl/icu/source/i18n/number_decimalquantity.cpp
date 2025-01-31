@@ -16,7 +16,11 @@
 #include "putilimp.h"
 #include "number_decimalquantity.h"
 #include "number_roundingutils.h"
+#ifdef JS_HAS_INTL_API
+#include "double-conversion/double-conversion.h"
+#else
 #include "double-conversion.h"
+#endif
 #include "charstr.h"
 #include "number_utils.h"
 #include "uassert.h"
@@ -26,8 +30,13 @@ using namespace icu;
 using namespace icu::number;
 using namespace icu::number::impl;
 
+#ifdef JS_HAS_INTL_API
+using double_conversion::DoubleToStringConverter;
+using double_conversion::StringToDoubleConverter;
+#else
 using icu::double_conversion::DoubleToStringConverter;
 using icu::double_conversion::StringToDoubleConverter;
+#endif
 
 namespace {
 
@@ -44,7 +53,7 @@ inline int32_t safeSubtract(int32_t a, int32_t b) {
     return diff;
 }
 
-static double DOUBLE_MULTIPLIERS[] = {
+double DOUBLE_MULTIPLIERS[] = {
         1e0,
         1e1,
         1e2,
@@ -131,18 +140,24 @@ void DecimalQuantity::clear() {
     setBcdToZero(); // sets scale, precision, hasDouble, origDouble, origDelta, and BCD data
 }
 
-void DecimalQuantity::setMinInteger(int32_t minInt) {
+void DecimalQuantity::decreaseMinIntegerTo(int32_t minInt) {
+    // Validation should happen outside of DecimalQuantity, e.g., in the Precision class.
+    U_ASSERT(minInt >= 0);
+
+    if (lReqPos > minInt) {
+        lReqPos = minInt;
+    }
+}
+
+void DecimalQuantity::increaseMinIntegerTo(int32_t minInt) {
     // Validation should happen outside of DecimalQuantity, e.g., in the Precision class.
     U_ASSERT(minInt >= 0);
 
     // Special behavior: do not set minInt to be less than what is already set.
     // This is so significant digits rounding can set the integer length.
-    if (minInt < lReqPos) {
-        minInt = lReqPos;
+    if (lReqPos < minInt) {
+        lReqPos = minInt;
     }
-
-    // Save values into internal state
-    lReqPos = minInt;
 }
 
 void DecimalQuantity::setMinFraction(int32_t minFrac) {
@@ -1076,7 +1091,7 @@ UnicodeString DecimalQuantity::toScientificString() const {
     result.append(u'E');
     int32_t _scale = upperPos + scale + exponent;
     if (_scale == INT32_MIN) {
-        result.append({u"-2147483648", -1});
+        result.append(u"-2147483648");
         return result;
     } else if (_scale < 0) {
         _scale *= -1;
@@ -1107,7 +1122,7 @@ int8_t DecimalQuantity::getDigitPos(int32_t position) const {
         return fBCD.bcdBytes.ptr[position];
     } else {
         if (position < 0 || position >= 16) { return 0; }
-        return (int8_t) ((fBCD.bcdLong >> (position * 4)) & 0xf);
+        return static_cast<int8_t>((fBCD.bcdLong >> (position * 4)) & 0xf);
     }
 }
 
@@ -1122,7 +1137,7 @@ void DecimalQuantity::setDigitPos(int32_t position, int8_t value) {
         fBCD.bcdBytes.ptr[position] = value;
     } else {
         int shift = position * 4;
-        fBCD.bcdLong = (fBCD.bcdLong & ~(0xfL << shift)) | ((long) value << shift);
+        fBCD.bcdLong = (fBCD.bcdLong & ~(0xfL << shift)) | (static_cast<long>(value) << shift);
     }
 }
 
@@ -1322,7 +1337,7 @@ void DecimalQuantity::ensureCapacity(int32_t capacity) {
         // Initialize the byte array to zeros (this is done automatically in Java)
         uprv_memset(fBCD.bcdBytes.ptr, 0, capacity * sizeof(int8_t));
     } else if (oldCapacity < capacity) {
-        auto bcd1 = static_cast<int8_t*>(uprv_malloc(capacity * 2 * sizeof(int8_t)));
+        auto* bcd1 = static_cast<int8_t*>(uprv_malloc(capacity * 2 * sizeof(int8_t)));
         uprv_memcpy(bcd1, fBCD.bcdBytes.ptr, oldCapacity * sizeof(int8_t));
         // Initialize the rest of the byte array to zeros (this is done automatically in Java)
         uprv_memset(bcd1 + oldCapacity, 0, (capacity - oldCapacity) * sizeof(int8_t));

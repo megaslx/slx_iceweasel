@@ -22,8 +22,6 @@
 #include "nsContentUtils.h"
 #include "SVGAnimatedTransformList.h"
 
-// XXX Tight coupling with content classes ahead!
-
 using namespace mozilla::dom;
 using namespace mozilla::dom::SVGGradientElement_Binding;
 using namespace mozilla::dom::SVGUnitTypes_Binding;
@@ -110,15 +108,11 @@ uint16_t SVGGradientFrame::GetSpreadMethod() {
   return GetEnumValue(dom::SVGGradientElement::SPREADMETHOD);
 }
 
-const SVGAnimatedTransformList* SVGGradientFrame::GetGradientTransformList(
-    nsIContent* aDefault) {
-  SVGAnimatedTransformList* thisTransformList =
-      static_cast<dom::SVGGradientElement*>(GetContent())
-          ->GetAnimatedTransformList();
-
-  if (thisTransformList && thisTransformList->IsExplicitlySet())
-    return thisTransformList;
-
+SVGGradientFrame* SVGGradientFrame::GetGradientTransformFrame(
+    SVGGradientFrame* aDefault) {
+  if (!StyleDisplay()->mTransform.IsNone()) {
+    return this;
+  }
   // Before we recurse, make sure we'll break reference loops and over long
   // reference chains:
   static int16_t sRefChainLengthCounter = AutoReferenceChainGuard::noChain;
@@ -126,21 +120,18 @@ const SVGAnimatedTransformList* SVGGradientFrame::GetGradientTransformList(
                                         &sRefChainLengthCounter);
   if (MOZ_UNLIKELY(!refChainGuard.Reference())) {
     // Break reference chain
-    return static_cast<const dom::SVGGradientElement*>(aDefault)
-        ->mGradientTransform.get();
+    return aDefault;
   }
 
-  SVGGradientFrame* next = GetReferencedGradient();
-
-  return next ? next->GetGradientTransformList(aDefault)
-              : static_cast<const dom::SVGGradientElement*>(aDefault)
-                    ->mGradientTransform.get();
+  if (SVGGradientFrame* next = GetReferencedGradient()) {
+    return next->GetGradientTransformFrame(aDefault);
+  }
+  return aDefault;
 }
 
 gfxMatrix SVGGradientFrame::GetGradientTransform(
     nsIFrame* aSource, const gfxRect* aOverrideBounds) {
   gfxMatrix bboxMatrix;
-
   uint16_t gradientUnits = GetGradientUnits();
   if (gradientUnits != SVG_UNIT_TYPE_USERSPACEONUSE) {
     NS_ASSERTION(gradientUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX,
@@ -156,15 +147,8 @@ gfxMatrix SVGGradientFrame::GetGradientTransform(
         gfxMatrix(bbox.Width(), 0, 0, bbox.Height(), bbox.X(), bbox.Y());
   }
 
-  const SVGAnimatedTransformList* animTransformList =
-      GetGradientTransformList(GetContent());
-  if (!animTransformList) {
-    return bboxMatrix;
-  }
-
-  gfxMatrix gradientTransform =
-      animTransformList->GetAnimValue().GetConsolidationMatrix();
-  return bboxMatrix.PreMultiply(gradientTransform);
+  return bboxMatrix.PreMultiply(
+      SVGUtils::GetTransformMatrixInUserSpace(GetGradientTransformFrame(this)));
 }
 
 dom::SVGLinearGradientElement* SVGGradientFrame::GetLinearGradientWithLength(
@@ -210,24 +194,57 @@ dom::SVGRadialGradientElement* SVGGradientFrame::GetRadialGradientWithLength(
 //----------------------------------------------------------------------
 // SVGPaintServerFrame methods:
 
-// helper
-static void GetStopInformation(nsIFrame* aStopFrame, float* aOffset,
-                               nscolor* aStopColor, float* aStopOpacity) {
+// helpers
+
+static ColorStop GetStopInformation(const nsIFrame* aStopFrame,
+                                    float aGraphicOpacity,
+                                    float& aLastPosition) {
   nsIContent* stopContent = aStopFrame->GetContent();
   MOZ_ASSERT(stopContent && stopContent->IsSVGElement(nsGkAtoms::stop));
 
+  float position;
   static_cast<SVGStopElement*>(stopContent)
-      ->GetAnimatedNumberValues(aOffset, nullptr);
+      ->GetAnimatedNumberValues(&position, nullptr);
 
-  const nsStyleSVGReset* styleSVGReset = aStopFrame->StyleSVGReset();
-  *aOffset = mozilla::clamped(*aOffset, 0.0f, 1.0f);
-  *aStopColor = styleSVGReset->mStopColor.CalcColor(aStopFrame);
-  *aStopOpacity = styleSVGReset->mStopOpacity;
+  position = std::clamp(position, 0.0f, 1.0f);
+
+  if (position < aLastPosition) {
+    position = aLastPosition;
+  } else {
+    aLastPosition = position;
+  }
+
+  const auto* svgReset = aStopFrame->StyleSVGReset();
+
+  sRGBColor stopColor =
+      sRGBColor::FromABGR(svgReset->mStopColor.CalcColor(aStopFrame));
+  stopColor.a *= svgReset->mStopOpacity * aGraphicOpacity;
+
+  return ColorStop(position, false,
+                   StyleAbsoluteColor::FromColor(stopColor.ToABGR()));
 }
+
+class MOZ_STACK_CLASS SVGColorStopInterpolator
+    : public ColorStopInterpolator<SVGColorStopInterpolator> {
+ public:
+  SVGColorStopInterpolator(
+      gfxPattern* aGradient, const nsTArray<ColorStop>& aStops,
+      const StyleColorInterpolationMethod& aStyleColorInterpolationMethod,
+      bool aExtend)
+      : ColorStopInterpolator(aStops, aStyleColorInterpolationMethod, aExtend),
+        mGradient(aGradient) {}
+
+  void CreateStop(float aPosition, DeviceColor aColor) {
+    mGradient->AddColorStop(aPosition, aColor);
+  }
+
+ private:
+  gfxPattern* mGradient;
+};
 
 already_AddRefed<gfxPattern> SVGGradientFrame::GetPaintServerPattern(
     nsIFrame* aSource, const DrawTarget* aDrawTarget,
-    const gfxMatrix& aContextMatrix, StyleSVGPaint nsStyleSVG::*aFillOrStroke,
+    const gfxMatrix& aContextMatrix, StyleSVGPaint nsStyleSVG::* aFillOrStroke,
     float aGraphicOpacity, imgDrawingParams& aImgParams,
     const gfxRect* aOverrideBounds) {
   uint16_t gradientUnits = GetGradientUnits();
@@ -240,36 +257,27 @@ already_AddRefed<gfxPattern> SVGGradientFrame::GetPaintServerPattern(
     mSource = aSource->IsTextFrame() ? aSource->GetParent() : aSource;
   }
 
-  AutoTArray<nsIFrame*, 8> stopFrames;
-  GetStopFrames(&stopFrames);
+  AutoTArray<ColorStop, 8> stops;
+  GetStops(&stops, aGraphicOpacity);
 
-  uint32_t nStops = stopFrames.Length();
+  uint32_t nStops = stops.Length();
 
   // SVG specification says that no stops should be treated like
   // the corresponding fill or stroke had "none" specified.
   if (nStops == 0) {
-    RefPtr<gfxPattern> pattern = new gfxPattern(DeviceColor());
     return do_AddRef(new gfxPattern(DeviceColor()));
   }
 
   if (nStops == 1 || GradientVectorLengthIsZero()) {
-    auto* lastStopFrame = stopFrames[nStops - 1];
-    const auto* svgReset = lastStopFrame->StyleSVGReset();
     // The gradient paints a single colour, using the stop-color of the last
     // gradient step if there are more than one.
-    float stopOpacity = svgReset->mStopOpacity;
-    nscolor stopColor = svgReset->mStopColor.CalcColor(lastStopFrame);
-
-    sRGBColor stopColor2 = sRGBColor::FromABGR(stopColor);
-    stopColor2.a *= stopOpacity * aGraphicOpacity;
-    return do_AddRef(new gfxPattern(ToDeviceColor(stopColor2)));
+    return do_AddRef(new gfxPattern(ToDeviceColor(stops.LastElement().mColor)));
   }
 
   // Get the transform list (if there is one). We do this after the returns
   // above since this call can be expensive when "gradientUnits" is set to
   // "objectBoundingBox" (since that requiring a GetBBox() call).
   gfxMatrix patternMatrix = GetGradientTransform(aSource, aOverrideBounds);
-
   if (patternMatrix.IsSingular()) {
     return nullptr;
   }
@@ -292,32 +300,27 @@ already_AddRefed<gfxPattern> SVGGradientFrame::GetPaintServerPattern(
   }
 
   uint16_t aSpread = GetSpreadMethod();
-  if (aSpread == SVG_SPREADMETHOD_PAD)
+  if (aSpread == SVG_SPREADMETHOD_PAD) {
     gradient->SetExtend(ExtendMode::CLAMP);
-  else if (aSpread == SVG_SPREADMETHOD_REFLECT)
+  } else if (aSpread == SVG_SPREADMETHOD_REFLECT) {
     gradient->SetExtend(ExtendMode::REFLECT);
-  else if (aSpread == SVG_SPREADMETHOD_REPEAT)
+  } else if (aSpread == SVG_SPREADMETHOD_REPEAT) {
     gradient->SetExtend(ExtendMode::REPEAT);
+  }
 
   gradient->SetMatrix(patternMatrix);
 
-  // setup stops
-  float lastOffset = 0.0f;
-
-  for (uint32_t i = 0; i < nStops; i++) {
-    float offset, stopOpacity;
-    nscolor stopColor;
-
-    GetStopInformation(stopFrames[i], &offset, &stopColor, &stopOpacity);
-
-    if (offset < lastOffset)
-      offset = lastOffset;
-    else
-      lastOffset = offset;
-
-    sRGBColor stopColor2 = sRGBColor::FromABGR(stopColor);
-    stopColor2.a *= stopOpacity * aGraphicOpacity;
-    gradient->AddColorStop(offset, ToDeviceColor(stopColor2));
+  if (StyleSVG()->mColorInterpolation == StyleColorInterpolation::Linearrgb) {
+    static constexpr auto interpolationMethod = StyleColorInterpolationMethod{
+        StyleColorSpace::SrgbLinear, StyleHueInterpolationMethod::Shorter};
+    SVGColorStopInterpolator interpolator(gradient, stops, interpolationMethod,
+                                          false);
+    interpolator.CreateStops();
+  } else {
+    // setup standard sRGB stops
+    for (const auto& stop : stops) {
+      gradient->AddColorStop(stop.mPosition, ToDeviceColor(stop.mColor));
+    }
   }
 
   return gradient.forget();
@@ -351,15 +354,16 @@ SVGGradientFrame* SVGGradientFrame::GetReferencedGradient() {
   return do_QueryFrame(SVGObserverUtils::GetAndObserveTemplate(this, GetHref));
 }
 
-void SVGGradientFrame::GetStopFrames(nsTArray<nsIFrame*>* aStopFrames) {
-  nsIFrame* stopFrame = nullptr;
-  for (stopFrame = mFrames.FirstChild(); stopFrame;
-       stopFrame = stopFrame->GetNextSibling()) {
+void SVGGradientFrame::GetStops(nsTArray<ColorStop>* aStops,
+                                float aGraphicOpacity) {
+  float lastPosition = 0.0f;
+  for (const auto* stopFrame : mFrames) {
     if (stopFrame->IsSVGStopFrame()) {
-      aStopFrames->AppendElement(stopFrame);
+      aStops->AppendElement(
+          GetStopInformation(stopFrame, aGraphicOpacity, lastPosition));
     }
   }
-  if (aStopFrames->Length() > 0) {
+  if (!aStops->IsEmpty()) {
     return;
   }
 
@@ -377,7 +381,7 @@ void SVGGradientFrame::GetStopFrames(nsTArray<nsIFrame*>* aStopFrames) {
 
   SVGGradientFrame* next = GetReferencedGradient();
   if (next) {
-    next->GetStopFrames(aStopFrames);
+    next->GetStops(aStops, aGraphicOpacity);
   }
 }
 
@@ -435,7 +439,7 @@ float SVGLinearGradientFrame::GetLengthValue(uint32_t aIndex) {
   NS_ASSERTION(gradientUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX,
                "Unknown gradientUnits type");
 
-  return length.GetAnimValue(static_cast<SVGViewportElement*>(nullptr));
+  return length.GetAnimValueWithZoom(static_cast<SVGViewportElement*>(nullptr));
 }
 
 dom::SVGLinearGradientElement*
@@ -465,8 +469,7 @@ already_AddRefed<gfxPattern> SVGLinearGradientFrame::CreateGradient() {
   float x2 = GetLengthValue(dom::SVGLinearGradientElement::ATTR_X2);
   float y2 = GetLengthValue(dom::SVGLinearGradientElement::ATTR_Y2);
 
-  RefPtr<gfxPattern> pattern = new gfxPattern(x1, y1, x2, y2);
-  return pattern.forget();
+  return do_AddRef(new gfxPattern(x1, y1, x2, y2));
 }
 
 // -------------------------------------------------------------------------
@@ -538,7 +541,7 @@ float SVGRadialGradientFrame::GetLengthValueFromElement(
   NS_ASSERTION(gradientUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX,
                "Unknown gradientUnits type");
 
-  return length.GetAnimValue(static_cast<SVGViewportElement*>(nullptr));
+  return length.GetAnimValueWithZoom(static_cast<SVGViewportElement*>(nullptr));
 }
 
 dom::SVGRadialGradientElement*
@@ -575,8 +578,7 @@ already_AddRefed<gfxPattern> SVGRadialGradientFrame::CreateGradient() {
   float fy = GetLengthValue(dom::SVGRadialGradientElement::ATTR_FY, cy);
   float fr = GetLengthValue(dom::SVGRadialGradientElement::ATTR_FR);
 
-  RefPtr<gfxPattern> pattern = new gfxPattern(fx, fy, fr, cx, cy, r);
-  return pattern.forget();
+  return do_AddRef(new gfxPattern(fx, fy, fr, cx, cy, r));
 }
 
 }  // namespace mozilla

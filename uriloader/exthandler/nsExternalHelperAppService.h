@@ -88,7 +88,8 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
                      nsIPrincipal* aRedirectPrincipal,
                      mozilla::dom::BrowsingContext* aBrowsingContext,
                      bool aWasTriggeredExternally,
-                     bool aHasValidUserGestureActivation) override;
+                     bool aHasValidUserGestureActivation,
+                     bool aNewWindowTarget) override;
   NS_IMETHOD SetProtocolHandlerDefaults(nsIHandlerInfo* aHandlerInfo,
                                         bool aOSHandlerExists) override;
 
@@ -253,7 +254,7 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
 
  private:
   nsresult DoContentContentProcessHelper(
-      const nsACString& aMimeContentType, nsIRequest* aRequest,
+      const nsACString& aMimeContentType, nsIChannel* aChannel,
       mozilla::dom::BrowsingContext* aContentContext, bool aForceSave,
       nsIInterfaceRequestor* aWindowContext,
       nsIStreamListener** aStreamListener);
@@ -314,8 +315,6 @@ class nsExternalAppHandler final : public nsIStreamListener,
    */
   void MaybeApplyDecodingForExtension(nsIRequest* request);
 
-  void SetShouldCloseWindow() { mShouldCloseWindow = true; }
-
  protected:
   bool IsDownloadSpam(nsIChannel* aChannel);
 
@@ -363,6 +362,12 @@ class nsExternalAppHandler final : public nsIStreamListener,
   bool mForceSave;
 
   /**
+   * If set, any internally handled type that has a disposition of
+     nsIChannel::DISPOSITION_ATTACHMENT will be saved to disk.
+   */
+  bool mForceSaveInternallyHandled;
+
+  /**
    * The canceled flag is set if the user canceled the launching of this
    * application before we finished saving the data to a temp file.
    */
@@ -374,12 +379,6 @@ class nsExternalAppHandler final : public nsIStreamListener,
   bool mStopRequestIssued;
 
   bool mIsFileChannel;
-
-  /**
-   * True if the ExternalHelperAppChild told us that we should close the window
-   * if we handle the content as a download.
-   */
-  bool mShouldCloseWindow;
 
   /**
    * True if the file should be handled internally.
@@ -538,8 +537,8 @@ class nsExternalAppHandler final : public nsIStreamListener,
                         const nsString& path);
 
   /**
-   * Set in HelperAppDlg.jsm. This is always null after the user has chosen an
-   * action.
+   * Set in HelperAppDlg.sys.mjs. This is always null after the user has chosen
+   * an action.
    */
   nsCOMPtr<nsIWebProgressListener2> mDialogProgressListener;
   /**

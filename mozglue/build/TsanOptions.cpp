@@ -73,6 +73,7 @@ extern "C" const char* __tsan_default_suppressions() {
          "race:pa_format_info_set_prop_string_array\n"
          "race:pa_stream_get_index\n"
          "race:pa_stream_update_timing_info\n"
+         "race:vorbis_synthesis_init\n"
          // This is a callback from libglib-2 that is apparently
          // not fully suppressed through `called_from_lib`.
          "race:g_main_context_dispatch\n"
@@ -313,6 +314,10 @@ extern "C" const char* __tsan_default_suppressions() {
          // 1816713. However, libvulkan_lvp.so is unloaded so a called_from_lib
          // suppression cannot be used.
          "race:libvulkan_lvp.so\n"
+
+         // Bug 1894073 - false positive
+         // TSan isn't aware of IPC; see bug for detailed explanation.
+         "race:LaunchAppWithForkServer\n"
 
       // End of suppressions.
       ;  // Please keep this semicolon.

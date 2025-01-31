@@ -10,12 +10,18 @@
 
 #include "modules/video_coding/video_receiver2.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "api/test/mock_video_decoder.h"
+#include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "api/video/encoded_frame.h"
+#include "api/video/video_content_type.h"
+#include "api/video/video_frame.h"
+#include "api/video/video_frame_type.h"
 #include "common_video/test/utilities.h"
 #include "modules/video_coding/decoder_database.h"
 #include "modules/video_coding/timing/timing.h"
@@ -35,11 +41,18 @@ class MockVCMReceiveCallback : public VCMReceiveCallback {
  public:
   MockVCMReceiveCallback() = default;
 
-  MOCK_METHOD(
-      int32_t,
-      FrameToRender,
-      (VideoFrame&, absl::optional<uint8_t>, TimeDelta, VideoContentType),
-      (override));
+  MOCK_METHOD(int32_t,
+              FrameToRender,
+              (VideoFrame&,
+               std::optional<uint8_t>,
+               TimeDelta,
+               VideoContentType,
+               VideoFrameType),
+              (override));
+  MOCK_METHOD(int32_t,
+              OnFrameToRender,
+              (const struct FrameToRender&),
+              (override));
   MOCK_METHOD(void, OnIncomingPayloadType, (int), (override));
   MOCK_METHOD(void,
               OnDecoderInfoChanged,
@@ -86,7 +99,8 @@ class VideoReceiver2Test : public ::testing::Test {
   SimulatedClock clock_{Timestamp::Millis(1337)};
   VCMTiming timing_{&clock_, field_trials_};
   NiceMock<MockVCMReceiveCallback> receive_callback_;
-  VideoReceiver2 receiver_{&clock_, &timing_, field_trials_};
+  VideoReceiver2 receiver_{&clock_, &timing_, field_trials_,
+                           /*corruption_score_calculator=*/nullptr};
 };
 
 TEST_F(VideoReceiver2Test, RegisterExternalDecoder) {
@@ -120,7 +134,7 @@ TEST_F(VideoReceiver2Test, RegisterReceiveCodecs) {
   auto decoder = std::make_unique<NiceMock<MockVideoDecoder>>();
   EXPECT_CALL(*decoder, RegisterDecodeCompleteCallback)
       .WillOnce(Return(WEBRTC_VIDEO_CODEC_OK));
-  EXPECT_CALL(*decoder, Decode).WillOnce(Return(WEBRTC_VIDEO_CODEC_OK));
+  EXPECT_CALL(*decoder, Decode(_, _)).WillOnce(Return(WEBRTC_VIDEO_CODEC_OK));
   EXPECT_CALL(*decoder, Release).WillOnce(Return(WEBRTC_VIDEO_CODEC_OK));
 
   // Register the decoder. Note that this moves ownership of the mock object

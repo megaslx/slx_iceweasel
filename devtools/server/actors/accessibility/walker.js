@@ -37,7 +37,7 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
-  ["getCurrentZoom", "isWindowIncluded", "isFrameWithChildTarget"],
+  ["isWindowIncluded", "isFrameWithChildTarget"],
   "resource://devtools/shared/layout/utils.js",
   true
 );
@@ -62,6 +62,15 @@ loader.lazyRequireGetter(
   "accessibility",
   "resource://devtools/shared/constants.js",
   true
+);
+
+const lazy = {};
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    TYPES: "resource://devtools/shared/highlighters.mjs",
+  },
+  { global: "contextual" }
 );
 
 const kStateHover = 0x00000004; // ElementState::HOVER
@@ -256,7 +265,7 @@ class AccessibleWalkerActor extends Actor {
     if (!this._highlighter) {
       this._highlighter = new CustomHighlighterActor(
         this,
-        "AccessibleHighlighter"
+        lazy.TYPES.ACCESSIBLE
       );
 
       this.manage(this._highlighter);
@@ -270,7 +279,7 @@ class AccessibleWalkerActor extends Actor {
     if (!this._tabbingOrderHighlighter) {
       this._tabbingOrderHighlighter = new CustomHighlighterActor(
         this,
-        "TabbingOrderHighlighter"
+        lazy.TYPES.TABBING_ORDER
       );
 
       this.manage(this._tabbingOrderHighlighter);
@@ -1084,10 +1093,6 @@ class AccessibleWalkerActor extends Actor {
     return accessible;
   }
 
-  get pixelRatio() {
-    return this.rootWin.devicePixelRatio;
-  }
-
   /**
    * Find deepest accessible object that corresponds to the screen coordinates of the
    * mouse pointer and attach it to the AccessibilityWalker tree.
@@ -1099,13 +1104,18 @@ class AccessibleWalkerActor extends Actor {
    */
   _findAndAttachAccessible(event) {
     const target = event.originalTarget || event.target;
-    const docAcc = this.getRawAccessibleFor(this.rootDoc);
     const win = target.ownerGlobal;
-    const zoom = this.isXUL ? 1 : getCurrentZoom(win);
-    const scale = this.pixelRatio / zoom;
-    const rawAccessible = docAcc.getDeepestChildAtPointInProcess(
-      event.screenX * scale,
-      event.screenY * scale
+    // This event might be inside a sub-document, so don't use this.rootDoc.
+    const docAcc = this.getRawAccessibleFor(win.document);
+    // If the target is inside a pop-up widget, we need to query the pop-up
+    // Accessible, not the DocAccessible. The DocAccessible can't hit test
+    // inside pop-ups.
+    const popup = win.isChromeWindow ? target.closest("panel") : null;
+    const containerAcc = popup ? this.getRawAccessibleFor(popup) : docAcc;
+    const { devicePixelRatio } = this.rootWin;
+    const rawAccessible = containerAcc.getDeepestChildAtPointInProcess(
+      event.screenX * devicePixelRatio,
+      event.screenY * devicePixelRatio
     );
     return this.attachAccessible(rawAccessible, docAcc);
   }

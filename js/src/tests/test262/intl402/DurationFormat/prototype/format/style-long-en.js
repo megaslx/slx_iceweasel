@@ -1,16 +1,16 @@
-// |reftest| skip -- Intl.DurationFormat is not supported
+// |reftest| skip-if(!Intl.hasOwnProperty('DurationFormat')) -- Intl.DurationFormat is not enabled unconditionally
 // Copyright 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
 esid: sec-Intl.DurationFormat.prototype.format
 description: Test if format method formats duration correctly with different "style" arguments
-locale: [en-US]
+locale: [en]
+includes: [testIntl.js]
 features: [Intl.DurationFormat]
 ---*/
 
 const style = "long";
-const expected = "1 year, 2 months, 3 weeks, 3 days, 4 hours, 5 minutes, 6 seconds, 7 milliseconds, 8 microseconds, 9 nanoseconds";
 
 const duration = {
   years: 1,
@@ -26,6 +26,9 @@ const duration = {
 };
 
 const df = new Intl.DurationFormat("en", {style});
+
+const expected = formatDurationFormatPattern(df, duration);
+
 assert.sameValue(df.format(duration), expected, `Assert DurationFormat format output using ${style} style option`);
 
 reportCompare(0, 0);

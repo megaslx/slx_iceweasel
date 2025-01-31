@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <stdint.h>
 #include "gtest/gtest.h"
 #include "BitReader.h"
 #include "BitWriter.h"
@@ -56,6 +57,25 @@ TEST(BitWriter, BitWriter)
   EXPECT_EQ(length, BitReader::GetBitLength(test));
 }
 
+TEST(BitWriter, AdvanceBytes)
+{
+  RefPtr<MediaByteBuffer> test = new MediaByteBuffer();
+  BitWriter b(test);
+  b.WriteBits(0xff, 8);
+  EXPECT_EQ(test->Length(), 1u);
+
+  uint8_t data[] = {0xfe, 0xfd};
+  test->AppendElements(data, sizeof(data));
+  EXPECT_EQ(test->Length(), 3u);
+  b.AdvanceBytes(2);
+
+  b.WriteBits(0xfc, 8);
+  EXPECT_EQ(test->Length(), 4u);
+
+  BitReader c(test);
+  EXPECT_EQ(c.ReadU32(), 0xfffefdfc);
+}
+
 TEST(BitWriter, SPS)
 {
   uint8_t sps_pps[] = {0x01, 0x4d, 0x40, 0x0c, 0xff, 0xe1, 0x00, 0x1b, 0x67,
@@ -72,8 +92,8 @@ TEST(BitWriter, SPS)
 
   auto testOutput = [&](uint8_t aProfile, uint8_t aConstraints, uint8_t aLevel,
                         gfx::IntSize aSize, char const* aDesc) {
-    RefPtr<MediaByteBuffer> extraData =
-        H264::CreateExtraData(aProfile, aConstraints, aLevel, aSize);
+    RefPtr<MediaByteBuffer> extraData = H264::CreateExtraData(
+        aProfile, aConstraints, H264_LEVEL{aLevel}, aSize);
     SPSData spsData;
     success = H264::DecodeSPSFromExtraData(extraData, spsData);
     EXPECT_EQ(success, true) << aDesc;

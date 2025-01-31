@@ -11,7 +11,7 @@
 #include "DOMMediaStream.h"
 #include "MediaDecoder.h"
 #include "MediaEncoder.h"
-#include "MediaTrackGraphImpl.h"
+#include "MediaTrackGraph.h"
 #include "VideoUtils.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/AudioStreamTrack.h"
@@ -34,6 +34,7 @@
 #include "nsIScriptError.h"
 #include "nsMimeTypes.h"
 #include "nsProxyRelease.h"
+#include "nsGlobalWindowInner.h"
 #include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
 
@@ -166,10 +167,10 @@ NS_IMPL_RELEASE_INHERITED(MediaRecorder, DOMEventTargetHelper)
 
 namespace {
 bool PrincipalSubsumes(MediaRecorder* aRecorder, nsIPrincipal* aPrincipal) {
-  if (!aRecorder->GetOwner()) {
+  if (!aRecorder->GetOwnerWindow()) {
     return false;
   }
-  nsCOMPtr<Document> doc = aRecorder->GetOwner()->GetExtantDoc();
+  nsCOMPtr<Document> doc = aRecorder->GetOwnerWindow()->GetExtantDoc();
   if (!doc) {
     return false;
   }
@@ -197,8 +198,9 @@ bool MediaStreamTracksPrincipalSubsumes(
 bool AudioNodePrincipalSubsumes(MediaRecorder* aRecorder,
                                 AudioNode* aAudioNode) {
   MOZ_ASSERT(aAudioNode);
-  Document* doc =
-      aAudioNode->GetOwner() ? aAudioNode->GetOwner()->GetExtantDoc() : nullptr;
+  Document* doc = aAudioNode->GetOwnerWindow()
+                      ? aAudioNode->GetOwnerWindow()->GetExtantDoc()
+                      : nullptr;
   nsCOMPtr<nsIPrincipal> principal = doc ? doc->NodePrincipal() : nullptr;
   return PrincipalSubsumes(aRecorder, principal);
 }
@@ -569,7 +571,9 @@ void SelectBitrates(uint32_t aBitsPerSecond, uint8_t aNumVideoTracks,
  */
 class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
                                public DOMMediaStream::TrackListener {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Session)
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(Session,
+                                           DOMMediaStream::TrackListener)
 
   struct TrackTypeComparator {
     enum Type {
@@ -588,7 +592,6 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
           uint32_t aVideoBitsPerSecond, uint32_t aAudioBitsPerSecond)
       : mRecorder(aRecorder),
         mMediaStreamTracks(std::move(aMediaStreamTracks)),
-        mMainThread(mRecorder->GetOwner()->EventTargetFor(TaskCategory::Other)),
         mMimeType(SelectMimeType(
             mMediaStreamTracks.Contains(TrackTypeComparator::VIDEO,
                                         TrackTypeComparator()),
@@ -598,10 +601,8 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
             mRecorder->mConstrainedMimeType)),
         mVideoBitsPerSecond(aVideoBitsPerSecond),
         mAudioBitsPerSecond(aAudioBitsPerSecond),
-        mStartTime(TimeStamp::Now()),
         mRunningState(RunningState::Idling) {
     MOZ_ASSERT(NS_IsMainThread());
-    Telemetry::ScalarAdd(Telemetry::ScalarID::MEDIARECORDER_RECORDING_COUNT, 1);
   }
 
   void PrincipalChanged(MediaStreamTrack* aTrack) override {
@@ -762,7 +763,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     InvokeAsync(mEncoderThread, mEncoder.get(), __func__,
                 &MediaEncoder::RequestData)
         ->Then(
-            mMainThread, __func__,
+            GetMainThreadSerialEventTarget(), __func__,
             [this, self = RefPtr<Session>(this)](
                 const MediaEncoder::BlobPromise::ResolveOrRejectValue& aRrv) {
               if (aRrv.IsReject()) {
@@ -868,13 +869,14 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
       return;
     }
 
-    mStartedListener = mEncoder->StartedEvent().Connect(mMainThread, this,
-                                                        &Session::OnStarted);
+    nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
+    mStartedListener =
+        mEncoder->StartedEvent().Connect(mainThread, this, &Session::OnStarted);
     mDataAvailableListener = mEncoder->DataAvailableEvent().Connect(
-        mMainThread, this, &Session::OnDataAvailable);
+        mainThread, this, &Session::OnDataAvailable);
     mErrorListener =
-        mEncoder->ErrorEvent().Connect(mMainThread, this, &Session::OnError);
-    mShutdownListener = mEncoder->ShutdownEvent().Connect(mMainThread, this,
+        mEncoder->ErrorEvent().Connect(mainThread, this, &Session::OnError);
+    mShutdownListener = mEncoder->ShutdownEvent().Connect(mainThread, this,
                                                           &Session::OnShutdown);
 
     if (mRecorder->mAudioNode) {
@@ -946,7 +948,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
 
     blobPromise
         ->Then(
-            mMainThread, __func__,
+            GetMainThreadSerialEventTarget(), __func__,
             [this, self = RefPtr<Session>(this), rv, needsStartEvent](
                 const MediaEncoder::BlobPromise::ResolveOrRejectValue& aRv) {
               if (mRecorder->mSessions.LastElement() == this) {
@@ -991,16 +993,17 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
               // And finally, Shutdown and destroy the Session
               return Shutdown();
             })
-        ->Then(mMainThread, __func__, [this, self = RefPtr<Session>(this)] {
-          // Guard against the case where we fail to add a blocker due to being
-          // in XPCOM shutdown. If we're in this state we shouldn't try and get
-          // a shutdown barrier as we'll fail.
-          if (!mShutdownBlocker) {
-            return;
-          }
-          MustGetShutdownBarrier()->RemoveBlocker(mShutdownBlocker);
-          mShutdownBlocker = nullptr;
-        });
+        ->Then(GetMainThreadSerialEventTarget(), __func__,
+               [this, self = RefPtr<Session>(this)] {
+                 // Guard against the case where we fail to add a blocker due to
+                 // being in XPCOM shutdown. If we're in this state we shouldn't
+                 // try and get a shutdown barrier as we'll fail.
+                 if (!mShutdownBlocker) {
+                   return;
+                 }
+                 MustGetShutdownBarrier()->RemoveBlocker(mShutdownBlocker);
+                 mShutdownBlocker = nullptr;
+               });
   }
 
   void OnStarted() {
@@ -1053,19 +1056,12 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
       return mShutdownPromise;
     }
 
-    // This is a coarse calculation and does not reflect the duration of the
-    // final recording for reasons such as pauses. However it allows us an
-    // idea of how long people are running their recorders for.
-    TimeDuration timeDelta = TimeStamp::Now() - mStartTime;
-    Telemetry::Accumulate(Telemetry::MEDIA_RECORDER_RECORDING_DURATION,
-                          timeDelta.ToSeconds());
-
     mShutdownPromise = ShutdownPromise::CreateAndResolve(true, __func__);
 
     if (mEncoder) {
       mShutdownPromise =
           mShutdownPromise
-              ->Then(mMainThread, __func__,
+              ->Then(GetMainThreadSerialEventTarget(), __func__,
                      [this, self = RefPtr<Session>(this)] {
                        mStartedListener.DisconnectIfExists();
                        mDataAvailableListener.DisconnectIfExists();
@@ -1095,7 +1091,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
 
     // Break the cycle reference between Session and MediaRecorder.
     mShutdownPromise = mShutdownPromise->Then(
-        mMainThread, __func__,
+        GetMainThreadSerialEventTarget(), __func__,
         [self = RefPtr<Session>(this)]() {
           self->mRecorder->RemoveSession(self);
           return ShutdownPromise::CreateAndResolve(true, __func__);
@@ -1107,7 +1103,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
 
     if (mEncoderThread) {
       mShutdownPromise = mShutdownPromise->Then(
-          mMainThread, __func__,
+          GetMainThreadSerialEventTarget(), __func__,
           [encoderThread = mEncoderThread]() {
             return encoderThread->BeginShutdown();
           },
@@ -1139,8 +1135,6 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
   // set.
   nsTArray<RefPtr<MediaStreamTrack>> mMediaStreamTracks;
 
-  // Main thread used for MozPromise operations.
-  const RefPtr<nsISerialEventTarget> mMainThread;
   // Runnable thread for reading data from MediaEncoder.
   RefPtr<TaskQueue> mEncoderThread;
   // MediaEncoder pipeline.
@@ -1161,8 +1155,6 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
   const uint32_t mVideoBitsPerSecond;
   // The audio bitrate the recorder was configured with.
   const uint32_t mAudioBitsPerSecond;
-  // The time this session started, for telemetry.
-  const TimeStamp mStartTime;
   // The session's current main thread state. The error type gets set when
   // ending a recording with an error. An NS_OK error is invalid.
   // Main thread only.
@@ -1170,6 +1162,14 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
   // Shutdown blocker unique for this Session. Main thread only.
   RefPtr<ShutdownBlocker> mShutdownBlocker;
 };
+
+NS_IMPL_CYCLE_COLLECTION_INHERITED(MediaRecorder::Session,
+                                   DOMMediaStream::TrackListener, mMediaStream,
+                                   mMediaStreamTracks)
+NS_IMPL_ADDREF_INHERITED(MediaRecorder::Session, DOMMediaStream::TrackListener)
+NS_IMPL_RELEASE_INHERITED(MediaRecorder::Session, DOMMediaStream::TrackListener)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MediaRecorder::Session)
+NS_INTERFACE_MAP_END_INHERITING(DOMMediaStream::TrackListener)
 
 MediaRecorder::~MediaRecorder() {
   LOG(LogLevel::Debug, ("~MediaRecorder (%p)", this));
@@ -1183,7 +1183,7 @@ MediaRecorder::MediaRecorder(nsPIDOMWindowInner* aOwnerWindow)
 }
 
 void MediaRecorder::RegisterActivityObserver() {
-  if (nsPIDOMWindowInner* window = GetOwner()) {
+  if (nsPIDOMWindowInner* window = GetOwnerWindow()) {
     mDocument = window->GetExtantDoc();
     if (mDocument) {
       mDocument->RegisterActivityObserver(
@@ -1814,7 +1814,7 @@ void MediaRecorder::RemoveSession(Session* aSession) {
 }
 
 void MediaRecorder::NotifyOwnerDocumentActivityChanged() {
-  nsPIDOMWindowInner* window = GetOwner();
+  nsPIDOMWindowInner* window = GetOwnerWindow();
   NS_ENSURE_TRUE_VOID(window);
   Document* doc = window->GetExtantDoc();
   NS_ENSURE_TRUE_VOID(doc);

@@ -5,19 +5,20 @@
 
 package org.mozilla.gecko;
 
+import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.hardware.input.InputManager;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.InputDevice;
-import androidx.annotation.RequiresApi;
 import org.mozilla.gecko.annotation.WrapForJNI;
 import org.mozilla.gecko.util.InputDeviceUtils;
 import org.mozilla.gecko.util.ThreadUtils;
@@ -32,6 +33,8 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
   private static Context sApplicationContext;
   private InputManager mInputManager;
   private boolean mIsNightMode;
+  private BroadcastReceiver mBroadcastReceiver;
+  private IntentFilter mIntentFilter;
 
   public static GeckoSystemStateListener getInstance() {
     return listenerInstance;
@@ -63,6 +66,33 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
         Settings.Secure.getUriFor(Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED);
     contentResolver.registerContentObserver(invertSetting, false, mContentObserver);
 
+    final Uri textContrastSetting =
+        Settings.Secure.getUriFor(
+            /*Settings.Secure.ACCESSIBILITY_HIGH_TEXT_CONTRAST_ENABLED*/ "high_text_contrast_enabled");
+    contentResolver.registerContentObserver(textContrastSetting, false, mContentObserver);
+
+    mBroadcastReceiver =
+        new BroadcastReceiver() {
+          @Override
+          public void onReceive(final Context context, final Intent intent) {
+            if (!GeckoThread.isStateAtLeast(GeckoThread.State.PROFILE_READY)) {
+              return;
+            }
+            if (intent.getAction().equals(Intent.ACTION_LOCALE_CHANGED)) {
+              GeckoAppShell.onSystemLocaleChanged();
+              return;
+            }
+            if (intent.getAction().equals(Intent.ACTION_TIMEZONE_CHANGED)) {
+              GeckoAppShell.onTimezoneChanged();
+              return;
+            }
+          }
+        };
+    final IntentFilter filter = new IntentFilter();
+    filter.addAction(Intent.ACTION_LOCALE_CHANGED);
+    filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+    context.registerReceiver(mBroadcastReceiver, filter);
+
     mIsNightMode =
         (sApplicationContext.getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK)
@@ -77,7 +107,7 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
       return;
     }
 
-    if (mInputManager != null) {
+    if (mInputManager == null) {
       Log.e(LOGTAG, "mInputManager should be valid!");
       return;
     }
@@ -87,12 +117,14 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
     final ContentResolver contentResolver = sApplicationContext.getContentResolver();
     contentResolver.unregisterContentObserver(mContentObserver);
 
+    GeckoAppShell.getApplicationContext().unregisterReceiver(mBroadcastReceiver);
+
     mInitialized = false;
     mInputManager = null;
     mContentObserver = null;
+    mBroadcastReceiver = null;
   }
 
-  @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR1)
   @WrapForJNI(calledFrom = "gecko")
   /**
    * For prefers-reduced-motion media queries feature.
@@ -100,17 +132,12 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
    * <p>Uses `Settings.Global` which was introduced in API version 17.
    */
   private static boolean prefersReducedMotion() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1) {
-      return false;
-    }
-
     final ContentResolver contentResolver = sApplicationContext.getContentResolver();
 
     return Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1)
         == 0.0f;
   }
 
-  @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
   @WrapForJNI(calledFrom = "gecko")
   /**
    * For inverted-colors queries feature.
@@ -119,14 +146,27 @@ public class GeckoSystemStateListener implements InputManager.InputDeviceListene
    * version 21.
    */
   private static boolean isInvertedColors() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-      return false;
-    }
-
     final ContentResolver contentResolver = sApplicationContext.getContentResolver();
 
     return Settings.Secure.getInt(
             contentResolver, Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED, 0)
+        == 1;
+  }
+
+  @WrapForJNI(calledFrom = "gecko")
+  /**
+   * For prefers-contrast queries feature.
+   *
+   * <p>Uses `Settings.Secure.ACCESSIBILITY_HIGH_TEXT_CONTRAST_ENABLED` which was introduced in API
+   * version 21.
+   */
+  private static boolean prefersContrast() {
+    final ContentResolver contentResolver = sApplicationContext.getContentResolver();
+
+    return Settings.Secure.getInt(
+            contentResolver, /*Settings.Secure.ACCESSIBILITY_HIGH_TEXT_CONTRAST_ENABLED*/
+            "high_text_contrast_enabled",
+            0)
         == 1;
   }
 

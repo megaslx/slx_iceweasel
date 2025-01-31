@@ -1,9 +1,10 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function setup() {
-  await AddonTestUtils.promiseStartupManager();
-  await SearchTestUtils.useTestEngines("simple-engines");
+const CONFIG = [{ identifier: "engine-1" }, { identifier: "engine-2" }];
+
+add_setup(async function () {
+  SearchTestUtils.setRemoteSettingsConfig(CONFIG);
   Services.fog.initializeFOG();
 });
 
@@ -19,17 +20,13 @@ add_task(async function test_async() {
   Assert.equal(engines.length, 2);
 
   // test jar engine is loaded ok.
-  let engine = Services.search.getEngineByName("basic");
+  let engine = Services.search.getEngineByName("engine-1");
   Assert.notEqual(engine, null);
   Assert.ok(engine.isAppProvided, "Should be shown as an app-provided engine");
 
-  engine = Services.search.getEngineByName("Simple Engine");
+  engine = Services.search.getEngineByName("engine-2");
   Assert.notEqual(engine, null);
   Assert.ok(engine.isAppProvided, "Should be shown as an app-provided engine");
-
-  // Check the hidden engine is not loaded.
-  engine = Services.search.getEngineByName("hidden");
-  Assert.equal(engine, null);
 
   // Check if there is a value for startup_time
   Assert.notEqual(

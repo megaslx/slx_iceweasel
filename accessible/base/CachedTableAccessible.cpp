@@ -35,7 +35,7 @@ class TablePartRule : public PivotRule {
         accRole == roles::TEXT || accRole == roles::TEXT_CONTAINER ||
         accRole == roles::SECTION ||
         // Row groups.
-        accRole == roles::GROUPING) {
+        accRole == roles::ROWGROUP) {
       // Walk inside these, but don't match them.
       return nsIAccessibleTraversalRule::FILTER_IGNORE;
     }
@@ -229,11 +229,30 @@ CachedTableCellAccessible* CachedTableCellAccessible::GetFrom(
     Accessible* aAcc) {
   MOZ_ASSERT(aAcc->IsTableCell());
   for (Accessible* parent = aAcc; parent; parent = parent->Parent()) {
-    if (auto* table = static_cast<CachedTableAccessible*>(parent->AsTable())) {
-      if (auto cellIdx = table->mAccToCellIdx.Lookup(aAcc)) {
-        return &table->mCells[*cellIdx];
+    if (parent->IsDoc()) {
+      break;  // Never cross document boundaries.
+    }
+    TableAccessible* table = parent->AsTable();
+    if (!table) {
+      continue;
+    }
+    if (LocalAccessible* local = parent->AsLocal()) {
+      nsIContent* content = local->GetContent();
+      if (content && content->IsXULElement()) {
+        // XUL tables don't use CachedTableAccessible.
+        break;
       }
     }
+    // Non-XUL tables only use CachedTableAccessible.
+    auto* cachedTable = static_cast<CachedTableAccessible*>(table);
+    if (auto cellIdx = cachedTable->mAccToCellIdx.Lookup(aAcc)) {
+      return &cachedTable->mCells[*cellIdx];
+    }
+    // We found a table, but it doesn't know about this cell. This can happen
+    // if a cell is outside of a row due to authoring error. We must not search
+    // ancestor tables, since this cell's data is not valid there and vice
+    // versa.
+    break;
   }
   return nullptr;
 }
@@ -258,9 +277,12 @@ TableAccessible* CachedTableCellAccessible::Table() const {
 
 uint32_t CachedTableCellAccessible::ColExtent() const {
   if (RemoteAccessible* remoteAcc = mAcc->AsRemote()) {
+    if (RequestDomainsIfInactive(CacheDomain::Table)) {
+      return 1;
+    }
     if (remoteAcc->mCachedFields) {
       if (auto colSpan = remoteAcc->mCachedFields->GetAttribute<int32_t>(
-              nsGkAtoms::colspan)) {
+              CacheKey::ColSpan)) {
         MOZ_ASSERT(*colSpan > 0);
         return *colSpan;
       }
@@ -281,9 +303,12 @@ uint32_t CachedTableCellAccessible::ColExtent() const {
 
 uint32_t CachedTableCellAccessible::RowExtent() const {
   if (RemoteAccessible* remoteAcc = mAcc->AsRemote()) {
+    if (RequestDomainsIfInactive(CacheDomain::Table)) {
+      return 1;
+    }
     if (remoteAcc->mCachedFields) {
       if (auto rowSpan = remoteAcc->mCachedFields->GetAttribute<int32_t>(
-              nsGkAtoms::rowspan)) {
+              CacheKey::RowSpan)) {
         MOZ_ASSERT(*rowSpan > 0);
         return *rowSpan;
       }
@@ -304,15 +329,18 @@ uint32_t CachedTableCellAccessible::RowExtent() const {
 
 UniquePtr<AccIterable> CachedTableCellAccessible::GetExplicitHeadersIterator() {
   if (RemoteAccessible* remoteAcc = mAcc->AsRemote()) {
+    if (RequestDomainsIfInactive(CacheDomain::Table)) {
+      return nullptr;
+    }
     if (remoteAcc->mCachedFields) {
       if (auto headers =
               remoteAcc->mCachedFields->GetAttribute<nsTArray<uint64_t>>(
-                  nsGkAtoms::headers)) {
+                  CacheKey::CellHeaders)) {
         return MakeUnique<RemoteAccIterator>(*headers, remoteAcc->Document());
       }
     }
   } else if (LocalAccessible* localAcc = mAcc->AsLocal()) {
-    return MakeUnique<IDRefsIterator>(
+    return MakeUnique<AssociatedElementsIterator>(
         localAcc->Document(), localAcc->GetContent(), nsGkAtoms::headers);
   }
   return nullptr;
@@ -321,6 +349,9 @@ UniquePtr<AccIterable> CachedTableCellAccessible::GetExplicitHeadersIterator() {
 void CachedTableCellAccessible::ColHeaderCells(nsTArray<Accessible*>* aCells) {
   auto* table = static_cast<CachedTableAccessible*>(Table());
   if (!table) {
+    return;
+  }
+  if (mAcc->IsRemote() && RequestDomainsIfInactive(CacheDomain::Table)) {
     return;
   }
   if (auto iter = GetExplicitHeadersIterator()) {

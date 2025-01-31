@@ -160,7 +160,7 @@ class TestNat {
         error_code_for_drop_(0),
         delay_stun_resp_ms_(0),
         nat_delegate_(nullptr),
-        sockets_() {}
+        network_delay_ms_(0) {}
 
   bool has_port_mappings() const;
 
@@ -200,6 +200,7 @@ class TestNat {
   std::map<nsCString, CopyableTArray<nsCString>> stun_redirect_map_;
 
   NatDelegate* nat_delegate_;
+  unsigned int network_delay_ms_;
   std::shared_ptr<NrSocketProxyConfig> proxy_config_;
 
  private:
@@ -293,10 +294,7 @@ class TestNrSocket : public NrSocketBase {
     DeferredPacket(TestNrSocket* sock, const void* data, size_t len, int flags,
                    const nr_transport_addr* addr,
                    RefPtr<NrSocketBase> internal_socket)
-        : socket_(sock),
-          buffer_(),
-          flags_(flags),
-          internal_socket_(internal_socket) {
+        : socket_(sock), flags_(flags), internal_socket_(internal_socket) {
       buffer_.Copy(reinterpret_cast<const uint8_t*>(data), len);
       nr_transport_addr_copy(&to_, addr);
     }
@@ -358,6 +356,7 @@ class TestNrSocket : public NrSocketBase {
   std::list<RefPtr<PortMapping>> port_mappings_;
 
   void* timer_handle_;
+  nsTArray<nsCOMPtr<nsITimer>> mTimers;
 
   // Just used for fake stun responses right now. Not _necessarily_ just UDP
   // stuff, UdpPacket just has what we need to make this work for UDP.

@@ -108,7 +108,8 @@ NS_INTERFACE_MAP_BEGIN(nsUnknownDecoder)
   NS_INTERFACE_MAP_ENTRY(nsIRequestObserver)
   NS_INTERFACE_MAP_ENTRY(nsIContentSniffer)
   NS_INTERFACE_MAP_ENTRY(nsIThreadRetargetableStreamListener)
-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIStreamListener)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports,
+                                   nsIThreadRetargetableStreamListener)
 NS_INTERFACE_MAP_END
 
 // ----
@@ -220,6 +221,11 @@ nsUnknownDecoder::OnDataAvailable(nsIRequest* request, nsIInputStream* aStream,
   }
 
   return rv;
+}
+
+NS_IMETHODIMP
+nsUnknownDecoder::MaybeRetarget(nsIRequest* request) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 // ----
@@ -766,7 +772,8 @@ nsresult nsUnknownDecoder::ConvertEncodedData(nsIRequest* request,
             do_CreateInstance(NS_STRINGINPUTSTREAM_CONTRACTID);
         if (!rawStream) return NS_ERROR_FAILURE;
 
-        rv = rawStream->SetData((const char*)data, length);
+        // Other OnDataAvailable callers use `ShareData`, can we use that here?
+        rv = rawStream->CopyData((const char*)data, length);
         NS_ENSURE_SUCCESS(rv, rv);
 
         rv = listener->OnDataAvailable(request, rawStream, 0, length);
@@ -794,6 +801,20 @@ nsUnknownDecoder::CheckListenerChain() {
   }
 
   return listener->CheckListenerChain();
+}
+
+NS_IMETHODIMP
+nsUnknownDecoder::OnDataFinished(nsresult aStatus) {
+  nsCOMPtr<nsIThreadRetargetableStreamListener> listener;
+  {
+    MutexAutoLock lock(mMutex);
+    listener = do_QueryInterface(mNextListener);
+  }
+  if (listener) {
+    return listener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
 }
 
 void nsBinaryDetector::DetermineContentType(nsIRequest* aRequest) {

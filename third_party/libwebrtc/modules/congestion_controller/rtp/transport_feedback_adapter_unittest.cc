@@ -23,9 +23,6 @@
 #include "test/gmock.h"
 #include "test/gtest.h"
 
-using ::testing::_;
-using ::testing::Invoke;
-
 namespace webrtc {
 
 namespace {
@@ -98,12 +95,6 @@ class TransportFeedbackAdapterTest : public ::testing::Test {
   virtual void TearDown() { adapter_.reset(); }
 
  protected:
-  void OnReceivedEstimatedBitrate(uint32_t bitrate) {}
-
-  void OnReceivedRtcpReceiverReport(const ReportBlockList& report_blocks,
-                                    int64_t rtt,
-                                    int64_t now_ms) {}
-
   void OnSentPacket(const PacketResult& packet_feedback) {
     RtpPacketSendInfo packet_info;
     packet_info.media_ssrc = kSsrc;
@@ -254,8 +245,9 @@ TEST_F(TransportFeedbackAdapterTest, SendTimeWrapsBothWays) {
     std::vector<PacketResult> expected_packets;
     expected_packets.push_back(packets[i]);
 
-    auto res = adapter_->ProcessTransportFeedback(*feedback.get(),
-                                                  clock_.CurrentTime());
+    ASSERT_TRUE(feedback.get() != nullptr);
+    auto res =
+        adapter_->ProcessTransportFeedback(*feedback, clock_.CurrentTime());
     ComparePacketFeedbackVectors(expected_packets, res->packet_feedbacks);
   }
 }
@@ -354,9 +346,9 @@ TEST_F(TransportFeedbackAdapterTest, TimestampDeltas) {
 
   std::vector<PacketResult> received_feedback;
 
-  EXPECT_TRUE(feedback.get() != nullptr);
+  ASSERT_TRUE(feedback.get() != nullptr);
   auto res =
-      adapter_->ProcessTransportFeedback(*feedback.get(), clock_.CurrentTime());
+      adapter_->ProcessTransportFeedback(*feedback, clock_.CurrentTime());
   ComparePacketFeedbackVectors(sent_packets, res->packet_feedbacks);
 
   // Create a new feedback message and add the trailing item.
@@ -370,10 +362,10 @@ TEST_F(TransportFeedbackAdapterTest, TimestampDeltas) {
   feedback =
       rtcp::TransportFeedback::ParseFrom(raw_packet.data(), raw_packet.size());
 
-  EXPECT_TRUE(feedback.get() != nullptr);
+  ASSERT_TRUE(feedback.get() != nullptr);
   {
-    auto res = adapter_->ProcessTransportFeedback(*feedback.get(),
-                                                  clock_.CurrentTime());
+    auto res =
+        adapter_->ProcessTransportFeedback(*feedback, clock_.CurrentTime());
     std::vector<PacketResult> expected_packets;
     expected_packets.push_back(packet_feedback);
     ComparePacketFeedbackVectors(expected_packets, res->packet_feedbacks);
@@ -391,14 +383,14 @@ TEST_F(TransportFeedbackAdapterTest, IgnoreDuplicatePacketSentCalls) {
   packet_info.pacing_info = packet.sent_packet.pacing_info;
   packet_info.packet_type = RtpPacketMediaType::kVideo;
   adapter_->AddPacket(packet_info, 0u, clock_.CurrentTime());
-  absl::optional<SentPacket> sent_packet = adapter_->ProcessSentPacket(
+  std::optional<SentPacket> sent_packet = adapter_->ProcessSentPacket(
       rtc::SentPacket(packet.sent_packet.sequence_number,
                       packet.sent_packet.send_time.ms(), rtc::PacketInfo()));
   EXPECT_TRUE(sent_packet.has_value());
 
   // Call ProcessSentPacket() again with the same sequence number. This packet
   // has already been marked as sent and the call should be ignored.
-  absl::optional<SentPacket> duplicate_packet = adapter_->ProcessSentPacket(
+  std::optional<SentPacket> duplicate_packet = adapter_->ProcessSentPacket(
       rtc::SentPacket(packet.sent_packet.sequence_number,
                       packet.sent_packet.send_time.ms(), rtc::PacketInfo()));
   EXPECT_FALSE(duplicate_packet.has_value());

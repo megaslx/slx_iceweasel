@@ -9,19 +9,19 @@ const { MockRegistrar } = ChromeUtils.importESModule(
 
 var httpserv = null;
 
-XPCOMUtils.defineLazyGetter(this, "systemSettings", function () {
+ChromeUtils.defineLazyGetter(this, "systemSettings", function () {
   return {
     QueryInterface: ChromeUtils.generateQI(["nsISystemProxySettings"]),
 
     mainThreadOnly: true,
     PACURI: "http://localhost:" + httpserv.identity.primaryPort + "/redirect",
-    getProxyForURI(aURI) {
+    getProxyForURI() {
       throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     },
   };
 });
 
-function checkValue(request, data, ctx) {
+function checkValue(request, data) {
   Assert.ok(called);
   Assert.equal("ok", data);
   httpserv.stop(do_test_finished);

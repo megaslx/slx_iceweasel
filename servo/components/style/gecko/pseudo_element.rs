@@ -35,17 +35,31 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
     fn valid_after_slotted(&self) -> bool {
         matches!(
             *self,
-            PseudoElement::Before |
-                PseudoElement::After |
-                PseudoElement::Marker |
-                PseudoElement::Placeholder |
-                PseudoElement::FileSelectorButton
+            Self::Before |
+                Self::After |
+                Self::Marker |
+                Self::Placeholder |
+                Self::FileSelectorButton
         )
     }
 
     #[inline]
     fn accepts_state_pseudo_classes(&self) -> bool {
-        self.supports_user_action_state()
+        // Note: if the pseudo element is a descendants of a pseudo element, `only-child` should be
+        // allowed after it.
+        self.supports_user_action_state() || self.is_in_pseudo_element_tree()
+    }
+
+    #[inline]
+    fn specificity_count(&self) -> u32 {
+        self.specificity_count()
+    }
+
+    #[inline]
+    fn is_in_pseudo_element_tree(&self) -> bool {
+        // All the named view transition pseudo-elements are the descendants of a pseudo-element
+        // root.
+        self.is_named_view_transition()
     }
 }
 
@@ -68,15 +82,6 @@ impl PseudoElement {
         }
 
         PseudoElementCascadeType::Lazy
-    }
-
-    /// Whether the pseudo-element should inherit from the default computed
-    /// values instead of from the parent element.
-    ///
-    /// This is not the common thing, but there are some pseudos (namely:
-    /// ::backdrop), that shouldn't inherit from the parent element.
-    pub fn inherits_from_default_values(&self) -> bool {
-        matches!(*self, PseudoElement::Backdrop)
     }
 
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
@@ -104,7 +109,7 @@ impl PseudoElement {
     /// Whether the current pseudo element is ::before or ::after.
     #[inline]
     pub fn is_before_or_after(&self) -> bool {
-        self.is_before() || self.is_after()
+        matches!(*self, Self::Before | Self::After)
     }
 
     /// Whether this pseudo-element is the ::before pseudo.
@@ -157,15 +162,49 @@ impl PseudoElement {
 
     /// The identifier of the highlight this pseudo-element represents.
     pub fn highlight_name(&self) -> Option<&AtomIdent> {
-        match &*self {
-            PseudoElement::Highlight(name) => Some(&name),
+        match *self {
+            Self::Highlight(ref name) => Some(name),
             _ => None,
         }
     }
 
     /// Whether this pseudo-element is the ::highlight pseudo.
     pub fn is_highlight(&self) -> bool {
-        matches!(*self, PseudoElement::Highlight(_))
+        matches!(*self, Self::Highlight(_))
+    }
+
+    /// Whether this pseudo-element is the ::target-text pseudo.
+    #[inline]
+    pub fn is_target_text(&self) -> bool {
+        *self == PseudoElement::TargetText
+    }
+
+    /// Whether this pseudo-element is a named view transition pseudo-element.
+    pub fn is_named_view_transition(&self) -> bool {
+        matches!(
+            *self,
+            Self::ViewTransitionGroup(..) |
+                Self::ViewTransitionImagePair(..) |
+                Self::ViewTransitionOld(..) |
+                Self::ViewTransitionNew(..)
+        )
+    }
+
+    /// The count we contribute to the specificity from this pseudo-element.
+    pub fn specificity_count(&self) -> u32 {
+        match *self {
+            Self::ViewTransitionGroup(ref name) |
+            Self::ViewTransitionImagePair(ref name) |
+            Self::ViewTransitionOld(ref name) |
+            Self::ViewTransitionNew(ref name) => {
+                // The specificity of a named view transition pseudo-element selector with a
+                // `<custom-ident>` argument is equivalent to a type selector.
+                // The specificity of a named view transition pseudo-element selector with a `*`
+                // argument is zero.
+                (name.0 != atom!("*")) as u32
+            },
+            _ => 1,
+        }
     }
 
     /// Whether this pseudo-element supports user action selectors.
@@ -175,10 +214,21 @@ impl PseudoElement {
 
     /// Whether this pseudo-element is enabled for all content.
     pub fn enabled_in_content(&self) -> bool {
-        if self.is_highlight() && !pref!("dom.customHighlightAPI.enabled") {
-            return false;
+        match *self {
+            Self::Highlight(..) => pref!("dom.customHighlightAPI.enabled"),
+            Self::TargetText => pref!("dom.text_fragments.enabled"),
+            Self::SliderFill | Self::SliderTrack | Self::SliderThumb => {
+                pref!("layout.css.modern-range-pseudos.enabled")
+            },
+            Self::ViewTransition |
+            Self::ViewTransitionGroup(..) |
+            Self::ViewTransitionImagePair(..) |
+            Self::ViewTransitionOld(..) |
+            Self::ViewTransitionNew(..) => pref!("dom.viewTransitions.enabled"),
+            // If it's not explicitly enabled in UA sheets or chrome, then we're enabled for
+            // content.
+            _ => (self.flags() & structs::CSS_PSEUDO_ELEMENT_ENABLED_IN_UA_SHEETS_AND_CHROME) == 0,
         }
-        return self.flags() & structs::CSS_PSEUDO_ELEMENT_ENABLED_IN_UA_SHEETS_AND_CHROME == 0;
     }
 
     /// Whether this pseudo is enabled explicitly in UA sheets.

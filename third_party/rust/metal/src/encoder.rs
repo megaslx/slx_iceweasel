@@ -9,6 +9,9 @@ use super::*;
 
 use std::ops::Range;
 
+/// See <https://developer.apple.com/documentation/metal/mtlcounterdontsample>
+pub const COUNTER_DONT_SAMPLE: NSUInteger = NSUInteger::MAX; // #define MTLCounterDontSample ((NSUInteger)-1)
+
 /// See <https://developer.apple.com/documentation/metal/mtlprimitivetype>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -71,7 +74,7 @@ pub enum MTLTriangleFillMode {
     Lines = 1,
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// https://developer.apple.com/documentation/metal/mtlblitoption
     #[allow(non_upper_case_globals)]
     #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -437,6 +440,34 @@ impl RenderCommandEncoderRef {
                 self,
                 setVertexIntersectionFunctionTable: table
                 atBufferIndex: index
+            ]
+        }
+    }
+
+    pub fn set_vertex_visible_function_table(
+        &self,
+        buffer_index: NSUInteger,
+        visible_function_table: Option<&VisibleFunctionTableRef>,
+    ) {
+        unsafe {
+            msg_send![self,
+            setVertexVisibleFunctionTable:visible_function_table
+            atBufferIndex:buffer_index]
+        }
+    }
+
+    pub fn set_vertex_visible_function_tables(
+        &self,
+        buffer_start_index: NSUInteger,
+        visible_function_tables: &[&VisibleFunctionTableRef],
+    ) {
+        unsafe {
+            msg_send![self,
+                setVertexVisibleFunctionTables:visible_function_tables.as_ptr()
+                withBufferRange: NSRange {
+                    location: buffer_start_index,
+                    length: visible_function_tables.len() as _,
+                }
             ]
         }
     }
@@ -863,6 +894,34 @@ impl RenderCommandEncoderRef {
         }
     }
 
+    pub fn set_fragment_visible_function_table(
+        &self,
+        buffer_index: NSUInteger,
+        visible_function_table: Option<&VisibleFunctionTableRef>,
+    ) {
+        unsafe {
+            msg_send![self,
+            setFragmentVisibleFunctionTable:visible_function_table
+            atBufferIndex:buffer_index]
+        }
+    }
+
+    pub fn set_fragment_visible_function_tables(
+        &self,
+        buffer_start_index: NSUInteger,
+        visible_function_tables: &[&VisibleFunctionTableRef],
+    ) {
+        unsafe {
+            msg_send![self,
+                setFragmentVisibleFunctionTables:visible_function_tables.as_ptr()
+                withBufferRange: NSRange {
+                    location: buffer_start_index,
+                    length: visible_function_tables.len() as _,
+                }
+            ]
+        }
+    }
+
     // Drawing Geometric Primitives
 
     pub fn draw_primitives(
@@ -1215,6 +1274,22 @@ impl RenderCommandEncoderRef {
             ]
         }
     }
+
+    /// See: <https://developer.apple.com/documentation/metal/mtlrendercommandencoder/3194379-samplecountersinbuffer>
+    pub fn sample_counters_in_buffer(
+        &self,
+        sample_buffer: &CounterSampleBufferRef,
+        sample_index: NSUInteger,
+        with_barrier: bool,
+    ) {
+        unsafe {
+            msg_send![self,
+                sampleCountersInBuffer: sample_buffer
+                atSampleIndex: sample_index
+                withBarrier: with_barrier
+            ]
+        }
+    }
 }
 
 /// See <https://developer.apple.com/documentation/metal/mtlblitcommandencoder/>
@@ -1396,6 +1471,45 @@ impl BlitCommandEncoderRef {
         unsafe { msg_send![self, waitForFence: fence] }
     }
 
+    pub fn copy_indirect_command_buffer(
+        &self,
+        source: &IndirectCommandBufferRef,
+        source_range: NSRange,
+        destination: &IndirectCommandBufferRef,
+        destination_index: NSUInteger,
+    ) {
+        unsafe {
+            msg_send![self,
+                copyIndirectCommandBuffer: source
+                sourceRange: source_range
+                destination: destination
+                destinationIndex: destination_index
+            ]
+        }
+    }
+
+    pub fn reset_commands_in_buffer(&self, buffer: &IndirectCommandBufferRef, range: NSRange) {
+        unsafe {
+            msg_send![self,
+                resetCommandsInBuffer: buffer
+                withRange: range
+            ]
+        }
+    }
+
+    pub fn optimize_indirect_command_buffer(
+        &self,
+        buffer: &IndirectCommandBufferRef,
+        range: NSRange,
+    ) {
+        unsafe {
+            msg_send![self,
+                optimizeIndirectCommandBuffer: buffer
+                withRange: range
+            ]
+        }
+    }
+
     /// See: <https://developer.apple.com/documentation/metal/mtlblitcommandencoder/3194348-samplecountersinbuffer>
     pub fn sample_counters_in_buffer(
         &self,
@@ -1532,6 +1646,34 @@ impl ComputeCommandEncoderRef {
                 setBytes: bytes
                 length: length
                 atIndex: index
+            ]
+        }
+    }
+
+    pub fn set_visible_function_table(
+        &self,
+        buffer_index: NSUInteger,
+        visible_function_table: Option<&VisibleFunctionTableRef>,
+    ) {
+        unsafe {
+            msg_send![self,
+            setVisibleFunctionTable:visible_function_table
+            atBufferIndex:buffer_index]
+        }
+    }
+
+    pub fn set_visible_function_tables(
+        &self,
+        buffer_start_index: NSUInteger,
+        visible_function_tables: &[&VisibleFunctionTableRef],
+    ) {
+        unsafe {
+            msg_send![self,
+                setVisibleFunctionTables:visible_function_tables.as_ptr()
+                withBufferRange: NSRange {
+                    location: buffer_start_index,
+                    length: visible_function_tables.len() as _,
+                }
             ]
         }
     }
@@ -1859,6 +2001,35 @@ impl ArgumentEncoderRef {
 
     pub fn constant_data(&self, at_index: NSUInteger) -> *mut std::ffi::c_void {
         unsafe { msg_send![self, constantDataAtIndex: at_index] }
+    }
+
+    pub fn set_indirect_command_buffer(
+        &self,
+        at_index: NSUInteger,
+        buffer: &IndirectCommandBufferRef,
+    ) {
+        unsafe {
+            msg_send![self,
+                setIndirectCommandBuffer: buffer
+                atIndex: at_index
+            ]
+        }
+    }
+
+    pub fn set_indirect_command_buffers(
+        &self,
+        start_index: NSUInteger,
+        data: &[&IndirectCommandBufferRef],
+    ) {
+        unsafe {
+            msg_send![self,
+                setIndirectCommandBuffers: data.as_ptr()
+                withRange: NSRange {
+                    location: start_index,
+                    length: data.len() as _,
+                }
+            ]
+        }
     }
 
     pub fn new_argument_encoder_for_buffer(&self, index: NSUInteger) -> ArgumentEncoder {

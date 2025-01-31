@@ -120,6 +120,17 @@ s! {
         pub __sin6_src_id: u32
     }
 
+    pub struct in_pktinfo {
+        pub ipi_ifindex: ::c_uint,
+        pub ipi_spec_dst: ::in_addr,
+        pub ipi_addr: ::in_addr,
+    }
+
+    pub struct in6_pktinfo {
+        pub ipi6_addr: ::in6_addr,
+        pub ipi6_ifindex: ::c_uint,
+    }
+
     pub struct passwd {
         pub pw_name: *mut ::c_char,
         pub pw_passwd: *mut ::c_char,
@@ -135,7 +146,7 @@ s! {
     pub struct ifaddrs {
         pub ifa_next: *mut ifaddrs,
         pub ifa_name: *mut ::c_char,
-        pub ifa_flags: ::c_ulong,
+        pub ifa_flags: u64,
         pub ifa_addr: *mut ::sockaddr,
         pub ifa_netmask: *mut ::sockaddr,
         pub ifa_dstaddr: *mut ::sockaddr,
@@ -1238,14 +1249,20 @@ pub const CLD_STOPPED: ::c_int = 5;
 pub const CLD_CONTINUED: ::c_int = 6;
 
 pub const IP_RECVDSTADDR: ::c_int = 0x7;
+pub const IP_PKTINFO: ::c_int = 0x1a;
+pub const IP_DONTFRAG: ::c_int = 0x1b;
 pub const IP_SEC_OPT: ::c_int = 0x22;
 
 pub const IPV6_UNICAST_HOPS: ::c_int = 0x5;
 pub const IPV6_MULTICAST_IF: ::c_int = 0x6;
 pub const IPV6_MULTICAST_HOPS: ::c_int = 0x7;
 pub const IPV6_MULTICAST_LOOP: ::c_int = 0x8;
+pub const IPV6_PKTINFO: ::c_int = 0xb;
 pub const IPV6_RECVPKTINFO: ::c_int = 0x12;
+pub const IPV6_RECVTCLASS: ::c_int = 0x19;
+pub const IPV6_DONTFRAG: ::c_int = 0x21;
 pub const IPV6_SEC_OPT: ::c_int = 0x22;
+pub const IPV6_TCLASS: ::c_int = 0x26;
 pub const IPV6_V6ONLY: ::c_int = 0x27;
 
 cfg_if! {
@@ -1279,9 +1296,10 @@ pub const FOPEN_MAX: ::c_uint = 20;
 pub const FILENAME_MAX: ::c_uint = 1024;
 pub const L_tmpnam: ::c_uint = 25;
 pub const TMP_MAX: ::c_uint = 17576;
+pub const PIPE_BUF: ::c_int = 5120;
 
-pub const GRND_NONBLOCK: ::c_int = 0x0001;
-pub const GRND_RANDOM: ::c_int = 0x0002;
+pub const GRND_NONBLOCK: ::c_uint = 0x0001;
+pub const GRND_RANDOM: ::c_uint = 0x0002;
 
 pub const O_RDONLY: ::c_int = 0;
 pub const O_WRONLY: ::c_int = 1;
@@ -1294,12 +1312,13 @@ pub const O_EXCL: ::c_int = 1024;
 pub const O_NOCTTY: ::c_int = 2048;
 pub const O_TRUNC: ::c_int = 512;
 pub const O_NOFOLLOW: ::c_int = 0x20000;
-pub const O_DIRECTORY: ::c_int = 0x1000000;
 pub const O_SEARCH: ::c_int = 0x200000;
 pub const O_EXEC: ::c_int = 0x400000;
 pub const O_CLOEXEC: ::c_int = 0x800000;
 pub const O_ACCMODE: ::c_int = 0x600003;
 pub const O_XATTR: ::c_int = 0x4000;
+pub const O_DIRECTORY: ::c_int = 0x1000000;
+pub const O_DIRECT: ::c_int = 0x2000000;
 pub const S_IFIFO: mode_t = 4096;
 pub const S_IFCHR: mode_t = 8192;
 pub const S_IFBLK: mode_t = 24576;
@@ -1773,8 +1792,9 @@ pub const SOCK_SEQPACKET: ::c_int = 6;
 pub const IP_MULTICAST_IF: ::c_int = 16;
 pub const IP_MULTICAST_TTL: ::c_int = 17;
 pub const IP_MULTICAST_LOOP: ::c_int = 18;
-pub const IP_TTL: ::c_int = 4;
 pub const IP_HDRINCL: ::c_int = 2;
+pub const IP_TOS: ::c_int = 3;
+pub const IP_TTL: ::c_int = 4;
 pub const IP_ADD_MEMBERSHIP: ::c_int = 19;
 pub const IP_DROP_MEMBERSHIP: ::c_int = 20;
 pub const IPV6_JOIN_GROUP: ::c_int = 9;
@@ -1825,7 +1845,10 @@ pub const SO_SNDTIMEO: ::c_int = 0x1005;
 pub const SO_RCVTIMEO: ::c_int = 0x1006;
 pub const SO_ERROR: ::c_int = 0x1007;
 pub const SO_TYPE: ::c_int = 0x1008;
+pub const SO_PROTOTYPE: ::c_int = 0x1009;
+pub const SO_DOMAIN: ::c_int = 0x100c;
 pub const SO_TIMESTAMP: ::c_int = 0x1013;
+pub const SO_EXCLBIND: ::c_int = 0x1015;
 
 pub const SCM_RIGHTS: ::c_int = 0x1010;
 pub const SCM_UCRED: ::c_int = 0x1012;
@@ -2579,10 +2602,15 @@ pub const AT_SUN_FPTYPE: ::c_uint = 2027;
 // and 4 bytes everywhere else:
 #[cfg(target_arch = "sparc64")]
 const _CMSG_HDR_ALIGNMENT: usize = 8;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(not(target_arch = "sparc64"))]
 const _CMSG_HDR_ALIGNMENT: usize = 4;
 
 const _CMSG_DATA_ALIGNMENT: usize = ::mem::size_of::<::c_int>();
+
+const NEWDEV: ::c_int = 1;
+
+// sys/sendfile.h
+pub const SFV_FD_SELF: ::c_int = -2;
 
 const_fn! {
     {const} fn _CMSG_HDR_ALIGN(p: usize) -> usize {
@@ -2599,7 +2627,7 @@ f! {
         _CMSG_DATA_ALIGN(cmsg.offset(1) as usize) as *mut ::c_uchar
     }
 
-    pub fn CMSG_LEN(length: ::c_uint) -> ::c_uint {
+    pub {const} fn CMSG_LEN(length: ::c_uint) -> ::c_uint {
         _CMSG_DATA_ALIGN(::mem::size_of::<::cmsghdr>()) as ::c_uint + length
     }
 
@@ -2749,7 +2777,7 @@ extern "C" {
         host: *mut ::c_char,
         hostlen: ::socklen_t,
         serv: *mut ::c_char,
-        sevlen: ::socklen_t,
+        servlen: ::socklen_t,
         flags: ::c_int,
     ) -> ::c_int;
     pub fn setpwent();
@@ -2859,15 +2887,15 @@ extern "C" {
     ) -> ::c_int;
     pub fn nl_langinfo(item: ::nl_item) -> *mut ::c_char;
 
-    #[cfg_attr(target_os = "illumos", link_name = "__xnet_bind")]
+    #[link_name = "__xnet_bind"]
     pub fn bind(socket: ::c_int, address: *const ::sockaddr, address_len: ::socklen_t) -> ::c_int;
 
     pub fn writev(fd: ::c_int, iov: *const ::iovec, iovcnt: ::c_int) -> ::ssize_t;
     pub fn readv(fd: ::c_int, iov: *const ::iovec, iovcnt: ::c_int) -> ::ssize_t;
 
-    #[cfg_attr(target_os = "illumos", link_name = "__xnet_sendmsg")]
+    #[link_name = "__xnet_sendmsg"]
     pub fn sendmsg(fd: ::c_int, msg: *const ::msghdr, flags: ::c_int) -> ::ssize_t;
-    #[cfg_attr(target_os = "illumos", link_name = "__xnet_recvmsg")]
+    #[link_name = "__xnet_recvmsg"]
     pub fn recvmsg(fd: ::c_int, msg: *mut ::msghdr, flags: ::c_int) -> ::ssize_t;
     pub fn accept4(
         fd: ::c_int,
@@ -2944,6 +2972,7 @@ extern "C" {
         result: *mut *mut ::group,
     ) -> ::c_int;
     pub fn sigaltstack(ss: *const stack_t, oss: *mut stack_t) -> ::c_int;
+    pub fn sigsuspend(mask: *const ::sigset_t) -> ::c_int;
     pub fn sem_close(sem: *mut sem_t) -> ::c_int;
     pub fn getdtablesize() -> ::c_int;
 
@@ -3196,6 +3225,12 @@ extern "C" {
         longopts: *const option,
         longindex: *mut ::c_int,
     ) -> ::c_int;
+
+    pub fn sync();
+
+    pub fn __major(version: ::c_int, devnum: ::dev_t) -> ::major_t;
+    pub fn __minor(version: ::c_int, devnum: ::dev_t) -> ::minor_t;
+    pub fn __makedev(version: ::c_int, majdev: ::major_t, mindev: ::minor_t) -> ::dev_t;
 }
 
 #[link(name = "sendfile")]
@@ -3250,6 +3285,18 @@ extern "C" {
         tpe: ::lgrp_rsrc_t,
     ) -> ::c_int;
     pub fn lgrp_root(cookie: ::lgrp_cookie_t) -> ::lgrp_id_t;
+}
+
+pub unsafe fn major(device: ::dev_t) -> ::major_t {
+    __major(NEWDEV, device)
+}
+
+pub unsafe fn minor(device: ::dev_t) -> ::minor_t {
+    __minor(NEWDEV, device)
+}
+
+pub unsafe fn makedev(maj: ::major_t, min: ::minor_t) -> ::dev_t {
+    __makedev(NEWDEV, maj, min)
 }
 
 mod compat;

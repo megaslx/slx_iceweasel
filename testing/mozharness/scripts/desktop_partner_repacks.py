@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """desktop_partner_repacks.py
 
 This script manages Desktop partner repacks for beta/release builds.
@@ -145,6 +143,7 @@ class DesktopPartnerRepacks(AutomationMixin, BaseScript, VirtualenvMixin, Secret
         }
         status = self.run_command(
             [
+                sys.executable,
                 repo,
                 "init",
                 "--no-repo-verify",
@@ -157,7 +156,7 @@ class DesktopPartnerRepacks(AutomationMixin, BaseScript, VirtualenvMixin, Secret
         if status:
             return status
         return self.run_command(
-            [repo, "sync", "--current-branch", "--no-tags"],
+            [sys.executable, repo, "sync", "--current-branch", "--no-tags"],
             cwd=self.query_abs_dirs()["abs_work_dir"],
             partial_env=partial_env,
         )

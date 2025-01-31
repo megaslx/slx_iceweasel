@@ -2,15 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import { isStepping, getPauseReason, getSelectedFrame } from "../../selectors";
+import {
+  isStepping,
+  getPauseReason,
+  getSelectedFrame,
+} from "../../selectors/index";
 import { evaluateExpressions } from "../expressions";
-import { inDebuggerEval } from "../../utils/pause";
+import { inDebuggerEval } from "../../utils/pause/index";
 
 /**
  * Debugger has just resumed.
  */
 export function resumed(thread) {
-  return async ({ dispatch, client, getState }) => {
+  return async ({ dispatch, getState }) => {
     const why = getPauseReason(getState(), thread);
     const wasPausedInEval = inDebuggerEval(why);
     const wasStepping = isStepping(getState(), thread);

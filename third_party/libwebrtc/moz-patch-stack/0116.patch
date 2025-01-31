@@ -1,26 +1,21 @@
-From: Jan-Ivar Bruaroey <jib@mozilla.com>
-Date: Fri, 30 Jun 2023 12:20:00 -0400
-Subject: Bug 1839451 - (fix-f6eae959bf)
- s/rtc_encoder_simulcast_proxy/rtc_simulcast_encoder_adapter/ BUILD ref.
+From: Michael Froman <mfroman@mozilla.com>
+Date: Wed, 18 Sep 2024 11:14:00 -0500
+Subject: Bug 1918268 - (fix-ec5a968070) readd an include that upstream removed
 
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/876b3f5821cd5c30564a82c1da7d057d79d17b01
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/8c080511a17a87c65771747faa74f859b7fe70bb
 ---
- BUILD.gn | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ api/transport/network_control.h | 1 +
+ 1 file changed, 1 insertion(+)
 
-diff --git a/BUILD.gn b/BUILD.gn
-index 0f39264f56..6eb14773b0 100644
---- a/BUILD.gn
-+++ b/BUILD.gn
-@@ -560,7 +560,7 @@ if (!build_with_chromium) {
-       deps += [
-         "api/video_codecs:video_codecs_api",
-         "api/video_codecs:rtc_software_fallback_wrappers",
--        "media:rtc_encoder_simulcast_proxy",
-+        "media:rtc_simulcast_encoder_adapter",
-         "modules/video_coding:webrtc_vp8",
-         "modules/video_coding:webrtc_vp9",
-       ]
--- 
-2.34.1
-
+diff --git a/api/transport/network_control.h b/api/transport/network_control.h
+index 90cdebe9bb..0f712da8bb 100644
+--- a/api/transport/network_control.h
++++ b/api/transport/network_control.h
+@@ -17,6 +17,7 @@
+ #include "absl/base/attributes.h"
+ #include "api/environment/environment.h"
+ #include "api/field_trials_view.h"
++#include "api/rtc_event_log/rtc_event_log.h"
+ #include "api/transport/network_types.h"
+ #include "api/units/data_rate.h"
+ #include "api/units/time_delta.h"

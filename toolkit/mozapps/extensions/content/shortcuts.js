@@ -72,6 +72,13 @@ ChromeUtils.defineESModuleGetters(this, {
     "F10",
     "F11",
     "F12",
+    "F13",
+    "F14",
+    "F15",
+    "F16",
+    "F17",
+    "F18",
+    "F19",
   ];
   const functionKeys = new Set(_functionKeys);
   const validKeys = new Set([
@@ -283,7 +290,7 @@ ChromeUtils.defineESModuleGetters(this, {
     }
 
     return Object.entries(modifierMap)
-      .filter(([key, isDown]) => isDown)
+      .filter(([, isDown]) => isDown)
       .map(([key]) => key)
       .concat(getStringForEvent(e))
       .join("+");
@@ -332,17 +339,16 @@ ChromeUtils.defineESModuleGetters(this, {
   }
 
   function createDuplicateWarningBar(shortcut) {
-    let messagebar = document.createElement("message-bar");
+    let messagebar = document.createElement("moz-message-bar");
     messagebar.setAttribute("type", "warning");
 
-    let message = document.createElement("span");
     document.l10n.setAttributes(
-      message,
-      "shortcuts-duplicate-warning-message",
+      messagebar,
+      "shortcuts-duplicate-warning-message2",
       { shortcut }
     );
+    messagebar.setAttribute("data-l10n-attrs", "message");
 
-    messagebar.append(message);
     return messagebar;
   }
 

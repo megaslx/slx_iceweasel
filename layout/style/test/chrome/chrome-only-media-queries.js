@@ -1,7 +1,6 @@
 const CHROME_ONLY_TOGGLES = [
   "-moz-is-glyph",
   "-moz-print-preview",
-  "-moz-non-native-content-theme",
   "-moz-scrollbar-start-backward",
   "-moz-scrollbar-start-forward",
   "-moz-scrollbar-end-backward",
@@ -12,6 +11,7 @@ const CHROME_ONLY_TOGGLES = [
   "-moz-windows-accent-color-in-titlebar",
   "-moz-swipe-animation-enabled",
   "-moz-gtk-csd-available",
+  "-moz-gtk-csd-transparency-available",
   "-moz-gtk-csd-minimize-button",
   "-moz-gtk-csd-maximize-button",
   "-moz-gtk-csd-close-button",
@@ -28,4 +28,9 @@ const CHROME_ONLY_QUERIES = [
   "(-moz-platform: android)",
   "(-moz-content-prefers-color-scheme: dark)",
   "(-moz-content-prefers-color-scheme: light)",
+  "(-moz-gtk-theme-family: unknown)",
+  "(-moz-gtk-theme-family: adwaita)",
+  "(-moz-gtk-theme-family: breeze)",
+  "(-moz-gtk-theme-family: yaru)",
+  "(forced-colors: requested)",
 ];

@@ -8,6 +8,7 @@
 #include "mozilla/dom/DocGroup.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLSlotElement.h"
+#include "mozilla/dom/HTMLSlotElementBinding.h"
 #include "mozilla/dom/HTMLUnknownElement.h"
 #include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/Text.h"
@@ -64,10 +65,10 @@ nsresult HTMLSlotElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void HTMLSlotElement::UnbindFromTree(bool aNullParent) {
+void HTMLSlotElement::UnbindFromTree(UnbindContext& aContext) {
   RefPtr<ShadowRoot> oldContainingShadow = GetContainingShadow();
 
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 
   if (oldContainingShadow && !GetContainingShadow()) {
     oldContainingShadow->RemoveSlot(this);
@@ -169,7 +170,6 @@ const nsTArray<nsINode*>& HTMLSlotElement::ManuallyAssignedNodes() const {
 }
 
 void HTMLSlotElement::Assign(const Sequence<OwningElementOrText>& aNodes) {
-  MOZ_ASSERT(StaticPrefs::dom_shadowdom_slot_assign_enabled());
   nsAutoScriptBlocker scriptBlocker;
 
   // no-op if the input nodes and the assigned nodes are identical
@@ -303,14 +303,16 @@ void HTMLSlotElement::InsertAssignedNode(uint32_t aIndex, nsIContent& aNode) {
   MOZ_ASSERT(!aNode.GetAssignedSlot(), "Losing track of a slot");
   mAssignedNodes.InsertElementAt(aIndex, &aNode);
   aNode.SetAssignedSlot(this);
-  SlotAssignedNodeChanged(this, aNode);
+  SetStates(ElementState::HAS_SLOTTED, true);
+  SlotAssignedNodeAdded(this, aNode);
 }
 
 void HTMLSlotElement::AppendAssignedNode(nsIContent& aNode) {
   MOZ_ASSERT(!aNode.GetAssignedSlot(), "Losing track of a slot");
   mAssignedNodes.AppendElement(&aNode);
   aNode.SetAssignedSlot(this);
-  SlotAssignedNodeChanged(this, aNode);
+  SetStates(ElementState::HAS_SLOTTED, true);
+  SlotAssignedNodeAdded(this, aNode);
 }
 
 void HTMLSlotElement::RemoveAssignedNode(nsIContent& aNode) {
@@ -320,7 +322,8 @@ void HTMLSlotElement::RemoveAssignedNode(nsIContent& aNode) {
              "How exactly?");
   mAssignedNodes.RemoveElement(&aNode);
   aNode.SetAssignedSlot(nullptr);
-  SlotAssignedNodeChanged(this, aNode);
+  SetStates(ElementState::HAS_SLOTTED, !mAssignedNodes.IsEmpty());
+  SlotAssignedNodeRemoved(this, aNode);
 }
 
 void HTMLSlotElement::ClearAssignedNodes() {
@@ -332,6 +335,7 @@ void HTMLSlotElement::ClearAssignedNodes() {
   }
 
   mAssignedNodes.Clear();
+  SetStates(ElementState::HAS_SLOTTED, false);
 }
 
 void HTMLSlotElement::EnqueueSlotChangeEvent() {
@@ -355,9 +359,8 @@ void HTMLSlotElement::EnqueueSlotChangeEvent() {
 }
 
 void HTMLSlotElement::FireSlotChangeEvent() {
-  nsContentUtils::DispatchTrustedEvent(
-      OwnerDoc(), static_cast<nsIContent*>(this), u"slotchange"_ns,
-      CanBubble::eYes, Cancelable::eNo);
+  nsContentUtils::DispatchTrustedEvent(OwnerDoc(), this, u"slotchange"_ns,
+                                       CanBubble::eYes, Cancelable::eNo);
 }
 
 void HTMLSlotElement::RemoveManuallyAssignedNode(nsIContent& aNode) {

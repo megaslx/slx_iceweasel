@@ -1,8 +1,7 @@
 use std::fmt;
 
-use miow::iocp::CompletionStatus;
-
 use super::afd;
+use super::iocp::CompletionStatus;
 use crate::Token;
 
 #[derive(Clone)]
@@ -41,6 +40,14 @@ impl Event {
 
     pub(super) fn to_completion_status(&self) -> CompletionStatus {
         CompletionStatus::new(self.flags, self.data as usize, std::ptr::null_mut())
+    }
+
+    #[cfg(feature = "os-ext")]
+    pub(super) fn to_completion_status_with_overlapped(
+        &self,
+        overlapped: *mut super::Overlapped,
+    ) -> CompletionStatus {
+        CompletionStatus::new(self.flags, self.data as usize, overlapped)
     }
 }
 

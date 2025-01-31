@@ -11,10 +11,10 @@ import {
   getBreakpointsForSource,
   getSourceActorsForSource,
   getFirstSourceActorForGeneratedSource,
-} from "../../selectors";
-import { addBreakpoint } from "../breakpoints";
+} from "../../selectors/index";
+import { addBreakpoint } from "../breakpoints/index";
 
-import { prettyPrintSource } from "./prettyPrint";
+import { prettyPrintSourceTextContent } from "./prettyPrint";
 import { isFulfilled, fulfilled } from "../../utils/async-value";
 
 import { isPretty } from "../../utils/source";
@@ -43,7 +43,7 @@ async function loadGeneratedSource(sourceActor, { client }) {
 
 async function loadOriginalSource(
   source,
-  { getState, client, sourceMapLoader, prettyPrintWorker }
+  { getState, sourceMapLoader, prettyPrintWorker }
 ) {
   if (isPretty(source)) {
     const generatedSource = getGeneratedSource(getState(), source);
@@ -58,7 +58,7 @@ async function loadOriginalSource(
       })
     );
 
-    return prettyPrintSource(
+    return prettyPrintSourceTextContent(
       sourceMapLoader,
       prettyPrintWorker,
       generatedSource,

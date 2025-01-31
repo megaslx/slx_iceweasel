@@ -61,7 +61,7 @@ async function openTestTab(
   knownTabs.byName.set(name, knownTab);
 
   // Now trigger the actual load of our page.
-  BrowserTestUtils.loadURIString(tab.linkedBrowser, realUrl);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, realUrl);
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
 
   let pid = tab.linkedBrowser.frameLoader.remoteTab.osPid;
@@ -164,10 +164,10 @@ function clearOriginStorageEnsuringNoPreload(origin) {
     Services.scriptSecurityManager.createContentPrincipalFromOrigin(origin);
 
   if (Services.domStorageManager.nextGenLocalStorageEnabled) {
-    let request = Services.qms.clearStoragesForPrincipal(
+    let request = Services.qms.clearStoragesForClient(
       principal,
-      "default",
-      "ls"
+      "ls",
+      "default"
     );
     let promise = new Promise(resolve => {
       request.callback = () => {

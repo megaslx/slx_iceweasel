@@ -7,17 +7,19 @@
 // Make this available to both AMD and CJS environments
 define(function (require, exports, module) {
   // Dependencies
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const {
+    span,
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
   const {
     cropString,
     cropMultipleLines,
     wrapRender,
-  } = require("devtools/client/shared/components/reps/reps/rep-utils");
+  } = require("resource://devtools/client/shared/components/reps/reps/rep-utils.js");
   const {
     MODE,
-  } = require("devtools/client/shared/components/reps/reps/constants");
-  const nodeConstants = require("devtools/client/shared/components/reps/shared/dom-node-constants");
+  } = require("resource://devtools/client/shared/components/reps/reps/constants.js");
+  const nodeConstants = require("resource://devtools/client/shared/components/reps/shared/dom-node-constants.js");
 
   /**
    * Renders DOM comment node.
@@ -33,7 +35,7 @@ define(function (require, exports, module) {
     const { object, mode = MODE.SHORT, shouldRenderTooltip } = props;
 
     let { textContent } = object.preview;
-    if (mode === MODE.TINY) {
+    if (mode === MODE.TINY || mode === MODE.HEADER) {
       textContent = cropMultipleLines(textContent, 30);
     } else if (mode === MODE.SHORT) {
       textContent = cropString(textContent, 50);

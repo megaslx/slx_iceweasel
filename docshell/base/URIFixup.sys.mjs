@@ -70,12 +70,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
-  "alternateEnabled",
-  "browser.fixup.alternate.enabled",
-  false
-);
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
   "alternateProtocol",
   "browser.fixup.alternate.protocol",
   "https"
@@ -94,7 +88,6 @@ const {
   FIXUP_FLAGS_MAKE_ALTERNATE_URI,
   FIXUP_FLAG_PRIVATE_CONTEXT,
   FIXUP_FLAG_FIX_SCHEME_TYPOS,
-  FIXUP_FLAG_FORCE_ALTERNATE_URI,
 } = Ci.nsIURIFixup;
 
 const COMMON_PROTOCOLS = ["http", "https", "file"];
@@ -275,9 +268,6 @@ URIFixup.prototype = {
   get FIXUP_FLAGS_MAKE_ALTERNATE_URI() {
     return FIXUP_FLAGS_MAKE_ALTERNATE_URI;
   },
-  get FIXUP_FLAG_FORCE_ALTERNATE_URI() {
-    return FIXUP_FLAG_FORCE_ALTERNATE_URI;
-  },
   get FIXUP_FLAG_PRIVATE_CONTEXT() {
     return FIXUP_FLAG_PRIVATE_CONTEXT;
   },
@@ -287,6 +277,7 @@ URIFixup.prototype = {
 
   getFixupURIInfo(uriString, fixupFlags = FIXUP_FLAG_NONE) {
     let isPrivateContext = fixupFlags & FIXUP_FLAG_PRIVATE_CONTEXT;
+    let untrimmedURIString = uriString;
 
     // Eliminate embedded newlines, which single-line text fields now allow,
     // and cleanup the empty spaces and tabs that might be on each end.
@@ -386,14 +377,29 @@ URIFixup.prototype = {
       uriString = uriString.replace(/^:?\/\//, "");
     }
 
+    let detectSpaceInCredentials = val => {
+      // Only search the first 512 chars for performance reasons.
+      let firstChars = val.slice(0, 512);
+      if (!firstChars.includes("@")) {
+        return false;
+      }
+      let credentials = firstChars.split("@")[0];
+      return !credentials.includes("/") && /\s/.test(credentials);
+    };
+
     // Avoid fixing up content that looks like tab-separated values.
     // Assume that 1 tab is accidental, but more than 1 implies this is
     // supposed to be tab-separated content.
-    if (!isCommonProtocol && lazy.maxOneTabRegex.test(uriString)) {
+    if (
+      !isCommonProtocol &&
+      lazy.maxOneTabRegex.test(uriString) &&
+      !detectSpaceInCredentials(untrimmedURIString)
+    ) {
       let uriWithProtocol = fixupURIProtocol(uriString);
       if (uriWithProtocol) {
         info.fixedURI = uriWithProtocol;
         info.fixupChangedProtocol = true;
+        info.schemelessInput = Ci.nsILoadInfo.SchemelessInputTypeSchemeless;
         maybeSetAlternateFixedURI(info, fixupFlags);
         info.preferredURI = info.fixedURI;
         // Check if it's a forced visit. The user can enforce a visit by
@@ -418,9 +424,9 @@ URIFixup.prototype = {
     // Memoize the public suffix check, since it may be expensive and should
     // only run once when necessary.
     let suffixInfo;
-    function checkSuffix(info) {
+    function checkSuffix(i) {
       if (!suffixInfo) {
-        suffixInfo = checkAndFixPublicSuffix(info);
+        suffixInfo = checkAndFixPublicSuffix(i);
       }
       return suffixInfo;
     }
@@ -696,6 +702,13 @@ URIFixupInfo.prototype = {
     return this._keywordAsSent || "";
   },
 
+  set schemelessInput(changed) {
+    this._schemelessInput = changed;
+  },
+  get schemelessInput() {
+    return this._schemelessInput ?? Ci.nsILoadInfo.SchemelessInputTypeUnset;
+  },
+
   set fixupChangedProtocol(changed) {
     this._fixupChangedProtocol = changed;
   },
@@ -781,10 +794,17 @@ function isDomainKnown(asciiHost) {
 function checkAndFixPublicSuffix(info) {
   let uri = info.fixedURI;
   let asciiHost = uri?.asciiHost;
+
+  // If the original input ends in a "。" character (U+3002), we consider the
+  // input a search query if there is no valid suffix.
+  // While the "。" character is equivalent to a period in domains, it's more
+  // commonly used to terminate search phrases. We're preserving the historical
+  // behavior of the ascii period for now, as that may be more commonly expected
+  // by technical users.
   if (
     !asciiHost ||
     !asciiHost.includes(".") ||
-    asciiHost.endsWith(".") ||
+    (asciiHost.endsWith(".") && !info.originalInput.endsWith("。")) ||
     isDomainKnown(asciiHost)
   ) {
     return { suffix: "", hasUnknownSuffix: false };
@@ -872,11 +892,8 @@ function tryKeywordFixupForURIInfo(uriString, fixupInfo, isPrivateContext) {
  */
 function maybeSetAlternateFixedURI(info, fixupFlags) {
   let uri = info.fixedURI;
-  let canUseAlternate =
-    fixupFlags & FIXUP_FLAG_FORCE_ALTERNATE_URI ||
-    (lazy.alternateEnabled && fixupFlags & FIXUP_FLAGS_MAKE_ALTERNATE_URI);
   if (
-    !canUseAlternate ||
+    !(fixupFlags & FIXUP_FLAGS_MAKE_ALTERNATE_URI) ||
     // Code only works for http. Not for any other protocol including https!
     !uri.schemeIs("http") ||
     // Security - URLs with user / password info should NOT be fixed up
@@ -925,8 +942,8 @@ function fileURIFixup(uriString) {
       path = uriString.replace(/\//g, "\\");
     }
   } else {
-    // UNIX: Check if it starts with "/".
-    attemptFixup = uriString.startsWith("/");
+    // UNIX: Check if it starts with "/" or "~".
+    attemptFixup = /^[~/]/.test(uriString);
   }
   if (attemptFixup) {
     try {
@@ -959,8 +976,11 @@ function fileURIFixup(uriString) {
  *          or null if fixing was not possible.
  */
 function fixupURIProtocol(uriString) {
-  let schemePos = uriString.indexOf("://");
-  if (schemePos == -1 || schemePos > uriString.search(/[:\/]/)) {
+  // The longest URI scheme on the IANA list is 36 chars + 3 for ://
+  let schemeChars = uriString.slice(0, 39);
+
+  let schemePos = schemeChars.indexOf("://");
+  if (schemePos == -1 || schemePos > schemeChars.search(/[:\/]/)) {
     uriString = "http://" + uriString;
   }
   try {
@@ -1135,11 +1155,7 @@ function extractScheme(uriString, fixupFlags = FIXUP_FLAG_NONE) {
 function fixupViewSource(uriString, fixupFlags) {
   // We disable keyword lookup and alternate URIs so that small typos don't
   // cause us to look at very different domains.
-  let newFixupFlags =
-    fixupFlags &
-    ~FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP &
-    ~FIXUP_FLAGS_MAKE_ALTERNATE_URI;
-
+  let newFixupFlags = fixupFlags & ~FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
   let innerURIString = uriString.substring(12).trim();
 
   // Prevent recursion.

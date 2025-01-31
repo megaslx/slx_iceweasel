@@ -13,7 +13,7 @@
 #include <string.h>
 #include <tuple>
 
-#include "third_party/googletest/src/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 #include "./vp9_rtcd.h"
 #include "./vpx_dsp_rtcd.h"
@@ -23,6 +23,7 @@
 #include "test/util.h"
 #include "vp9/common/vp9_entropy.h"
 #include "vp9/common/vp9_scan.h"
+#include "vpx_config.h"
 #include "vpx/vpx_codec.h"
 #include "vpx/vpx_integer.h"
 #include "vpx_ports/mem.h"
@@ -132,9 +133,21 @@ void idct8x8_64_add_12_sse2(const tran_low_t *in, uint8_t *out, int stride) {
 #endif  // HAVE_SSE2
 #endif  // CONFIG_VP9_HIGHBITDEPTH
 
+// Visual Studio 2022 (cl.exe) < 17.12.3 targeting AArch64 with optimizations
+// enabled produces invalid code in RunExtremalCheck() and
+// RunInvAccuracyCheck(). See:
+// https://developercommunity.visualstudio.com/t/1770-preview-1:-Misoptimization-for-AR/10369786
+#if defined(_MSC_FULL_VER) && _MSC_FULL_VER < 194234435 && \
+    defined(_M_ARM64) && !defined(__clang__)
+#define AOM_WORK_AROUND_MSVC_BUG_10369786
+#endif
+
+#ifdef AOM_WORK_AROUND_MSVC_BUG_10369786
+#pragma optimize("", off)
+#endif
 class FwdTrans8x8TestBase {
  public:
-  virtual ~FwdTrans8x8TestBase() {}
+  virtual ~FwdTrans8x8TestBase() = default;
 
  protected:
   virtual void RunFwdTxfm(int16_t *in, tran_low_t *out, int stride) = 0;
@@ -523,13 +536,16 @@ class FwdTrans8x8TestBase {
   vpx_bit_depth_t bit_depth_;
   int mask_;
 };
+#ifdef AOM_WORK_AROUND_MSVC_BUG_10369786
+#pragma optimize("", on)
+#endif
 
 class FwdTrans8x8DCT : public FwdTrans8x8TestBase,
                        public ::testing::TestWithParam<Dct8x8Param> {
  public:
-  virtual ~FwdTrans8x8DCT() {}
+  ~FwdTrans8x8DCT() override = default;
 
-  virtual void SetUp() {
+  void SetUp() override {
     fwd_txfm_ = GET_PARAM(0);
     inv_txfm_ = GET_PARAM(1);
     tx_type_ = GET_PARAM(2);
@@ -539,13 +555,13 @@ class FwdTrans8x8DCT : public FwdTrans8x8TestBase,
     mask_ = (1 << bit_depth_) - 1;
   }
 
-  virtual void TearDown() { libvpx_test::ClearSystemState(); }
+  void TearDown() override { libvpx_test::ClearSystemState(); }
 
  protected:
-  void RunFwdTxfm(int16_t *in, tran_low_t *out, int stride) {
+  void RunFwdTxfm(int16_t *in, tran_low_t *out, int stride) override {
     fwd_txfm_(in, out, stride);
   }
-  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) {
+  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) override {
     inv_txfm_(out, dst, stride);
   }
 
@@ -566,9 +582,9 @@ TEST_P(FwdTrans8x8DCT, InvAccuracyCheck) { RunInvAccuracyCheck(); }
 class FwdTrans8x8HT : public FwdTrans8x8TestBase,
                       public ::testing::TestWithParam<Ht8x8Param> {
  public:
-  virtual ~FwdTrans8x8HT() {}
+  ~FwdTrans8x8HT() override = default;
 
-  virtual void SetUp() {
+  void SetUp() override {
     fwd_txfm_ = GET_PARAM(0);
     inv_txfm_ = GET_PARAM(1);
     tx_type_ = GET_PARAM(2);
@@ -578,13 +594,13 @@ class FwdTrans8x8HT : public FwdTrans8x8TestBase,
     mask_ = (1 << bit_depth_) - 1;
   }
 
-  virtual void TearDown() { libvpx_test::ClearSystemState(); }
+  void TearDown() override { libvpx_test::ClearSystemState(); }
 
  protected:
-  void RunFwdTxfm(int16_t *in, tran_low_t *out, int stride) {
+  void RunFwdTxfm(int16_t *in, tran_low_t *out, int stride) override {
     fwd_txfm_(in, out, stride, tx_type_);
   }
-  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) {
+  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) override {
     inv_txfm_(out, dst, stride, tx_type_);
   }
 
@@ -602,9 +618,9 @@ TEST_P(FwdTrans8x8HT, ExtremalCheck) { RunExtremalCheck(); }
 class InvTrans8x8DCT : public FwdTrans8x8TestBase,
                        public ::testing::TestWithParam<Idct8x8Param> {
  public:
-  virtual ~InvTrans8x8DCT() {}
+  ~InvTrans8x8DCT() override = default;
 
-  virtual void SetUp() {
+  void SetUp() override {
     ref_txfm_ = GET_PARAM(0);
     inv_txfm_ = GET_PARAM(1);
     thresh_ = GET_PARAM(2);
@@ -613,13 +629,14 @@ class InvTrans8x8DCT : public FwdTrans8x8TestBase,
     mask_ = (1 << bit_depth_) - 1;
   }
 
-  virtual void TearDown() { libvpx_test::ClearSystemState(); }
+  void TearDown() override { libvpx_test::ClearSystemState(); }
 
  protected:
-  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) {
+  void RunInvTxfm(tran_low_t *out, uint8_t *dst, int stride) override {
     inv_txfm_(out, dst, stride);
   }
-  void RunFwdTxfm(int16_t * /*out*/, tran_low_t * /*dst*/, int /*stride*/) {}
+  void RunFwdTxfm(int16_t * /*out*/, tran_low_t * /*dst*/,
+                  int /*stride*/) override {}
 
   IdctFunc ref_txfm_;
   IdctFunc inv_txfm_;

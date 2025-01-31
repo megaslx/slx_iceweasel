@@ -13,8 +13,8 @@ import time
 import warnings
 from contextlib import contextmanager
 from textwrap import dedent
-
-from six.moves import urllib
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 __all__ = [
     "extract_tarball",
@@ -22,6 +22,7 @@ __all__ = [
     "extract",
     "is_url",
     "load",
+    "load_source",
     "copy_contents",
     "match",
     "move",
@@ -305,7 +306,7 @@ def remove(path):
         _call_with_windows_retry(shutil.rmtree, (path,))
 
 
-def copy_contents(srcdir, dstdir):
+def copy_contents(srcdir, dstdir, ignore_dangling_symlinks=False):
     """
     Copy the contents of the srcdir into the dstdir, preserving
     subdirectories.
@@ -331,7 +332,11 @@ def copy_contents(srcdir, dstdir):
                     linkto = os.readlink(srcname)
                     os.symlink(linkto, dstname)
                 elif os.path.isdir(srcname):
-                    copy_contents(srcname, dstname)
+                    copy_contents(
+                        srcname,
+                        dstname,
+                        ignore_dangling_symlinks=ignore_dangling_symlinks,
+                    )
                 else:
                     _call_windows_retry(shutil.copy2, (srcname, dstname))
             except OSError as why:
@@ -346,7 +351,12 @@ def copy_contents(srcdir, dstdir):
         if errors:
             raise Exception(errors)
     else:
-        shutil.copytree(srcdir, dstdir, dirs_exist_ok=True)
+        shutil.copytree(
+            srcdir,
+            dstdir,
+            dirs_exist_ok=True,
+            ignore_dangling_symlinks=ignore_dangling_symlinks,
+        )
 
 
 def move(src, dst):
@@ -387,7 +397,6 @@ def tree(directory, sort_key=lambda x: x.lower()):
     top = depth(directory)
 
     for dirpath, dirnames, filenames in os.walk(directory, topdown=True):
-
         abspath = os.path.abspath(dirpath)
         basename = os.path.basename(abspath)
         parent = os.path.dirname(abspath)
@@ -481,11 +490,6 @@ def which(cmd, mode=os.F_OK | os.X_OK, path=None, exts=None, extra_search_dirs=(
     if not exts:
         exts = oldexts.split(os.pathsep)
 
-    # This ensures that `cmd` without any extensions will be found.
-    # See: https://bugs.python.org/issue31405
-    if "." not in exts:
-        exts.append(".")
-
     os.environ["PATHEXT"] = os.pathsep.join(exts)
     try:
         path = shutil_which(cmd, mode=mode, path=path)
@@ -540,7 +544,6 @@ class NamedTemporaryFile(object):
     def __init__(
         self, mode="w+b", bufsize=-1, suffix="", prefix="tmp", dir=None, delete=True
     ):
-
         import tempfile
 
         fd, path = tempfile.mkstemp(suffix, prefix, dir, "t" in mode)
@@ -604,7 +607,7 @@ def is_url(thing):
     Return True if thing looks like a URL.
     """
 
-    parsed = urllib.parse.urlparse(thing)
+    parsed = urlparse(thing)
     if "scheme" in parsed:
         return len(parsed.scheme) >= 2
     else:
@@ -626,7 +629,20 @@ def load(resource):
         # if no scheme is given, it is a file path
         return open(resource)
 
-    return urllib.request.urlopen(resource)
+    return urlopen(resource)
+
+
+# see https://docs.python.org/3/whatsnew/3.12.html#imp
+def load_source(modname, filename):
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(modname, filename)
+    spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module.__name__] = module
+    loader.exec_module(module)
+    return module
 
 
 # We can't depend on mozpack.path here, so copy the 'match' function over.

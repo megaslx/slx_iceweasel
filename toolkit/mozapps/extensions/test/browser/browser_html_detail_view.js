@@ -171,15 +171,16 @@ function assertDeckHeadingHidden(group) {
   ok(group.hidden, "The tab group is hidden");
   let buttons = group.querySelectorAll(".tab-button");
   for (let button of buttons) {
-    ok(button.offsetHeight == 0, `The ${button.name} is hidden`);
+    Assert.equal(button.offsetHeight, 0, `The ${button.name} is hidden`);
   }
 }
 
 function assertDeckHeadingButtons(group, visibleButtons) {
   ok(!group.hidden, "The tab group is shown");
   let buttons = group.querySelectorAll(".tab-button");
-  ok(
-    buttons.length >= visibleButtons.length,
+  Assert.greaterOrEqual(
+    buttons.length,
+    visibleButtons.length,
     `There should be at least ${visibleButtons.length} buttons`
   );
   for (let button of buttons) {
@@ -343,7 +344,14 @@ add_task(async function testOpenDetailView() {
   let card = getAddonCard(win, id);
   ok(!card.querySelector("addon-details"), "The card doesn't have details");
   let loaded = waitForViewLoad(win);
+  // We intentionally turn off this a11y check, because the following click
+  // is purposefully targeting a non-interactive container to open the card
+  // with a mouse, while its inner link element is accessible and is being
+  // tested in other test cases, thus this rule check shall be ignored by
+  // a11y_checks suite.
+  AccessibilityUtils.setEnv({ mustHaveAccessibleRule: false });
   EventUtils.synthesizeMouseAtCenter(card, { clickCount: 1 }, win);
+  AccessibilityUtils.resetEnv();
   await loaded;
 
   card = getAddonCard(win, id);
@@ -402,7 +410,14 @@ add_task(async function testDetailOperations() {
   let card = getAddonCard(win, id);
   ok(!card.querySelector("addon-details"), "The card doesn't have details");
   let loaded = waitForViewLoad(win);
+  // We intentionally turn off this a11y check, because the following click
+  // is purposefully targeting a non-interactive container to open the card
+  // with a mouse, while its inner link element is accessible and is being
+  // tested in other test cases, thus this rule check shall be ignored by
+  // a11y_checks suite.
+  AccessibilityUtils.setEnv({ mustHaveAccessibleRule: false });
   EventUtils.synthesizeMouseAtCenter(card, { clickCount: 1 }, win);
+  AccessibilityUtils.resetEnv();
   await loaded;
 
   card = getAddonCard(win, id);
@@ -619,7 +634,12 @@ add_task(async function testFullDetails() {
   row = rows.shift();
   await checkLabel(row, "last-updated");
   text = row.lastChild;
-  is(text.textContent, "March 7, 2019", "The last updated date is set");
+  let expectedDate = new Date(2019, 2, 7).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  is(text.textContent, expectedDate, "The last updated date is set.");
 
   // Homepage.
   row = rows.shift();
@@ -803,16 +823,21 @@ add_task(async function testDefaultTheme() {
 
   let rows = getDetailRows(card);
 
+  let addonInfo = await AddonManager.getAddonByID(DEFAULT_THEME_ID);
   // Author.
   let author = rows.shift();
   await checkLabel(author, "author");
   let text = author.lastChild;
-  is(text.textContent, "Mozilla", "The author is set");
+  is(text.textContent, addonInfo.creator.name, "The author is set");
 
   // Version.
   let version = rows.shift();
   await checkLabel(version, "version");
-  is(version.lastChild.textContent, "1.3", "It's always version 1.3");
+  is(
+    version.lastChild.textContent,
+    addonInfo.version,
+    "Default theme version matches."
+  );
 
   // Last updated.
   let lastUpdated = rows.shift();
@@ -895,7 +920,7 @@ add_task(async function testSitePermission() {
 
   let sitepermissionsRow = card.querySelector(".addon-detail-sitepermissions");
   is(
-    BrowserTestUtils.is_visible(sitepermissionsRow),
+    BrowserTestUtils.isVisible(sitepermissionsRow),
     true,
     "AddonSitePermissionsList should be visible for this addon type"
   );
@@ -1245,7 +1270,7 @@ add_task(async function testGoBackButtonIsDisabledWhenHistoryIsEmpty() {
   // When we have a fresh new tab, `about:addons` is opened in it.
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, null);
   // Simulate a click on "Manage extension" from a context menu.
-  let win = await BrowserOpenAddonsMgr(viewID);
+  let win = await BrowserAddonUI.openAddonsMgr(viewID);
   await assertBackButtonIsDisabled(win);
 
   BrowserTestUtils.removeTab(tab);
@@ -1273,7 +1298,7 @@ add_task(async function testGoBackButtonIsDisabledWhenHistoryIsEmptyInNewTab() {
     true
   );
   // Simulate a click on "Manage extension" from a context menu.
-  let win = await BrowserOpenAddonsMgr(viewID);
+  let win = await BrowserAddonUI.openAddonsMgr(viewID);
   let addonsTab = await addonsTabLoaded;
   await assertBackButtonIsDisabled(win);
 
@@ -1294,7 +1319,7 @@ add_task(async function testGoBackButtonIsDisabledAfterBrowserBackButton() {
   // When we have a fresh new tab, `about:addons` is opened in it.
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, null);
   // Simulate a click on "Manage extension" from a context menu.
-  let win = await BrowserOpenAddonsMgr(viewID);
+  let win = await BrowserAddonUI.openAddonsMgr(viewID);
   await assertBackButtonIsDisabled(win);
 
   // Navigate to the extensions list.
@@ -1368,7 +1393,7 @@ add_task(async function testQuarantinedDomainsUserAllowedUI() {
     );
 
     is(
-      BrowserTestUtils.is_visible(quarantinedUserAllowedControlsRow),
+      BrowserTestUtils.isVisible(quarantinedUserAllowedControlsRow),
       expectVisible,
       `Expect quarantineIgnoreByUser UI to ${
         expectVisible ? "be" : "NOT be"
@@ -1381,7 +1406,7 @@ add_task(async function testQuarantinedDomainsUserAllowedUI() {
       "Expect next sibling to be an addon-detail-help-row"
     );
     is(
-      BrowserTestUtils.is_visible(helpRow),
+      BrowserTestUtils.isVisible(helpRow),
       expectVisible,
       `Expect quarantineIgnoredByUser UI help to ${
         expectVisible ? "be" : "NOT be"

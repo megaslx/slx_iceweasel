@@ -26,9 +26,11 @@ static_assert(!std::is_polymorphic_v<WarpOpSnapshot>,
 
 WarpSnapshot::WarpSnapshot(JSContext* cx, TempAllocator& alloc,
                            WarpScriptSnapshotList&& scriptSnapshots,
+                           const WarpZoneStubsSnapshot& zoneStubs,
                            const WarpBailoutInfo& bailoutInfo,
                            bool needsFinalWarmUpCount)
     : scriptSnapshots_(std::move(scriptSnapshots)),
+      zoneStubs_(zoneStubs),
       globalLexicalEnv_(&cx->global()->lexicalEnvironment()),
       globalLexicalEnvThis_(globalLexicalEnv_->thisObject()),
       bailoutInfo_(bailoutInfo),
@@ -46,8 +48,7 @@ WarpScriptSnapshot::WarpScriptSnapshot(JSScript* script,
       environment_(env),
       opSnapshots_(std::move(opSnapshots)),
       moduleObject_(moduleObject),
-      isArrowFunction_(script->isFunction() && script->function()->isArrow()),
-      isMonomorphicInlined_(false) {}
+      isArrowFunction_(script->isFunction() && script->function()->isArrow()) {}
 
 #ifdef JS_JITSPEW
 void WarpSnapshot::dump() const {
@@ -62,6 +63,13 @@ void WarpSnapshot::dump(GenericPrinter& out) const {
   out.printf("globalLexicalEnvThis: 0x%p\n", globalLexicalEnvThis());
   out.printf("failedBoundsCheck: %u\n", bailoutInfo().failedBoundsCheck());
   out.printf("failedLexicalCheck: %u\n", bailoutInfo().failedLexicalCheck());
+  out.printf("\n");
+
+  out.printf("JitZone stubs:\n");
+  for (const auto& stub : zoneStubs_) {
+    unsigned index = &stub - zoneStubs_.begin();
+    out.printf("Stub %u: 0x%p\n", index, stub);
+  }
   out.printf("\n");
 
   out.printf("Nursery objects (%u):\n", unsigned(nurseryObjects_.length()));
@@ -79,7 +87,7 @@ void WarpScriptSnapshot::dump(GenericPrinter& out) const {
   out.printf("WarpScriptSnapshot (0x%p)\n", this);
   out.printf("------------------------------\n");
   out.printf("Script: %s:%u:%u (0x%p)\n", script_->filename(),
-             script_->lineno(), script_->column(),
+             script_->lineno(), script_->column().oneOriginValue(),
              static_cast<JSScript*>(script_));
   out.printf("  moduleObject: 0x%p\n", moduleObject());
   out.printf("  isArrowFunction: %u\n", isArrowFunction());
@@ -154,7 +162,7 @@ void WarpRest::dumpData(GenericPrinter& out) const {
   out.printf("    shape: 0x%p\n", shape());
 }
 
-void WarpBindGName::dumpData(GenericPrinter& out) const {
+void WarpBindUnqualifiedGName::dumpData(GenericPrinter& out) const {
   out.printf("    globalEnv: 0x%p\n", globalEnv());
 }
 
@@ -224,6 +232,12 @@ void WarpSnapshot::trace(JSTracer* trc) {
   for (auto* script : scriptSnapshots_) {
     script->trace(trc);
   }
+  for (JitCode* stub : zoneStubs_) {
+    if (stub) {
+      WarpGCPtr<JitCode*> ptr(stub);
+      TraceWarpGCPtr(trc, ptr, "warp-zone-stub");
+    }
+  }
   TraceWarpGCPtr(trc, globalLexicalEnv_, "warp-lexical");
   TraceWarpGCPtr(trc, globalLexicalEnvThis_, "warp-lexicalthis");
 }
@@ -292,8 +306,8 @@ void WarpRest::traceData(JSTracer* trc) {
   TraceWarpGCPtr(trc, shape_, "warp-rest-shape");
 }
 
-void WarpBindGName::traceData(JSTracer* trc) {
-  TraceWarpGCPtr(trc, globalEnv_, "warp-bindgname-globalenv");
+void WarpBindUnqualifiedGName::traceData(JSTracer* trc) {
+  TraceWarpGCPtr(trc, globalEnv_, "warp-bindunqualifiedgname-globalenv");
 }
 
 void WarpVarEnvironment::traceData(JSTracer* trc) {
@@ -342,7 +356,8 @@ void WarpCacheIR::traceData(JSTracer* trc) {
           TraceWarpStubPtr<Shape>(trc, word, "warp-cacheir-shape");
           break;
         }
-        case StubField::Type::GetterSetter: {
+        case StubField::Type::WeakGetterSetter: {
+          // WeakGetterSetter pointers are traced strongly in this context.
           uintptr_t word = stubInfo_->getStubRawWord(stubData_, offset);
           TraceWarpStubPtr<GetterSetter>(trc, word,
                                          "warp-cacheir-getter-setter");
@@ -368,7 +383,8 @@ void WarpCacheIR::traceData(JSTracer* trc) {
           TraceWarpStubPtr<JSString>(trc, word, "warp-cacheir-string");
           break;
         }
-        case StubField::Type::BaseScript: {
+        case StubField::Type::WeakBaseScript: {
+          // WeakBaseScript pointers are traced strongly in this context.
           uintptr_t word = stubInfo_->getStubRawWord(stubData_, offset);
           TraceWarpStubPtr<BaseScript>(trc, word, "warp-cacheir-script");
           break;

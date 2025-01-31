@@ -30,7 +30,6 @@ class TargetPolicy {
     SUBSYS_PROCESS,          // Creation of child processes.
     SUBSYS_REGISTRY,         // Creation and opening of registry keys.
     SUBSYS_SYNC,             // Creation of named sync objects.
-    SUBSYS_HANDLES,          // Duplication of handles to other processes.
     SUBSYS_WIN32K_LOCKDOWN,  // Win32K Lockdown related policy.
     SUBSYS_SIGNED_BINARY,    // Signed binary policy.
     SUBSYS_LINE_BREAK        // Complex line break policy.
@@ -44,9 +43,6 @@ class TargetPolicy {
     FILES_ALLOW_QUERY,     // Allows access to query the attributes of a file.
     FILES_ALLOW_DIR_ANY,   // Allows open or create with directory semantics
                            // only.
-    HANDLES_DUP_ANY,       // Allows duplicating handles opened with any
-                           // access permissions.
-    HANDLES_DUP_BROKER,    // Allows duplicating handles to the broker process.
     NAMEDPIPES_ALLOW_ANY,  // Allows creation of a named pipe.
     PROCESS_MIN_EXEC,      // Allows to create a process with minimal rights
                            // over the resulting process and thread handles.
@@ -112,6 +108,9 @@ class TargetPolicy {
   // to do this in some circumstances even though it weakens the sandbox.
   // The default is to use them.
   virtual void SetDoNotUseRestrictingSIDs() = 0;
+
+  // When called the Everyone SID won't be set to deny only for USER_RESTRICED.
+  virtual void SetAllowEveryoneForUserRestricted() = 0;
 
   // Sets the security level of the Job Object to which the target process will
   // belong. This setting is permanent and cannot be changed once the target

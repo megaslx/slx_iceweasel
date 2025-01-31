@@ -36,10 +36,14 @@ add_task(async function () {
 
   const msg = await waitFor(() => findConsoleAPIMessage(hud, "<h1>"));
   const node = msg.querySelector(".objectBox-node");
-  ok(node !== null, "Node was logged as expected");
+  Assert.notStrictEqual(node, null, "Node was logged as expected");
 
   const openInInspectorIcon = node.querySelector(".open-inspector");
-  ok(openInInspectorIcon !== null, "The is an open in inspector icon");
+  Assert.notStrictEqual(
+    openInInspectorIcon,
+    null,
+    "The is an open in inspector icon"
+  );
 
   info(
     "Clicking on the inspector icon and waiting for the " +
@@ -59,7 +63,7 @@ add_task(async function () {
   is(nodeFront.displayName, "h1", "The expected node was selected");
 
   is(
-    msg.querySelector(".arrow").classList.contains("expanded"),
+    msg.querySelector(".theme-twisty").classList.contains("open"),
     false,
     "The object inspector wasn't expanded"
   );

@@ -18,7 +18,6 @@
 #include "js/Id.h"                  // JS::PropertyKey
 #include "js/PropertyAndElement.h"  // JS::IdVector, JS_HasPropertyById, JS_HasOwnPropertyById, JS_GetPropertyById, JS_Enumerate
 #include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnPropertyDescriptorById
-#include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnPropertyDescriptorById
 #include "js/Proxy.h"  // js::ProxyOptions, js::NewProxyObject, js::GetProxyPrivate
 #include "js/RootingAPI.h"  // JS::Rooted, JS::Handle, JS::MutableHandle
 #include "js/TypeDecls.h"   // JSContext, JSObject, JS::MutableHandleVector
@@ -117,7 +116,8 @@ struct JSMEnvironmentProxyHandler : public js::BaseProxyHandler {
   static const JSMEnvironmentProxyHandler gHandler;
 };
 
-const JSMEnvironmentProxyHandler JSMEnvironmentProxyHandler::gHandler;
+MOZ_RUNINIT const JSMEnvironmentProxyHandler
+    JSMEnvironmentProxyHandler::gHandler;
 const char JSMEnvironmentProxyHandler::gFamily = 0;
 
 JSObject* ResolveModuleObjectPropertyById(JSContext* aCx,

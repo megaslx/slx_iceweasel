@@ -18,27 +18,31 @@ class PictureInPictureVideoWrapper {
     }
     this.player = netflixPlayerAPI.getVideoPlayerBySessionId(sessionId);
   }
+
   /**
    * The Netflix player returns the current time in milliseconds so we convert
    * to seconds before returning.
-   * @param {HTMLVideoElement} video The original video element
-   * @returns {Number} The current time in seconds
+   *
+   * @returns {number} The current time in seconds
    */
-  getCurrentTime(video) {
+  getCurrentTime() {
     return this.player.getCurrentTime() / 1000;
   }
+
   /**
    * The Netflix player returns the duration in milliseconds so we convert to
    * seconds before returning.
-   * @param {HTMLVideoElement} video The original video element
-   * @returns {Number} The duration in seconds
+   *
+   * @returns {number} The duration in seconds
    */
-  getDuration(video) {
+  getDuration() {
     return this.player.getDuration() / 1000;
   }
+
   play() {
     this.player.play();
   }
+
   pause() {
     this.player.pause();
   }
@@ -48,7 +52,7 @@ class PictureInPictureVideoWrapper {
 
     if (container) {
       updateCaptionsFunction("");
-      const callback = function (mutationsList, observer) {
+      const callback = function () {
         let text = container.querySelector(".player-timedtext").innerText;
         updateCaptionsFunction(text);
       };
@@ -56,9 +60,9 @@ class PictureInPictureVideoWrapper {
       // immediately invoke the callback function to add subtitles to the PiP window
       callback([1], null);
 
-      let captionsObserver = new MutationObserver(callback);
+      this.captionsObserver = new MutationObserver(callback);
 
-      captionsObserver.observe(container, {
+      this.captionsObserver.observe(container, {
         attributes: false,
         childList: true,
         subtree: true,
@@ -66,23 +70,32 @@ class PictureInPictureVideoWrapper {
     }
   }
 
+  removeCaptionContainerObserver() {
+    this.captionsObserver?.disconnect();
+  }
+
   /**
    * Set the current time of the video in milliseconds.
+   *
    * @param {HTMLVideoElement} video The original video element
-   * @param {Number} position The new time in seconds
+   * @param {number} position The new time in seconds
    */
   setCurrentTime(video, position) {
     this.player.seek(position * 1000);
   }
+
   setVolume(video, volume) {
     this.player.setVolume(volume);
   }
+
   getVolume() {
     return this.player.getVolume();
   }
+
   setMuted(video, shouldMute) {
     this.player.setMuted(shouldMute);
   }
+
   isMuted() {
     return this.player.isMuted();
   }

@@ -24,9 +24,8 @@
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Try.h"
 #include "nsString.h"
-
-static const uint32_t kMinTelemetryNotifyObserversLatencyMs = 1;
 
 // Log module for nsObserverService logging...
 //
@@ -181,19 +180,20 @@ nsresult nsObserverService::EnsureValidCall() const {
 }
 
 nsresult nsObserverService::FilterHttpOnTopics(const char* aTopic) {
-  // Specifically allow http-on-opening-request and http-on-stop-request in the
-  // child process; see bug 1269765.
+  // Specifically allow some http-on-* observer notifications in the child
+  // process.
   if (mozilla::net::IsNeckoChild() && !strncmp(aTopic, "http-on-", 8) &&
+      strcmp(aTopic, "http-on-before-stop-request") &&
       strcmp(aTopic, "http-on-failed-opening-request") &&
+      strcmp(aTopic, "http-on-resource-cache-response") &&
       strcmp(aTopic, "http-on-opening-request") &&
-      strcmp(aTopic, "http-on-stop-request") &&
-      strcmp(aTopic, "http-on-image-cache-response")) {
+      strcmp(aTopic, "http-on-stop-request")) {
     nsCOMPtr<nsIConsoleService> console(
         do_GetService(NS_CONSOLESERVICE_CONTRACTID));
     nsCOMPtr<nsIScriptError> error(
         do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
     error->Init(u"http-on-* observers only work in the parent process"_ns,
-                u""_ns, u""_ns, 0, 0, nsIScriptError::warningFlag,
+                ""_ns, 0, 0, nsIScriptError::warningFlag,
                 "chrome javascript"_ns, false /* from private window */,
                 true /* from chrome context */);
     console->LogMessage(error);
@@ -279,8 +279,6 @@ NS_IMETHODIMP nsObserverService::NotifyObservers(nsISupports* aSubject,
 
   MOZ_ASSERT(AppShutdown::IsNoOrLegalShutdownTopic(aTopic));
 
-  mozilla::TimeStamp start = TimeStamp::Now();
-
   AUTO_PROFILER_MARKER_TEXT("NotifyObservers", OTHER, MarkerStack::Capture(),
                             nsDependentCString(aTopic));
   AUTO_PROFILER_LABEL_DYNAMIC_CSTR_NONSENSITIVE(
@@ -289,12 +287,6 @@ NS_IMETHODIMP nsObserverService::NotifyObservers(nsISupports* aSubject,
   nsObserverList* observerList = mObserverTopicTable.GetEntry(aTopic);
   if (observerList) {
     observerList->NotifyObservers(aSubject, aTopic, aSomeData);
-  }
-
-  uint32_t latencyMs = round((TimeStamp::Now() - start).ToMilliseconds());
-  if (latencyMs >= kMinTelemetryNotifyObserversLatencyMs) {
-    Telemetry::Accumulate(Telemetry::NOTIFY_OBSERVERS_LATENCY_MS,
-                          nsDependentCString(aTopic), latencyMs);
   }
 
   return NS_OK;

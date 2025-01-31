@@ -53,7 +53,7 @@ nsImageRenderer::nsImageRenderer(nsIFrame* aForFrame, const StyleImage* aImage,
                                  uint32_t aFlags)
     : mForFrame(aForFrame),
       mImage(&aImage->FinalImage()),
-      mImageResolution(aImage->GetResolution()),
+      mImageResolution(aImage->GetResolution(*aForFrame->Style())),
       mType(mImage->tag),
       mImageContainer(nullptr),
       mGradientData(nullptr),
@@ -114,7 +114,7 @@ bool nsImageRenderer::PrepareImage() {
 
       bool canDrawPartial =
           (mFlags & nsImageRenderer::FLAG_DRAW_PARTIAL_FRAMES) &&
-          isImageRequest && mImage->IsSizeAvailable() && !mImage->IsRect();
+          isImageRequest && mImage->IsSizeAvailable();
 
       // If we are drawing a partial frame then we want to make sure there are
       // some pixels to draw, otherwise we waste effort pushing through to draw
@@ -153,24 +153,7 @@ bool nsImageRenderer::PrepareImage() {
       srcImage = nsLayoutUtils::OrientImage(srcImage, orientation);
     }
 
-    if (!mImage->IsRect()) {
-      mImageContainer.swap(srcImage);
-    } else {
-      auto croprect = mImage->ComputeActualCropRect();
-      if (!croprect || croprect->mRect.IsEmpty()) {
-        // The cropped image has zero size
-        mPrepareResult = ImgDrawResult::BAD_IMAGE;
-        return false;
-      }
-      if (croprect->mIsEntireImage) {
-        // The cropped image is identical to the source image
-        mImageContainer.swap(srcImage);
-      } else {
-        nsCOMPtr<imgIContainer> subImage =
-            ImageOps::Clip(srcImage, croprect->mRect, Nothing());
-        mImageContainer.swap(subImage);
-      }
-    }
+    mImageContainer.swap(srcImage);
     mPrepareResult = ImgDrawResult::SUCCESS;
   } else if (mImage->IsGradient()) {
     mGradientData = &*mImage->AsGradient();
@@ -188,12 +171,11 @@ bool nsImageRenderer::PrepareImage() {
           paintElement ? paintElement->GetPrimaryFrame() : nullptr;
       // If there's no referenced frame, or the referenced frame is
       // non-displayable SVG, then we have nothing valid to paint.
-      if (!paintServerFrame ||
-          (paintServerFrame->IsFrameOfType(nsIFrame::eSVG) &&
-           !static_cast<SVGPaintServerFrame*>(
-               do_QueryFrame(paintServerFrame)) &&
-           !static_cast<ISVGDisplayableFrame*>(
-               do_QueryFrame(paintServerFrame)))) {
+      if (!paintServerFrame || (paintServerFrame->IsSVGFrame() &&
+                                !static_cast<SVGPaintServerFrame*>(
+                                    do_QueryFrame(paintServerFrame)) &&
+                                !static_cast<ISVGDisplayableFrame*>(
+                                    do_QueryFrame(paintServerFrame)))) {
         mPrepareResult = ImgDrawResult::BAD_IMAGE;
         return false;
       }
@@ -220,7 +202,6 @@ CSSSizeOrRatio nsImageRenderer::ComputeIntrinsicSize() {
 
   CSSSizeOrRatio result;
   switch (mType) {
-    case StyleImage::Tag::Rect:
     case StyleImage::Tag::Url: {
       bool haveWidth, haveHeight;
       CSSIntSize imageIntSize;
@@ -237,11 +218,11 @@ CSSSizeOrRatio nsImageRenderer::ComputeIntrinsicSize() {
       // If we know the aspect ratio and one of the dimensions,
       // we can compute the other missing width or height.
       if (!haveHeight && haveWidth && result.mRatio) {
-        nscoord intrinsicHeight =
+        CSSIntCoord intrinsicHeight =
             result.mRatio.Inverted().ApplyTo(imageIntSize.width);
         result.SetHeight(nsPresContext::CSSPixelsToAppUnits(intrinsicHeight));
       } else if (haveHeight && !haveWidth && result.mRatio) {
-        nscoord intrinsicWidth = result.mRatio.ApplyTo(imageIntSize.height);
+        CSSIntCoord intrinsicWidth = result.mRatio.ApplyTo(imageIntSize.height);
         result.SetWidth(nsPresContext::CSSPixelsToAppUnits(intrinsicWidth));
       }
 
@@ -256,7 +237,7 @@ CSSSizeOrRatio nsImageRenderer::ComputeIntrinsicSize() {
       //     when fixing this!
       if (mPaintServerFrame) {
         // SVG images have no intrinsic size
-        if (!mPaintServerFrame->IsFrameOfType(nsIFrame::eSVG)) {
+        if (!mPaintServerFrame->IsSVGFrame()) {
           // The intrinsic image size for a generic nsIFrame paint server is
           // the union of the border-box rects of all of its continuations,
           // rounded to device pixels.
@@ -506,7 +487,6 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
   }
 
   switch (mType) {
-    case StyleImage::Tag::Rect:
     case StyleImage::Tag::Url: {
       result = nsLayoutUtils::DrawBackgroundImage(
           *ctx, mForFrame, aPresContext, mImageContainer, samplingFilter, aDest,
@@ -606,7 +586,6 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
                                           !aItem->BackfaceIsHidden(), aOpacity);
       break;
     }
-    case StyleImage::Tag::Rect:
     case StyleImage::Tag::Url: {
       ExtendMode extendMode = mExtendMode;
       if (aDest.Contains(aFill)) {
@@ -803,31 +782,31 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItemsForLayer(
  * tile used to fill the dest rect.
  * aFill The destination rect to be filled
  * aHFill and aVFill are the repeat patterns for the component -
- * StyleBorderImageRepeat - i.e., how a tiling unit is used to fill aFill
+ * StyleBorderImageRepeatKeyword - i.e., how a tiling unit is used to fill aFill
  * aUnitSize The size of the source rect in dest coords.
  */
-static nsRect ComputeTile(nsRect& aFill, StyleBorderImageRepeat aHFill,
-                          StyleBorderImageRepeat aVFill,
+static nsRect ComputeTile(nsRect& aFill, StyleBorderImageRepeatKeyword aHFill,
+                          StyleBorderImageRepeatKeyword aVFill,
                           const nsSize& aUnitSize, nsSize& aRepeatSize) {
   nsRect tile;
   switch (aHFill) {
-    case StyleBorderImageRepeat::Stretch:
+    case StyleBorderImageRepeatKeyword::Stretch:
       tile.x = aFill.x;
       tile.width = aFill.width;
       aRepeatSize.width = tile.width;
       break;
-    case StyleBorderImageRepeat::Repeat:
+    case StyleBorderImageRepeatKeyword::Repeat:
       tile.x = aFill.x + aFill.width / 2 - aUnitSize.width / 2;
       tile.width = aUnitSize.width;
       aRepeatSize.width = tile.width;
       break;
-    case StyleBorderImageRepeat::Round:
+    case StyleBorderImageRepeatKeyword::Round:
       tile.x = aFill.x;
       tile.width =
           nsCSSRendering::ComputeRoundedSize(aUnitSize.width, aFill.width);
       aRepeatSize.width = tile.width;
       break;
-    case StyleBorderImageRepeat::Space: {
+    case StyleBorderImageRepeatKeyword::Space: {
       nscoord space;
       aRepeatSize.width = nsCSSRendering::ComputeBorderSpacedRepeatSize(
           aUnitSize.width, aFill.width, space);
@@ -841,23 +820,23 @@ static nsRect ComputeTile(nsRect& aFill, StyleBorderImageRepeat aHFill,
   }
 
   switch (aVFill) {
-    case StyleBorderImageRepeat::Stretch:
+    case StyleBorderImageRepeatKeyword::Stretch:
       tile.y = aFill.y;
       tile.height = aFill.height;
       aRepeatSize.height = tile.height;
       break;
-    case StyleBorderImageRepeat::Repeat:
+    case StyleBorderImageRepeatKeyword::Repeat:
       tile.y = aFill.y + aFill.height / 2 - aUnitSize.height / 2;
       tile.height = aUnitSize.height;
       aRepeatSize.height = tile.height;
       break;
-    case StyleBorderImageRepeat::Round:
+    case StyleBorderImageRepeatKeyword::Round:
       tile.y = aFill.y;
       tile.height =
           nsCSSRendering::ComputeRoundedSize(aUnitSize.height, aFill.height);
       aRepeatSize.height = tile.height;
       break;
-    case StyleBorderImageRepeat::Space: {
+    case StyleBorderImageRepeatKeyword::Space: {
       nscoord space;
       aRepeatSize.height = nsCSSRendering::ComputeBorderSpacedRepeatSize(
           aUnitSize.height, aFill.height, space);
@@ -878,20 +857,21 @@ static nsRect ComputeTile(nsRect& aFill, StyleBorderImageRepeat aHFill,
  * the dest rect to be scaled from the source tile. See comment on ComputeTile
  * for argument descriptions.
  */
-static bool RequiresScaling(const nsRect& aFill, StyleBorderImageRepeat aHFill,
-                            StyleBorderImageRepeat aVFill,
+static bool RequiresScaling(const nsRect& aFill,
+                            StyleBorderImageRepeatKeyword aHFill,
+                            StyleBorderImageRepeatKeyword aVFill,
                             const nsSize& aUnitSize) {
   // If we have no tiling in either direction, we can skip the intermediate
   // scaling step.
-  return (aHFill != StyleBorderImageRepeat::Stretch ||
-          aVFill != StyleBorderImageRepeat::Stretch) &&
+  return (aHFill != StyleBorderImageRepeatKeyword::Stretch ||
+          aVFill != StyleBorderImageRepeatKeyword::Stretch) &&
          (aUnitSize.width != aFill.width || aUnitSize.height != aFill.height);
 }
 
 ImgDrawResult nsImageRenderer::DrawBorderImageComponent(
     nsPresContext* aPresContext, gfxContext& aRenderingContext,
     const nsRect& aDirtyRect, const nsRect& aFill, const CSSIntRect& aSrc,
-    StyleBorderImageRepeat aHFill, StyleBorderImageRepeat aVFill,
+    StyleBorderImageRepeatKeyword aHFill, StyleBorderImageRepeatKeyword aVFill,
     const nsSize& aUnitSize, uint8_t aIndex,
     const Maybe<nsSize>& aSVGViewportSize, const bool aHasIntrinsicRatio) {
   if (!IsReady()) {
@@ -905,8 +885,7 @@ ImgDrawResult nsImageRenderer::DrawBorderImageComponent(
     return ImgDrawResult::SUCCESS;
   }
 
-  const bool isRequestBacked =
-      mType == StyleImage::Tag::Url || mType == StyleImage::Tag::Rect;
+  const bool isRequestBacked = mType == StyleImage::Tag::Url;
   MOZ_ASSERT(isRequestBacked == mImage->IsImageRequestType());
 
   if (isRequestBacked || mType == StyleImage::Tag::Element) {

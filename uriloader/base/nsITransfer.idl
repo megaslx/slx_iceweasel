@@ -103,7 +103,7 @@ interface nsITransfer : nsIWebProgressListener2 {
                                     in boolean aIsPrivate,
                                     in long aDownloadClassification,
                                     in nsIReferrerInfo aReferrerInfo,
-                                    [optional] in boolean aOpenDownloadsListOnStart,
+                                    in boolean aOpenDownloadsListOnStart,
                                     in BrowsingContext aBrowsingContext,
                                     in boolean aHandleInternally,
                                     in nsIHttpChannel aHttpChannel);
@@ -134,6 +134,12 @@ interface nsITransfer : nsIWebProgressListener2 {
      *        associated with the downloaded file.
      */
     void setRedirects(in nsIArray aRedirects);
+
+    /*
+     * Returns a promise that resolves to the download object associated with
+     * this transfer.
+     */
+    readonly attribute Promise downloadPromise;
 };
 
 %{C++

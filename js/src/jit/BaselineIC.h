@@ -32,6 +32,7 @@ namespace jit {
 class BaselineFrame;
 class CacheIRStubInfo;
 class ICScript;
+class ICStubSpace;
 
 enum class VMFunctionId;
 
@@ -157,7 +158,9 @@ class ICStub {
 
   ICStub(uint8_t* stubCode, bool isFallback)
       : stubCode_(stubCode), isFallback_(isFallback) {
+#ifndef ENABLE_PORTABLE_BASELINE_INTERP
     MOZ_ASSERT(stubCode != nullptr);
+#endif  // !ENABLE_PORTABLE_BASELINE_INTERP
   }
 
  public:
@@ -189,10 +192,19 @@ class ICStub {
     // call JitCode::FromExecutable on the raw pointer.
     return isFallback();
   }
+
+#ifndef ENABLE_PORTABLE_BASELINE_INTERP
   JitCode* jitCode() {
     MOZ_ASSERT(!usesTrampolineCode());
     return JitCode::FromExecutable(stubCode_);
   }
+  bool hasJitCode() { return !!stubCode_; }
+#else  // !ENABLE_PORTABLE_BASELINE_INTERP
+  JitCode* jitCode() { return nullptr; }
+  bool hasJitCode() { return false; }
+  uint8_t* rawJitCode() const { return stubCode_; }
+  void updateRawJitCode(uint8_t* ptr) { stubCode_ = ptr; }
+#endif
 
   uint32_t enteredCount() const { return enteredCount_; }
   inline void incrementEnteredCount() { enteredCount_++; }
@@ -231,7 +243,7 @@ class ICFallbackStub final : public ICStub {
   // Add a new stub to the IC chain terminated by this fallback stub.
   inline void addNewStub(ICEntry* icEntry, ICCacheIRStub* stub);
 
-  void discardStubs(JSContext* cx, ICEntry* icEntry);
+  void discardStubs(Zone* zone, ICEntry* icEntry);
 
   void clearUsedByTranspiler() { state_.clearUsedByTranspiler(); }
   void setUsedByTranspiler() { state_.setUsedByTranspiler(); }
@@ -269,8 +281,10 @@ class ICCacheIRStub final : public ICStub {
 
  public:
   ICCacheIRStub(JitCode* stubCode, const CacheIRStubInfo* stubInfo)
-      : ICStub(stubCode->raw(), /* isFallback = */ false),
-        stubInfo_(stubInfo) {}
+      : ICStub(stubCode ? stubCode->raw() : nullptr, /* isFallback = */ false),
+        stubInfo_(stubInfo) {
+    MOZ_ASSERT_IF(!IsPortableBaselineInterpreterEnabled(), stubCode);
+  }
 
   ICStub* next() const { return next_; }
   void setNext(ICStub* stub) { next_ = stub; }
@@ -285,12 +299,10 @@ class ICCacheIRStub final : public ICStub {
   void trace(JSTracer* trc);
   bool traceWeak(JSTracer* trc);
 
-  // Optimized stubs get purged on GC.  But some stubs can be active on the
-  // stack during GC - specifically the ones that can make calls.  To ensure
-  // that these do not get purged, all stubs that can make calls are allocated
-  // in the fallback stub space.
+  ICCacheIRStub* clone(JSRuntime* rt, ICStubSpace& newSpace);
+
+  // Returns true if this stub can call JS or VM code that can trigger a GC.
   bool makesGCCalls() const;
-  bool allocatedInFallbackSpace() const { return makesGCCalls(); }
 
   static constexpr size_t offsetOfNext() {
     return offsetof(ICCacheIRStub, next_);
@@ -374,7 +386,7 @@ extern bool DoBindNameFallback(JSContext* cx, BaselineFrame* frame,
                                ICFallbackStub* stub, HandleObject envChain,
                                MutableHandleValue res);
 
-extern bool DoGetIntrinsicFallback(JSContext* cx, BaselineFrame* frame,
+extern bool DoLazyConstantFallback(JSContext* cx, BaselineFrame* frame,
                                    ICFallbackStub* stub,
                                    MutableHandleValue res);
 
@@ -408,6 +420,10 @@ extern bool DoTypeOfFallback(JSContext* cx, BaselineFrame* frame,
                              ICFallbackStub* stub, HandleValue val,
                              MutableHandleValue res);
 
+extern bool DoTypeOfEqFallback(JSContext* cx, BaselineFrame* frame,
+                               ICFallbackStub* stub, HandleValue val,
+                               MutableHandleValue res);
+
 extern bool DoToPropertyKeyFallback(JSContext* cx, BaselineFrame* frame,
                                     ICFallbackStub* stub, HandleValue val,
                                     MutableHandleValue res);
@@ -429,12 +445,20 @@ extern bool DoNewArrayFallback(JSContext* cx, BaselineFrame* frame,
 extern bool DoNewObjectFallback(JSContext* cx, BaselineFrame* frame,
                                 ICFallbackStub* stub, MutableHandleValue res);
 
+extern bool DoLambdaFallback(JSContext* cx, BaselineFrame* frame,
+                             ICFallbackStub* stub, MutableHandleValue res);
+
 extern bool DoCompareFallback(JSContext* cx, BaselineFrame* frame,
                               ICFallbackStub* stub, HandleValue lhs,
                               HandleValue rhs, MutableHandleValue ret);
 
 extern bool DoCloseIterFallback(JSContext* cx, BaselineFrame* frame,
                                 ICFallbackStub* stub, HandleObject iter);
+
+extern bool DoOptimizeGetIteratorFallback(JSContext* cx, BaselineFrame* frame,
+                                          ICFallbackStub* stub,
+                                          HandleValue value,
+                                          MutableHandleValue res);
 
 }  // namespace jit
 }  // namespace js

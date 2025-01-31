@@ -228,10 +228,10 @@ namespace ChromeUtils {
 #endif // NIGHTLY_BUILD
 
   /**
-   * Clears the stylesheet cache by baseDomain. This includes associated
+   * Clears the stylesheet cache by site. This includes associated
    * state-partitioned cache.
    */
-  undefined clearStyleSheetCacheByBaseDomain(UTF8String baseDomain);
+  undefined clearStyleSheetCacheBySite(UTF8String schemelessSite, optional OriginAttributesPatternDictionary pattern = {});
 
   /**
    * Clears the stylesheet cache by principal.
@@ -242,6 +242,41 @@ namespace ChromeUtils {
    * Clears the entire stylesheet cache.
    */
   undefined clearStyleSheetCache();
+
+  /**
+   * Clears the Messaging Layer Security state by schemeless site.
+   * This includes associated state-partitioned cache.
+   */
+  [Throws]
+  undefined clearMessagingLayerSecurityStateBySite(UTF8String schemelessSite, optional OriginAttributesPatternDictionary pattern = {});
+
+  /**
+   * Clears the Messaging Layer Security state by principal.
+   */
+  [Throws]
+  undefined clearMessagingLayerSecurityStateByPrincipal(Principal principal);
+
+  /**
+   * Clears all Messaging Layer Security related state across domains
+   */
+  [Throws]
+  undefined clearMessagingLayerSecurityState();
+
+  /**
+   * Clears the JavaScript cache by schemeless site. This includes associated
+   * state-partitioned cache.
+   */
+  undefined clearScriptCacheBySite(UTF8String schemelessSite, optional OriginAttributesPatternDictionary pattern = {});
+
+  /**
+   * Clears the JavaScript cache by principal.
+   */
+  undefined clearScriptCacheByPrincipal(Principal principal);
+
+  /**
+   * Clears the entire JavaScript cache.
+   */
+  undefined clearScriptCache();
 
   /**
    * If the profiler is currently running and recording the current thread,
@@ -296,6 +331,62 @@ namespace ChromeUtils {
    */
   LibcConstants getLibcConstants();
 #endif
+
+#ifdef MOZ_WMF_CDM
+  /**
+   * Returns the information about all Media Foundation based content decryption
+   * modules, which would include key system names and their capabilities.
+   */
+  [NewObject]
+  Promise<sequence<CDMInformation>> getWMFContentDecryptionModuleInformation();
+#endif
+
+  /**
+   * Returns the information about the GMP based content decryption
+   * modules, which would include key system names and their capabilities.
+   */
+  [NewObject]
+  Promise<sequence<CDMInformation>> getGMPContentDecryptionModuleInformation();
+
+  /**
+   * Synchronously loads and evaluates the JS module source located at
+   * 'aResourceURI'.
+   *
+   * @param aResourceURI A resource:// URI string to load the module from.
+   * @param aOption An option to specify where to load the module into.
+   * @returns the module's namespace object.
+   *
+   * The implementation maintains a hash of aResourceURI->global obj.
+   * Subsequent invocations of import with 'aResourceURI' pointing to
+   * the same file will not cause the module to be re-evaluated.
+   *
+   * In worker threads, aOption is required and only { global: "current" } and
+   * { global: "contextual" } are supported.
+   *
+   * In DevTools distinct global, aOptions.global is reuiqred.
+   */
+  [Throws]
+  object importESModule(DOMString aResourceURI,
+                        optional ImportESModuleOptionsDictionary aOptions = {});
+
+  /**
+   * Defines properties on the given target which lazily imports a ES module
+   * when accessed.
+   *
+   * @param aTarget The target object on which to define the property.
+   * @param aModules An object with a property for each module property to be
+   *                 imported, where the property name is the name of the
+   *                 imported symbol and the value is the module URI.
+   * @param aOptions An option to specify where to load the module into.
+   *
+   * In worker threads, aOptions is required and only { global: "current" } and
+   * { global: "contextual" } are supported.
+   *
+   * In DevTools distinct global, aOptions.global is required.
+   */
+  [Throws]
+  undefined defineESModuleGetters(object aTarget, object aModules,
+                                  optional ImportESModuleOptionsDictionary aOptions = {});
 
   /**
    * IF YOU ADD NEW METHODS HERE, MAKE SURE THEY ARE THREAD-SAFE.
@@ -382,16 +473,20 @@ partial namespace ChromeUtils {
   getBaseDomainFromPartitionKey(DOMString partitionKey);
 
   /**
-   * Returns the partitionKey for a given URL.
+   * Returns the partitionKey for a given subresourceURL given its top-level URL
+   * and whether or not it is in a foreign context.
    *
-   * The function will treat the URL as a first party and construct the
-   * partitionKey according to the scheme, site and port in the URL.
+   * The function will treat the topLevelURL as a first party and construct the
+   * partitionKey according to the scheme, site and port in the URL. It will also
+   * include information about the subresource and whether or not this is a foreign
+   * request in the partition key.
    *
-   * Throws for invalid urls.
+   * Throws for invalid urls, if the Third Party Service is unavailable, or if the
+   * combination of inputs is impossible.
    */
   [Throws]
   DOMString
-  getPartitionKeyFromURL(DOMString url);
+  getPartitionKeyFromURL(DOMString topLevelUrl, DOMString subresourceUrl, optional boolean foreignContext);
 
   /**
    * Loads and compiles the script at the given URL and returns an object
@@ -447,6 +542,11 @@ partial namespace ChromeUtils {
   boolean isDOMObject(object obj, optional boolean unwrap = true);
 
   /**
+   * Returns whether |str| follows the Date Time String Format.
+   */
+  boolean isISOStyleDate(UTF8String str);
+
+  /**
    * Clones the properties of the given object into a new object in the given
    * target compartment (or the caller compartment if no target is provided).
    * Property values themeselves are not cloned.
@@ -483,23 +583,12 @@ partial namespace ChromeUtils {
    * the same file will not cause the module to be re-evaluated, but
    * the symbols in EXPORTED_SYMBOLS will be exported into the
    * specified target object and the global object returned as above.
+   *
+   * TODO: Remove this once m-c, c-c, and out-of-tree code migrations finish
+   *       (bug 1881888).
    */
   [Throws]
   object import(UTF8String aResourceURI, optional object aTargetObj);
-
-  /**
-   * Synchronously loads and evaluates the JS module source located at
-   * 'aResourceURI'.
-   *
-   * @param aResourceURI A resource:// URI string to load the module from.
-   * @returns the module's namespace object.
-   *
-   * The implementation maintains a hash of aResourceURI->global obj.
-   * Subsequent invocations of import with 'aResourceURI' pointing to
-   * the same file will not cause the module to be re-evaluated.
-   */
-  [Throws]
-  object importESModule(DOMString aResourceURI, optional ImportESModuleOptionsDictionary options = {});
 
   /**
    * Defines a property on the given target which lazily imports a JavaScript
@@ -535,18 +624,6 @@ partial namespace ChromeUtils {
   undefined defineModuleGetter(object target, DOMString id, DOMString resourceURI);
 
   /**
-   * Defines propertys on the given target which lazily imports a ES module
-   * when accessed.
-   *
-   * @param target The target object on which to define the property.
-   * @param modules An object with a property for each module property to be
-   *                imported, where the property name is the name of the
-   *                imported symbol and the value is the module URI.
-   */
-  [Throws]
-  undefined defineESModuleGetters(object target, object modules);
-
-  /**
    * Returns the scripted location of the first ancestor stack frame with a
    * principal which is subsumed by the given principal. If no such frame
    * exists on the call stack, returns null.
@@ -578,12 +655,6 @@ partial namespace ChromeUtils {
    */
   [NewObject]
   Promise<DOMString> collectPerfStats();
-
-  /**
-  * Returns a Promise containing a sequence of I/O activities
-  */
-  [NewObject]
-  Promise<sequence<IOActivityDataDictionary>> requestIOActivity();
 
   /**
   * Returns a Promise containing all processes info
@@ -717,7 +788,8 @@ partial namespace ChromeUtils {
   [ChromeOnly]
   sequence<UTF8String> getAllPossibleUtilityActorNames();
 
-  boolean shouldResistFingerprinting(JSRFPTarget target);
+  boolean shouldResistFingerprinting(JSRFPTarget target,
+                                     unsigned long long? overriddenFingerprintingSettings);
 };
 
 /*
@@ -741,7 +813,7 @@ enum WebIDLProcType {
  "vr",
  "rdd",
  "socket",
- "remoteSandboxBroker",
+ "inference",
 #ifdef MOZ_ENABLE_FORKSERVER
  "forkServer",
 #endif
@@ -794,6 +866,7 @@ enum WebIDLUtilityActorName {
   "mfMediaEngineCDM",
   "jSOracle",
   "windowsUtils",
+  "windowsFileDialog",
 };
 
 dictionary UtilityActorsDictionary {
@@ -888,18 +961,6 @@ dictionary ParentProcInfoDictionary {
 };
 
 /**
- * Used by requestIOActivity() to return the number of bytes
- * that were read (rx) and/or written (tx) for a given location.
- *
- * Locations can be sockets or files.
- */
-dictionary IOActivityDataDictionary {
-  ByteString location = "";
-  unsigned long long rx = 0;
-  unsigned long long tx = 0;
-};
-
-/**
  * Used by principals and the script security manager to represent origin
  * attributes. The first dictionary is designed to contain the full set of
  * OriginAttributes, the second is used for pattern-matching (i.e. does this
@@ -911,10 +972,9 @@ dictionary IOActivityDataDictionary {
  *     serialization, deserialization, and inheritance.
  * (3) Update the methods on mozilla::OriginAttributesPattern, including matching.
  */
-[GenerateInitFromJSON]
+[GenerateInitFromJSON, GenerateEqualityOperator]
 dictionary OriginAttributesDictionary {
   unsigned long userContextId = 0;
-  boolean inIsolatedMozBrowser = false;
   unsigned long privateBrowsingId = 0;
   DOMString firstPartyDomain = "";
   DOMString geckoViewSessionContextId = "";
@@ -924,7 +984,6 @@ dictionary OriginAttributesDictionary {
 [GenerateInitFromJSON, GenerateToJSON]
 dictionary OriginAttributesPatternDictionary {
   unsigned long userContextId;
-  boolean inIsolatedMozBrowser;
   unsigned long privateBrowsingId;
   DOMString firstPartyDomain;
   DOMString geckoViewSessionContextId;
@@ -937,6 +996,7 @@ dictionary PartitionKeyPatternDictionary {
   DOMString scheme;
   DOMString baseDomain;
   long port;
+  boolean foreignByAncestorContext;
 };
 
 dictionary CompileScriptOptionsDictionary {
@@ -944,6 +1004,11 @@ dictionary CompileScriptOptionsDictionary {
    * The character set from which to decode the script.
    */
   DOMString charset = "utf-8";
+
+  /**
+   * The filename to associate with the script. Defaults to the source's URL.
+   */
+  DOMString filename;
 
   /**
    * If true, certain parts of the script may be parsed lazily, the first time
@@ -960,13 +1025,46 @@ dictionary CompileScriptOptionsDictionary {
   boolean hasReturnValue = false;
 };
 
-dictionary ImportESModuleOptionsDictionary {
+/**
+ * Where the modules are loaded into with importESModule and
+ * defineESModuleGetters.
+ */
+enum ImportESModuleTargetGlobal {
   /**
-   * If true, a distinct module loader will be used, in the system principal,
-   * but with a distinct global so that the DevTools can load a distinct set
-   * of modules and do not interfere with its debuggee.
+   * Load into the shared system global.
+   * This is the default value.
    */
-  boolean loadInDevToolsLoader;
+  "shared",
+
+  /**
+   * Load into a distinct system global for DevTools, so that the DevTools can
+   * load a distinct set of modules and do not interfere with its debuggee.
+   */
+  "devtools",
+
+  /**
+   * If the current global is DevTools' distinct system global, load into the
+   * DevTools' distinct system global.
+   * If the current thread is worker thread, load into the current global.
+   * Otherwise load into the shared system global.
+   *
+   * This is a temporary workaround until DevTools modules are ESMified.
+   */
+  "contextual",
+
+  /**
+   * Load into current global.
+   *
+   * This can be used for any global.  If this is used for shared global or
+   * devtools global, this has the same effect as "shared" or "devtools".
+   */
+  "current",
+};
+
+dictionary ImportESModuleOptionsDictionary {
+  // This field is required for importESModule and defineESModuleGetters in
+  // DevTools distinct global.
+  ImportESModuleTargetGlobal global;
 };
 
 /**
@@ -1043,10 +1141,12 @@ enum PopupBlockerState {
 enum JSRFPTarget {
   "RoundWindowSize",
   "SiteSpecificZoom",
+  "CSSPrefersColorScheme",
 };
 
 #ifdef XP_UNIX
 dictionary LibcConstants {
+  long EPERM;
   long EINTR;
   long EACCES;
   long EAGAIN;
@@ -1077,3 +1177,11 @@ dictionary LibcConstants {
 #endif
 };
 #endif
+
+dictionary CDMInformation {
+  required DOMString keySystemName;
+  required DOMString capabilities;
+  required boolean clearlead;
+  required boolean isHDCP22Compatible;
+  required boolean isHardwareDecryption;
+};

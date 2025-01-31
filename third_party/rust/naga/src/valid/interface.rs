@@ -7,10 +7,10 @@ use crate::arena::{Handle, UniqueArena};
 use crate::span::{AddSpan as _, MapErrWithSpan as _, SpanProvider as _, WithSpan};
 use bit_set::BitSet;
 
-#[cfg(feature = "validate")]
 const MAX_WORKGROUP_SIZE: u32 = 0x4000;
 
 #[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum GlobalVariableError {
     #[error("Usage isn't compatible with address space {0:?}")]
     InvalidUsage(crate::AddressSpace),
@@ -31,11 +31,18 @@ pub enum GlobalVariableError {
         Handle<crate::Type>,
         #[source] Disalignment,
     ),
+    #[error("Initializer must be an override-expression")]
+    InitializerExprType,
     #[error("Initializer doesn't match the variable type")]
     InitializerType,
+    #[error("Initializer can't be used with address space {0:?}")]
+    InitializerNotAllowed(crate::AddressSpace),
+    #[error("Storage address space doesn't support write-only access")]
+    StorageAddressSpaceWriteOnlyNotSupported,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum VaryingError {
     #[error("The type {0:?} does not match the varying")]
     InvalidType(Handle<crate::Type>),
@@ -43,6 +50,11 @@ pub enum VaryingError {
     NotIOShareableType(Handle<crate::Type>),
     #[error("Interpolation is not valid")]
     InvalidInterpolation,
+    #[error("Cannot combine {interpolation:?} interpolation with the {sampling:?} sample type")]
+    InvalidInterpolationSamplingCombination {
+        interpolation: crate::Interpolation,
+        sampling: crate::Sampling,
+    },
     #[error("Interpolation must be specified on vertex shader outputs and fragment shader inputs")]
     MissingInterpolation,
     #[error("Built-in {0:?} is not available at this stage")]
@@ -59,9 +71,23 @@ pub enum VaryingError {
     DuplicateBuiltIn(crate::BuiltIn),
     #[error("Capability {0:?} is not supported")]
     UnsupportedCapability(Capabilities),
+    #[error("The attribute {0:?} is only valid as an output for stage {1:?}")]
+    InvalidInputAttributeInStage(&'static str, crate::ShaderStage),
+    #[error("The attribute {0:?} is not valid for stage {1:?}")]
+    InvalidAttributeInStage(&'static str, crate::ShaderStage),
+    #[error(
+        "The location index {location} cannot be used together with the attribute {attribute:?}"
+    )]
+    InvalidLocationAttributeCombination {
+        location: u32,
+        attribute: &'static str,
+    },
+    #[error("Workgroup size is multi dimensional, @builtin(subgroup_id) and @builtin(subgroup_invocation_id) are not supported.")]
+    InvalidMultiDimensionalSubgroupBuiltIn,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum EntryPointError {
     #[error("Multiple conflicting entry points")]
     Conflict,
@@ -77,6 +103,8 @@ pub enum EntryPointError {
     ForbiddenStageOperations,
     #[error("Global variable {0:?} is used incorrectly as {1:?}")]
     InvalidGlobalUsage(Handle<crate::GlobalVariable>, GlobalUse),
+    #[error("More than 1 push constant variable is used")]
+    MoreThanOnePushConstantUsed,
     #[error("Bindings for {0:?} conflict with other resource")]
     BindingCollision(Handle<crate::GlobalVariable>),
     #[error("Argument {0} varying error")]
@@ -87,9 +115,12 @@ pub enum EntryPointError {
     InvalidIntegerInterpolation { location: u32 },
     #[error(transparent)]
     Function(#[from] FunctionError),
+    #[error(
+        "Invalid locations {location_mask:?} are set while dual source blending. Only location 0 may be set."
+    )]
+    InvalidLocationsWhileDualSourceBlending { location_mask: BitSet },
 }
 
-#[cfg(feature = "validate")]
 fn storage_usage(access: crate::StorageAccess) -> GlobalUse {
     let mut storage_usage = GlobalUse::QUERY;
     if access.contains(crate::StorageAccess::LOAD) {
@@ -104,25 +135,23 @@ fn storage_usage(access: crate::StorageAccess) -> GlobalUse {
 struct VaryingContext<'a> {
     stage: crate::ShaderStage,
     output: bool,
+    second_blend_source: bool,
     types: &'a UniqueArena<crate::Type>,
     type_info: &'a Vec<super::r#type::TypeInfo>,
     location_mask: &'a mut BitSet,
     built_ins: &'a mut crate::FastHashSet<crate::BuiltIn>,
     capabilities: Capabilities,
-
-    #[cfg(feature = "validate")]
     flags: super::ValidationFlags,
 }
 
 impl VaryingContext<'_> {
     fn validate_impl(
         &mut self,
+        ep: &crate::EntryPoint,
         ty: Handle<crate::Type>,
         binding: &crate::Binding,
     ) -> Result<(), VaryingError> {
-        use crate::{
-            BuiltIn as Bi, ScalarKind as Sk, ShaderStage as St, TypeInner as Ti, VectorSize as Vs,
-        };
+        use crate::{BuiltIn as Bi, ShaderStage as St, TypeInner as Ti, VectorSize as Vs};
 
         let ty_inner = &self.types[ty].inner;
         match *binding {
@@ -146,50 +175,52 @@ impl VaryingContext<'_> {
                     Bi::PrimitiveIndex => Capabilities::PRIMITIVE_INDEX,
                     Bi::ViewIndex => Capabilities::MULTIVIEW,
                     Bi::SampleIndex => Capabilities::MULTISAMPLED_SHADING,
+                    Bi::NumSubgroups
+                    | Bi::SubgroupId
+                    | Bi::SubgroupSize
+                    | Bi::SubgroupInvocationId => Capabilities::SUBGROUP,
                     _ => Capabilities::empty(),
                 };
                 if !self.capabilities.contains(required) {
                     return Err(VaryingError::UnsupportedCapability(required));
                 }
 
-                let width = 4;
+                if matches!(
+                    built_in,
+                    crate::BuiltIn::SubgroupId | crate::BuiltIn::SubgroupInvocationId
+                ) && ep.workgroup_size[1..].iter().any(|&s| s > 1)
+                {
+                    return Err(VaryingError::InvalidMultiDimensionalSubgroupBuiltIn);
+                }
+
                 let (visible, type_good) = match built_in {
-                    Bi::BaseInstance | Bi::BaseVertex | Bi::InstanceIndex | Bi::VertexIndex => (
+                    Bi::BaseInstance
+                    | Bi::BaseVertex
+                    | Bi::InstanceIndex
+                    | Bi::VertexIndex
+                    | Bi::DrawID => (
                         self.stage == St::Vertex && !self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Uint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                     Bi::ClipDistance | Bi::CullDistance => (
                         self.stage == St::Vertex && self.output,
                         match *ty_inner {
                             Ti::Array { base, .. } => {
-                                self.types[base].inner
-                                    == Ti::Scalar {
-                                        kind: Sk::Float,
-                                        width,
-                                    }
+                                self.types[base].inner == Ti::Scalar(crate::Scalar::F32)
                             }
                             _ => false,
                         },
                     ),
                     Bi::PointSize => (
                         self.stage == St::Vertex && self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Float,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::F32),
                     ),
                     Bi::PointCoord => (
                         self.stage == St::Fragment && !self.output,
                         *ty_inner
                             == Ti::Vector {
                                 size: Vs::Bi,
-                                kind: Sk::Float,
-                                width,
+                                scalar: crate::Scalar::F32,
                             },
                     ),
                     Bi::Position { .. } => (
@@ -201,8 +232,7 @@ impl VaryingContext<'_> {
                         *ty_inner
                             == Ti::Vector {
                                 size: Vs::Quad,
-                                kind: Sk::Float,
-                                width,
+                                scalar: crate::Scalar::F32,
                             },
                     ),
                     Bi::ViewIndex => (
@@ -210,59 +240,31 @@ impl VaryingContext<'_> {
                             St::Vertex | St::Fragment => !self.output,
                             St::Compute => false,
                         },
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Sint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::I32),
                     ),
                     Bi::FragDepth => (
                         self.stage == St::Fragment && self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Float,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::F32),
                     ),
                     Bi::FrontFacing => (
                         self.stage == St::Fragment && !self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Bool,
-                                width: crate::BOOL_WIDTH,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::BOOL),
                     ),
                     Bi::PrimitiveIndex => (
                         self.stage == St::Fragment && !self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Uint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                     Bi::SampleIndex => (
                         self.stage == St::Fragment && !self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Uint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                     Bi::SampleMask => (
                         self.stage == St::Fragment,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Uint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                     Bi::LocalInvocationIndex => (
                         self.stage == St::Compute && !self.output,
-                        *ty_inner
-                            == Ti::Scalar {
-                                kind: Sk::Uint,
-                                width,
-                            },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                     Bi::GlobalInvocationId
                     | Bi::LocalInvocationId
@@ -273,9 +275,19 @@ impl VaryingContext<'_> {
                         *ty_inner
                             == Ti::Vector {
                                 size: Vs::Tri,
-                                kind: Sk::Uint,
-                                width,
+                                scalar: crate::Scalar::U32,
                             },
+                    ),
+                    Bi::NumSubgroups | Bi::SubgroupId => (
+                        self.stage == St::Compute && !self.output,
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
+                    ),
+                    Bi::SubgroupSize | Bi::SubgroupInvocationId => (
+                        match self.stage {
+                            St::Compute | St::Fragment => !self.output,
+                            St::Vertex => false,
+                        },
+                        *ty_inner == Ti::Scalar(crate::Scalar::U32),
                     ),
                 };
 
@@ -291,6 +303,7 @@ impl VaryingContext<'_> {
                 location,
                 interpolation,
                 sampling,
+                second_blend_source,
             } => {
                 // Only IO-shareable types may be stored in locations.
                 if !self.type_info[ty.index()]
@@ -299,10 +312,64 @@ impl VaryingContext<'_> {
                 {
                     return Err(VaryingError::NotIOShareableType(ty));
                 }
-                if !self.location_mask.insert(location as usize) {
-                    #[cfg(feature = "validate")]
+
+                if second_blend_source {
+                    if !self
+                        .capabilities
+                        .contains(Capabilities::DUAL_SOURCE_BLENDING)
+                    {
+                        return Err(VaryingError::UnsupportedCapability(
+                            Capabilities::DUAL_SOURCE_BLENDING,
+                        ));
+                    }
+                    if self.stage != crate::ShaderStage::Fragment {
+                        return Err(VaryingError::InvalidAttributeInStage(
+                            "second_blend_source",
+                            self.stage,
+                        ));
+                    }
+                    if !self.output {
+                        return Err(VaryingError::InvalidInputAttributeInStage(
+                            "second_blend_source",
+                            self.stage,
+                        ));
+                    }
+                    if location != 0 {
+                        return Err(VaryingError::InvalidLocationAttributeCombination {
+                            location,
+                            attribute: "second_blend_source",
+                        });
+                    }
+
+                    self.second_blend_source = true;
+                } else if !self.location_mask.insert(location as usize) {
                     if self.flags.contains(super::ValidationFlags::BINDINGS) {
                         return Err(VaryingError::BindingCollision { location });
+                    }
+                }
+
+                if let Some(interpolation) = interpolation {
+                    let invalid_sampling = match (interpolation, sampling) {
+                        (_, None)
+                        | (
+                            crate::Interpolation::Perspective | crate::Interpolation::Linear,
+                            Some(
+                                crate::Sampling::Center
+                                | crate::Sampling::Centroid
+                                | crate::Sampling::Sample,
+                            ),
+                        )
+                        | (
+                            crate::Interpolation::Flat,
+                            Some(crate::Sampling::First | crate::Sampling::Either),
+                        ) => None,
+                        (_, Some(invalid_sampling)) => Some(invalid_sampling),
+                    };
+                    if let Some(sampling) = invalid_sampling {
+                        return Err(VaryingError::InvalidInterpolationSamplingCombination {
+                            interpolation,
+                            sampling,
+                        });
                     }
                 }
 
@@ -347,13 +414,14 @@ impl VaryingContext<'_> {
 
     fn validate(
         &mut self,
+        ep: &crate::EntryPoint,
         ty: Handle<crate::Type>,
         binding: Option<&crate::Binding>,
     ) -> Result<(), WithSpan<VaryingError>> {
         let span_context = self.types.get_span_context(ty);
         match binding {
             Some(binding) => self
-                .validate_impl(ty, binding)
+                .validate_impl(ep, ty, binding)
                 .map_err(|e| e.with_span_context(span_context)),
             None => {
                 match self.types[ty].inner {
@@ -362,25 +430,20 @@ impl VaryingContext<'_> {
                             let span_context = self.types.get_span_context(ty);
                             match member.binding {
                                 None => {
-                                    #[cfg(feature = "validate")]
                                     if self.flags.contains(super::ValidationFlags::BINDINGS) {
                                         return Err(VaryingError::MemberMissingBinding(
                                             index as u32,
                                         )
                                         .with_span_context(span_context));
                                     }
-                                    #[cfg(not(feature = "validate"))]
-                                    let _ = index;
                                 }
                                 Some(ref binding) => self
-                                    .validate_impl(member.ty, binding)
+                                    .validate_impl(ep, member.ty, binding)
                                     .map_err(|e| e.with_span_context(span_context))?,
                             }
                         }
                     }
-                    _ =>
-                    {
-                        #[cfg(feature = "validate")]
+                    _ => {
                         if self.flags.contains(super::ValidationFlags::BINDINGS) {
                             return Err(VaryingError::MissingBinding.with_span());
                         }
@@ -393,12 +456,12 @@ impl VaryingContext<'_> {
 }
 
 impl super::Validator {
-    #[cfg(feature = "validate")]
     pub(super) fn validate_global_var(
         &self,
         var: &crate::GlobalVariable,
         gctx: crate::proc::GlobalCtx,
         mod_info: &ModuleInfo,
+        global_expr_kind: &crate::proc::ExpressionKindTracker,
     ) -> Result<(), GlobalVariableError> {
         use super::TypeFlags;
 
@@ -407,7 +470,12 @@ impl super::Validator {
             // A binding array is (mostly) supposed to behave the same as a
             // series of individually bound resources, so we can (mostly)
             // validate a `binding_array<T>` as if it were just a plain `T`.
-            crate::TypeInner::BindingArray { base, .. } => base,
+            crate::TypeInner::BindingArray { base, .. } => match var.space {
+                crate::AddressSpace::Storage { .. }
+                | crate::AddressSpace::Uniform
+                | crate::AddressSpace::Handle => base,
+                _ => return Err(GlobalVariableError::InvalidUsage(var.space)),
+            },
             _ => var.ty,
         };
         let type_info = &self.types[inner_ty.index()];
@@ -416,7 +484,7 @@ impl super::Validator {
             crate::AddressSpace::Function => {
                 return Err(GlobalVariableError::InvalidUsage(var.space))
             }
-            crate::AddressSpace::Storage { .. } => {
+            crate::AddressSpace::Storage { access } => {
                 if let Err((ty_handle, disalignment)) = type_info.storage_layout {
                     if self.flags.contains(super::ValidationFlags::STRUCT_LAYOUTS) {
                         return Err(GlobalVariableError::Alignment(
@@ -426,7 +494,13 @@ impl super::Validator {
                         ));
                     }
                 }
-                (TypeFlags::DATA | TypeFlags::HOST_SHAREABLE, true)
+                if access == crate::StorageAccess::STORE {
+                    return Err(GlobalVariableError::StorageAddressSpaceWriteOnlyNotSupported);
+                }
+                (
+                    TypeFlags::DATA | TypeFlags::HOST_SHAREABLE | TypeFlags::CREATION_RESOLVED,
+                    true,
+                )
             }
             crate::AddressSpace::Uniform => {
                 if let Err((ty_handle, disalignment)) = type_info.uniform_layout {
@@ -442,7 +516,8 @@ impl super::Validator {
                     TypeFlags::DATA
                         | TypeFlags::COPY
                         | TypeFlags::SIZED
-                        | TypeFlags::HOST_SHAREABLE,
+                        | TypeFlags::HOST_SHAREABLE
+                        | TypeFlags::CREATION_RESOLVED,
                     true,
                 )
             }
@@ -480,9 +555,11 @@ impl super::Validator {
 
                 (TypeFlags::empty(), true)
             }
-            crate::AddressSpace::Private | crate::AddressSpace::WorkGroup => {
-                (TypeFlags::DATA | TypeFlags::SIZED, false)
-            }
+            crate::AddressSpace::Private => (
+                TypeFlags::CONSTRUCTIBLE | TypeFlags::CREATION_RESOLVED,
+                false,
+            ),
+            crate::AddressSpace::WorkGroup => (TypeFlags::DATA | TypeFlags::SIZED, false),
             crate::AddressSpace::PushConstant => {
                 if !self.capabilities.contains(Capabilities::PUSH_CONSTANT) {
                     return Err(GlobalVariableError::UnsupportedCapability(
@@ -513,6 +590,17 @@ impl super::Validator {
         }
 
         if let Some(init) = var.init {
+            match var.space {
+                crate::AddressSpace::Private | crate::AddressSpace::Function => {}
+                _ => {
+                    return Err(GlobalVariableError::InitializerNotAllowed(var.space));
+                }
+            }
+
+            if !global_expr_kind.is_const_or_override(init) {
+                return Err(GlobalVariableError::InitializerExprType);
+            }
+
             let decl_ty = &gctx.types[var.ty].inner;
             let init_ty = mod_info[init].inner_with(gctx.types);
             if !decl_ty.equivalent(init_ty, gctx.types) {
@@ -528,8 +616,8 @@ impl super::Validator {
         ep: &crate::EntryPoint,
         module: &crate::Module,
         mod_info: &ModuleInfo,
+        global_expr_kind: &crate::proc::ExpressionKindTracker,
     ) -> Result<FunctionInfo, WithSpan<EntryPointError>> {
-        #[cfg(feature = "validate")]
         if ep.early_depth_test.is_some() {
             let required = Capabilities::EARLY_DEPTH_TEST;
             if !self.capabilities.contains(required) {
@@ -544,7 +632,6 @@ impl super::Validator {
             }
         }
 
-        #[cfg(feature = "validate")]
         if ep.stage == crate::ShaderStage::Compute {
             if ep
                 .workgroup_size
@@ -557,11 +644,10 @@ impl super::Validator {
             return Err(EntryPointError::UnexpectedWorkgroupSize.with_span());
         }
 
-        let info = self
-            .validate_function(&ep.function, module, mod_info, true)
+        let mut info = self
+            .validate_function(&ep.function, module, mod_info, true, global_expr_kind)
             .map_err(WithSpan::into_other)?;
 
-        #[cfg(feature = "validate")]
         {
             use super::ShaderStages;
 
@@ -583,16 +669,15 @@ impl super::Validator {
             let mut ctx = VaryingContext {
                 stage: ep.stage,
                 output: false,
+                second_blend_source: false,
                 types: &module.types,
                 type_info: &self.types,
                 location_mask: &mut self.location_mask,
                 built_ins: &mut argument_built_ins,
                 capabilities: self.capabilities,
-
-                #[cfg(feature = "validate")]
                 flags: self.flags,
             };
-            ctx.validate(fa.ty, fa.binding.as_ref())
+            ctx.validate(ep, fa.ty, fa.binding.as_ref())
                 .map_err_inner(|e| EntryPointError::Argument(index as u32, e).with_span())?;
         }
 
@@ -602,34 +687,53 @@ impl super::Validator {
             let mut ctx = VaryingContext {
                 stage: ep.stage,
                 output: true,
+                second_blend_source: false,
                 types: &module.types,
                 type_info: &self.types,
                 location_mask: &mut self.location_mask,
                 built_ins: &mut result_built_ins,
                 capabilities: self.capabilities,
-
-                #[cfg(feature = "validate")]
                 flags: self.flags,
             };
-            ctx.validate(fr.ty, fr.binding.as_ref())
+            ctx.validate(ep, fr.ty, fr.binding.as_ref())
                 .map_err_inner(|e| EntryPointError::Result(e).with_span())?;
+            if ctx.second_blend_source {
+                // Only the first location may be used when dual source blending
+                if ctx.location_mask.len() == 1 && ctx.location_mask.contains(0) {
+                    info.dual_source_blending = true;
+                } else {
+                    return Err(EntryPointError::InvalidLocationsWhileDualSourceBlending {
+                        location_mask: self.location_mask.clone(),
+                    }
+                    .with_span());
+                }
+            }
 
-            #[cfg(feature = "validate")]
             if ep.stage == crate::ShaderStage::Vertex
                 && !result_built_ins.contains(&crate::BuiltIn::Position { invariant: false })
             {
                 return Err(EntryPointError::MissingVertexOutputPosition.with_span());
             }
         } else if ep.stage == crate::ShaderStage::Vertex {
-            #[cfg(feature = "validate")]
             return Err(EntryPointError::MissingVertexOutputPosition.with_span());
         }
 
-        for bg in self.bind_group_masks.iter_mut() {
-            bg.clear();
+        {
+            let mut used_push_constants = module
+                .global_variables
+                .iter()
+                .filter(|&(_, var)| var.space == crate::AddressSpace::PushConstant)
+                .map(|(handle, _)| handle)
+                .filter(|&handle| !info[handle].is_empty());
+            // Check if there is more than one push constant, and error if so.
+            // Use a loop for when returning multiple errors is supported.
+            if let Some(handle) = used_push_constants.nth(1) {
+                return Err(EntryPointError::MoreThanOnePushConstantUsed
+                    .with_span_handle(handle, &module.global_variables));
+            }
         }
 
-        #[cfg(feature = "validate")]
+        self.ep_resource_bindings.clear();
         for (var_handle, var) in module.global_variables.iter() {
             let usage = info[var_handle];
             if usage.is_empty() {
@@ -669,10 +773,7 @@ impl super::Validator {
             }
 
             if let Some(ref bind) = var.binding {
-                while self.bind_group_masks.len() <= bind.group as usize {
-                    self.bind_group_masks.push(BitSet::new());
-                }
-                if !self.bind_group_masks[bind.group as usize].insert(bind.binding as usize) {
+                if !self.ep_resource_bindings.insert(bind.clone()) {
                     if self.flags.contains(super::ValidationFlags::BINDINGS) {
                         return Err(EntryPointError::BindingCollision(var_handle)
                             .with_span_handle(var_handle, &module.global_variables));

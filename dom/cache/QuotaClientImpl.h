@@ -7,9 +7,12 @@
 #ifndef mozilla_dom_cache_QuotaClientImpl_h
 #define mozilla_dom_cache_QuotaClientImpl_h
 
+#include "CacheCipherKeyManager.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/QMResult.h"
 #include "mozilla/dom/cache/QuotaClient.h"
 #include "mozilla/dom/cache/FileUtils.h"
+#include "mozilla/dom/cache/Types.h"
 #include "mozilla/dom/quota/ResultExtensions.h"
 
 namespace mozilla::dom::cache {
@@ -40,8 +43,8 @@ class CacheQuotaClient final : public quota::Client {
       PersistenceType aPersistenceType, const OriginMetadata& aOriginMetadata,
       const AtomicBool& aCanceled) override;
 
-  virtual void OnOriginClearCompleted(PersistenceType aPersistenceType,
-                                      const nsACString& aOrigin) override;
+  virtual void OnOriginClearCompleted(
+      const OriginMetadata& aOriginMetadata) override;
 
   void OnRepositoryClearCompleted(PersistenceType aPersistenceType) override;
 
@@ -119,6 +122,9 @@ class CacheQuotaClient final : public quota::Client {
   nsresult WipePaddingFileInternal(
       const CacheDirectoryMetadata& aDirectoryMetadata, nsIFile* aBaseDir);
 
+  RefPtr<CipherKeyManager> GetOrCreateCipherKeyManager(
+      const quota::PrincipalMetadata& aMetadata);
+
  private:
   ~CacheQuotaClient();
 
@@ -127,6 +133,9 @@ class CacheQuotaClient final : public quota::Client {
   nsCString GetShutdownStatus() const override;
   void ForceKillActors() override;
   void FinalizeShutdown() override;
+
+  // Should always be accessed from QM IO thread.
+  nsTHashMap<nsCStringHashKey, RefPtr<CipherKeyManager>> mCipherKeyManagers;
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CacheQuotaClient, override)
 };

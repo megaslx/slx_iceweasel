@@ -13,7 +13,7 @@ const TEST_PROVIDER_INFO = [
     telemetryId: "example",
     searchPageRegexp:
       /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd_/,
-    queryParamName: "s",
+    queryParamNames: ["s"],
     codeParamName: "abc",
     taggedCodes: ["ff"],
     adServerAttributes: ["mozAttr"],
@@ -48,12 +48,6 @@ const TEST_PROVIDER_INFO = [
 add_setup(async function () {
   SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
   await waitForIdle();
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.search.log", true],
-      ["browser.search.serpEventTelemetry.enabled", true],
-    ],
-  });
 
   registerCleanupFunction(async () => {
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
@@ -96,7 +90,7 @@ add_task(async function test_cached_serp() {
   for (let index = 0; index < 3; ++index) {
     info("Load non-search page.");
     let loadPromise = BrowserTestUtils.browserLoaded(tab.linkedBrowser, true);
-    BrowserTestUtils.loadURIString(
+    BrowserTestUtils.startLoadingURIString(
       tab.linkedBrowser,
       "https://www.example.com"
     );
@@ -182,7 +176,7 @@ add_task(async function test_back_and_forward_content_to_serp_to_serp() {
   info("Load search page.");
   let url = getSERPUrl("searchTelemetryAd_searchbox.html");
   let loadPromise = BrowserTestUtils.browserLoaded(tab.linkedBrowser, true);
-  BrowserTestUtils.loadURIString(tab.linkedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   await loadPromise;
   await waitForPageWithAdImpressions();
 

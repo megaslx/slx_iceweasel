@@ -29,11 +29,7 @@ export function setStoragePrefs(optionalPrefsToSet) {
 }
 
 export function clearStoragePrefs(optionalPrefsToClear) {
-  const prefsToClear = [
-    "dom.quotaManager.testing",
-    "dom.simpleDB.enabled",
-    "dom.storageManager.enabled",
-  ];
+  const prefsToClear = ["dom.quotaManager.testing", "dom.simpleDB.enabled"];
 
   if (Services.appinfo.OS === "WINNT") {
     prefsToClear.push("dom.quotaManager.useDOSDevicePathSyntax");
@@ -48,11 +44,10 @@ export function clearStoragePrefs(optionalPrefsToClear) {
   }
 }
 
-export async function getUsageForOrigin(principal, fromMemory) {
-  const request = Services.qms.getUsageForPrincipal(
+export async function getCachedUsageForOrigin(principal) {
+  const request = Services.qms.getCachedUsageForPrincipal(
     principal,
-    function () {},
-    fromMemory
+    function () {}
   );
 
   await new Promise(function (resolve) {

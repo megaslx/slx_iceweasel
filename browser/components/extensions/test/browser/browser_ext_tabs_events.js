@@ -2,6 +2,13 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
+// TODO(Bug 1938594): Remove this allowlisted uncaught rejection once we clarified how
+// the underlying issue hit by SessionStoreInternal.onMoveToNewWindow will be
+// fixed.
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Unexpected undefined tabState for onMoveToNewWindow/
+);
+
 // A single monitor for the tests.  If it receives any
 // incognito data in event listeners it will fail.
 let monitor;
@@ -211,7 +218,7 @@ add_task(async function test_tab_events_incognito_monitored() {
       // We have to explicitly wait for the event here, since its timing is
       // not predictable.
       let promiseAttached = new Promise(resolve => {
-        browser.tabs.onAttached.addListener(function listener(tabId) {
+        browser.tabs.onAttached.addListener(function listener() {
           browser.tabs.onAttached.removeListener(listener);
           resolve();
         });
@@ -427,11 +434,7 @@ add_task(async function testTabRemovalEvent() {
 
     function awaitLoad(tabId) {
       return new Promise(resolve => {
-        browser.tabs.onUpdated.addListener(function listener(
-          tabId_,
-          changed,
-          tab
-        ) {
+        browser.tabs.onUpdated.addListener(function listener(tabId_, changed) {
           if (tabId == tabId_ && changed.status == "complete") {
             browser.tabs.onUpdated.removeListener(listener);
             resolve();
@@ -440,7 +443,7 @@ add_task(async function testTabRemovalEvent() {
       });
     }
 
-    chrome.tabs.onRemoved.addListener((tabId, info) => {
+    chrome.tabs.onRemoved.addListener(tabId => {
       browser.test.assertEq(
         0,
         events.length,
@@ -466,7 +469,7 @@ add_task(async function testTabRemovalEvent() {
       let tab = await browser.tabs.create({ url: url });
       await awaitLoad(tab.id);
 
-      chrome.tabs.onActivated.addListener(info => {
+      chrome.tabs.onActivated.addListener(() => {
         browser.test.assertEq(
           1,
           events.length,
@@ -522,7 +525,7 @@ add_task(async function testTabCreateRelated() {
       );
       browser.test.fail("tabMoved was received");
     });
-    browser.tabs.onRemoved.addListener((tabId, info) => {
+    browser.tabs.onRemoved.addListener(tabId => {
       browser.test.assertEq(created, tabId, "removed id same as created");
       browser.test.sendMessage("tabRemoved");
     });

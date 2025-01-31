@@ -18,6 +18,40 @@
 
 namespace mozilla::dom {
 
+#ifndef NS_BUILD_REFCNT_LOGGING
+MozExternalRefCountType EventTarget::NonVirtualAddRef() {
+  return mRefCnt.incr(this);
+}
+
+MozExternalRefCountType EventTarget::NonVirtualRelease() {
+  if (mRefCnt.get() == 1) {
+    return Release();
+  }
+  return mRefCnt.decr(this);
+}
+#endif
+
+NS_IMETHODIMP_(MozExternalRefCountType) EventTarget::AddRef() {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::AddRef should not be called");
+  return 0;
+}
+
+NS_IMETHODIMP_(MozExternalRefCountType) EventTarget::Release() {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::Release should not be called");
+  return 0;
+}
+
+NS_IMETHODIMP EventTarget::QueryInterface(REFNSIID aIID, void** aInstancePtr) {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::QueryInterface should not be called");
+  *aInstancePtr = nullptr;
+  return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP_(void) EventTarget::DeleteCycleCollectable() {
+  MOZ_ASSERT_UNREACHABLE(
+      "EventTarget::DeleteCycleCollectable should not be called");
+}
+
 /* static */
 already_AddRefed<EventTarget> EventTarget::Constructor(
     const GlobalObject& aGlobal, ErrorResult& aRv) {
@@ -55,15 +89,15 @@ bool EventTarget::ComputeWantsUntrusted(
 void EventTarget::AddEventListener(
     const nsAString& aType, EventListener* aCallback,
     const AddEventListenerOptionsOrBoolean& aOptions,
-    const Nullable<bool>& aWantsUntrusted, ErrorResult& aRv) {
-  bool wantsUntrusted = ComputeWantsUntrusted(aWantsUntrusted, &aOptions, aRv);
-  if (aRv.Failed()) {
+    const Nullable<bool>& aWantsUntrusted) {
+  IgnoredErrorResult rv;
+  bool wantsUntrusted = ComputeWantsUntrusted(aWantsUntrusted, &aOptions, rv);
+  if (NS_WARN_IF(rv.Failed())) {
     return;
   }
 
   EventListenerManager* elm = GetOrCreateListenerManager();
   if (!elm) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
     return;
   }
 
@@ -88,7 +122,7 @@ nsresult EventTarget::AddEventListener(const nsAString& aType,
 
 void EventTarget::RemoveEventListener(
     const nsAString& aType, EventListener* aListener,
-    const EventListenerOptionsOrBoolean& aOptions, ErrorResult& aRv) {
+    const EventListenerOptionsOrBoolean& aOptions) {
   EventListenerManager* elm = GetExistingListenerManager();
   if (elm) {
     elm->RemoveEventListener(aType, aListener, aOptions);
@@ -195,40 +229,40 @@ Nullable<WindowProxyHolder> EventTarget::GetOwnerGlobalForBindings() {
   return WindowProxyHolder(win->GetBrowsingContext());
 }
 
-nsPIDOMWindowInner* EventTarget::GetAsWindowInner() {
+nsPIDOMWindowInner* EventTarget::GetAsInnerWindow() {
   return IsInnerWindow() ? static_cast<nsGlobalWindowInner*>(this) : nullptr;
 }
 
-const nsPIDOMWindowInner* EventTarget::GetAsWindowInner() const {
+const nsPIDOMWindowInner* EventTarget::GetAsInnerWindow() const {
   return IsInnerWindow() ? static_cast<const nsGlobalWindowInner*>(this)
                          : nullptr;
 }
 
-nsPIDOMWindowOuter* EventTarget::GetAsWindowOuter() {
+nsPIDOMWindowOuter* EventTarget::GetAsOuterWindow() {
   return IsOuterWindow() ? static_cast<nsGlobalWindowOuter*>(this) : nullptr;
 }
 
-const nsPIDOMWindowOuter* EventTarget::GetAsWindowOuter() const {
+const nsPIDOMWindowOuter* EventTarget::GetAsOuterWindow() const {
   return IsOuterWindow() ? static_cast<const nsGlobalWindowOuter*>(this)
                          : nullptr;
 }
 
-nsPIDOMWindowInner* EventTarget::AsWindowInner() {
+nsPIDOMWindowInner* EventTarget::AsInnerWindow() {
   MOZ_DIAGNOSTIC_ASSERT(IsInnerWindow());
   return static_cast<nsGlobalWindowInner*>(this);
 }
 
-const nsPIDOMWindowInner* EventTarget::AsWindowInner() const {
+const nsPIDOMWindowInner* EventTarget::AsInnerWindow() const {
   MOZ_DIAGNOSTIC_ASSERT(IsInnerWindow());
   return static_cast<const nsGlobalWindowInner*>(this);
 }
 
-nsPIDOMWindowOuter* EventTarget::AsWindowOuter() {
+nsPIDOMWindowOuter* EventTarget::AsOuterWindow() {
   MOZ_DIAGNOSTIC_ASSERT(IsOuterWindow());
   return static_cast<nsGlobalWindowOuter*>(this);
 }
 
-const nsPIDOMWindowOuter* EventTarget::AsWindowOuter() const {
+const nsPIDOMWindowOuter* EventTarget::AsOuterWindow() const {
   MOZ_DIAGNOSTIC_ASSERT(IsOuterWindow());
   return static_cast<const nsGlobalWindowOuter*>(this);
 }

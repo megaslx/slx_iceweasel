@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "api/environment/environment.h"
 #include "api/media_stream_interface.h"
 #include "api/media_types.h"
 #include "api/peer_connection_interface.h"
@@ -35,7 +36,6 @@
 #include "pc/rtp_transceiver.h"
 #include "pc/transceiver_list.h"
 #include "pc/usage_pattern.h"
-#include "rtc_base/third_party/sigslot/sigslot.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 #include "rtc_base/weak_ptr.h"
@@ -71,7 +71,8 @@ struct RtpSenderInfo {
 // RtpTransceiver.
 class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
  public:
-  RtpTransmissionManager(bool is_unified_plan,
+  RtpTransmissionManager(const Environment& env,
+                         bool is_unified_plan,
                          ConnectionContext* context,
                          UsagePattern* usage_pattern,
                          PeerConnectionObserver* observer,
@@ -251,6 +252,7 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
     return context_->ssrc_generator();
   }
 
+  const Environment env_;
   TransceiverList transceivers_;
 
   // These lists store sender info seen in local/remote descriptions.

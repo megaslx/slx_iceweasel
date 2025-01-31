@@ -24,7 +24,9 @@ class AccShowEvent;
  */
 class DocAccessibleChild : public PDocAccessibleChild {
  public:
-  DocAccessibleChild(DocAccessible* aDoc, IProtocol* aManager) : mDoc(aDoc) {
+  DocAccessibleChild(DocAccessible* aDoc,
+                     mozilla::ipc::IRefCountedProtocol* aManager)
+      : mDoc(aDoc) {
     MOZ_COUNT_CTOR(DocAccessibleChild);
     SetManager(aManager);
   }
@@ -46,11 +48,16 @@ class DocAccessibleChild : public PDocAccessibleChild {
   }
 
   /**
-   * Serializes a shown tree and sends it to the chrome process.
+   * Serializes a shown tree and appends the show event data to the mutation
+   * event queue with AppendMutationEventData. This function may queue multiple
+   * show events depending on the size of the flattened tree.
    */
-  void InsertIntoIpcTree(LocalAccessible* aParent, LocalAccessible* aChild,
-                         uint32_t aIdxInParent, bool aSuppressShowEvent);
+  void InsertIntoIpcTree(LocalAccessible* aChild, bool aSuppressShowEvent);
   void ShowEvent(AccShowEvent* aShowEvent);
+
+  void AppendMutationEventData(MutationEventData aData, uint32_t aAccCount = 1);
+  void SendQueuedMutationEvents();
+  size_t MutationEventQueueLength() const;
 
   virtual void ActorDestroy(ActorDestroyReason) override {
     if (!mDoc) {
@@ -133,19 +140,19 @@ class DocAccessibleChild : public PDocAccessibleChild {
   bool SendCaretMoveEvent(const uint64_t& aID, const int32_t& aOffset,
                           const bool& aIsSelectionCollapsed,
                           const bool& aIsAtEndOfLine,
-                          const int32_t& aGranularity);
+                          const int32_t& aGranularity, bool aFromUser);
   bool SendFocusEvent(const uint64_t& aID);
 
 #if !defined(XP_WIN)
   virtual mozilla::ipc::IPCResult RecvAnnounce(
       const uint64_t& aID, const nsAString& aAnnouncement,
       const uint16_t& aPriority) override;
+#endif  // !defined(XP_WIN)
 
   virtual mozilla::ipc::IPCResult RecvScrollSubstringToPoint(
       const uint64_t& aID, const int32_t& aStartOffset,
       const int32_t& aEndOffset, const uint32_t& aCoordinateType,
       const int32_t& aX, const int32_t& aY) override;
-#endif  // !defined(XP_WIN)
 
  private:
   LayoutDeviceIntRect GetCaretRectFor(const uint64_t& aID);
@@ -154,12 +161,7 @@ class DocAccessibleChild : public PDocAccessibleChild {
   static void FlattenTree(LocalAccessible* aRoot,
                           nsTArray<LocalAccessible*>& aTree);
 
-  static void SerializeTree(nsTArray<LocalAccessible*>& aTree,
-                            nsTArray<AccessibleData>& aData);
-
-  virtual void MaybeSendShowEvent(ShowEventData& aData, bool aFromUser) {
-    Unused << SendShowEvent(aData, aFromUser);
-  }
+  static AccessibleData SerializeAcc(LocalAccessible* aAcc);
 
   void DetachDocument() {
     if (mDoc) {
@@ -172,6 +174,30 @@ class DocAccessibleChild : public PDocAccessibleChild {
   HyperTextAccessible* IdToHyperTextAccessible(const uint64_t& aID) const;
 
   DocAccessible* mDoc;
+
+  // Utility structure that encapsulates mutation event batching.
+  struct MutationEventBatcher {
+    void AppendMutationEventData(MutationEventData aData, uint32_t aAccCount);
+    void SendQueuedMutationEvents(DocAccessibleChild& aDocAcc);
+    uint32_t GetCurrentBatchAccCount() const { return mCurrentBatchAccCount; }
+    size_t EventCount() const { return mMutationEventData.Length(); }
+
+   private:
+    // A collection of mutation events to be sent in batches.
+    nsTArray<MutationEventData> mMutationEventData;
+
+    // Indices that demarcate batch endpoint boundaries. All indices are one
+    // past the end, to make them suitable for working with Spans. The start
+    // index of the first batch is implicitly 0.
+    nsTArray<size_t> mBatchBoundaries;
+
+    // The number of accessibles in the current (latest) batch. A show event may
+    // have many accessibles shown, where each accessible in the show event
+    // counts separately here. Every other mutation event adds one to this
+    // count.
+    uint32_t mCurrentBatchAccCount = 0;
+  };
+  MutationEventBatcher mMutationEventBatcher;
 
   friend void DocAccessible::DoInitialUpdate();
 };

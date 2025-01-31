@@ -1,5 +1,5 @@
 ;
-; Copyright (c) 2016, Alliance for Open Media. All rights reserved
+; Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ;
 ; This source code is subject to the terms of the BSD 2 Clause License and
 ; the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -110,7 +110,7 @@
 
 SECTION .text
 
-global sym(aom_filter_block1d4_v2_ssse3) PRIVATE
+globalsym(aom_filter_block1d4_v2_ssse3)
 sym(aom_filter_block1d4_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -134,7 +134,7 @@ sym(aom_filter_block1d4_v2_ssse3):
     pop         rbp
     ret
 
-global sym(aom_filter_block1d8_v2_ssse3) PRIVATE
+globalsym(aom_filter_block1d8_v2_ssse3)
 sym(aom_filter_block1d8_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -160,7 +160,7 @@ sym(aom_filter_block1d8_v2_ssse3):
     pop         rbp
     ret
 
-global sym(aom_filter_block1d16_v2_ssse3) PRIVATE
+globalsym(aom_filter_block1d16_v2_ssse3)
 sym(aom_filter_block1d16_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -187,7 +187,7 @@ sym(aom_filter_block1d16_v2_ssse3):
     pop         rbp
     ret
 
-global sym(aom_filter_block1d4_h2_ssse3) PRIVATE
+globalsym(aom_filter_block1d4_h2_ssse3)
 sym(aom_filter_block1d4_h2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -212,7 +212,7 @@ sym(aom_filter_block1d4_h2_ssse3):
     pop         rbp
     ret
 
-global sym(aom_filter_block1d8_h2_ssse3) PRIVATE
+globalsym(aom_filter_block1d8_h2_ssse3)
 sym(aom_filter_block1d8_h2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -239,7 +239,7 @@ sym(aom_filter_block1d8_h2_ssse3):
     pop         rbp
     ret
 
-global sym(aom_filter_block1d16_h2_ssse3) PRIVATE
+globalsym(aom_filter_block1d16_h2_ssse3)
 sym(aom_filter_block1d16_h2_ssse3):
     push        rbp
     mov         rbp, rsp

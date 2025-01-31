@@ -16,6 +16,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/FilePreferences.h"
+#include "mozilla/dom/Promise.h"
 #include "prtime.h"
 
 #include <sys/select.h>
@@ -51,6 +52,11 @@
 
 #ifdef MOZ_WIDGET_GTK
 #  include "nsIGIOService.h"
+#  ifdef MOZ_ENABLE_DBUS
+#    include "mozilla/widget/AsyncDBus.h"
+#    include "mozilla/WidgetUtilsGtk.h"
+#    include <map>
+#  endif
 #endif
 
 #ifdef MOZ_WIDGET_COCOA
@@ -116,6 +122,21 @@ using namespace mozilla;
     if (!FilePreferences::IsAllowedPath(mPath))           \
       return NS_ERROR_FILE_ACCESS_DENIED;                 \
   } while (0)
+
+#if defined(MOZ_ENABLE_DBUS) && defined(MOZ_WIDGET_GTK)
+// Prefix for files exported through document portal when we are
+// in a sandboxed environment (Flatpak).
+static const nsCString& GetDocumentStorePath() {
+  static const nsDependentCString sDocumentStorePath = [] {
+    nsCString storePath = nsPrintfCString("/run/user/%d/doc/", getuid());
+    // Intentionally put into a ToNewCString copy, rather than just making a
+    // static nsCString to avoid leakchecking errors, since we really want to
+    // leak this string.
+    return nsDependentCString(ToNewCString(storePath), storePath.Length());
+  }();
+  return sDocumentStorePath;
+}
+#endif
 
 static PRTime TimespecToMillis(const struct timespec& aTimeSpec) {
   return PRTime(aTimeSpec.tv_sec) * PR_MSEC_PER_SEC +
@@ -223,7 +244,7 @@ nsDirEnumeratorUnix::GetNextEntry() {
 
     // keep going past "." and ".."
   } while (mEntry->d_name[0] == '.' &&
-           (mEntry->d_name[1] == '\0' ||                                // .\0
+           (mEntry->d_name[1] == '\0' ||  // .\0
             (mEntry->d_name[1] == '.' && mEntry->d_name[2] == '\0')));  // ..\0
   return NS_OK;
 }
@@ -257,10 +278,6 @@ nsDirEnumeratorUnix::Close() {
 }
 
 nsLocalFile::nsLocalFile() : mCachedStat() {}
-
-nsLocalFile::nsLocalFile(const nsACString& aFilePath) : mCachedStat() {
-  InitWithNativePath(aFilePath);
-}
 
 nsLocalFile::nsLocalFile(const nsLocalFile& aOther) : mPath(aOther.mPath) {}
 
@@ -307,19 +324,35 @@ nsLocalFile::Clone(nsIFile** aFile) {
 
 NS_IMETHODIMP
 nsLocalFile::InitWithNativePath(const nsACString& aFilePath) {
-  if (aFilePath.EqualsLiteral("~") ||
-      Substring(aFilePath, 0, 2).EqualsLiteral("~/")) {
-    nsCOMPtr<nsIFile> homeDir;
-    nsAutoCString homePath;
-    if (NS_FAILED(
-            NS_GetSpecialDirectory(NS_OS_HOME_DIR, getter_AddRefs(homeDir))) ||
-        NS_FAILED(homeDir->GetNativePath(homePath))) {
-      return NS_ERROR_FAILURE;
-    }
+  if (!aFilePath.IsEmpty() && aFilePath.First() == '~') {
+    if (aFilePath.Length() == 1 || aFilePath.CharAt(1) == '/') {
+      // Home dir for the current user
 
-    mPath = homePath;
-    if (aFilePath.Length() > 2) {
-      mPath.Append(Substring(aFilePath, 1, aFilePath.Length() - 1));
+      nsCOMPtr<nsIFile> homeDir;
+      nsAutoCString homePath;
+      if (NS_FAILED(NS_GetSpecialDirectory(NS_OS_HOME_DIR,
+                                           getter_AddRefs(homeDir))) ||
+          NS_FAILED(homeDir->GetNativePath(homePath))) {
+        return NS_ERROR_FAILURE;
+      }
+
+      mPath = homePath;
+      if (aFilePath.Length() > 2) {
+        mPath.Append(Substring(aFilePath, 1));
+      }
+    } else {
+      // Home dir for an arbitrary user e.g. `~foo/bar` -> `/home/foo/bar`
+      // (`/Users/foo/bar` on Mac). The accurate way to get this directory
+      // is with `getpwnam`, but we would like to avoid doing blocking
+      // filesystem I/O while creating an `nsIFile`.
+
+      mPath =
+#ifdef XP_MACOSX
+          "/Users/"_ns
+#else
+          "/home/"_ns
+#endif
+          + Substring(aFilePath, 1);
     }
   } else {
     if (aFilePath.IsEmpty() || aFilePath.First() != '/') {
@@ -655,6 +688,146 @@ nsLocalFile::SetNativeLeafName(const nsACString& aLeafName) {
 NS_IMETHODIMP
 nsLocalFile::GetDisplayName(nsAString& aLeafName) {
   return GetLeafName(aLeafName);
+}
+
+NS_IMETHODIMP
+nsLocalFile::HostPath(JSContext* aCx, dom::Promise** aPromise) {
+  MOZ_ASSERT(aCx);
+  MOZ_ASSERT(aPromise);
+
+  nsIGlobalObject* globalObject = xpc::CurrentNativeGlobal(aCx);
+  if (NS_WARN_IF(!globalObject)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  ErrorResult result;
+  RefPtr<dom::Promise> retPromise = dom::Promise::Create(globalObject, result);
+  if (NS_WARN_IF(result.Failed())) {
+    return result.StealNSResult();
+  }
+
+#if defined(MOZ_ENABLE_DBUS) && defined(MOZ_WIDGET_GTK)
+  if (!widget::IsRunningUnderFlatpak() ||
+      !StringBeginsWith(mPath, GetDocumentStorePath())) {
+    retPromise->MaybeResolve(mPath);
+    retPromise.forget(aPromise);
+    return NS_OK;
+  }
+
+  nsCString docId = [this] {
+    auto subPath = Substring(mPath, GetDocumentStorePath().Length());
+    if (auto idx = subPath.Find("/"); idx > 0) {
+      subPath.Truncate(idx);
+    }
+    return nsCString(subPath);
+  }();
+
+  const char kServiceName[] = "org.freedesktop.portal.Documents";
+  const char kDBusPath[] = "/org/freedesktop/portal/documents";
+  const char kInterfaceName[] = "org.freedesktop.portal.Documents";
+
+  widget::CreateDBusProxyForBus(G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE,
+                                /* aInterfaceInfo = */ nullptr, kServiceName,
+                                kDBusPath, kInterfaceName)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [this, self = RefPtr(this), docId,
+           retPromise](RefPtr<GDBusProxy>&& aProxy) {
+            RefPtr<GVariant> version = dont_AddRef(
+                g_dbus_proxy_get_cached_property(aProxy, "version"));
+            if (!version ||
+                !g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32)) {
+              g_printerr(
+                  "nsIFile: failed to get host path for %s: Invalid value.\n",
+                  mPath.get());
+              retPromise->MaybeReject(NS_ERROR_FAILURE);
+              return;
+            }
+
+            if (g_variant_get_uint32(version) < 5) {
+              g_printerr(
+                  "nsIFile: failed to get host path for %s: Document "
+                  "portal in version 5 is required.\n",
+                  mPath.get());
+              retPromise->MaybeReject(NS_ERROR_NOT_AVAILABLE);
+              return;
+            }
+
+            GVariantBuilder builder;
+            g_variant_builder_init(&builder, G_VARIANT_TYPE("(as)"));
+            g_variant_builder_open(&builder, G_VARIANT_TYPE("as"));
+            g_variant_builder_add(&builder, "s", docId.get());
+            g_variant_builder_close(&builder);
+
+            RefPtr<GVariant> args = dont_AddRef(
+                g_variant_ref_sink(g_variant_builder_end(&builder)));
+
+            if (!args) {
+              g_printerr(
+                  "nsIFile: failed to get host path for %s: "
+                  "Invalid value.\n",
+                  mPath.get());
+              retPromise->MaybeReject(NS_ERROR_FAILURE);
+              return;
+            }
+
+            widget::DBusProxyCall(aProxy, "GetHostPaths", args,
+                                  G_DBUS_CALL_FLAGS_NONE, -1,
+                                  /* cancellable */ nullptr)
+                ->Then(
+                    GetCurrentSerialEventTarget(), __func__,
+                    [this, self = RefPtr(this), docId,
+                     retPromise](RefPtr<GVariant>&& aResult) {
+                      RefPtr<GVariant> result = dont_AddRef(
+                          g_variant_get_child_value(aResult.get(), 0));
+                      if (!g_variant_is_of_type(result,
+                                                G_VARIANT_TYPE("a{say}"))) {
+                        g_printerr(
+                            "nsIFile: failed to get host path for %s: "
+                            "Invalid value.\n",
+                            mPath.get());
+                        retPromise->MaybeReject(NS_ERROR_FAILURE);
+                        return;
+                      }
+
+                      const gchar* key = nullptr;
+                      const gchar* path = nullptr;
+                      GVariantIter* iter = g_variant_iter_new(result);
+
+                      while (
+                          g_variant_iter_loop(iter, "{&s^&ay}", &key, &path)) {
+                        if (g_strcmp0(key, docId.get()) == 0) {
+                          retPromise->MaybeResolve(nsDependentCString(path));
+                          g_variant_iter_free(iter);
+                          return;
+                        }
+                      }
+
+                      g_variant_iter_free(iter);
+                      g_printerr(
+                          "nsIFile: failed to get host path for %s: "
+                          "Invalid value.\n",
+                          mPath.get());
+                      retPromise->MaybeReject(NS_ERROR_FAILURE);
+                    },
+                    [this, self = RefPtr(this),
+                     retPromise](GUniquePtr<GError>&& aError) {
+                      g_printerr(
+                          "nsIFile: failed to get host path for %s: %s.\n",
+                          mPath.get(), aError->message);
+                      retPromise->MaybeReject(NS_ERROR_FAILURE);
+                    });
+          },
+          [this, self = RefPtr(this), retPromise](GUniquePtr<GError>&& aError) {
+            g_printerr("nsIFile: failed to get host path for %s: %s.\n",
+                       mPath.get(), aError->message);
+            retPromise->MaybeReject(NS_ERROR_NOT_AVAILABLE);
+          });
+#else
+  retPromise->MaybeResolve(mPath);
+#endif
+  retPromise.forget(aPromise);
+  return NS_OK;
 }
 
 nsCString nsLocalFile::NativePath() { return mPath; }
@@ -1691,7 +1864,7 @@ nsLocalFile::GetParent(nsIFile** aParent) {
   *slashp = '\0';
 
   nsCOMPtr<nsIFile> localFile;
-  nsresult rv = NS_NewNativeLocalFile(nsDependentCString(buffer), true,
+  nsresult rv = NS_NewNativeLocalFile(nsDependentCString(buffer),
                                       getter_AddRefs(localFile));
 
   // make buffer whole again
@@ -1970,6 +2143,46 @@ nsLocalFile::Contains(nsIFile* aInFile, bool* aResult) {
   return NS_OK;
 }
 
+static nsresult ReadLinkSafe(const nsCString& aTarget, int32_t aExpectedSize,
+                             nsACString& aOutBuffer) {
+  // If we call readlink with a buffer size S it returns S, then we cannot tell
+  // if the buffer was big enough to hold the entire path. We allocate an
+  // additional byte so we can check if the buffer was large enough.
+  const auto allocSize = CheckedInt<size_t>(aExpectedSize) + 1;
+  if (!allocSize.isValid()) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  auto result = aOutBuffer.BulkWrite(allocSize.value(), 0, false);
+  if (result.isErr()) {
+    return result.unwrapErr();
+  }
+
+  auto handle = result.unwrap();
+
+  while (true) {
+    ssize_t bytesWritten =
+        readlink(aTarget.get(), handle.Elements(), handle.Length());
+    if (bytesWritten < 0) {
+      return NSRESULT_FOR_ERRNO();
+    }
+
+    // written >= 0 so it is safe to cast to size_t.
+    if ((size_t)bytesWritten < handle.Length()) {
+      // Target might have changed since the lstat call, or lstat might lie, see
+      // bug 1791029.
+      handle.Finish(bytesWritten, false);
+      return NS_OK;
+    }
+
+    // The buffer was not large enough, so double it and try again.
+    auto restartResult = handle.RestartBulkWrite(handle.Length() * 2, 0, false);
+    if (restartResult.isErr()) {
+      return restartResult.unwrapErr();
+    }
+  }
+}
+
 NS_IMETHODIMP
 nsLocalFile::GetNativeTarget(nsACString& aResult) {
   CHECK_mPath();
@@ -1984,21 +2197,12 @@ nsLocalFile::GetNativeTarget(nsACString& aResult) {
     return NS_ERROR_FILE_INVALID_PATH;
   }
 
-  int32_t size = (int32_t)symStat.st_size;
   nsAutoCString target;
-  if (!target.SetLength(size, mozilla::fallible)) {
-    return NS_ERROR_OUT_OF_MEMORY;
+  nsresult rv = ReadLinkSafe(mPath, symStat.st_size, target);
+  if (NS_FAILED(rv)) {
+    return rv;
   }
 
-  ssize_t written = readlink(mPath.get(), target.BeginWriting(), size_t(size));
-  if (written < 0) {
-    return NSRESULT_FOR_ERRNO();
-  }
-  // Target might have changed since the lstat call, or lstat might lie, see bug
-  // 1791029.
-  target.Truncate(written);
-
-  nsresult rv = NS_OK;
   nsCOMPtr<nsIFile> self(this);
   int32_t maxLinks = 40;
   while (true) {
@@ -2036,21 +2240,12 @@ nsLocalFile::GetNativeTarget(nsACString& aResult) {
       break;
     }
 
-    int32_t newSize = (int32_t)symStat.st_size;
-    size = newSize;
     nsAutoCString newTarget;
-    if (!newTarget.SetLength(size, mozilla::fallible)) {
-      rv = NS_ERROR_OUT_OF_MEMORY;
+    rv = ReadLinkSafe(flatRetval, symStat.st_size, newTarget);
+    if (NS_FAILED(rv)) {
       break;
     }
 
-    ssize_t linkLen =
-        readlink(flatRetval.get(), newTarget.BeginWriting(), size);
-    if (linkLen == -1) {
-      rv = NSRESULT_FOR_ERRNO();
-      break;
-    }
-    newTarget.Truncate(linkLen);
     target = newTarget;
   }
 
@@ -2219,8 +2414,7 @@ nsLocalFile::Launch() {
 #endif
 }
 
-nsresult NS_NewNativeLocalFile(const nsACString& aPath, bool aFollowSymlinks,
-                               nsIFile** aResult) {
+nsresult NS_NewNativeLocalFile(const nsACString& aPath, nsIFile** aResult) {
   RefPtr<nsLocalFile> file = new nsLocalFile();
 
   if (!aPath.IsEmpty()) {
@@ -2231,6 +2425,16 @@ nsresult NS_NewNativeLocalFile(const nsACString& aPath, bool aFollowSymlinks,
   }
   file.forget(aResult);
   return NS_OK;
+}
+
+nsresult NS_NewUTF8LocalFile(const nsACString& aPath, nsIFile** aResult) {
+  static_assert(NS_IsNativeUTF8());
+  return NS_NewNativeLocalFile(aPath, aResult);
+}
+
+nsresult NS_NewPathStringLocalFile(const PathSubstring& aPath,
+                                   nsIFile** aResult) {
+  return NS_NewNativeLocalFile(aPath, aResult);
 }
 
 //-----------------------------------------------------------------------------
@@ -2338,14 +2542,13 @@ nsresult nsLocalFile::GetTarget(nsAString& aResult) {
   GET_UCS(GetNativeTarget, aResult);
 }
 
-nsresult NS_NewLocalFile(const nsAString& aPath, bool aFollowLinks,
-                         nsIFile** aResult) {
+nsresult NS_NewLocalFile(const nsAString& aPath, nsIFile** aResult) {
   nsAutoCString buf;
   nsresult rv = NS_CopyUnicodeToNative(aPath, buf);
   if (NS_FAILED(rv)) {
     return rv;
   }
-  return NS_NewNativeLocalFile(buf, aFollowLinks, aResult);
+  return NS_NewNativeLocalFile(buf, aResult);
 }
 
 // nsILocalFileMac
@@ -2867,7 +3070,7 @@ NS_IMETHODIMP nsLocalFile::InitWithFile(nsIFile* aFile) {
   return InitWithNativePath(nativePath);
 }
 
-nsresult NS_NewLocalFileWithFSRef(const FSRef* aFSRef, bool aFollowLinks,
+nsresult NS_NewLocalFileWithFSRef(const FSRef* aFSRef,
                                   nsILocalFileMac** aResult) {
   RefPtr<nsLocalFile> file = new nsLocalFile();
 
@@ -2879,7 +3082,7 @@ nsresult NS_NewLocalFileWithFSRef(const FSRef* aFSRef, bool aFollowLinks,
   return NS_OK;
 }
 
-nsresult NS_NewLocalFileWithCFURL(const CFURLRef aURL, bool aFollowLinks,
+nsresult NS_NewLocalFileWithCFURL(const CFURLRef aURL,
                                   nsILocalFileMac** aResult) {
   RefPtr<nsLocalFile> file = new nsLocalFile();
 

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" content="width=device-width, height=device-height" />
@@ -8,7 +8,7 @@
     <video id="video" controls preload></video>
   </body>
   <script>
-    window.addEventListener("DOMContentLoaded", function (e) {
+    window.addEventListener("DOMContentLoaded", function () {
       const video = document.getElementById("video");
       const mediaSource = new MediaSource();
       video.src = URL.createObjectURL(mediaSource);

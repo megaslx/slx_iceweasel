@@ -35,6 +35,7 @@ if is_asm_enabled
     checkasm_sources = files(
         'checkasm/checkasm.c',
         'checkasm/msac.c',
+        'checkasm/pal.c',
         'checkasm/refmvs.c',
     )
 
@@ -68,8 +69,12 @@ if is_asm_enabled
         checkasm_asm_sources += files('checkasm/arm/checkasm_64.S')
     elif host_machine.cpu_family().startswith('arm')
         checkasm_asm_sources += files('checkasm/arm/checkasm_32.S')
+    elif host_machine.cpu_family() == 'riscv64'
+        checkasm_asm_sources += files('checkasm/riscv/checkasm_64.S')
     elif host_machine.cpu_family().startswith('x86')
         checkasm_asm_objs += nasm_gen.process(files('checkasm/x86/checkasm.asm'))
+    elif host_machine.cpu_family().startswith('loongarch')
+        checkasm_asm_sources += files('checkasm/loongarch/checkasm.S')
     endif
 
     if use_gaspp
@@ -97,7 +102,7 @@ if is_asm_enabled
             ],
         )
 
-    test('checkasm', checkasm, suite: 'checkasm', timeout: 180, is_parallel: false)
+    test('checkasm', checkasm, suite: 'checkasm', timeout: 180)
     benchmark('checkasm', checkasm, suite: 'checkasm', timeout: 3600, args: '--bench')
 endif
 
@@ -127,7 +132,7 @@ endforeach
 subdir('libfuzzer')
 
 # seek stress test binary, depends on dav1d cli tool
-if get_option('enable_tools')
+if (get_option('enable_tools') and get_option('enable_seek_stress'))
     seek_stress_sources = files('seek_stress.c')
     seek_stress = executable('seek_stress',
         seek_stress_sources, rev_target,

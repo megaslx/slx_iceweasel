@@ -68,10 +68,10 @@ already_AddRefed<DOMSVGAnimatedString> SVGMPathElement::Href() {
 //----------------------------------------------------------------------
 // nsIContent methods
 
-void SVGMPathElement::UnbindFromTree(bool aNullParent) {
+void SVGMPathElement::UnbindFromTree(UnbindContext& aContext) {
   mMPathObserver = nullptr;
   NotifyParentOfMpathChange();
-  SVGMPathElementBase::UnbindFromTree(aNullParent);
+  SVGMPathElementBase::UnbindFromTree(aContext);
 }
 
 void SVGMPathElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
@@ -95,7 +95,7 @@ void SVGMPathElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
 
 SVGElement::StringAttributesInfo SVGMPathElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 //----------------------------------------------------------------------

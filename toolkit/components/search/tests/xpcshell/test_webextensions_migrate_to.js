@@ -7,12 +7,12 @@
 
 "use strict";
 
-add_task(async function setup() {
-  useHttpServer("opensearch");
-  await AddonTestUtils.promiseStartupManager();
-  await SearchTestUtils.useTestEngines("data1");
+add_setup(async function () {
+  SearchTestUtils.setRemoteSettingsConfig([{ identifier: "unused" }]);
 
-  let data = await readJSONFile(do_get_file("data/search-migration.json"));
+  let data = await readJSONFile(
+    do_get_file("settings/v1-migrate-to-webextension.json")
+  );
 
   await promiseSaveSettingsData(data);
 

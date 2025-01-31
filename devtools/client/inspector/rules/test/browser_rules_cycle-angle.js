@@ -105,10 +105,10 @@ async function checkSwatchShiftClick(container, win, expectedValue, comment) {
   // - mochitest general synthesize events issue https://bugzilla.mozilla.org/show_bug.cgi?id=1720248
   await wait(500);
 
-  const swatch = container.querySelector(".ruleview-angleswatch");
+  const swatch = container.querySelector(".inspector-angleswatch");
   const valueNode = container.querySelector(".ruleview-angle");
 
-  const onUnitChange = swatch.once("unit-change");
+  const onUnitChange = once(swatch, "unit-change");
   EventUtils.synthesizeMouseAtCenter(
     swatch,
     {

@@ -31,7 +31,7 @@ g.test('device_mismatch')
   .beforeAllSubcases(t => {
     t.selectMismatchedDeviceOrSkipTestCase(undefined);
   })
-  .fn(async t => {
+  .fn(t => {
     const { isAsync, vertex_mismatched, fragment_mismatched, _success } = t.params;
 
     const code = `
@@ -71,7 +71,7 @@ g.test('device_mismatch')
 g.test('invalid,vertex')
   .desc(`Tests shader module must be valid.`)
   .params(u => u.combine('isAsync', [true, false]).combine('isVertexShaderValid', [true, false]))
-  .fn(async t => {
+  .fn(t => {
     const { isAsync, isVertexShaderValid } = t.params;
     t.doCreateRenderPipelineTest(isAsync, isVertexShaderValid, {
       layout: 'auto',
@@ -83,13 +83,20 @@ g.test('invalid,vertex')
           : t.createInvalidShaderModule(),
         entryPoint: 'main',
       },
+      // Specify a color attachment so we have at least one render target.
+      fragment: {
+        targets: [{ format: 'rgba8unorm' }],
+        module: t.device.createShaderModule({
+          code: `@fragment fn main() -> @location(0) vec4f { return vec4f(0); }`,
+        }),
+      },
     });
   });
 
 g.test('invalid,fragment')
   .desc(`Tests shader module must be valid.`)
   .params(u => u.combine('isAsync', [true, false]).combine('isFragmentShaderValid', [true, false]))
-  .fn(async t => {
+  .fn(t => {
     const { isAsync, isFragmentShaderValid } = t.params;
     t.doCreateRenderPipelineTest(isAsync, isFragmentShaderValid, {
       layout: 'auto',

@@ -96,7 +96,11 @@ nsPrintSettingsGTK& nsPrintSettingsGTK::operator=(
   mPrintSettings = gtk_print_settings_copy(rhs.mPrintSettings);
 
   if (mGTKPrinter) g_object_unref(mGTKPrinter);
-  mGTKPrinter = (GtkPrinter*)g_object_ref(rhs.mGTKPrinter);
+
+  if (rhs.mGTKPrinter) {
+    g_object_ref(rhs.mGTKPrinter);
+  }
+  mGTKPrinter = rhs.mGTKPrinter;
 
   return *this;
 }
@@ -306,7 +310,7 @@ nsPrintSettingsGTK::SetToFileName(const nsAString& aToFileName) {
                          "pdf");
 
   nsCOMPtr<nsIFile> file;
-  nsresult rv = NS_NewLocalFile(aToFileName, true, getter_AddRefs(file));
+  nsresult rv = NS_NewLocalFile(aToFileName, getter_AddRefs(file));
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Convert the nsIFile to a URL

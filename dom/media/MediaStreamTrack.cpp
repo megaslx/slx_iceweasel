@@ -47,8 +47,8 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(MediaStreamTrackSource)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 auto MediaStreamTrackSource::ApplyConstraints(
-    const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType)
-    -> RefPtr<ApplyConstraintsPromise> {
+    const dom::MediaTrackConstraints& aConstraints,
+    CallerType aCallerType) -> RefPtr<ApplyConstraintsPromise> {
   return ApplyConstraintsPromise::CreateAndReject(
       MakeRefPtr<MediaMgrError>(MediaMgrError::Name::OverconstrainedError, ""),
       __func__);
@@ -122,12 +122,9 @@ class MediaStreamTrack::MTGListener : public MediaTrackListener {
       return;
     }
 
-    AbstractThread* mainThread =
-        nsGlobalWindowInner::Cast(mTrack->GetParentObject())
-            ->AbstractMainThreadFor(TaskCategory::Other);
-    mainThread->Dispatch(NewRunnableMethod("MediaStreamTrack::OverrideEnded",
-                                           mTrack.get(),
-                                           &MediaStreamTrack::OverrideEnded));
+    AbstractThread::MainThread()->Dispatch(
+        NewRunnableMethod("MediaStreamTrack::OverrideEnded", mTrack.get(),
+                          &MediaStreamTrack::OverrideEnded));
   }
 
   void NotifyEnded(MediaTrackGraph* aGraph) override {
@@ -311,6 +308,11 @@ void MediaStreamTrack::Stop() {
   NotifyEnded();
 }
 
+void MediaStreamTrack::GetCapabilities(MediaTrackCapabilities& aResult,
+                                       CallerType aCallerType) {
+  GetSource().GetCapabilities(aResult);
+}
+
 void MediaStreamTrack::GetConstraints(dom::MediaTrackConstraints& aResult) {
   aResult = mConstraints;
 }
@@ -327,7 +329,7 @@ void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
   }
   if (aResult.mFacingMode.WasPassed()) {
     aResult.mFacingMode.Value().AssignASCII(
-        VideoFacingModeEnumValues::GetString(VideoFacingModeEnum::User));
+        GetEnumString(VideoFacingModeEnum::User));
   }
 }
 

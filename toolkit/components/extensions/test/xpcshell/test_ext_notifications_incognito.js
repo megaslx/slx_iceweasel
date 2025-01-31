@@ -7,10 +7,6 @@ const ALERTS_SERVICE_CONTRACT_ID = "@mozilla.org/alerts-service;1";
 const createdAlerts = [];
 
 const mockAlertsService = {
-  showPersistentNotification(persistentData, alert, alertListener) {
-    this.showAlert(alert, alertListener);
-  },
-
   showAlert(alert, listener) {
     createdAlerts.push(alert);
     listener.observe(null, "alertfinished", alert.cookie);
@@ -33,7 +29,7 @@ const mockAlertsService = {
     this.showAlert({ cookie, title, text, privateBrowsing }, alertListener);
   },
 
-  closeAlert(name) {
+  closeAlert() {
     // This mock immediately close the alert on show, so this is empty.
   },
 

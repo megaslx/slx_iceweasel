@@ -7,13 +7,11 @@
 #include "mozilla/glean/bindings/Denominator.h"
 
 #include "nsString.h"
-#include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/dom/GleanMetricsBinding.h"
 #include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
-#include "nsIClassInfoImpl.h"
-#include "nsIScriptError.h"
-#include "Common.h"
+#include "GIFFTFwd.h"
 
 namespace mozilla::glean {
 
@@ -22,7 +20,7 @@ namespace impl {
 void DenominatorMetric::Add(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
   if (scalarId && aAmount >= 0) {
-    Telemetry::ScalarAdd(scalarId.extract(), aAmount);
+    TelemetryScalar::Add(scalarId.extract(), aAmount);
   }
   fog_denominator_add(mId, aAmount);
 }
@@ -41,32 +39,27 @@ Result<Maybe<int32_t>, nsCString> DenominatorMetric::TestGetValue(
 
 }  // namespace impl
 
-NS_IMPL_CLASSINFO(GleanDenominator, nullptr, 0, {0})
-NS_IMPL_ISUPPORTS_CI(GleanDenominator, nsIGleanDenominator)
-
-NS_IMETHODIMP
-GleanDenominator::Add(int32_t aAmount) {
-  mDenominator.Add(aAmount);
-  return NS_OK;
+/* virtual */
+JSObject* GleanDenominator::WrapObject(JSContext* aCx,
+                                       JS::Handle<JSObject*> aGivenProto) {
+  return dom::GleanDenominator_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMETHODIMP
-GleanDenominator::TestGetValue(const nsACString& aStorageName,
-                               JS::MutableHandle<JS::Value> aResult) {
-  auto result = mDenominator.TestGetValue(aStorageName);
+void GleanDenominator::Add(int32_t aAmount) { mDenominator.Add(aAmount); }
+
+dom::Nullable<int32_t> GleanDenominator::TestGetValue(
+    const nsACString& aPingName, ErrorResult& aRv) {
+  dom::Nullable<int32_t> ret;
+  auto result = mDenominator.TestGetValue(aPingName);
   if (result.isErr()) {
-    aResult.set(JS::UndefinedValue());
-    LogToBrowserConsole(nsIScriptError::errorFlag,
-                        NS_ConvertUTF8toUTF16(result.unwrapErr()));
-    return NS_ERROR_LOSS_OF_SIGNIFICANT_DATA;
+    aRv.ThrowDataError(result.unwrapErr());
+    return ret;
   }
   auto optresult = result.unwrap();
-  if (optresult.isNothing()) {
-    aResult.set(JS::UndefinedValue());
-  } else {
-    aResult.set(JS::Int32Value(optresult.value()));
+  if (!optresult.isNothing()) {
+    ret.SetValue(optresult.value());
   }
-  return NS_OK;
+  return ret;
 }
 
 }  // namespace mozilla::glean

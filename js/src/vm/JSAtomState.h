@@ -18,7 +18,7 @@ class PropertyName;
 
 /* Various built-in or commonly-used names pinned on first context. */
 struct JSAtomState {
-#define PROPERTYNAME_FIELD(idpart, id, text) \
+#define PROPERTYNAME_FIELD(id, text) \
   js::ImmutableTenuredPtr<js::PropertyName*> id;
   FOR_EACH_COMMON_PROPERTYNAME(PROPERTYNAME_FIELD)
 #undef PROPERTYNAME_FIELD
@@ -35,9 +35,9 @@ struct JSAtomState {
   JS_FOR_EACH_WELL_KNOWN_SYMBOL(PROPERTYNAME_FIELD)
 #undef PROPERTYNAME_FIELD
 
-  js::ImmutableTenuredPtr<js::PropertyName*>* wellKnownSymbolNames() {
+  js::ImmutableTenuredPtr<js::PropertyName*>* wellKnownSymbolNames(){
 #define FIRST_PROPERTYNAME_FIELD(name) return &name;
-    JS_FOR_EACH_WELL_KNOWN_SYMBOL(FIRST_PROPERTYNAME_FIELD)
+      JS_FOR_EACH_WELL_KNOWN_SYMBOL(FIRST_PROPERTYNAME_FIELD)
 #undef FIRST_PROPERTYNAME_FIELD
   }
 

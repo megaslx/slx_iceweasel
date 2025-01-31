@@ -45,6 +45,7 @@ fn cli() -> Command {
         .subcommand(
             Command::new("stash")
                 .args_conflicts_with_subcommands(true)
+                .flatten_help(true)
                 .args(push_args())
                 .subcommand(Command::new("push").args(push_args()))
                 .subcommand(Command::new("pop").arg(arg!([STASH])))
@@ -118,7 +119,7 @@ fn main() {
                     println!("Pushing {message:?}");
                 }
                 (name, _) => {
-                    unreachable!("Unsupported subcommand `{}`", name)
+                    unreachable!("Unsupported subcommand `{name}`")
                 }
             }
         }

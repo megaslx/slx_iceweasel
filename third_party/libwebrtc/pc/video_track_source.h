@@ -11,7 +11,8 @@
 #ifndef PC_VIDEO_TRACK_SOURCE_H_
 #define PC_VIDEO_TRACK_SOURCE_H_
 
-#include "absl/types/optional.h"
+#include <optional>
+
 #include "api/media_stream_interface.h"
 #include "api/notifier.h"
 #include "api/sequence_checker.h"
@@ -41,9 +42,7 @@ class RTC_EXPORT VideoTrackSource : public Notifier<VideoTrackSourceInterface> {
   bool remote() const override { return remote_; }
 
   bool is_screencast() const override { return false; }
-  absl::optional<bool> needs_denoising() const override {
-    return absl::nullopt;
-  }
+  std::optional<bool> needs_denoising() const override { return std::nullopt; }
 
   bool GetStats(Stats* stats) override { return false; }
 
@@ -62,7 +61,8 @@ class RTC_EXPORT VideoTrackSource : public Notifier<VideoTrackSourceInterface> {
   virtual rtc::VideoSourceInterface<VideoFrame>* source() = 0;
 
  private:
-  RTC_NO_UNIQUE_ADDRESS SequenceChecker worker_thread_checker_;
+  RTC_NO_UNIQUE_ADDRESS SequenceChecker worker_thread_checker_{
+      SequenceChecker::kDetached};
   RTC_NO_UNIQUE_ADDRESS SequenceChecker signaling_thread_checker_;
   SourceState state_ RTC_GUARDED_BY(&signaling_thread_checker_);
   const bool remote_;

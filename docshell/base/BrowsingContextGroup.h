@@ -145,7 +145,7 @@ class BrowsingContextGroup final : public nsWrapperCache {
     }
   }
 
-  nsresult QueuePostMessageEvent(already_AddRefed<nsIRunnable>&& aRunnable);
+  nsresult QueuePostMessageEvent(nsIRunnable* aRunnable);
 
   void FlushPostMessageEvents();
 
@@ -199,6 +199,8 @@ class BrowsingContextGroup final : public nsWrapperCache {
   // also requires that the document is loaded within a `webCOOP+COEP` content
   // process.
   bool IsPotentiallyCrossOriginIsolated();
+
+  void NotifyFocusedOrActiveBrowsingContextToProcess(ContentParent* aProcess);
 
   static void GetAllGroups(nsTArray<RefPtr<BrowsingContextGroup>>& aGroups);
 

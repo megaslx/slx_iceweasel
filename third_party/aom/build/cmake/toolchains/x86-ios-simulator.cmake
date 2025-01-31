@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, Alliance for Open Media. All rights reserved
+# Copyright (c) 2017, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and the
 # Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License was
@@ -23,6 +23,6 @@ set(CMAKE_SYSTEM_PROCESSOR "i386")
 set(CMAKE_OSX_ARCHITECTURES "i386")
 
 # Avoid noisy PIC/PIE warnings.
-set(CONFIG_PIC 1 CACHE NUMBER "")
+set(CONFIG_PIC 1 CACHE STRING "")
 
 include("${CMAKE_CURRENT_LIST_DIR}/ios-simulator-common.cmake")

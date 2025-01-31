@@ -42,7 +42,7 @@ NS_IMPL_FRAMEARENA_HELPERS(SVGForeignObjectFrame)
 
 SVGForeignObjectFrame::SVGForeignObjectFrame(ComputedStyle* aStyle,
                                              nsPresContext* aPresContext)
-    : nsContainerFrame(aStyle, aPresContext, kClassID), mInReflow(false) {
+    : nsContainerFrame(aStyle, aPresContext, kClassID) {
   AddStateBits(NS_FRAME_REFLOW_ROOT | NS_FRAME_MAY_BE_TRANSFORMED |
                NS_FRAME_SVG_LAYOUT | NS_FRAME_FONT_INFLATION_CONTAINER |
                NS_FRAME_FONT_INFLATION_FLOW_ROOT);
@@ -120,8 +120,7 @@ void SVGForeignObjectFrame::Reflow(nsPresContext* aPresContext,
 
   NS_ASSERTION(!aReflowInput.mParentReflowInput,
                "should only get reflow from being reflow root");
-  NS_ASSERTION(aReflowInput.ComputedWidth() == GetSize().width &&
-                   aReflowInput.ComputedHeight() == GetSize().height,
+  NS_ASSERTION(aReflowInput.ComputedSize() == GetLogicalSize(),
                "reflow roots should be reflowed at existing size and "
                "svg.css should ensure we have no padding/border/margin");
 
@@ -148,9 +147,9 @@ void SVGForeignObjectFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                                            &newList);
 }
 
-bool SVGForeignObjectFrame::IsSVGTransformed(
-    Matrix* aOwnTransform, Matrix* aFromParentTransform) const {
-  return SVGUtils::IsSVGTransformed(this, aOwnTransform, aFromParentTransform);
+bool SVGForeignObjectFrame::DoGetParentSVGTransforms(
+    Matrix* aFromParentTransform) const {
+  return SVGUtils::GetParentSVGTransforms(this, aFromParentTransform);
 }
 
 void SVGForeignObjectFrame::PaintSVG(gfxContext& aContext,
@@ -237,8 +236,12 @@ void SVGForeignObjectFrame::ReflowSVG() {
       static_cast<SVGElement*>(GetContent()), &x, &y, &w, &h);
 
   // If mRect's width or height are negative, reflow blows up! We must clamp!
-  if (w < 0.0f) w = 0.0f;
-  if (h < 0.0f) h = 0.0f;
+  if (w < 0.0f) {
+    w = 0.0f;
+  }
+  if (h < 0.0f) {
+    h = 0.0f;
+  }
 
   mRect = nsLayoutUtils::RoundGfxRectToAppRect(gfxRect(x, y, w, h),
                                                AppUnitsPerCSSPixel());
@@ -295,8 +298,8 @@ void SVGForeignObjectFrame::NotifySVGChanged(uint32_t aFlags) {
 
     // Our coordinate context's width/height has changed. If we have a
     // percentage width/height our dimensions will change so we must reflow.
-    if (StylePosition()->mWidth.HasPercent() ||
-        StylePosition()->mHeight.HasPercent()) {
+    if (StylePosition()->GetWidth().HasPercent() ||
+        StylePosition()->GetHeight().HasPercent()) {
       needNewBounds = true;
       needReflow = true;
     }
@@ -352,8 +355,12 @@ SVGBBox SVGForeignObjectFrame::GetBBoxContribution(
   SVGGeometryProperty::ResolveAll<SVGT::X, SVGT::Y, SVGT::Width, SVGT::Height>(
       content, &x, &y, &w, &h);
 
-  if (w < 0.0f) w = 0.0f;
-  if (h < 0.0f) h = 0.0f;
+  if (w < 0.0f) {
+    w = 0.0f;
+  }
+  if (h < 0.0f) {
+    h = 0.0f;
+  }
 
   if (aToBBoxUserspace.IsSingular()) {
     // XXX ReportToConsole
@@ -367,13 +374,10 @@ SVGBBox SVGForeignObjectFrame::GetBBoxContribution(
 gfxMatrix SVGForeignObjectFrame::GetCanvasTM() {
   if (!mCanvasTM) {
     NS_ASSERTION(GetParent(), "null parent");
-
     auto* parent = static_cast<SVGContainerFrame*>(GetParent());
     auto* content = static_cast<SVGForeignObjectElement*>(GetContent());
-
-    gfxMatrix tm = content->PrependLocalTransformsTo(parent->GetCanvasTM());
-
-    mCanvasTM = MakeUnique<gfxMatrix>(tm);
+    mCanvasTM = MakeUnique<gfxMatrix>(content->ChildToUserSpaceTransform() *
+                                      parent->GetCanvasTM());
   }
   return *mCanvasTM;
 }
@@ -412,8 +416,6 @@ void SVGForeignObjectFrame::DoReflow() {
   UniquePtr<gfxContext> renderingContext =
       presContext->PresShell()->CreateReferenceRenderingContext();
 
-  mInReflow = true;
-
   WritingMode wm = kid->GetWritingMode();
   ReflowInput reflowInput(presContext, kid, renderingContext.get(),
                           LogicalSize(wm, ISize(wm), NS_UNCONSTRAINEDSIZE));
@@ -438,8 +440,6 @@ void SVGForeignObjectFrame::DoReflow() {
                "unexpected size");
   FinishReflowChild(kid, presContext, desiredSize, &reflowInput, 0, 0,
                     ReflowChildFlags::NoMoveFrame);
-
-  mInReflow = false;
 }
 
 void SVGForeignObjectFrame::AppendDirectlyOwnedAnonBoxes(

@@ -109,6 +109,12 @@ this.test = class extends ExtensionAPI {
           return pids[0];
         },
 
+        async waitForContentTransformsReceived(tabId) {
+          return getActorForTab(tabId).sendQuery(
+            "WaitForContentTransformsReceived"
+          );
+        },
+
         async getAllBrowserPids() {
           const pids = [];
           const processes = ChromeUtils.getAllDOMProcesses();
@@ -142,10 +148,6 @@ this.test = class extends ExtensionAPI {
           overrideService.clearAllOverrides();
         },
 
-        async setScalar(id, value) {
-          return Services.telemetry.scalarSet(id, value);
-        },
-
         async setResolutionAndScaleTo(tabId, resolution) {
           return getActorForTab(tabId, "TestSupport").sendQuery(
             "SetResolutionAndScaleTo",
@@ -173,6 +175,12 @@ this.test = class extends ExtensionAPI {
           // well.
           await getActorForTab(tabId, "TestSupport").sendQuery(
             "FlushApzRepaints"
+          );
+        },
+
+        async zoomToFocusedInput(tabId) {
+          await getActorForTab(tabId, "TestSupport").sendQuery(
+            "ZoomToFocusedInput"
           );
         },
 
@@ -210,6 +218,14 @@ this.test = class extends ExtensionAPI {
           return sss.clearAll();
         },
 
+        async isSessionHistoryInParentRunning() {
+          return Services.appinfo.sessionHistoryInParent;
+        },
+
+        async isFissionRunning() {
+          return Services.appinfo.fissionAutostart;
+        },
+
         async triggerCookieBannerDetected(tabId) {
           const actor = getActorForTab(tabId, "CookieBanner");
           return actor.receiveMessage({
@@ -222,6 +238,27 @@ this.test = class extends ExtensionAPI {
           return actor.receiveMessage({
             name: "CookieBanner::HandledBanner",
           });
+        },
+
+        async triggerTranslationsOffer(tabId) {
+          const browser = context.extension.tabManager.get(tabId).browser;
+          const { CustomEvent } = browser.ownerGlobal;
+          return browser.dispatchEvent(
+            new CustomEvent("TranslationsParent:OfferTranslation", {
+              bubbles: true,
+            })
+          );
+        },
+
+        async triggerLanguageStateChange(tabId, languageState) {
+          const browser = context.extension.tabManager.get(tabId).browser;
+          const { CustomEvent } = browser.ownerGlobal;
+          return browser.dispatchEvent(
+            new CustomEvent("TranslationsParent:LanguageState", {
+              bubbles: true,
+              detail: languageState,
+            })
+          );
         },
       },
     };

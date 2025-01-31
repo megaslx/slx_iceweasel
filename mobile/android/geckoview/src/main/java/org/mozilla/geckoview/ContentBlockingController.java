@@ -102,6 +102,15 @@ public class ContentBlockingController {
     /** SocialTracking content has been loaded. */
     public static final int LOADED_SOCIALTRACKING_CONTENT = 0x00020000;
 
+    /** Email content has been blocked from loading. */
+    public static final int BLOCKED_EMAILTRACKING_CONTENT = 0x00400000;
+
+    /** EmailTracking content from the Disconnect level 1 has been loaded. */
+    public static final int LOADED_EMAILTRACKING_LEVEL_1_CONTENT = 0x00800000;
+
+    /** EmailTracking content from the Disconnect level 2 has been loaded. */
+    public static final int LOADED_EMAILTRACKING_LEVEL_2_CONTENT = 0x00000100;
+
     /**
      * Indicates that content that would have been blocked has instead been replaced with a shim.
      */
@@ -109,6 +118,12 @@ public class ContentBlockingController {
 
     /** Indicates that content that would have been blocked has instead been allowed by a shim. */
     public static final int ALLOWED_TRACKING_CONTENT = 0x00000020;
+
+    /** Indicates that bounce trackers have been purged. */
+    public static final int PURGED_BOUNCETRACKER = 0x00000007;
+
+    /** Indicates that suspicious fingerprinting content has been blocked */
+    public static final int BLOCKED_SUSPICIOUS_FINGERPRINTING = 0x00000004;
 
     protected Event() {}
   }
@@ -129,7 +144,10 @@ public class ContentBlockingController {
         Event.COOKIES_BLOCKED_TRACKER, Event.COOKIES_BLOCKED_SOCIALTRACKER,
         Event.COOKIES_BLOCKED_ALL, Event.COOKIES_PARTITIONED_FOREIGN,
         Event.COOKIES_BLOCKED_FOREIGN, Event.BLOCKED_SOCIALTRACKING_CONTENT,
-        Event.LOADED_SOCIALTRACKING_CONTENT, Event.REPLACED_TRACKING_CONTENT
+        Event.LOADED_SOCIALTRACKING_CONTENT, Event.REPLACED_TRACKING_CONTENT,
+        Event.LOADED_EMAILTRACKING_LEVEL_1_CONTENT, Event.LOADED_EMAILTRACKING_LEVEL_2_CONTENT,
+        Event.BLOCKED_EMAILTRACKING_CONTENT, Event.PURGED_BOUNCETRACKER,
+        Event.BLOCKED_SUSPICIOUS_FINGERPRINTING
       })
       public @interface LogEvent {}
 

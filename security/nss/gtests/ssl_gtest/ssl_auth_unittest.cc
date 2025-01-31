@@ -28,6 +28,14 @@ TEST_P(TlsConnectGeneric, ServerAuthBigRsa) {
   CheckKeys();
 }
 
+TEST_P(TlsConnectGeneric, PeerCertificateChainConsistency) {
+  Reset("rsa_chain");
+  Connect();
+  CheckKeys();
+  client_->CheckPeerChainFunctionConsistency();
+  server_->CheckPeerChainFunctionConsistency();
+}
+
 TEST_P(TlsConnectGeneric, ServerAuthRsaChain) {
   Reset("rsa_chain");
   Connect();
@@ -921,6 +929,9 @@ TEST_P(TlsConnectClientAuth, ClientAuthEcdsa) {
 }
 
 TEST_P(TlsConnectClientAuth, ClientAuthWithEch) {
+  if (variant_ == ssl_variant_datagram) {
+    GTEST_SKIP();
+  }
   Reset(TlsAgent::kServerEcdsa256);
   EnsureTlsSetup();
   SetupEch(client_, server_);

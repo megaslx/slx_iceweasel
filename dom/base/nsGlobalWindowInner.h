@@ -13,6 +13,7 @@
 
 // Local Includes
 // Helper Classes
+#include "mozilla/WeakPtr.h"
 #include "nsCOMPtr.h"
 #include "nsWeakReference.h"
 #include "nsTHashMap.h"
@@ -33,6 +34,7 @@
 #include "mozilla/dom/DebuggerNotificationManager.h"
 #include "mozilla/dom/GamepadHandle.h"
 #include "mozilla/dom/Location.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/StorageEvent.h"
 #include "mozilla/CallState.h"
 #include "mozilla/Attributes.h"
@@ -49,14 +51,15 @@
 #include "mozilla/dom/ImageBitmapSource.h"
 #include "mozilla/UniquePtr.h"
 #include "nsThreadUtils.h"
+#include "mozilla/MozPromise.h"
 
 class nsIArray;
 class nsIBaseWindow;
 class nsIContent;
+class nsICookieJarSettings;
 class nsICSSDeclaration;
 class nsIDocShellTreeOwner;
 class nsIDOMWindowUtils;
-class nsIScrollableFrame;
 class nsIControllers;
 class nsIScriptContext;
 class nsIScriptTimeoutHandler;
@@ -79,12 +82,11 @@ class nsWindowSizes;
 
 class IdleRequestExecutor;
 
-class DialogValueHolder;
-
 class PromiseDocumentFlushedResolver;
 
 namespace mozilla {
 class AbstractThread;
+class ScrollContainerFrame;
 class ErrorResult;
 
 namespace glean {
@@ -100,27 +102,30 @@ namespace dom {
 class BarProp;
 class BrowsingContext;
 struct ChannelPixelLayout;
+class Credential;
 class ClientSource;
 class Console;
+class CookieStore;
 class Crypto;
 class CustomElementRegistry;
+class DataTransfer;
 class DocGroup;
 class External;
-class Function;
+class FunctionOrTrustedScriptOrString;
 class Gamepad;
 class ContentMediaController;
 enum class ImageBitmapFormat : uint8_t;
 class IdleRequest;
 class IdleRequestCallback;
-class IncrementalRunnable;
 class InstallTriggerImpl;
 class IntlUtils;
 class MediaQueryList;
+class Navigation;
 class OwningExternalOrWindowProxy;
 class Promise;
 class PostMessageEvent;
 struct RequestInit;
-class RequestOrUSVString;
+class RequestOrUTF8String;
 class SharedWorker;
 class Selection;
 struct SizeToContentConstraints;
@@ -128,6 +133,7 @@ class WebTaskScheduler;
 class WebTaskSchedulerMainThread;
 class SpeechSynthesis;
 class Timeout;
+class TrustedTypePolicyFactory;
 class VisualViewport;
 class VRDisplay;
 enum class VRDisplayEventReason : uint8_t;
@@ -140,16 +146,6 @@ class CacheStorage;
 class IDBFactory;
 }  // namespace dom
 }  // namespace mozilla
-
-extern already_AddRefed<nsIScriptTimeoutHandler> NS_CreateJSTimeoutHandler(
-    JSContext* aCx, nsGlobalWindowInner* aWindow,
-    mozilla::dom::Function& aFunction,
-    const mozilla::dom::Sequence<JS::Value>& aArguments,
-    mozilla::ErrorResult& aError);
-
-extern already_AddRefed<nsIScriptTimeoutHandler> NS_CreateJSTimeoutHandler(
-    JSContext* aCx, nsGlobalWindowInner* aWindow, const nsAString& aExpression,
-    mozilla::ErrorResult& aError);
 
 extern const JSClass OuterWindowProxyClass;
 
@@ -230,7 +226,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
       mozilla::dom::WindowGlobalChild* aActor);
 
   // nsISupports
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_IMETHOD_(void) DeleteCycleCollectable() override;
 
   // nsWrapperCache
   virtual JSObject* WrapObject(JSContext* cx,
@@ -261,6 +258,12 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   bool IsEligibleForMessaging() override;
 
+  void ReportToConsole(uint32_t aErrorFlags, const nsCString& aCategory,
+                       nsContentUtils::PropertiesFile aFile,
+                       const nsCString& aMessageName,
+                       const nsTArray<nsString>& aParams,
+                       const mozilla::SourceLocation& aLocation) override;
+
   void TraceGlobalJSObject(JSTracer* aTrc);
 
   virtual nsresult EnsureScriptEnvironment() override;
@@ -277,6 +280,10 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   virtual nsIPrincipal* GetEffectiveStoragePrincipal() override;
 
   virtual nsIPrincipal* PartitionedPrincipal() override;
+
+  mozilla::dom::TimeoutManager* GetTimeoutManager() override;
+
+  bool IsRunningTimeout() override;
 
   // nsIDOMWindow
   NS_DECL_NSIDOMWINDOW
@@ -342,14 +349,19 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   mozilla::dom::DebuggerNotificationManager*
   GetExistingDebuggerNotificationManager() override;
 
+  nsIURI* GetBaseURI() const final;
+
   mozilla::Maybe<mozilla::dom::ClientInfo> GetClientInfo() const override;
-  mozilla::Maybe<mozilla::dom::ClientState> GetClientState() const;
+  mozilla::Maybe<mozilla::dom::ClientState> GetClientState() const final;
   mozilla::Maybe<mozilla::dom::ServiceWorkerDescriptor> GetController()
       const override;
 
   void SetCsp(nsIContentSecurityPolicy* aCsp);
   void SetPreloadCsp(nsIContentSecurityPolicy* aPreloadCsp);
   nsIContentSecurityPolicy* GetCsp();
+
+  virtual already_AddRefed<mozilla::dom::ServiceWorkerContainer>
+  GetServiceWorkerContainer() override;
 
   virtual RefPtr<mozilla::dom::ServiceWorker> GetOrCreateServiceWorker(
       const mozilla::dom::ServiceWorkerDescriptor& aDescriptor) override;
@@ -365,6 +377,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   mozilla::StorageAccess GetStorageAccess() final;
 
+  nsICookieJarSettings* GetCookieJarSettings() final;
+
   void NoteCalledRegisterForServiceWorkerScope(const nsACString& aScope);
 
   void NoteDOMContentLoaded();
@@ -375,6 +389,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   // Inner windows only.
   void RefreshRealmPrincipal();
+  void RefreshReduceTimerPrecisionCallerType();
 
   // For accessing protected field mFullscreen
   friend class FullscreenTransitionTask;
@@ -407,7 +422,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   static bool CachesEnabled(JSContext* aCx, JSObject*);
 
-  static bool IsSizeToContentEnabled(JSContext*, JSObject*);
+  // WebIDL permission Func for whether Glean APIs are permitted.
+  static bool IsGleanNeeded(JSContext*, JSObject*);
 
   bool DoResolve(
       JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId,
@@ -435,9 +451,10 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   bool IsChromeWindow() const { return mIsChrome; }
 
-  // GetScrollFrame does not flush.  Callers should do it themselves as needed,
-  // depending on which info they actually want off the scrollable frame.
-  nsIScrollableFrame* GetScrollFrame();
+  // GetScrollContainerFrame does not flush. Callers should do it themselves as
+  // needed, depending on which info they actually want off the scroll container
+  // frame.
+  mozilla::ScrollContainerFrame* GetScrollContainerFrame();
 
   nsresult Observe(nsISupports* aSubject, const char* aTopic,
                    const char16_t* aData);
@@ -463,7 +480,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   virtual bool TakeFocus(bool aFocus, uint32_t aFocusMethod) override;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void SetReadyForFocus() override;
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void PageHidden() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void PageHidden(
+      bool aIsEnteringBFCache) override;
   virtual nsresult DispatchAsyncHashchange(nsIURI* aOldURI,
                                            nsIURI* aNewURI) override;
   virtual nsresult DispatchSyncPopState() override;
@@ -499,6 +517,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
                   mozilla::dom::Gamepad* aGamepad);
   void RemoveGamepad(mozilla::dom::GamepadHandle aHandle);
   void GetGamepads(nsTArray<RefPtr<mozilla::dom::Gamepad>>& aGamepads);
+  already_AddRefed<mozilla::dom::Promise> RequestAllGamepads(
+      mozilla::ErrorResult& aRv);
   already_AddRefed<mozilla::dom::Gamepad> GetGamepad(
       mozilla::dom::GamepadHandle aHandle);
   void SetHasSeenGamepadInput(bool aHasSeen);
@@ -595,6 +615,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   void SetName(const nsAString& aName, mozilla::ErrorResult& aError);
   mozilla::dom::Location* Location() override;
   nsHistory* GetHistory(mozilla::ErrorResult& aError);
+  mozilla::dom::Navigation* Navigation();
   mozilla::dom::CustomElementRegistry* CustomElements() override;
   mozilla::dom::CustomElementRegistry* GetExistingCustomElements();
   mozilla::dom::BarProp* GetLocationbar(mozilla::ErrorResult& aError);
@@ -646,10 +667,11 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   already_AddRefed<mozilla::dom::Console> GetConsole(JSContext* aCx,
                                                      mozilla::ErrorResult& aRv);
 
+  already_AddRefed<mozilla::dom::CookieStore> CookieStore();
+
   // https://w3c.github.io/webappsec-secure-contexts/#dom-window-issecurecontext
   bool IsSecureContext() const;
 
-  void GetSidebar(mozilla::dom::OwningExternalOrWindowProxy& aResult);
   mozilla::dom::External* External();
 
   mozilla::dom::Worklet* GetPaintWorklet(mozilla::ErrorResult& aRv);
@@ -676,7 +698,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   already_AddRefed<mozilla::dom::cache::CacheStorage> GetCaches(
       mozilla::ErrorResult& aRv);
   already_AddRefed<mozilla::dom::Promise> Fetch(
-      const mozilla::dom::RequestOrUSVString& aInput,
+      const mozilla::dom::RequestOrUTF8String& aInput,
       const mozilla::dom::RequestInit& aInit,
       mozilla::dom::CallerType aCallerType, mozilla::ErrorResult& aRv);
   MOZ_CAN_RUN_SCRIPT void Print(mozilla::ErrorResult& aError);
@@ -694,31 +716,22 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
                       mozilla::ErrorResult& aError);
 
   MOZ_CAN_RUN_SCRIPT
-  int32_t SetTimeout(JSContext* aCx, mozilla::dom::Function& aFunction,
-                     int32_t aTimeout,
-                     const mozilla::dom::Sequence<JS::Value>& aArguments,
-                     mozilla::ErrorResult& aError);
-
-  MOZ_CAN_RUN_SCRIPT
-  int32_t SetTimeout(JSContext* aCx, const nsAString& aHandler,
-                     int32_t aTimeout,
-                     const mozilla::dom::Sequence<JS::Value>& /* unused */,
-                     mozilla::ErrorResult& aError);
+  int32_t SetTimeout(
+      JSContext* aCx,
+      const mozilla::dom::FunctionOrTrustedScriptOrString& aHandler,
+      int32_t aTimeout, const mozilla::dom::Sequence<JS::Value>& /* unused */,
+      mozilla::ErrorResult& aError);
 
   MOZ_CAN_RUN_SCRIPT
   void ClearTimeout(int32_t aHandle);
 
   MOZ_CAN_RUN_SCRIPT
-  int32_t SetInterval(JSContext* aCx, mozilla::dom::Function& aFunction,
-                      const int32_t aTimeout,
-                      const mozilla::dom::Sequence<JS::Value>& aArguments,
-                      mozilla::ErrorResult& aError);
-
-  MOZ_CAN_RUN_SCRIPT
-  int32_t SetInterval(JSContext* aCx, const nsAString& aHandler,
-                      const int32_t aTimeout,
-                      const mozilla::dom::Sequence<JS::Value>& /* unused */,
-                      mozilla::ErrorResult& aError);
+  int32_t SetInterval(
+      JSContext* aCx,
+      const mozilla::dom::FunctionOrTrustedScriptOrString& aHandler,
+      const int32_t aTimeout,
+      const mozilla::dom::Sequence<JS::Value>& /* unused */,
+      mozilla::ErrorResult& aError);
 
   MOZ_CAN_RUN_SCRIPT
   void ClearInterval(int32_t aHandle);
@@ -733,6 +746,9 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
             mozilla::ErrorResult& aError);
   void Btoa(const nsAString& aBinaryData, nsAString& aAsciiBase64String,
             mozilla::ErrorResult& aError);
+
+  void MaybeNotifyStorageKeyUsed();
+
   mozilla::dom::Storage* GetSessionStorage(mozilla::ErrorResult& aError);
   mozilla::dom::Storage* GetLocalStorage(mozilla::ErrorResult& aError);
   mozilla::dom::Selection* GetSelection(mozilla::ErrorResult& aError);
@@ -745,7 +761,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   already_AddRefed<mozilla::dom::MediaQueryList> MatchMedia(
       const nsACString& aQuery, mozilla::dom::CallerType aCallerType,
       mozilla::ErrorResult& aError);
-  nsScreen* GetScreen(mozilla::ErrorResult& aError);
+  nsScreen* Screen();
   void MoveTo(int32_t aXPos, int32_t aYPos,
               mozilla::dom::CallerType aCallerType,
               mozilla::ErrorResult& aError);
@@ -758,8 +774,12 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   void ResizeBy(int32_t aWidthDif, int32_t aHeightDif,
                 mozilla::dom::CallerType aCallerType,
                 mozilla::ErrorResult& aError);
-  void Scroll(double aXScroll, double aYScroll);
-  void Scroll(const mozilla::dom::ScrollToOptions& aOptions);
+  void Scroll(double aXScroll, double aYScroll) {
+    ScrollTo(aXScroll, aYScroll);
+  }
+  void Scroll(const mozilla::dom::ScrollToOptions& aOptions) {
+    ScrollTo(aOptions);
+  }
   void ScrollTo(double aXScroll, double aYScroll);
   void ScrollTo(const mozilla::dom::ScrollToOptions& aOptions);
   void ScrollBy(double aXScrollDif, double aYScrollDif);
@@ -805,11 +825,11 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
                       mozilla::ErrorResult& aError);
 
   MOZ_CAN_RUN_SCRIPT
-  int32_t RequestAnimationFrame(mozilla::dom::FrameRequestCallback& aCallback,
-                                mozilla::ErrorResult& aError);
+  uint32_t RequestAnimationFrame(mozilla::dom::FrameRequestCallback& aCallback,
+                                 mozilla::ErrorResult& aError);
 
   MOZ_CAN_RUN_SCRIPT
-  void CancelAnimationFrame(int32_t aHandle, mozilla::ErrorResult& aError);
+  void CancelAnimationFrame(uint32_t aHandle, mozilla::ErrorResult& aError);
 
   uint32_t RequestIdleCallback(JSContext* aCx,
                                mozilla::dom::IdleRequestCallback& aCallback,
@@ -829,10 +849,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   already_AddRefed<nsICSSDeclaration> GetDefaultComputedStyle(
       mozilla::dom::Element& aElt, const nsAString& aPseudoElt,
       mozilla::ErrorResult& aError);
-  void SizeToContent(mozilla::dom::CallerType aCallerType,
-                     mozilla::ErrorResult& aError);
-  void SizeToContentConstrained(const mozilla::dom::SizeToContentConstraints&,
-                                mozilla::ErrorResult&);
+  void SizeToContent(const mozilla::dom::SizeToContentConstraints&,
+                     mozilla::ErrorResult&);
   mozilla::dom::Crypto* GetCrypto(mozilla::ErrorResult& aError);
   nsIControllers* GetControllers(mozilla::ErrorResult& aError);
   nsresult GetControllers(nsIControllers** aControllers) override;
@@ -863,8 +881,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
       const nsAString& aOptions,
       const mozilla::dom::Sequence<JS::Value>& aExtraArgument,
       mozilla::ErrorResult& aError);
-  void UpdateCommands(const nsAString& anAction, mozilla::dom::Selection* aSel,
-                      int16_t aReason);
+  void UpdateCommands(const nsAString& anAction);
 
   void GetContent(JSContext* aCx, JS::MutableHandle<JSObject*> aRetval,
                   mozilla::dom::CallerType aCallerType,
@@ -911,20 +928,6 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   already_AddRefed<mozilla::dom::Promise> PromiseDocumentFlushed(
       mozilla::dom::PromiseDocumentFlushedCallback& aCallback,
       mozilla::ErrorResult& aError);
-
-  void GetReturnValueOuter(JSContext* aCx,
-                           JS::MutableHandle<JS::Value> aReturnValue,
-                           nsIPrincipal& aSubjectPrincipal,
-                           mozilla::ErrorResult& aError);
-  void GetReturnValue(JSContext* aCx, JS::MutableHandle<JS::Value> aReturnValue,
-                      nsIPrincipal& aSubjectPrincipal,
-                      mozilla::ErrorResult& aError);
-  void SetReturnValueOuter(JSContext* aCx, JS::Handle<JS::Value> aReturnValue,
-                           nsIPrincipal& aSubjectPrincipal,
-                           mozilla::ErrorResult& aError);
-  void SetReturnValue(JSContext* aCx, JS::Handle<JS::Value> aReturnValue,
-                      nsIPrincipal& aSubjectPrincipal,
-                      mozilla::ErrorResult& aError);
 
   void GetInterface(JSContext* aCx, JS::Handle<JS::Value> aIID,
                     JS::MutableHandle<JS::Value> aRetval,
@@ -1066,14 +1069,10 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   // |interval| is in milliseconds.
   MOZ_CAN_RUN_SCRIPT
   int32_t SetTimeoutOrInterval(
-      JSContext* aCx, mozilla::dom::Function& aFunction, int32_t aTimeout,
-      const mozilla::dom::Sequence<JS::Value>& aArguments, bool aIsInterval,
-      mozilla::ErrorResult& aError);
-
-  MOZ_CAN_RUN_SCRIPT
-  int32_t SetTimeoutOrInterval(JSContext* aCx, const nsAString& aHandler,
-                               int32_t aTimeout, bool aIsInterval,
-                               mozilla::ErrorResult& aError);
+      JSContext* aCx,
+      const mozilla::dom::FunctionOrTrustedScriptOrString& aHandler,
+      int32_t aTimeout, const mozilla::dom::Sequence<JS::Value>& aArguments,
+      bool aIsInterval, mozilla::ErrorResult& aError);
 
   // Return true if |aTimeout| was cleared while its handler ran.
   MOZ_CAN_RUN_SCRIPT
@@ -1122,17 +1121,17 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   // available.
   nsIPrincipal* GetClientPrincipal();
 
+  // Whether the chrome window is currently in a full screen transition. This
+  // flag is updated from FullscreenTransitionTask.
+  bool IsInFullScreenTransition();
+
   // This method is called if this window loads a 3rd party tracking resource
-  // and the storage is just been granted. The window can reset the partitioned
+  // and the storage is just been changed. The window can reset the partitioned
   // storage objects and switch to the first party cookie jar.
-  void StorageAccessPermissionGranted();
+  RefPtr<mozilla::GenericPromise> StorageAccessPermissionChanged(bool aGranted);
 
  protected:
-  static void NotifyDOMWindowDestroyed(nsGlobalWindowInner* aWindow);
   void NotifyWindowIDDestroyed(const char* aTopic);
-
-  static void NotifyDOMWindowFrozen(nsGlobalWindowInner* aWindow);
-  static void NotifyDOMWindowThawed(nsGlobalWindowInner* aWindow);
 
   virtual void UpdateParentTarget() override;
 
@@ -1171,7 +1170,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   friend class nsPIDOMWindowInner;
   friend class nsPIDOMWindowOuter;
 
-  bool IsBackgroundInternal() const;
+  bool IsBackgroundInternal() const override;
 
   // NOTE: Chrome Only
   void DisconnectAndClearGroupMessageManagers() {
@@ -1211,14 +1210,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   static uint32_t GetShortcutsPermission(nsIPrincipal* aPrincipal);
 
   // Dispatch a runnable related to the global.
-  virtual nsresult Dispatch(mozilla::TaskCategory aCategory,
-                            already_AddRefed<nsIRunnable>&& aRunnable) override;
-
-  virtual nsISerialEventTarget* EventTargetFor(
-      mozilla::TaskCategory aCategory) const override;
-
-  virtual mozilla::AbstractThread* AbstractMainThreadFor(
-      mozilla::TaskCategory aCategory) override;
+  nsresult Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) const final;
+  nsISerialEventTarget* SerialEventTarget() const final;
 
   void DisableIdleCallbackRequests();
   uint32_t LastIdleRequestHandle() const {
@@ -1278,10 +1271,17 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   virtual JS::loader::ModuleLoaderBase* GetModuleLoader(
       JSContext* aCx) override;
 
+  mozilla::dom::TrustedTypePolicyFactory* TrustedTypes();
+
+  void SetCurrentPasteDataTransfer(mozilla::dom::DataTransfer* aDataTransfer);
+  mozilla::dom::DataTransfer* GetCurrentPasteDataTransfer() const;
+
  private:
   RefPtr<mozilla::dom::ContentMediaController> mContentMediaController;
 
   RefPtr<mozilla::dom::WebTaskSchedulerMainThread> mWebTaskScheduler;
+
+  RefPtr<mozilla::dom::TrustedTypePolicyFactory> mTrustedTypePolicyFactory;
 
  protected:
   // Whether we need to care about orientation changes.
@@ -1374,6 +1374,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   RefPtr<mozilla::dom::Crypto> mCrypto;
   RefPtr<mozilla::dom::cache::CacheStorage> mCacheStorage;
   RefPtr<mozilla::dom::Console> mConsole;
+  RefPtr<mozilla::dom::CookieStore> mCookieStore;
   RefPtr<mozilla::dom::Worklet> mPaintWorklet;
   RefPtr<mozilla::dom::External> mExternal;
   RefPtr<mozilla::dom::InstallTriggerImpl> mInstallTrigger;
@@ -1384,6 +1385,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   RefPtr<mozilla::EventListenerManager> mListenerManager;
   RefPtr<mozilla::dom::Location> mLocation;
   RefPtr<nsHistory> mHistory;
+  RefPtr<mozilla::dom::Navigation> mNavigation;
   RefPtr<mozilla::dom::CustomElementRegistry> mCustomElements;
 
   nsTObserverArray<RefPtr<mozilla::dom::SharedWorker>> mSharedWorkers;
@@ -1403,6 +1405,11 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   // instead.
   mozilla::Maybe<mozilla::StorageAccess> mStorageAllowedCache;
   uint32_t mStorageAllowedReasonCache;
+
+  // When window associated storage is accessed we need to notify the parent
+  // process. This flag is used to ensure we only do it once per window
+  // lifetime.
+  bool hasNotifiedStorageKeyUsed{false};
 
   RefPtr<mozilla::dom::DebuggerNotificationManager>
       mDebuggerNotificationManager;
@@ -1472,7 +1479,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   nsTArray<uint32_t> mScrollMarks;
 
-  nsTArray<nsWeakPtr> mDataDocumentsForMemoryReporting;
+  nsTArray<mozilla::WeakPtr<Document>> mDataDocumentsForMemoryReporting;
 
   static InnerWindowByIdTable* sInnerWindowsById;
 
@@ -1484,15 +1491,17 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
         mGroupMessageManagers{1};
   } mChromeFields;
 
+  // Cache the DataTransfer created for a paste event, this will be reset after
+  // the event is dispatched.
+  RefPtr<mozilla::dom::DataTransfer> mCurrentPasteDataTransfer;
+
   // These fields are used by the inner and outer windows to prevent
   // programatically moving the window while the mouse is down.
   static bool sMouseDown;
   static bool sDragServiceDisabled;
 
-  friend class nsDOMScriptableHelper;
   friend class nsDOMWindowUtils;
   friend class mozilla::dom::PostMessageEvent;
-  friend class DesktopNotification;
   friend class mozilla::dom::TimeoutManager;
   friend class IdleRequestExecutor;
   friend class nsGlobalWindowOuter;

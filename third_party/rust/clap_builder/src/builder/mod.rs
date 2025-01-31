@@ -7,6 +7,7 @@ mod arg_group;
 mod arg_predicate;
 mod arg_settings;
 mod command;
+mod ext;
 mod os_str;
 mod possible_value;
 mod range;
@@ -22,9 +23,13 @@ mod debug_asserts;
 #[cfg(test)]
 mod tests;
 
+pub mod styling;
+
 pub use self::str::Str;
 pub use action::ArgAction;
 pub use arg::Arg;
+#[cfg(feature = "unstable-ext")]
+pub use arg::ArgExt;
 pub use arg_group::ArgGroup;
 pub use arg_predicate::ArgPredicate;
 pub use command::Command;
@@ -34,6 +39,7 @@ pub use range::ValueRange;
 pub use resettable::IntoResettable;
 pub use resettable::Resettable;
 pub use styled_str::StyledStr;
+pub use styling::Styles;
 pub use value_hint::ValueHint;
 pub use value_parser::_AutoValueParser;
 pub use value_parser::via_prelude;
@@ -49,7 +55,9 @@ pub use value_parser::PossibleValuesParser;
 pub use value_parser::RangedI64ValueParser;
 pub use value_parser::RangedU64ValueParser;
 pub use value_parser::StringValueParser;
+pub use value_parser::TryMapValueParser;
 pub use value_parser::TypedValueParser;
+pub use value_parser::UnknownArgumentValueParser;
 pub use value_parser::ValueParser;
 pub use value_parser::ValueParserFactory;
 pub use value_parser::_AnonymousValueParser;
@@ -58,3 +66,4 @@ pub use value_parser::_AnonymousValueParser;
 pub(crate) use self::str::Inner as StrInner;
 pub(crate) use action::CountType;
 pub(crate) use arg_settings::{ArgFlags, ArgSettings};
+pub(crate) use command::AppTag;

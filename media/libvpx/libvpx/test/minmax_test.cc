@@ -11,8 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "third_party/googletest/src/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
+#include "vpx_config.h"
 #include "./vpx_dsp_rtcd.h"
 #include "vpx/vpx_integer.h"
 #include "vpx_mem/vpx_mem.h"
@@ -29,7 +30,7 @@ typedef void (*MinMaxFunc)(const uint8_t *a, int a_stride, const uint8_t *b,
 
 class MinMaxTest : public ::testing::TestWithParam<MinMaxFunc> {
  public:
-  virtual void SetUp() {
+  void SetUp() override {
     mm_func_ = GetParam();
     rnd_.Reset(ACMRandom::DeterministicSeed());
   }

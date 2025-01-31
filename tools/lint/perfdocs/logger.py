@@ -45,8 +45,22 @@ class PerfDocLogger(object):
         :param list/str files: The file(s) that this warning is about.
         :param boolean restricted: If the param is False, the lint error can be used anywhere.
         """
-        if type(files) != list:
+        if type(files) is not list:
             files = [files]
+
+        if len(files) == 0:
+            self.logger.info("No file was provided for the warning")
+            self.logger.lint_error(
+                message=msg,
+                lineno=0,
+                column=None,
+                path=None,
+                linter="perfdocs",
+                rule="Flawless performance docs (unknown file)",
+            )
+
+            PerfDocLogger.FAILED = True
+            return
 
         # Add a reviewbot error for each file that is given
         for file in files:

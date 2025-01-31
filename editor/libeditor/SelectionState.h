@@ -77,7 +77,7 @@ struct RangeItem final {
     return EditorDOMPointType(mEndContainer, mEndOffset);
   }
 
-  NS_INLINE_DECL_MAIN_THREAD_ONLY_CYCLE_COLLECTING_NATIVE_REFCOUNTING(RangeItem)
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(RangeItem)
   NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(RangeItem)
 
   nsCOMPtr<nsINode> mStartContainer;
@@ -220,12 +220,9 @@ class MOZ_STACK_CLASS RangeUpdater final {
    *                            it.
    * @param aNewContent         The new content node which was inserted into
    *                            the DOM tree.
-   * @param aSplitNodeDirection Whether aNewNode was inserted before or after
-   *                            aOriginalContent.
    */
   nsresult SelAdjSplitNode(nsIContent& aOriginalContent, uint32_t aSplitOffset,
-                           nsIContent& aNewContent,
-                           SplitNodeDirection aSplitNodeDirection);
+                           nsIContent& aNewContent);
 
   /**
    * SelAdjJoinNodes() is called immediately after joining aRemovedContent and
@@ -242,8 +239,7 @@ class MOZ_STACK_CLASS RangeUpdater final {
    */
   nsresult SelAdjJoinNodes(const EditorRawDOMPoint& aStartOfRightContent,
                            const nsIContent& aRemovedContent,
-                           const EditorDOMPoint& aOldPointAtRightContent,
-                           JoinNodesDirection aJoinNodesDirection);
+                           const EditorDOMPoint& aOldPointAtRightContent);
   void SelAdjInsertText(const dom::Text& aTextNode, uint32_t aOffset,
                         uint32_t aInsertedLength);
   void SelAdjDeleteText(const dom::Text& aTextNode, uint32_t aOffset,
@@ -296,6 +292,9 @@ class MOZ_STACK_CLASS RangeUpdater final {
 class MOZ_STACK_CLASS AutoTrackDOMPoint final {
  public:
   AutoTrackDOMPoint() = delete;
+
+  AutoTrackDOMPoint(RangeUpdater& aRangeUpdater, CaretPoint* aCaretPoint);
+
   AutoTrackDOMPoint(RangeUpdater& aRangeUpdater, nsCOMPtr<nsINode>* aNode,
                     uint32_t* aOffset)
       : mRangeUpdater(aRangeUpdater),
@@ -502,6 +501,63 @@ class MOZ_STACK_CLASS AutoTrackDOMRange final {
   EditorDOMPoint mEndPoint;
   RefPtr<nsRange>* mRangeRefPtr;
   OwningNonNull<nsRange>* mRangeOwningNonNull;
+};
+
+class MOZ_STACK_CLASS AutoTrackDOMMoveNodeResult final {
+ public:
+  AutoTrackDOMMoveNodeResult() = delete;
+  AutoTrackDOMMoveNodeResult(RangeUpdater& aRangeUpdater,
+                             MoveNodeResult* aMoveNodeResult);
+
+  void FlushAndStopTracking() {
+    mTrackCaretPoint.FlushAndStopTracking();
+    mTrackNextInsertionPoint.FlushAndStopTracking();
+    mTrackMovedContentRange.FlushAndStopTracking();
+  }
+  void StopTracking() {
+    mTrackCaretPoint.StopTracking();
+    mTrackNextInsertionPoint.StopTracking();
+    mTrackMovedContentRange.StopTracking();
+  }
+
+ private:
+  AutoTrackDOMPoint mTrackCaretPoint;
+  AutoTrackDOMPoint mTrackNextInsertionPoint;
+  AutoTrackDOMRange mTrackMovedContentRange;
+};
+
+class MOZ_STACK_CLASS AutoTrackDOMDeleteRangeResult final {
+ public:
+  AutoTrackDOMDeleteRangeResult() = delete;
+  AutoTrackDOMDeleteRangeResult(RangeUpdater& aRangeUpdater,
+                                DeleteRangeResult* aDeleteRangeResult);
+
+  void FlushAndStopTracking() {
+    mTrackCaretPoint.FlushAndStopTracking();
+    mTrackDeleteRange.FlushAndStopTracking();
+  }
+  void StopTracking() {
+    mTrackCaretPoint.StopTracking();
+    mTrackDeleteRange.StopTracking();
+  }
+
+ private:
+  AutoTrackDOMPoint mTrackCaretPoint;
+  AutoTrackDOMRange mTrackDeleteRange;
+};
+
+class MOZ_STACK_CLASS AutoTrackLineBreak final {
+ public:
+  AutoTrackLineBreak() = delete;
+  AutoTrackLineBreak(RangeUpdater& aRangeUpdater, EditorLineBreak* aLineBreak);
+
+  void FlushAndStopTracking();
+  void StopTracking() { mTracker.StopTracking(); }
+
+ private:
+  EditorLineBreak* mLineBreak;
+  EditorDOMPoint mPoint;
+  AutoTrackDOMPoint mTracker;
 };
 
 /**

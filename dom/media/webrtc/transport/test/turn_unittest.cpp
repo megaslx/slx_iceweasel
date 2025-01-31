@@ -66,13 +66,12 @@ extern "C" {
 
 using namespace mozilla;
 
-static std::string kDummyTurnServer("192.0.2.1");  // From RFC 5737
+MOZ_RUNINIT static std::string kDummyTurnServer("192.0.2.1");  // From RFC 5737
 
 class TurnClient : public MtransportTest {
  public:
   TurnClient()
-      : MtransportTest(),
-        real_socket_(nullptr),
+      : real_socket_(nullptr),
         net_socket_(nullptr),
         buffered_socket_(nullptr),
         net_fd_(nullptr),
@@ -136,6 +135,7 @@ class TurnClient : public MtransportTest {
 
   void TearDown() {
     test_utils_->SyncDispatchToSTS(WrapRunnable(this, &TurnClient::TearDown_s));
+    MtransportTest::TearDown();
   }
 
   void Allocate_s() {

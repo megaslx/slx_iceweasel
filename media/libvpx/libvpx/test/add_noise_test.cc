@@ -10,12 +10,13 @@
 #include <math.h>
 #include <tuple>
 
+#include "gtest/gtest.h"
 #include "test/clear_system_state.h"
 #include "test/register_state_check.h"
 #include "test/util.h"
-#include "third_party/googletest/src/include/gtest/gtest.h"
 #include "./vpx_dsp_rtcd.h"
 #include "vpx/vpx_integer.h"
+#include "vpx_config.h"
 #include "vpx_dsp/postproc.h"
 #include "vpx_mem/vpx_mem.h"
 
@@ -32,8 +33,8 @@ typedef std::tuple<double, AddNoiseFunc> AddNoiseTestFPParam;
 class AddNoiseTest : public ::testing::Test,
                      public ::testing::WithParamInterface<AddNoiseTestFPParam> {
  public:
-  virtual void TearDown() { libvpx_test::ClearSystemState(); }
-  virtual ~AddNoiseTest() {}
+  void TearDown() override { libvpx_test::ClearSystemState(); }
+  ~AddNoiseTest() override = default;
 };
 
 double stddev6(char a, char b, char c, char d, char e, char f) {

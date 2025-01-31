@@ -8,8 +8,10 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  clearTimeout: "resource://gre/modules/Timer.sys.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
+  clearTimeout: "resource://gre/modules/Timer.sys.mjs",
+  setInterval: "resource://gre/modules/Timer.sys.mjs",
+  clearInterval: "resource://gre/modules/Timer.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
@@ -39,9 +41,19 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
-  "observeTimeout",
-  "cookiebanners.bannerClicking.timeout",
-  3000
+  "cleanupTimeoutAfterLoad",
+  "cookiebanners.bannerClicking.timeoutAfterLoad"
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "cleanupTimeoutAfterDOMContentLoaded",
+  "cookiebanners.bannerClicking.timeoutAfterDOMContentLoaded"
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "pollingInterval",
+  "cookiebanners.bannerClicking.pollingInterval",
+  500
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
@@ -58,23 +70,21 @@ ChromeUtils.defineLazyGetter(lazy, "logConsole", () => {
 });
 
 export class CookieBannerChild extends JSWindowActorChild {
+  // Caches the enabled state to ensure we only compute it once for the lifetime
+  // of the actor. Particularly the private browsing check can be expensive.
+  #isEnabledCached = null;
   #clickRules;
-  #originalBannerDisplay = null;
-  #observerCleanUp;
-  #observerCleanUpTimer;
+  #abortController = new AbortController();
+  #timeoutSignalController = new AbortController();
+  #timeoutTimerID;
+  #hasActiveObserver = false;
   // Indicates whether the page "load" event occurred.
   #didLoad = false;
 
-  // Used to keep track of click telemetry for the current window.
-  #telemetryStatus = {
-    currentStage: null,
-    success: false,
-    successStage: null,
-    failReason: null,
-    bannerVisibilityFail: false,
-  };
-  // For measuring the cookie banner handling duration.
-  #gleanBannerHandlingTimer = null;
+  // Indicates whether we should stop running the cookie banner handling
+  // mechanism because it has been previously executed for the site. So, we can
+  // cool down the cookie banner handing to improve performance.
+  #isCooledDownInSession = false;
 
   handleEvent(event) {
     if (!this.#isEnabled) {
@@ -104,13 +114,22 @@ export class CookieBannerChild extends JSWindowActorChild {
    * @type {boolean} true if feature is enabled, false otherwise.
    */
   get #isEnabled() {
-    if (!lazy.bannerClickingEnabled) {
-      return false;
+    if (this.#isEnabledCached != null) {
+      return this.#isEnabledCached;
     }
-    if (this.#isPrivateBrowsing) {
-      return lazy.serviceModePBM != Ci.nsICookieBannerService.MODE_DISABLED;
-    }
-    return lazy.serviceMode != Ci.nsICookieBannerService.MODE_DISABLED;
+
+    let checkIsEnabled = () => {
+      if (!lazy.bannerClickingEnabled) {
+        return false;
+      }
+      if (this.#isPrivateBrowsing) {
+        return lazy.serviceModePBM != Ci.nsICookieBannerService.MODE_DISABLED;
+      }
+      return lazy.serviceMode != Ci.nsICookieBannerService.MODE_DISABLED;
+    };
+
+    this.#isEnabledCached = checkIsEnabled();
+    return this.#isEnabledCached;
   }
 
   /**
@@ -141,7 +160,10 @@ export class CookieBannerChild extends JSWindowActorChild {
    * @returns {boolean} Whether we handled the banner and dispatched events.
    */
   #dispatchEventsForBannerHandledByInjection() {
-    if (!this.#hasInjectedCookieForCookieBannerHandling) {
+    if (
+      !this.#hasInjectedCookieForCookieBannerHandling ||
+      this.#isCooledDownInSession
+    ) {
       return false;
     }
     // Strictly speaking we don't actively detect a banner when we handle it by
@@ -159,7 +181,6 @@ export class CookieBannerChild extends JSWindowActorChild {
   async #onDOMContentLoaded() {
     lazy.logConsole.debug("onDOMContentLoaded", { didLoad: this.#didLoad });
     this.#didLoad = false;
-    this.#telemetryStatus.currentStage = "dom_content_loaded";
 
     let principal = this.document?.nodePrincipal;
 
@@ -181,7 +202,12 @@ export class CookieBannerChild extends JSWindowActorChild {
     let rules;
 
     try {
-      rules = await this.sendQuery("CookieBanner::GetClickRules", {});
+      let data = await this.sendQuery("CookieBanner::GetClickRules", {});
+
+      rules = data.rules;
+      // Set we are cooling down for this session if the cookie banner handling
+      // has been executed previously.
+      this.#isCooledDownInSession = data.hasExecuted;
     } catch (e) {
       lazy.logConsole.warn("Failed to get click rule from parent.", e);
       return;
@@ -192,17 +218,7 @@ export class CookieBannerChild extends JSWindowActorChild {
     if (!rules.length) {
       // If the cookie injector has handled the banner and there are no click
       // rules we still need to dispatch a "cookiebannerhandled" event.
-      let dispatchedEvents = this.#dispatchEventsForBannerHandledByInjection();
-      // Record telemetry about handling the banner via cookie injection.
-      // Note: The success state recorded here may be invalid if the given
-      // cookie fails to handle the banner. Since we don't have a presence
-      // detector for this rule we can't determine whether the banner is still
-      // showing or not.
-      if (dispatchedEvents) {
-        this.#telemetryStatus.failReason = null;
-        this.#telemetryStatus.success = true;
-        this.#telemetryStatus.successStage = "cookie_injected";
-      }
+      this.#dispatchEventsForBannerHandledByInjection();
 
       this.#maybeSendTestMessage();
       return;
@@ -210,31 +226,28 @@ export class CookieBannerChild extends JSWindowActorChild {
 
     this.#clickRules = rules;
 
-    if (!this.#isDetectOnly) {
-      // Start a timer to measure how long it takes for the banner to appear and
-      // be handled.
-      this.#gleanBannerHandlingTimer =
-        Glean.cookieBannersClick.handleDuration.start();
+    let bannerHandled, bannerDetected, matchedRules;
+    try {
+      ({ bannerHandled, bannerDetected, matchedRules } =
+        await this.handleCookieBanner());
+    } catch (e) {
+      if (DOMException.isInstance(e) && e.name === "AbortError") {
+        lazy.logConsole.debug("handleCookieBanner() has aborted");
+        return;
+      }
+      throw e;
     }
 
-    let { bannerHandled, bannerDetected, matchedRule } =
-      await this.handleCookieBanner();
+    // Send a message to mark that the cookie banner handling has been executed.
+    this.sendAsyncMessage("CookieBanner::MarkSiteExecuted");
 
     let dispatchedEventsForCookieInjection =
       this.#dispatchEventsForBannerHandledByInjection();
-    // A cookie injection followed by not detecting the banner via querySelector
-    // is a success state. Record that in telemetry.
-    // Note: The success state reported may be invalid in edge cases where both
-    // the cookie injection and the banner detection via query selector fails.
-    if (dispatchedEventsForCookieInjection && !bannerDetected) {
-      this.#telemetryStatus.success = true;
-      this.#telemetryStatus.successStage = "cookie_injected";
-    }
 
     // 1. Detected event.
     if (bannerDetected) {
       lazy.logConsole.info("Detected cookie banner.", {
-        url: this.document?.location.href,
+        url: this.document.location.href,
       });
       // Avoid dispatching a duplicate "cookiebannerdetected" event.
       if (!dispatchedEventsForCookieInjection) {
@@ -245,28 +258,14 @@ export class CookieBannerChild extends JSWindowActorChild {
     // 2. Handled event.
     if (bannerHandled) {
       lazy.logConsole.info("Handled cookie banner.", {
-        url: this.document?.location.href,
-        rule: matchedRule,
+        url: this.document.location.href,
+        matchedRules,
       });
-
-      // Stop the timer to record how long it took to handle the banner.
-      lazy.logConsole.debug(
-        "Telemetry timer: stop and accumulate",
-        this.#gleanBannerHandlingTimer
-      );
-      Glean.cookieBannersClick.handleDuration.stopAndAccumulate(
-        this.#gleanBannerHandlingTimer
-      );
 
       // Avoid dispatching a duplicate "cookiebannerhandled" event.
       if (!dispatchedEventsForCookieInjection) {
         this.sendAsyncMessage("CookieBanner::HandledBanner");
       }
-    } else if (!this.#isDetectOnly) {
-      // Cancel the timer we didn't handle the banner.
-      Glean.cookieBannersClick.handleDuration.cancel(
-        this.#gleanBannerHandlingTimer
-      );
     }
 
     this.#maybeSendTestMessage();
@@ -285,93 +284,68 @@ export class CookieBannerChild extends JSWindowActorChild {
     }
 
     lazy.logConsole.debug("Observed 'load' event", {
-      href: this.document?.location.href,
-      hasActiveObserver: !!this.#observerCleanUp,
-      observerCleanupTimer: this.#observerCleanUpTimer,
+      href: this.document.location.href,
+      hasActiveObserver: this.#hasActiveObserver,
+      observerCleanupTimer: this.#timeoutTimerID,
     });
 
-    // Update stage for click telemetry.
-    if (!this.#telemetryStatus.success) {
-      this.#telemetryStatus.currentStage = "mutation_post_load";
-    }
-
-    this.#startObserverCleanupTimer();
+    // On load reset the timer for cleanup.
+    this.#startOrResetCleanupTimer();
   }
 
   /**
-   * If there is an active mutation observer, start a timeout to unregister it.
+   * We limit how long we observe cookie banner mutations for performance
+   * reasons. If not present initially on DOMContentLoaded, cookie banners are
+   * expected to show up during or shortly after page load.
+   * This method starts a cleanup timeout which duration depends on the current
+   * load stage (DOMContentLoaded, or load). When called, if a timeout is
+   * already running, it is cancelled and a new timeout is scheduled.
    */
-  #startObserverCleanupTimer() {
-    // We limit how long we observe cookie banner mutations for performance
-    // reasons. If not present initially on DOMContentLoaded, cookie banners are
-    // expected to show up during or shortly after page load.
-    if (!this.#observerCleanUp || this.#observerCleanUpTimer) {
-      return;
-    }
-    lazy.logConsole.debug("Starting MutationObserver cleanup timeout");
-    this.#observerCleanUpTimer = lazy.setTimeout(() => {
+  #startOrResetCleanupTimer() {
+    // Cancel any already running timeout so we can schedule a new one.
+    if (this.#timeoutTimerID) {
       lazy.logConsole.debug(
-        `MutationObserver timeout after ${lazy.observeTimeout}ms.`
+        "#startOrResetCleanupTimer: Cancelling existing cleanup timeout",
+        {
+          didLoad: this.#didLoad,
+          id: this.#timeoutTimerID,
+        }
       );
-      this.#observerCleanUp();
-    }, lazy.observeTimeout);
+      lazy.clearTimeout(this.#timeoutTimerID);
+      this.#timeoutTimerID = null;
+    }
+
+    let durationMS = this.#didLoad
+      ? lazy.cleanupTimeoutAfterLoad
+      : lazy.cleanupTimeoutAfterDOMContentLoaded;
+    lazy.logConsole.debug(
+      "#startOrResetCleanupTimer: Starting cleanup timeout",
+      {
+        durationMS,
+        didLoad: this.#didLoad,
+      }
+    );
+
+    this.#timeoutTimerID = lazy.setTimeout(() => {
+      lazy.logConsole.debug(
+        "#startOrResetCleanupTimer: Cleanup timeout triggered",
+        {
+          durationMS,
+          didLoad: this.#didLoad,
+        }
+      );
+      this.#timeoutTimerID = null;
+      this.#timeoutSignalController.abort();
+    }, durationMS);
   }
 
   didDestroy() {
-    this.#reportTelemetry();
+    lazy.logConsole.debug("didDestroy() called");
 
-    // Clean up the observer and timer if needed.
-    this.#observerCleanUp?.();
-  }
-
-  #reportTelemetry() {
-    // Nothing to report, banner handling didn't run.
-    if (
-      this.#telemetryStatus.successStage == null &&
-      this.#telemetryStatus.failReason == null
-    ) {
-      lazy.logConsole.debug(
-        "Skip telemetry",
-        this.#telemetryStatus,
-        this.#clickRules
-      );
-      return;
-    }
-
-    let { success, successStage, currentStage, failReason } =
-      this.#telemetryStatus;
-
-    // Check if we got interrupted during an observe.
-    if (this.#observerCleanUp && !success) {
-      failReason = "actor_destroyed";
-    }
-
-    let status, reason;
-    if (success) {
-      status = "success";
-      reason = successStage;
-    } else {
-      status = "fail";
-      reason = failReason;
-    }
-
-    // Increment general success or failure counter.
-    Glean.cookieBannersClick.result[status].add(1);
-    // Increment reason counters.
-    if (reason) {
-      Glean.cookieBannersClick.result[`${status}_${reason}`].add(1);
-    } else {
-      lazy.logConsole.debug(
-        "Could not determine success / fail reason for telemetry."
-      );
-    }
-
-    lazy.logConsole.debug("Submitted clickResult telemetry", status, reason, {
-      success,
-      successStage,
-      currentStage,
-      failReason,
-    });
+    // Clean up the observer and polling function.
+    this.#abortController.abort();
+    lazy.clearTimeout(this.#timeoutTimerID);
+    this.#timeoutTimerID = null;
   }
 
   /**
@@ -384,20 +358,16 @@ export class CookieBannerChild extends JSWindowActorChild {
    * @returns A promise which resolves when it finishes auto clicking.
    */
   async handleCookieBanner() {
-    lazy.logConsole.debug("handleCookieBanner", this.document?.location.href);
+    lazy.logConsole.debug("handleCookieBanner", this.document.location.href);
+
+    // Start timer to clean up detection code (polling and mutation observers).
+    this.#startOrResetCleanupTimer();
 
     // First, we detect if the banner is shown on the page
     let rules = await this.#detectBanner();
 
     if (!rules.length) {
       // The banner was never shown.
-      this.#telemetryStatus.success = false;
-      if (this.#telemetryStatus.bannerVisibilityFail) {
-        this.#telemetryStatus.failReason = "banner_not_visible";
-      } else {
-        this.#telemetryStatus.failReason = "banner_not_found";
-      }
-
       return { bannerHandled: false, bannerDetected: false };
     }
 
@@ -406,8 +376,6 @@ export class CookieBannerChild extends JSWindowActorChild {
     // This also applies when detect-only mode is enabled. We only want to
     // dispatch events matching the current service mode.
     if (rules.every(rule => rule.target == null)) {
-      this.#telemetryStatus.success = false;
-      this.#telemetryStatus.failReason = "no_rule_for_mode";
       return { bannerHandled: false, bannerDetected: false };
     }
 
@@ -416,30 +384,14 @@ export class CookieBannerChild extends JSWindowActorChild {
       return { bannerHandled: false, bannerDetected: true };
     }
 
-    // Hide the banner.
-    let matchedRule = this.#hideBanner(rules);
-
     let successClick = false;
-    try {
-      successClick = await this.#clickTarget(rules);
-    } finally {
-      if (!successClick) {
-        // We cannot successfully click the target button. Show the banner on
-        // the page so that user can interact with the banner.
-        this.#showBanner(matchedRule);
-      }
-    }
+    successClick = await this.#clickTarget(rules);
 
-    if (successClick) {
-      // For telemetry, Keep track of in which stage we successfully handled the banner.
-      this.#telemetryStatus.successStage = this.#telemetryStatus.currentStage;
-    } else {
-      this.#telemetryStatus.failReason = "button_not_found";
-      this.#telemetryStatus.successStage = null;
-    }
-    this.#telemetryStatus.success = successClick;
-
-    return { bannerHandled: successClick, bannerDetected: true, matchedRule };
+    return {
+      bannerHandled: successClick,
+      bannerDetected: true,
+      matchedRules: rules,
+    };
   }
 
   /**
@@ -453,66 +405,122 @@ export class CookieBannerChild extends JSWindowActorChild {
    * check function or null if the function times out.
    */
   #promiseObserve(checkFn) {
-    if (this.#observerCleanUp) {
+    if (this.#hasActiveObserver) {
       throw new Error(
         "The promiseObserve is called before previous one resolves."
       );
     }
-    lazy.logConsole.debug("#promiseObserve", { didLoad: this.#didLoad });
+    this.#hasActiveObserver = true;
 
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
+      if (this.#abortController.signal.aborted) {
+        reject(this.#abortController.signal.reason);
+        return;
+      }
+
+      if (this.#timeoutSignalController.signal.aborted) {
+        resolve(null);
+        return;
+      }
+
       let win = this.contentWindow;
+      // Marks whether a mutation on the site has been observed since we last
+      // ran checkFn.
+      let sawMutation = false;
 
-      let observer = new win.MutationObserver(mutationList => {
-        lazy.logConsole.debug(
-          "#promiseObserve: Mutation observed",
-          mutationList
-        );
+      // IDs for interval for checkFn polling.
+      let pollIntervalId = null;
 
-        let result = checkFn?.();
-        if (result) {
-          cleanup(result, observer);
-        }
+      // Keep track of DOM changes via MutationObserver. We only run query
+      // selectors again if the DOM updated since our last check.
+      let observer = new win.MutationObserver(() => {
+        sawMutation = true;
       });
-
       observer.observe(win.document.body, {
         attributes: true,
         subtree: true,
         childList: true,
       });
 
-      let cleanup = (result, observer) => {
+      // Start polling checkFn.
+      let intervalFn = () => {
         lazy.logConsole.debug(
-          "#promiseObserve cleanup",
-          result,
-          observer,
-          this.#observerCleanUpTimer
+          "#promiseObserve interval function",
+          this.document.location.href
         );
+
+        if (this.#abortController.signal.aborted) {
+          throw new Error(
+            "The promiseObserve interval function is still running after banner detection has aborted."
+          );
+        }
+
+        if (this.#timeoutSignalController.signal.aborted) {
+          throw new Error(
+            "The promiseObserve interval function is still running after banner detection has timed out."
+          );
+        }
+
+        // Nothing changed since last run, skip running checkFn.
+        if (!sawMutation) {
+          return;
+        }
+        // Reset mutation flag.
+        sawMutation = false;
+
+        // A truthy result means we have a hit so we can stop observing.
+        let result = checkFn?.();
+        if (result) {
+          cleanUp();
+          resolve(result);
+        }
+      };
+      pollIntervalId = lazy.setInterval(intervalFn, lazy.pollingInterval);
+
+      let cleanUp = () => {
+        lazy.logConsole.debug("#promiseObserve cleanup", {
+          observer,
+          pollIntervalId,
+          href: this.document.location?.href,
+        });
+
+        // Unregister the observer.
         if (observer) {
           observer.disconnect();
           observer = null;
         }
 
-        if (this.#observerCleanUpTimer) {
-          lazy.clearTimeout(this.#observerCleanUpTimer);
+        // Stop the polling checks.
+        if (pollIntervalId) {
+          lazy.clearInterval(pollIntervalId);
+          pollIntervalId = null;
         }
 
-        this.#observerCleanUp = null;
-        resolve(result);
+        this.#hasActiveObserver = false;
+        this.#abortController.signal.removeEventListener(
+          "abort",
+          abortFunction
+        );
+        this.#timeoutSignalController.signal.removeEventListener(
+          "abort",
+          timeoutFunction
+        );
       };
 
-      // The clean up function to clean unfinished observer and timer when the
-      // actor destroys.
-      this.#observerCleanUp = () => {
-        cleanup(null, observer);
+      let abortFunction = () => {
+        cleanUp();
+        reject(this.#abortController.signal.reason);
       };
+      this.#abortController.signal.addEventListener("abort", abortFunction);
 
-      // If we already observed a load event we can start the cleanup timer
-      // straight away.
-      // Otherwise wait for the load event via the #onLoad method.
-      if (this.#didLoad) {
-        this.#startObserverCleanupTimer();
-      }
+      let timeoutFunction = () => {
+        cleanUp();
+        resolve(null);
+      };
+      this.#timeoutSignalController.signal.addEventListener(
+        "abort",
+        timeoutFunction
+      );
     });
   }
 
@@ -540,16 +548,11 @@ export class CookieBannerChild extends JSWindowActorChild {
         if (!banner) {
           return false;
         }
+
         if (skipPresenceVisibilityCheck) {
           return true;
         }
-
-        let isVisible = this.#isVisible(banner);
-        // Store visibility of banner element to keep track of why detection
-        // failed.
-        this.#telemetryStatus.bannerVisibilityFail = !isVisible;
-
-        return isVisible;
+        return this.#isVisible(banner);
       });
 
       // For no rules matched return null explicitly so #promiseObserve knows we
@@ -571,8 +574,7 @@ export class CookieBannerChild extends JSWindowActorChild {
         "Initial presenceDetector failed, registering MutationObserver",
         rules
       );
-      this.#telemetryStatus.currentStage = "mutation_pre_load";
-      rules = await this.#promiseObserve(presenceDetector, lazy.observeTimeout);
+      rules = await this.#promiseObserve(presenceDetector);
     }
 
     if (!rules?.length) {
@@ -621,7 +623,7 @@ export class CookieBannerChild extends JSWindowActorChild {
           }
         }
         return null;
-      }, lazy.observeTimeout);
+      });
 
       if (!targetEl) {
         lazy.logConsole.debug("Cannot find the target button.");
@@ -639,70 +641,6 @@ export class CookieBannerChild extends JSWindowActorChild {
     return element.checkVisibility({
       checkOpacity: true,
       checkVisibilityCSS: true,
-    });
-  }
-
-  // The helper function to hide the banner. It will store the original display
-  // value of the banner, so it can be used to show the banner later if needed.
-  #hideBanner(rules) {
-    if (this.#originalBannerDisplay) {
-      // We've already hidden the banner.
-      return null;
-    }
-
-    let banner;
-    let rule;
-    for (let r of rules) {
-      banner = this.document.querySelector(r.hide);
-      if (banner) {
-        rule = r;
-        break;
-      }
-    }
-    // Failed to find banner el to hide.
-    if (!banner) {
-      lazy.logConsole.debug(
-        "Failed to find banner element to hide from rules.",
-        rules
-      );
-      return null;
-    }
-
-    lazy.logConsole.debug("Found banner element to hide from rules.", rules);
-
-    this.#originalBannerDisplay = banner.style.display;
-
-    // Change the display of the banner right before the style flush occurs to
-    // avoid the unnecessary sync reflow.
-    banner.ownerGlobal.requestAnimationFrame(() => {
-      banner.style.display = "none";
-    });
-
-    return rule;
-  }
-
-  // The helper function to show the banner by reverting the display of the
-  // banner to the original value.
-  #showBanner({ hide }) {
-    if (this.#originalBannerDisplay === null) {
-      // We've never hidden the banner.
-      return;
-    }
-    let banner = this.document.querySelector(hide);
-
-    // Banner no longer present or destroyed or content window has been
-    // destroyed.
-    if (!banner || Cu.isDeadWrapper(banner) || !banner.ownerGlobal) {
-      return;
-    }
-
-    let originalDisplay = this.#originalBannerDisplay;
-    this.#originalBannerDisplay = null;
-
-    // Change the display of the banner right before the style flush occurs to
-    // avoid the unnecessary sync reflow.
-    banner.ownerGlobal.requestAnimationFrame(() => {
-      banner.style.display = originalDisplay;
     });
   }
 

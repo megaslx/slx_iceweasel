@@ -14,7 +14,6 @@
 #include "mozilla/dom/PushManager.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/dom/ServiceWorker.h"
-#include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/ipc/PBackgroundChild.h"
@@ -37,7 +36,7 @@ NS_IMPL_ADDREF_INHERITED(ServiceWorkerRegistration, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(ServiceWorkerRegistration, DOMEventTargetHelper)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ServiceWorkerRegistration)
-  NS_INTERFACE_MAP_ENTRY(ServiceWorkerRegistration)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(ServiceWorkerRegistration)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 namespace {
@@ -65,9 +64,15 @@ ServiceWorkerRegistration::ServiceWorkerRegistration(
     return;
   }
 
+  Maybe<ClientInfo> clientInfo = aGlobal->GetClientInfo();
+  if (clientInfo.isNothing()) {
+    Shutdown();
+    return;
+  }
+
   PServiceWorkerRegistrationChild* sentActor =
       parentActor->SendPServiceWorkerRegistrationConstructor(
-          actor, aDescriptor.ToIPC());
+          actor, aDescriptor.ToIPC(), clientInfo.ref().ToIPC());
   if (NS_WARN_IF(!sentActor)) {
     Shutdown();
     return;
@@ -209,6 +214,9 @@ ServiceWorkerUpdateViaCache ServiceWorkerRegistration::GetUpdateViaCache(
 }
 
 already_AddRefed<Promise> ServiceWorkerRegistration::Update(ErrorResult& aRv) {
+  AUTO_PROFILER_MARKER_TEXT("ServiceWorkerRegistration::Update", DOM, {},
+                            ""_ns);
+
   nsIGlobalObject* global = GetParentObject();
   if (!global) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
@@ -260,6 +268,9 @@ already_AddRefed<Promise> ServiceWorkerRegistration::Update(ErrorResult& aRv) {
       [outer,
        self](const IPCServiceWorkerRegistrationDescriptorOrCopyableErrorResult&
                  aResult) {
+        AUTO_PROFILER_MARKER_TEXT("ServiceWorkerRegistration::Update (inner)",
+                                  DOM, {}, ""_ns);
+
         if (aResult.type() ==
             IPCServiceWorkerRegistrationDescriptorOrCopyableErrorResult::
                 TCopyableErrorResult) {
@@ -370,15 +381,20 @@ already_AddRefed<PushManager> ServiceWorkerRegistration::GetPushManager(
   return ret.forget();
 }
 
+// https://notifications.spec.whatwg.org/#dom-serviceworkerregistration-shownotification
 already_AddRefed<Promise> ServiceWorkerRegistration::ShowNotification(
     JSContext* aCx, const nsAString& aTitle,
     const NotificationOptions& aOptions, ErrorResult& aRv) {
+  // Step 1: Let global be this’s relevant global object.
   nsIGlobalObject* global = GetParentObject();
   if (!global) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return nullptr;
   }
 
+  // Step 3: If this’s active worker is null, then reject promise with a
+  // TypeError and return promise.
+  //
   // Until we ship ServiceWorker objects on worker threads the active
   // worker will always be nullptr.  So limit this check to main
   // thread for now.
@@ -389,12 +405,14 @@ already_AddRefed<Promise> ServiceWorkerRegistration::ShowNotification(
 
   NS_ConvertUTF8toUTF16 scope(mDescriptor.Scope());
 
+  // Step 2, 5, 6
   RefPtr<Promise> p = Notification::ShowPersistentNotification(
       aCx, global, scope, aTitle, aOptions, mDescriptor, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
 
+  // Step 7: Return promise.
   return p.forget();
 }
 
@@ -511,13 +529,18 @@ void ServiceWorkerRegistration::WhenVersionReached(
 void ServiceWorkerRegistration::MaybeScheduleUpdateFound(
     const Maybe<ServiceWorkerDescriptor>& aInstallingDescriptor) {
   // This function sets mScheduledUpdateFoundId to note when we were told about
-  // a new installing worker. We rely on a call to
-  // MaybeDispatchUpdateFoundRunnable (called indirectly from UpdateJobCallback)
-  // to actually fire the event.
+  // a new installing worker. We rely on a call to MaybeDispatchUpdateFound via
+  // ServiceWorkerRegistrationChild::RecvFireUpdateFound to trigger the properly
+  // timed notification...
   uint64_t newId = aInstallingDescriptor.isSome()
                        ? aInstallingDescriptor.ref().Id()
                        : kInvalidUpdateFoundId;
 
+  // ...but the whole reason this logic exists is because SWRegistrations are
+  // bootstrapped off of inherently stale descriptor snapshots and receive
+  // catch-up updates once the actor is created and registered in the parent.
+  // To handle the catch-up case where we need to generate a synthetic
+  // updatefound that would otherwise be lost, we immediately flush here.
   if (mScheduledUpdateFoundId != kInvalidUpdateFoundId) {
     if (mScheduledUpdateFoundId == newId) {
       return;
@@ -534,22 +557,6 @@ void ServiceWorkerRegistration::MaybeScheduleUpdateFound(
   }
 
   mScheduledUpdateFoundId = newId;
-}
-
-void ServiceWorkerRegistration::MaybeDispatchUpdateFoundRunnable() {
-  if (mScheduledUpdateFoundId == kInvalidUpdateFoundId) {
-    return;
-  }
-
-  nsIGlobalObject* global = GetParentObject();
-  NS_ENSURE_TRUE_VOID(global);
-
-  nsCOMPtr<nsIRunnable> r = NewCancelableRunnableMethod(
-      "ServiceWorkerRegistration::MaybeDispatchUpdateFound", this,
-      &ServiceWorkerRegistration::MaybeDispatchUpdateFound);
-
-  Unused << global->EventTargetFor(TaskCategory::Other)
-                ->Dispatch(r.forget(), NS_DISPATCH_NORMAL);
 }
 
 void ServiceWorkerRegistration::MaybeDispatchUpdateFound() {
@@ -626,11 +633,8 @@ void ServiceWorkerRegistration::UpdateStateInternal(
   });
 
   // Clear all workers if the registration has been detached from the global.
-  // Also, we cannot expose ServiceWorker objects on worker threads yet, so
-  // do the same on when off-main-thread.  This main thread check should be
-  // removed as part of bug 1113522.
   nsCOMPtr<nsIGlobalObject> global = GetParentObject();
-  if (!global || !NS_IsMainThread()) {
+  if (!global) {
     return;
   }
 

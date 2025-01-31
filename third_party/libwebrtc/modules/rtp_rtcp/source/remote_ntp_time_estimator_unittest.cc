@@ -10,8 +10,9 @@
 
 #include "modules/rtp_rtcp/include/remote_ntp_time_estimator.h"
 
-#include "absl/types/optional.h"
-#include "modules/rtp_rtcp/source/time_util.h"
+#include <optional>
+
+#include "modules/rtp_rtcp/source/ntp_time_util.h"
 #include "system_wrappers/include/clock.h"
 #include "system_wrappers/include/ntp_time.h"
 #include "test/gmock.h"
@@ -44,7 +45,7 @@ class RemoteNtpTimeEstimatorTest : public ::testing::Test {
     NtpTime ntp = remote_clock_.CurrentNtpTime();
 
     AdvanceTime(kTestRtt / 2);
-    RTC_DCHECK(estimator_.UpdateRtcpTimestamp(kTestRtt, ntp, rtcp_timestamp));
+    EXPECT_TRUE(estimator_.UpdateRtcpTimestamp(kTestRtt, ntp, rtcp_timestamp));
   }
 
   void SendRtcpSrInaccurately(TimeDelta ntp_error, TimeDelta networking_delay) {
@@ -53,7 +54,7 @@ class RemoteNtpTimeEstimatorTest : public ::testing::Test {
     NtpTime ntp(static_cast<uint64_t>(remote_clock_.CurrentNtpTime()) +
                 ntp_error_fractions);
     AdvanceTime(kTestRtt / 2 + networking_delay);
-    RTC_DCHECK(estimator_.UpdateRtcpTimestamp(kTestRtt, ntp, rtcp_timestamp));
+    EXPECT_TRUE(estimator_.UpdateRtcpTimestamp(kTestRtt, ntp, rtcp_timestamp));
   }
 
   SimulatedClock local_clock_{kLocalClockInitialTime};
@@ -78,7 +79,7 @@ TEST_F(RemoteNtpTimeEstimatorTest, Estimate) {
   // Local peer needs at least 2 RTCP SR to calculate the capture time.
   const int64_t kNotEnoughRtcpSr = -1;
   EXPECT_EQ(kNotEnoughRtcpSr, estimator_.Estimate(rtp_timestamp));
-  EXPECT_EQ(estimator_.EstimateRemoteToLocalClockOffset(), absl::nullopt);
+  EXPECT_EQ(estimator_.EstimateRemoteToLocalClockOffset(), std::nullopt);
 
   AdvanceTime(TimeDelta::Millis(800));
   // Remote sends second RTCP SR.

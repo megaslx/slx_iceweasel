@@ -5,14 +5,16 @@
 //! `<length>` computed values, and related ones.
 
 use super::{Context, Number, ToComputedValue};
-use crate::values::animated::ToAnimatedValue;
-use crate::values::computed::NonNegativeNumber;
+use crate::values::animated::{Context as AnimatedContext, ToAnimatedValue};
+use crate::values::computed::{NonNegativeNumber, Zoom};
 use crate::values::generics::length as generics;
 use crate::values::generics::length::{
-    GenericLengthOrNumber, GenericLengthPercentageOrNormal, GenericMaxSize, GenericSize,
+    GenericAnchorSizeFunction, GenericLengthOrNumber, GenericLengthPercentageOrNormal,
+    GenericMaxSize, GenericSize,
 };
 use crate::values::generics::NonNegative;
-use crate::values::specified::length::{AbsoluteLength, FontBaseSize};
+use crate::values::resolved::{Context as ResolvedContext, ToResolvedValue};
+use crate::values::specified::length::{AbsoluteLength, FontBaseSize, LineHeightBase};
 use crate::values::{specified, CSSFloat};
 use crate::Zero;
 use app_units::Au;
@@ -30,7 +32,11 @@ impl ToComputedValue for specified::NoCalcLength {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        self.to_computed_value_with_base_size(context, FontBaseSize::CurrentStyle)
+        self.to_computed_value_with_base_size(
+            context,
+            FontBaseSize::CurrentStyle,
+            LineHeightBase::CurrentStyle,
+        )
     }
 
     #[inline]
@@ -45,10 +51,13 @@ impl specified::NoCalcLength {
         &self,
         context: &Context,
         base_size: FontBaseSize,
+        line_height_base: LineHeightBase,
     ) -> Length {
         match *self {
             Self::Absolute(length) => length.to_computed_value(context),
-            Self::FontRelative(length) => length.to_computed_value(context, base_size),
+            Self::FontRelative(length) => {
+                length.to_computed_value(context, base_size, line_height_base)
+            },
             Self::ViewportPercentage(length) => length.to_computed_value(context),
             Self::ContainerRelative(length) => length.to_computed_value(context),
             Self::ServoCharacterWidth(length) => length
@@ -64,7 +73,16 @@ impl ToComputedValue for specified::Length {
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
             Self::NoCalc(l) => l.to_computed_value(context),
-            Self::Calc(ref calc) => calc.to_computed_value(context).to_length().unwrap(),
+            Self::Calc(ref calc) => {
+                let result = calc.to_computed_value(context);
+                debug_assert!(
+                    result.to_length().is_some(),
+                    "{:?} didn't resolve to a length: {:?}",
+                    calc,
+                    result,
+                );
+                result.to_length().unwrap_or_else(Length::zero)
+            },
         }
     }
 
@@ -192,7 +210,10 @@ impl Size {
             Self::MaxContent |
             Self::FitContent |
             Self::MozAvailable |
-            Self::FitContentFunction(_) => false,
+            Self::WebkitFillAvailable |
+            Self::Stretch |
+            Self::FitContentFunction(_) |
+            Self::AnchorSizeFunction(_) => false,
         }
     }
 }
@@ -208,14 +229,38 @@ impl Size {
     PartialEq,
     PartialOrd,
     Serialize,
-    ToAnimatedValue,
     ToAnimatedZero,
     ToComputedValue,
-    ToResolvedValue,
     ToShmem,
 )]
 #[repr(C)]
 pub struct CSSPixelLength(CSSFloat);
+
+impl ToResolvedValue for CSSPixelLength {
+    type ResolvedValue = Self;
+
+    fn to_resolved_value(self, context: &ResolvedContext) -> Self::ResolvedValue {
+        Self(context.style.effective_zoom.unzoom(self.0))
+    }
+
+    #[inline]
+    fn from_resolved_value(value: Self::ResolvedValue) -> Self {
+        value
+    }
+}
+
+impl ToAnimatedValue for CSSPixelLength {
+    type AnimatedValue = Self;
+
+    fn to_animated_value(self, context: &AnimatedContext) -> Self::AnimatedValue {
+        Self(context.style.effective_zoom.unzoom(self.0))
+    }
+
+    #[inline]
+    fn from_animated_value(value: Self::AnimatedValue) -> Self {
+        value
+    }
+}
 
 impl fmt::Debug for CSSPixelLength {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -253,6 +298,12 @@ impl CSSPixelLength {
     #[inline]
     pub fn px(self) -> CSSFloat {
         self.0
+    }
+
+    /// Zooms a particular length.
+    #[inline]
+    pub fn zoom(self, zoom: Zoom) -> Self {
+        Self::new(zoom.zoom(self.px()))
     }
 
     /// Return the length with app_unit i32 type.
@@ -446,8 +497,8 @@ impl ToAnimatedValue for NonNegativeLength {
     type AnimatedValue = Length;
 
     #[inline]
-    fn to_animated_value(self) -> Self::AnimatedValue {
-        self.0
+    fn to_animated_value(self, context: &AnimatedContext) -> Self::AnimatedValue {
+        self.0.to_animated_value(context)
     }
 
     #[inline]
@@ -511,5 +562,11 @@ pub type NonNegativeLengthOrNumber = GenericLengthOrNumber<NonNegativeLength, No
 /// A computed value for `min-width`, `min-height`, `width` or `height` property.
 pub type Size = GenericSize<NonNegativeLengthPercentage>;
 
-/// A computed value for `max-width` or `min-height` property.
+/// A computed value for `max-width` or `max-height` property.
 pub type MaxSize = GenericMaxSize<NonNegativeLengthPercentage>;
+
+/// A computed value for `anchor-size` runction.
+pub type AnchorSizeFunction = GenericAnchorSizeFunction<LengthPercentage>;
+
+/// A computed type for `margin` properties.
+pub type Margin = generics::GenericMargin<LengthPercentage>;

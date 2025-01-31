@@ -46,15 +46,10 @@ namespace intl {
     const nsTArray<nsCString>& aErrors, ErrorResult& aRv,
     nsIGlobalObject* aGlobal) {
   if (!aErrors.IsEmpty()) {
-    if (xpc::IsInAutomation()) {
-      aRv.ThrowInvalidStateError(aErrors.ElementAt(0));
-      return true;
-    }
-
 #if defined(NIGHTLY_BUILD) || defined(MOZ_DEV_EDITION) || defined(DEBUG)
     dom::Document* doc = nullptr;
     if (aGlobal) {
-      nsPIDOMWindowInner* innerWindow = aGlobal->AsInnerWindow();
+      nsPIDOMWindowInner* innerWindow = aGlobal->GetAsInnerWindow();
       if (innerWindow) {
         doc = innerWindow->GetExtantDoc();
       }
@@ -67,6 +62,11 @@ namespace intl {
       printf_stderr("%s\n", error.get());
     }
 #endif
+
+    if (xpc::IsInAutomation()) {
+      aRv.ThrowInvalidStateError(aErrors.ElementAt(0));
+      return true;
+    }
   }
 
   return false;
@@ -83,6 +83,8 @@ class Localization : public nsIObserver,
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS_AMBIGUOUS(Localization,
                                                         nsIObserver)
   NS_DECL_NSIOBSERVER
+
+  static bool IsAPIEnabled(JSContext* aCx, JSObject* aObject);
 
   static already_AddRefed<Localization> Constructor(
       const dom::GlobalObject& aGlobal,

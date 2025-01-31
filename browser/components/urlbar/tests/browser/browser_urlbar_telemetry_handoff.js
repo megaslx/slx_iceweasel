@@ -12,7 +12,7 @@ const TEST_PROVIDER_INFO = [
     telemetryId: "example",
     searchPageRegexp:
       /^https:\/\/example.com\/browser\/browser\/components\/search\/test\/browser\/searchTelemetry(?:Ad)?.html/,
-    queryParamName: "s",
+    queryParamNames: ["s"],
     codeParamName: "abc",
     taggedCodes: ["ff"],
     followOnParamNames: ["a"],
@@ -60,13 +60,11 @@ add_setup(async function () {
 
   const oldCanRecord = Services.telemetry.canRecordExtended;
   Services.telemetry.canRecordExtended = true;
-  Services.telemetry.setEventRecordingEnabled("navigation", true);
 
   registerCleanupFunction(async function () {
     await PlacesUtils.history.clear();
 
     Services.telemetry.canRecordExtended = oldCanRecord;
-    Services.telemetry.setEventRecordingEnabled("navigation", false);
 
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
 
@@ -85,7 +83,7 @@ add_task(async function test_search() {
   info("Load about:newtab in new window");
   const newtab = "about:newtab";
   const tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
-  BrowserTestUtils.loadURIString(tab.linkedBrowser, newtab);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, newtab);
   await BrowserTestUtils.browserStopped(tab.linkedBrowser, newtab);
 
   info("Focus on search input in newtab content");
@@ -143,18 +141,6 @@ async function assertHandoffResult(histogram) {
     ["browser.search.content.urlbar_handoff", "example:tagged:ff", 1],
   ]);
   await assertHistogram(histogram, [["other-Example.urlbar-handoff", 1]]);
-  TelemetryTestUtils.assertEvents(
-    [
-      [
-        "navigation",
-        "search",
-        "urlbar_handoff",
-        "enter",
-        { engine: "other-Example" },
-      ],
-    ],
-    { category: "navigation", method: "search" }
-  );
 }
 
 async function assertHistogram(histogram, expectedResults) {

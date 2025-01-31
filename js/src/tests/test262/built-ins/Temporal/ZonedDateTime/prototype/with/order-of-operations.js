@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -13,40 +13,6 @@ const expected = [
   // RejectObjectWithCalendarOrTimeZone
   "get fields.calendar",
   "get fields.timeZone",
-  // CalendarFields
-  "get this.calendar.fields",
-  "call this.calendar.fields",
-  // PrepareTemporalFields on receiver
-  "get this.timeZone.getOffsetNanosecondsFor",
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.calendar.day",
-  "call this.calendar.day",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.hour
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.microsecond
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.millisecond
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.minute
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.calendar.month",
-  "call this.calendar.month",
-  "get this.timeZone.getOffsetNanosecondsFor",
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.calendar.monthCode",
-  "call this.calendar.monthCode",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.nanosecond
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.offset
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",  // ZonedDateTime.p.second
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",
-  "call this.timeZone.getOffsetNanosecondsFor",
-  "get this.calendar.year",
-  "call this.calendar.year",
   // PrepareTemporalFields on argument
   "get fields.day",
   "get fields.day.valueOf",
@@ -81,38 +47,22 @@ const expected = [
   "get fields.year",
   "get fields.year.valueOf",
   "call fields.year.valueOf",
-  // CalendarMergeFields
-  "get this.calendar.mergeFields",
-  "call this.calendar.mergeFields",
-  // InterpretTemporalDateTimeFields
+  // GetTemporalDisambiguationOption
   "get options.disambiguation",
   "get options.disambiguation.toString",
   "call options.disambiguation.toString",
+  // GetTemporalOffsetOption
   "get options.offset",
   "get options.offset.toString",
   "call options.offset.toString",
+  // GetTemporalOverflowOption
   "get options.overflow",
   "get options.overflow.toString",
   "call options.overflow.toString",
-  "get this.calendar.dateFromFields",
-  "call this.calendar.dateFromFields",
-  // Calendar.p.dateFromFields
-  "get options.overflow",
-  "get options.overflow.toString",
-  "call options.overflow.toString",
-  // InterpretISODateTimeOffset
-  "get this.timeZone.getPossibleInstantsFor",
-  "call this.timeZone.getPossibleInstantsFor",
-  "get this.timeZone.getOffsetNanosecondsFor",
-  "call this.timeZone.getOffsetNanosecondsFor",
 ];
 const actual = [];
 
-const timeZone = TemporalHelpers.timeZoneObserver(actual, "this.timeZone");
-const calendar = TemporalHelpers.calendarObserver(actual, "this.calendar");
-const instance = new Temporal.ZonedDateTime(0n, timeZone, calendar);
-// clear observable operations that occurred during the constructor call
-actual.splice(0);
+const instance = new Temporal.ZonedDateTime(0n, "UTC");
 
 const fields = TemporalHelpers.propertyBagObserver(actual, {
   year: 1.7,
@@ -132,9 +82,11 @@ const options = TemporalHelpers.propertyBagObserver(actual, {
   overflow: "constrain",
   disambiguation: "compatible",
   offset: "prefer",
+  extra: "property",
 }, "options");
 
 instance.with(fields, options);
 assert.compareArray(actual, expected, "order of operations");
+actual.splice(0); // clear
 
 reportCompare(0, 0);

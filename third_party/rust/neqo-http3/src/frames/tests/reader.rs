@@ -4,6 +4,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::{fmt::Debug, mem};
+
+use neqo_common::Encoder;
+use neqo_transport::{Connection, StreamId, StreamType};
+use test_fixture::{connect, now};
+
 use crate::{
     frames::{
         reader::FrameDecoder, FrameReader, HFrame, StreamReaderConnectionWrapper, WebTransportFrame,
@@ -11,11 +17,6 @@ use crate::{
     settings::{HSetting, HSettingType, HSettings},
     Error,
 };
-use neqo_common::Encoder;
-use neqo_transport::{Connection, StreamId, StreamType};
-use std::fmt::Debug;
-use std::mem;
-use test_fixture::{connect, now};
 
 struct FrameReaderTest {
     pub fr: FrameReader,
@@ -38,7 +39,7 @@ impl FrameReaderTest {
 
     fn process<T: FrameDecoder<T>>(&mut self, v: &[u8]) -> Option<T> {
         self.conn_s.stream_send(self.stream_id, v).unwrap();
-        let out = self.conn_s.process(None, now());
+        let out = self.conn_s.process_output(now());
         mem::drop(self.conn_c.process(out.dgram(), now()));
         let (frame, fin) = self
             .fr
@@ -54,7 +55,7 @@ impl FrameReaderTest {
 
 // Test receiving byte by byte for a SETTINGS frame.
 #[test]
-fn test_frame_reading_with_stream_settings1() {
+fn frame_reading_with_stream_settings1() {
     let mut fr = FrameReaderTest::new();
 
     // Send and read settings frame 040406040804
@@ -76,7 +77,7 @@ fn test_frame_reading_with_stream_settings1() {
 
 // Test receiving byte by byte for a SETTINGS frame with larger varints
 #[test]
-fn test_frame_reading_with_stream_settings2() {
+fn frame_reading_with_stream_settings2() {
     let mut fr = FrameReaderTest::new();
 
     // Read settings frame 400406064004084100
@@ -96,7 +97,7 @@ fn test_frame_reading_with_stream_settings2() {
 
 // Test receiving byte by byte for a PUSH_PROMISE frame.
 #[test]
-fn test_frame_reading_with_stream_push_promise() {
+fn frame_reading_with_stream_push_promise() {
     let mut fr = FrameReaderTest::new();
 
     // Read push-promise frame 05054101010203
@@ -120,7 +121,7 @@ fn test_frame_reading_with_stream_push_promise() {
 
 // Test DATA
 #[test]
-fn test_frame_reading_with_stream_data() {
+fn frame_reading_with_stream_data() {
     let mut fr = FrameReaderTest::new();
 
     // Read data frame 0003010203
@@ -136,7 +137,7 @@ fn test_frame_reading_with_stream_data() {
 
 // Test an unknown frame
 #[test]
-fn test_unknown_frame() {
+fn unknown_frame() {
     // Construct an unknown frame.
     const UNKNOWN_FRAME_LEN: usize = 832;
 
@@ -161,7 +162,7 @@ fn test_unknown_frame() {
 
 // Test receiving byte by byte for a WT_FRAME_CLOSE_SESSION frame.
 #[test]
-fn test_frame_reading_with_stream_wt_close_session() {
+fn frame_reading_with_stream_wt_close_session() {
     let mut fr = FrameReaderTest::new();
 
     // Read CloseSession frame 6843090000000548656c6c6f
@@ -180,7 +181,7 @@ fn test_frame_reading_with_stream_wt_close_session() {
 
 // Test an unknown frame for WebTransportFrames.
 #[test]
-fn test_unknown_wt_frame() {
+fn unknown_wt_frame() {
     // Construct an unknown frame.
     const UNKNOWN_FRAME_LEN: usize = 832;
 
@@ -225,16 +226,16 @@ fn test_reading_frame<T: FrameDecoder<T> + PartialEq + Debug>(
     let mut fr = FrameReaderTest::new();
 
     fr.conn_s.stream_send(fr.stream_id, buf).unwrap();
-    if let FrameReadingTestSend::DataWithFin = test_to_send {
+    if matches!(test_to_send, FrameReadingTestSend::DataWithFin) {
         fr.conn_s.stream_close_send(fr.stream_id).unwrap();
     }
 
-    let out = fr.conn_s.process(None, now());
+    let out = fr.conn_s.process_output(now());
     mem::drop(fr.conn_c.process(out.dgram(), now()));
 
-    if let FrameReadingTestSend::DataThenFin = test_to_send {
+    if matches!(test_to_send, FrameReadingTestSend::DataThenFin) {
         fr.conn_s.stream_close_send(fr.stream_id).unwrap();
-        let out = fr.conn_s.process(None, now());
+        let out = fr.conn_s.process_output(now());
         mem::drop(fr.conn_c.process(out.dgram(), now()));
     }
 
@@ -267,7 +268,7 @@ fn test_reading_frame<T: FrameDecoder<T> + PartialEq + Debug>(
 }
 
 #[test]
-fn test_complete_and_incomplete_unknown_frame() {
+fn complete_and_incomplete_unknown_frame() {
     // Construct an unknown frame.
     const UNKNOWN_FRAME_LEN: usize = 832;
     let mut enc = Encoder::with_capacity(UNKNOWN_FRAME_LEN + 4);
@@ -376,7 +377,7 @@ fn test_complete_and_incomplete_frame<T: FrameDecoder<T> + PartialEq + Debug>(
 }
 
 #[test]
-fn test_complete_and_incomplete_frames() {
+fn complete_and_incomplete_frames() {
     const FRAME_LEN: usize = 10;
     const HEADER_BLOCK: &[u8] = &[0x01, 0x02, 0x03, 0x04];
 
@@ -459,7 +460,7 @@ fn test_complete_and_incomplete_frames() {
 }
 
 #[test]
-fn test_complete_and_incomplete_wt_frames() {
+fn complete_and_incomplete_wt_frames() {
     // H3_FRAME_TYPE_MAX_PUSH_ID
     let f = WebTransportFrame::CloseSession {
         error: 5,
@@ -473,15 +474,15 @@ fn test_complete_and_incomplete_wt_frames() {
 
 // Test closing a stream before any frame is sent should not cause an error.
 #[test]
-fn test_frame_reading_when_stream_is_closed_before_sending_data() {
+fn frame_reading_when_stream_is_closed_before_sending_data() {
     let mut fr = FrameReaderTest::new();
 
     fr.conn_s.stream_send(fr.stream_id, &[0x00]).unwrap();
-    let out = fr.conn_s.process(None, now());
+    let out = fr.conn_s.process_output(now());
     mem::drop(fr.conn_c.process(out.dgram(), now()));
 
     assert_eq!(Ok(()), fr.conn_c.stream_close_send(fr.stream_id));
-    let out = fr.conn_c.process(None, now());
+    let out = fr.conn_c.process_output(now());
     mem::drop(fr.conn_s.process(out.dgram(), now()));
     assert_eq!(
         Ok((None, true)),
@@ -496,15 +497,15 @@ fn test_frame_reading_when_stream_is_closed_before_sending_data() {
 // Test closing a stream before any frame is sent should not cause an error.
 // This is the same as the previous just for WebTransportFrame.
 #[test]
-fn test_wt_frame_reading_when_stream_is_closed_before_sending_data() {
+fn wt_frame_reading_when_stream_is_closed_before_sending_data() {
     let mut fr = FrameReaderTest::new();
 
     fr.conn_s.stream_send(fr.stream_id, &[0x00]).unwrap();
-    let out = fr.conn_s.process(None, now());
+    let out = fr.conn_s.process_output(now());
     mem::drop(fr.conn_c.process(out.dgram(), now()));
 
     assert_eq!(Ok(()), fr.conn_c.stream_close_send(fr.stream_id));
-    let out = fr.conn_c.process(None, now());
+    let out = fr.conn_c.process_output(now());
     mem::drop(fr.conn_s.process(out.dgram(), now()));
     assert_eq!(
         Ok((None, true)),

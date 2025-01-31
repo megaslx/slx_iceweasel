@@ -56,19 +56,6 @@ function loadImagePageHandler(metadata, response) {
   response.bodyOutputStream.write(body, body.length);
 }
 
-async function openTabInUserContext(uri, userContextId) {
-  // Open the tab in the correct userContextId.
-  let tab = BrowserTestUtils.addTab(gBrowser, uri, { userContextId });
-
-  // Select tab and make sure its browser is focused.
-  gBrowser.selectedTab = tab;
-  tab.ownerGlobal.focus();
-
-  let browser = gBrowser.getBrowserForTab(tab);
-  await BrowserTestUtils.browserLoaded(browser);
-  return { tab, browser };
-}
-
 function getCookiesForOA(host, userContextId) {
   return Services.cookies.getCookiesFromHost(host, { userContextId });
 }
@@ -99,11 +86,11 @@ function OpenCacheEntry(key, where, flags, lci) {
     CacheListener.prototype = {
       QueryInterface: ChromeUtils.generateQI(["nsICacheEntryOpenCallback"]),
 
-      onCacheEntryCheck(entry) {
+      onCacheEntryCheck() {
         return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
       },
 
-      onCacheEntryAvailable(entry, isnew, status) {
+      onCacheEntryAvailable() {
         resolve();
       },
 
@@ -154,7 +141,7 @@ async function test_cookie_cleared() {
   }
 
   // Forget the site.
-  await ForgetAboutSite.removeDataFromDomain(TEST_HOST);
+  await ForgetAboutSite.removeDataFromBaseDomain(TEST_HOST);
 
   // Check that whether cookies has been cleared or not.
   for (let userContextId of Object.keys(USER_CONTEXTS)) {
@@ -204,7 +191,7 @@ async function test_cache_cleared() {
   }
 
   // Forget the site.
-  await ForgetAboutSite.removeDataFromDomain(TEST_HOST);
+  await ForgetAboutSite.removeDataFromBaseDomain(TEST_HOST);
 
   // Check that do caches be removed or not?
   for (let userContextId of Object.keys(USER_CONTEXTS)) {
@@ -256,7 +243,7 @@ async function test_image_cache_cleared() {
   gHits = 0;
 
   // Forget the site.
-  await ForgetAboutSite.removeDataFromDomain("localhost");
+  await ForgetAboutSite.removeDataFromBaseDomain("localhost");
 
   // Load again.
   for (let userContextId of Object.keys(USER_CONTEXTS)) {
@@ -324,7 +311,7 @@ async function test_storage_cleared() {
         let storeRequest = store.get(1);
 
         await new Promise(done => {
-          storeRequest.onsuccess = event => {
+          storeRequest.onsuccess = () => {
             let res = storeRequest.result;
             Assert.equal(
               res.userContext,
@@ -342,7 +329,7 @@ async function test_storage_cleared() {
   }
 
   // Forget the site.
-  await ForgetAboutSite.removeDataFromDomain(TEST_HOST);
+  await ForgetAboutSite.removeDataFromBaseDomain(TEST_HOST);
 
   // Open the tab again without setting the localStorage and check that the
   // local storage has been cleared or not.

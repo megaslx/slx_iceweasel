@@ -8,15 +8,17 @@
 #include "APZTestCommon.h"
 #include "InputUtils.h"
 #include "Units.h"
+#include "mozilla/BasicEvents.h"
+#include "mozilla/StaticPrefs_apz.h"
 
 class APZCTreeManagerGenericTester : public APZCTreeManagerTester {
  protected:
   void CreateSimpleScrollingLayer() {
     const char* treeShape = "x";
-    LayerIntRegion layerVisibleRegion[] = {
+    LayerIntRect layerVisibleRect[] = {
         LayerIntRect(0, 0, 200, 200),
     };
-    CreateScrollData(treeShape, layerVisibleRegion);
+    CreateScrollData(treeShape, layerVisibleRect);
     SetScrollableFrameMetrics(layers[0], ScrollableLayerGuid::START_SCROLL_ID,
                               CSSRect(0, 0, 500, 500));
   }
@@ -24,12 +26,12 @@ class APZCTreeManagerGenericTester : public APZCTreeManagerTester {
   void CreateSimpleMultiLayerTree() {
     const char* treeShape = "x(xx)";
     // LayerID               0 12
-    LayerIntRegion layerVisibleRegion[] = {
+    LayerIntRect layerVisibleRect[] = {
         LayerIntRect(0, 0, 100, 100),
         LayerIntRect(0, 0, 100, 50),
         LayerIntRect(0, 50, 100, 50),
     };
-    CreateScrollData(treeShape, layerVisibleRegion);
+    CreateScrollData(treeShape, layerVisibleRect);
   }
 
   void CreatePotentiallyLeakingTree() {
@@ -50,11 +52,11 @@ class APZCTreeManagerGenericTester : public APZCTreeManagerTester {
   void CreateTwoLayerTree(int32_t aRootContentLayerIndex) {
     const char* treeShape = "x(x)";
     // LayerID               0 1
-    LayerIntRegion layerVisibleRegion[] = {
+    LayerIntRect layerVisibleRect[] = {
         LayerIntRect(0, 0, 100, 100),
         LayerIntRect(0, 0, 100, 100),
     };
-    CreateScrollData(treeShape, layerVisibleRegion);
+    CreateScrollData(treeShape, layerVisibleRect);
     SetScrollableFrameMetrics(layers[0], ScrollableLayerGuid::START_SCROLL_ID);
     SetScrollableFrameMetrics(layers[1],
                               ScrollableLayerGuid::START_SCROLL_ID + 1);
@@ -159,7 +161,7 @@ TEST_F(APZCTreeManagerGenericTesterMock, Bug1194876) {
   // We want to ensure that ApzcOf(layers[0]) has had its state cleared, because
   // otherwise it will do things like dispatch spurious long-tap events.
 
-  EXPECT_CALL(*mcc, HandleTap(TapType::eLongTap, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mcc, HandleTap(TapType::eLongTap, _, _, _, _, _)).Times(0);
 }
 
 TEST_F(APZCTreeManagerGenericTesterMock, TargetChangesMidGesture_Bug1570559) {
@@ -208,7 +210,7 @@ TEST_F(APZCTreeManagerGenericTesterMock, TargetChangesMidGesture_Bug1570559) {
 
   // If we've failed to clear the child's gesture state, then the long tap
   // timeout task will fire in TearDown() and a long-tap will be dispatched.
-  EXPECT_CALL(*mcc, HandleTap(TapType::eLongTap, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mcc, HandleTap(TapType::eLongTap, _, _, _, _, _)).Times(0);
 }
 
 TEST_F(APZCTreeManagerGenericTesterMock, Bug1198900) {
@@ -344,4 +346,144 @@ TEST_F(APZCTreeManagerTester, Bug1805601) {
   // Check that APZ clamped the scroll offset.
   EXPECT_EQ(CSSRect(0, 0, 300, 300), compositorMetrics.CalculateScrollRange());
   EXPECT_EQ(CSSPoint(300, 300), compositorMetrics.GetVisualScrollOffset());
+}
+
+TEST_F(APZCTreeManagerTester,
+       InstantKeyScrollBetweenTwoSamplingsWithSameTimeStamp) {
+  if (!StaticPrefs::apz_keyboard_enabled_AtStartup()) {
+    // On Android apz.keyboard.enabled is false by default and it's can't be
+    // changed here since it's `mirror: once`, so we just skip this test.
+    return;
+  }
+
+  // For instant scrolling, i.e. no async animation should not be involved.
+  SCOPED_GFX_PREF_BOOL("general.smoothScroll", false);
+
+  // Set up a keyboard shortcuts map to scroll page down.
+  AutoTArray<KeyboardShortcut, 1> shortcuts{KeyboardShortcut(
+      KeyboardInput::KEY_DOWN, 0, 0, 0, 0,
+      KeyboardScrollAction(
+          KeyboardScrollAction::KeyboardScrollActionType::eScrollPage, true))};
+  KeyboardMap keyboardMap(std::move(shortcuts));
+  manager->SetKeyboardMap(keyboardMap);
+
+  // Set up a scrollable layer.
+  CreateSimpleScrollingLayer();
+  ScopedLayerTreeRegistration registration(LayersId{0}, mcc);
+  UpdateHitTestingTree();
+
+  // Setup the scrollable layer is scrollable by key events.
+  FocusTarget focusTarget;
+  focusTarget.mSequenceNumber = 1;
+  focusTarget.mData = AsVariant<FocusTarget::ScrollTargets>(
+      {ScrollableLayerGuid::START_SCROLL_ID,
+       ScrollableLayerGuid::START_SCROLL_ID});
+  manager->UpdateFocusState(LayersId{0}, LayersId{0}, focusTarget);
+
+  // A vsync tick happens.
+  mcc->AdvanceByMillis(16);
+
+  // The first sampling happens, there's no change have happened, thus no need
+  // to composite.
+  EXPECT_FALSE(manager->AdvanceAnimations(mcc->GetSampleTime()));
+
+  // A key event causing scroll page down happens.
+  WidgetKeyboardEvent widgetEvent(true, eKeyDown, nullptr);
+  KeyboardInput input(widgetEvent);
+  Unused << manager->ReceiveInputEvent(input);
+
+  // Simulate WebRender compositing frames until APZ tells it the scroll offset
+  // has stopped changing.
+  // Important to trigger the bug: the first composite has the same time stamp
+  // as the earlier one above.
+  ParentLayerPoint compositedScrollOffset;
+  while (true) {
+    bool needMoreFrames = manager->AdvanceAnimations(mcc->GetSampleTime());
+    compositedScrollOffset = ApzcOf(root)->GetCurrentAsyncScrollOffset(
+        AsyncPanZoomController::eForCompositing);
+    if (!needMoreFrames) {
+      break;
+    }
+    mcc->AdvanceBy(TimeDuration::FromMilliseconds(16));
+  }
+
+  // Check that the effect of the keyboard scroll has been composited.
+  EXPECT_GT(compositedScrollOffset.y, 0);
+}
+
+TEST_F(APZCTreeManagerGenericTesterMock,
+       PanGestureWithCtrlModifier_Bug1917488) {
+  // The outer layer represents the browser chrome, and has layers id 0.
+  // The inner layer represents web content, and will initally get layers id 1.
+  const char* treeShape = "x(x)";
+  LayerIntRect layerVisibleRect[] = {
+      LayerIntRect(0, 0, 100, 100),
+      LayerIntRect(0, 0, 100, 100),
+  };
+  CreateScrollData(treeShape, layerVisibleRect);
+
+  // We need one of these for every LayersId the test will use!
+  ScopedLayerTreeRegistration registration0(LayersId{0}, mcc);
+  ScopedLayerTreeRegistration registration1(LayersId{1}, mcc);
+  ScopedLayerTreeRegistration registration2(LayersId{2}, mcc);
+
+  // In this test, we only bother to give the inner layer an APZC.
+  ScrollableLayerGuid::ViewID scrollId = ScrollableLayerGuid::START_SCROLL_ID;
+  SetScrollableFrameMetrics(layers[1], scrollId, CSSRect(0, 0, 100, 100));
+
+  // Set the referent id of the root layer to 1.
+  // Note that this causes the *descendants* of the root layer
+  // to get a layers id of 1 during the hit-testing tree update.
+  LayersId tab1LayersId{1};
+  ScrollableLayerGuid tab1Guid(tab1LayersId, 0, scrollId);
+  root->SetReferentId(tab1LayersId);
+  UpdateHitTestingTree();
+
+  // Perform a pan gesture on the content layer.
+  // For the START event, do not use the PanGesture() helper, because we want to
+  // check the mLayersId that APZ sets on the input event object. This
+  // determines what content process the event will gets dispatched to.
+  ScreenIntPoint panPoint(50, 50);
+  QueueMockHitResult(tab1Guid);
+  PanGestureInput panStart(PanGestureInput::PANGESTURE_START, mcc->Time(),
+                           panPoint, ScreenPoint(0, 10), MODIFIER_NONE);
+  manager->ReceiveInputEvent(panStart);
+  mcc->AdvanceByMillis(5);
+  QueueMockHitResult(tab1Guid);
+  PanGesture(PanGestureInput::PANGESTURE_PAN, manager, panPoint,
+             ScreenPoint(0, 10), mcc->Time());
+  mcc->AdvanceByMillis(5);
+  QueueMockHitResult(tab1Guid);
+  PanGesture(PanGestureInput::PANGESTURE_END, manager, panPoint,
+             ScreenPoint(0, 0), mcc->Time());
+
+  // The layers id assigned to the events of this gesture should be 1.
+  EXPECT_EQ(panStart.mLayersId, tab1LayersId);
+
+  // Simulate a tab switch by updating the referent id of the root layer
+  // to a new layers id, 2.
+  LayersId tab2LayersId{2};
+  ScrollableLayerGuid tab2Guid(tab2LayersId, 0, scrollId);
+  root->SetReferentId(tab2LayersId);
+  UpdateHitTestingTree();
+
+  // Perform another pan gesture on the content layer, but this time with
+  // the Control modifier held down.
+  QueueMockHitResult(tab2Guid);
+  PanGestureInput zoomStart(PanGestureInput::PANGESTURE_START, mcc->Time(),
+                            panPoint, ScreenPoint(0, 10), MODIFIER_CONTROL);
+  manager->ReceiveInputEvent(zoomStart);
+  mcc->AdvanceByMillis(5);
+  QueueMockHitResult(tab2Guid);
+  PanGesture(PanGestureInput::PANGESTURE_PAN, manager, panPoint,
+             ScreenPoint(0, 10), mcc->Time(), MODIFIER_CONTROL);
+  mcc->AdvanceByMillis(5);
+  QueueMockHitResult(tab2Guid);
+  PanGesture(PanGestureInput::PANGESTURE_END, manager, panPoint,
+             ScreenPoint(0, 0), mcc->Time(), MODIFIER_CONTROL);
+
+  // The layers id assigned to the events in the zoom gesture should be 2.
+  // (In the buggy scenario, it's 1, meaning the events get incorrectly
+  // sent to the previous tab's content process.)
+  EXPECT_EQ(zoomStart.mLayersId, tab2LayersId);
 }

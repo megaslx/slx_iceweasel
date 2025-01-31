@@ -7,19 +7,20 @@
 
 #include "SharedFontList.h"
 
-#include "base/shared_memory.h"
-
+#include "base/process.h"
 #include "gfxFontUtils.h"
 #include "nsClassHashtable.h"
 #include "nsTHashMap.h"
 #include "nsXULAppAPI.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/ipc/SharedMemory.h"
 
 // This is split out from SharedFontList.h because that header is included
 // quite widely (via gfxPlatformFontList.h, gfxTextRun.h, etc), and other code
 // such as the generated DOM bindings code gets upset at (indirect) inclusion
-// of <windows.h> via SharedMemoryBasic.h. So this header, which defines the
-// actual shared-memory FontList class, is included only by the .cpp files that
+// of <windows.h> via SharedMemory.h. So this header, which defines the actual
+// shared-memory FontList class, is included only by the .cpp files that
 // implement or directly interface with the font list, to avoid polluting other
 // headers.
 
@@ -200,12 +201,6 @@ class FontList {
    */
   Pointer Alloc(uint32_t aSize);
 
-  /**
-   * Convert a native pointer to a shared-memory Pointer record that can be
-   * passed between processes.
-   */
-  Pointer ToSharedPointer(const void* aPtr);
-
   uint32_t GetGeneration() { return GetHeader().mGeneration; }
 
   /**
@@ -248,11 +243,11 @@ class FontList {
    * list has changed/grown since the child was first initialized).
    */
   void ShareShmBlockToProcess(uint32_t aIndex, base::ProcessId aPid,
-                              base::SharedMemoryHandle* aOut) {
+                              ipc::SharedMemory::Handle* aOut) {
     MOZ_RELEASE_ASSERT(mReadOnlyShmems.Length() == mBlocks.Length());
     if (aIndex >= mReadOnlyShmems.Length()) {
       // Block index out of range
-      *aOut = base::SharedMemory::NULLHandle();
+      *aOut = ipc::SharedMemory::NULLHandle();
       return;
     }
     *aOut = mReadOnlyShmems[aIndex]->CloneHandle();
@@ -266,14 +261,14 @@ class FontList {
    * shared to the given process. This is used at child process startup
    * to pass the complete list at once.
    */
-  void ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
+  void ShareBlocksToProcess(nsTArray<ipc::SharedMemory::Handle>* aBlocks,
                             base::ProcessId aPid);
 
-  base::SharedMemoryHandle ShareBlockToProcess(uint32_t aIndex,
-                                               base::ProcessId aPid);
+  ipc::SharedMemory::Handle ShareBlockToProcess(uint32_t aIndex,
+                                                base::ProcessId aPid);
 
   void ShmBlockAdded(uint32_t aGeneration, uint32_t aIndex,
-                     base::SharedMemoryHandle aHandle);
+                     ipc::SharedMemory::Handle aHandle);
   /**
    * Support for memory reporter.
    */
@@ -305,11 +300,11 @@ class FontList {
   struct ShmBlock {
     // Takes ownership of aShmem. Note that in a child process, aShmem will be
     // mapped as read-only.
-    explicit ShmBlock(mozilla::UniquePtr<base::SharedMemory>&& aShmem)
+    explicit ShmBlock(RefPtr<ipc::SharedMemory>&& aShmem)
         : mShmem(std::move(aShmem)) {}
 
     // Get pointer to the mapped memory.
-    void* Memory() const { return mShmem->memory(); }
+    void* Memory() const { return mShmem->Memory(); }
 
     // Only the parent process does allocation, so only it will update this
     // field. Content processes read the value when checking Pointer validity.
@@ -331,14 +326,10 @@ class FontList {
       return static_cast<BlockHeader*>(Memory())->mBlockSize;
     }
 
-    mozilla::UniquePtr<base::SharedMemory> mShmem;
+    RefPtr<ipc::SharedMemory> mShmem;
   };
 
-  Header& GetHeader() {
-    // It's invalid to try and access this before the first block exists.
-    MOZ_ASSERT(mBlocks.Length() > 0);
-    return *static_cast<Header*>(mBlocks[0]->Memory());
-  }
+  Header& GetHeader() const;
 
   /**
    * Create a new shared memory block and append to the FontList's list
@@ -351,8 +342,10 @@ class FontList {
   /**
    * Used by child processes to ensure all the blocks are registered.
    * Returns false on failure.
+   * Pass aMustLock=true to take the gfxPlatformFontList lock during the
+   * update (not required when calling from the constructor).
    */
-  [[nodiscard]] bool UpdateShmBlocks();
+  [[nodiscard]] bool UpdateShmBlocks(bool aMustLock);
 
   /**
    * This makes a *sync* IPC call to get a shared block from the parent.
@@ -379,7 +372,12 @@ class FontList {
    * Auxiliary array, used only in the parent process; holds read-only copies
    * of the shmem blocks; these are what will be shared to child processes.
    */
-  nsTArray<mozilla::UniquePtr<base::SharedMemory>> mReadOnlyShmems;
+  nsTArray<RefPtr<ipc::SharedMemory>> mReadOnlyShmems;
+
+#ifdef XP_WIN
+  // Bool array to track whether we have read face names from the name table.
+  nsTArray<bool> mFaceNamesRead;
+#endif
 };
 
 }  // namespace fontlist

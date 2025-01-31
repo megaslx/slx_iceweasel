@@ -7,7 +7,7 @@
 var tests = [
   // Common page.
   {
-    url: "http://example.com/browser/browser/components/places/tests/browser/dummy_page.html",
+    url: "https://example.com/browser/browser/components/places/tests/browser/dummy_page.html",
     title: "Dummy test page",
     isError: false,
   },
@@ -38,7 +38,7 @@ SpecialPowers.pushPrefEnv({
 add_task(async function check_default_bookmark_title() {
   let tab = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
-    "http://www.example.com/"
+    "https://www.example.com/"
   );
   let browser = tab.linkedBrowser;
 
@@ -50,7 +50,7 @@ add_task(async function check_default_bookmark_title() {
       url,
       isError
     );
-    BrowserTestUtils.loadURIString(browser, url);
+    BrowserTestUtils.startLoadingURIString(browser, url);
     await promiseLoaded;
 
     await checkBookmark(url, title);
@@ -80,7 +80,7 @@ add_task(async function check_default_bookmark_title() {
     null,
     true
   );
-  BrowserTestUtils.loadURIString(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
   await promiseLoaded;
 
   // The offline mode test is only good if the page failed to load.

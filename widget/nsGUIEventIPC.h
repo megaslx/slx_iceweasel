@@ -218,6 +218,16 @@ template <>
 struct ParamTraits<mozilla::WidgetMouseEvent> {
   using paramType = mozilla::WidgetMouseEvent;
 
+  // We don't need to copy the following members:
+  // - mIgnoreCapturingContent: When this is `true`, the remote process should
+  //   not be capturing the pointer because this is used to dispatch boundary
+  //   events outside the capturing element after handling ePointerUp/eMouseUp.
+  // - mSynthesizeMoveAfterDispatch: When this is `true`, the event needs to
+  //   synthesize a move event to dispatch corresponding boundary events.
+  //   However, when a remote content is under the pointer, it should occur
+  //   before dispatching this event in the remote process, but there is no
+  //   path to do that.  Therefore, this flag is not required for now.
+
   static void Write(MessageWriter* aWriter, const paramType& aParam) {
     WriteParam(aWriter,
                static_cast<const mozilla::WidgetMouseEventBase&>(aParam));
@@ -270,13 +280,15 @@ struct ParamTraits<mozilla::WidgetDragEvent> {
     WriteParam(aWriter, static_cast<const mozilla::WidgetMouseEvent&>(aParam));
     WriteParam(aWriter, aParam.mUserCancelled);
     WriteParam(aWriter, aParam.mDefaultPreventedOnContent);
+    WriteParam(aWriter, aParam.mInHTMLEditorEventListener);
   }
 
   static bool Read(MessageReader* aReader, paramType* aResult) {
     bool rv =
         ReadParam(aReader, static_cast<mozilla::WidgetMouseEvent*>(aResult)) &&
         ReadParam(aReader, &aResult->mUserCancelled) &&
-        ReadParam(aReader, &aResult->mDefaultPreventedOnContent);
+        ReadParam(aReader, &aResult->mDefaultPreventedOnContent) &&
+        ReadParam(aReader, &aResult->mInHTMLEditorEventListener);
     return rv;
   }
 };
@@ -290,6 +302,7 @@ struct ParamTraits<mozilla::WidgetPointerEvent> {
     WriteParam(aWriter, aParam.mWidth);
     WriteParam(aWriter, aParam.mHeight);
     WriteParam(aWriter, aParam.mIsPrimary);
+    WriteParam(aWriter, aParam.mFromTouchEvent);
   }
 
   static bool Read(MessageReader* aReader, paramType* aResult) {
@@ -297,7 +310,8 @@ struct ParamTraits<mozilla::WidgetPointerEvent> {
         ReadParam(aReader, static_cast<mozilla::WidgetMouseEvent*>(aResult)) &&
         ReadParam(aReader, &aResult->mWidth) &&
         ReadParam(aReader, &aResult->mHeight) &&
-        ReadParam(aReader, &aResult->mIsPrimary);
+        ReadParam(aReader, &aResult->mIsPrimary) &&
+        ReadParam(aReader, &aResult->mFromTouchEvent);
     return rv;
   }
 };
@@ -379,17 +393,33 @@ struct ParamTraits<mozilla::AlternativeCharCode> {
 };
 
 template <>
+struct ParamTraits<mozilla::ShortcutKeyCandidate::ShiftState>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::ShortcutKeyCandidate::ShiftState,
+          mozilla::ShortcutKeyCandidate::ShiftState::Ignorable,
+          mozilla::ShortcutKeyCandidate::ShiftState::MatchExactly> {};
+
+template <>
+struct ParamTraits<mozilla::ShortcutKeyCandidate::SkipIfEarlierHandlerDisabled>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::ShortcutKeyCandidate::SkipIfEarlierHandlerDisabled,
+          mozilla::ShortcutKeyCandidate::SkipIfEarlierHandlerDisabled::No,
+          mozilla::ShortcutKeyCandidate::SkipIfEarlierHandlerDisabled::Yes> {};
+
+template <>
 struct ParamTraits<mozilla::ShortcutKeyCandidate> {
   using paramType = mozilla::ShortcutKeyCandidate;
 
   static void Write(MessageWriter* aWriter, const paramType& aParam) {
     WriteParam(aWriter, aParam.mCharCode);
-    WriteParam(aWriter, aParam.mIgnoreShift);
+    WriteParam(aWriter, aParam.mShiftState);
+    WriteParam(aWriter, aParam.mSkipIfEarlierHandlerDisabled);
   }
 
   static bool Read(MessageReader* aReader, paramType* aResult) {
     return ReadParam(aReader, &aResult->mCharCode) &&
-           ReadParam(aReader, &aResult->mIgnoreShift);
+           ReadParam(aReader, &aResult->mShiftState) &&
+           ReadParam(aReader, &aResult->mSkipIfEarlierHandlerDisabled);
   }
 };
 
@@ -816,6 +846,7 @@ struct ParamTraits<mozilla::widget::InputContext> {
     WriteParam(aWriter, aParam.mHTMLInputMode);
     WriteParam(aWriter, aParam.mActionHint);
     WriteParam(aWriter, aParam.mAutocapitalize);
+    WriteParam(aWriter, aParam.mAutocorrect);
     WriteParam(aWriter, aParam.mOrigin);
     WriteParam(aWriter, aParam.mHasHandledUserInput);
     WriteParam(aWriter, aParam.mInPrivateBrowsing);
@@ -828,6 +859,7 @@ struct ParamTraits<mozilla::widget::InputContext> {
            ReadParam(aReader, &aResult->mHTMLInputMode) &&
            ReadParam(aReader, &aResult->mActionHint) &&
            ReadParam(aReader, &aResult->mAutocapitalize) &&
+           ReadParam(aReader, &aResult->mAutocorrect) &&
            ReadParam(aReader, &aResult->mOrigin) &&
            ReadParam(aReader, &aResult->mHasHandledUserInput) &&
            ReadParam(aReader, &aResult->mInPrivateBrowsing) &&
@@ -871,11 +903,11 @@ struct ParamTraits<mozilla::WritingMode> {
   using paramType = mozilla::WritingMode;
 
   static void Write(MessageWriter* aWriter, const paramType& aParam) {
-    WriteParam(aWriter, aParam.mWritingMode.bits);
+    WriteParam(aWriter, aParam.mWritingMode._0);
   }
 
   static bool Read(MessageReader* aReader, paramType* aResult) {
-    return ReadParam(aReader, &aResult->mWritingMode.bits);
+    return ReadParam(aReader, &aResult->mWritingMode._0);
   }
 };
 

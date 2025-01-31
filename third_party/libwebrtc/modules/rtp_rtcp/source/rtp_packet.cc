@@ -12,11 +12,17 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "api/array_view.h"
+#include "api/rtp_parameters.h"
+#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/byte_io.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "rtc_base/checks.h"
+#include "rtc_base/copy_on_write_buffer.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/strings/string_builder.h"
@@ -192,6 +198,7 @@ void RtpPacket::ZeroMutableExtensions() {
 #endif
       case RTPExtensionType::kRtpExtensionAbsoluteCaptureTime:
       case RTPExtensionType::kRtpExtensionColorSpace:
+      case RTPExtensionType::kRtpExtensionCorruptionDetection:
       case RTPExtensionType::kRtpExtensionGenericFrameDescriptor:
       case RTPExtensionType::kRtpExtensionDependencyDescriptor:
       case RTPExtensionType::kRtpExtensionMid:
@@ -406,10 +413,6 @@ uint8_t* RtpPacket::AllocatePayload(size_t size_bytes) {
 
 uint8_t* RtpPacket::SetPayloadSize(size_t size_bytes) {
   RTC_DCHECK_EQ(padding_size_, 0);
-  if (payload_offset_ + size_bytes > capacity()) {
-    RTC_LOG(LS_WARNING) << "Cannot set payload, not enough space in buffer.";
-    return nullptr;
-  }
   payload_size_ = size_bytes;
   buffer_.SetSize(payload_offset_ + payload_size_);
   return WriteAt(payload_offset_);

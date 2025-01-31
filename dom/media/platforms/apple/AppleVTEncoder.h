@@ -11,7 +11,6 @@
 #include <VideoToolbox/VideoToolbox.h>
 
 #include "PlatformEncoderModule.h"
-#include "TimeUnits.h"
 
 namespace mozilla {
 
@@ -21,25 +20,29 @@ class Image;
 
 class AppleVTEncoder final : public MediaDataEncoder {
  public:
-  using Config = H264Config;
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AppleVTEncoder, final);
 
-  AppleVTEncoder(const Config& aConfig, RefPtr<TaskQueue> aTaskQueue,
-                 const bool aHwardwareNotAllowed)
+  AppleVTEncoder(const EncoderConfig& aConfig,
+                 const RefPtr<TaskQueue>& aTaskQueue)
       : mConfig(aConfig),
         mTaskQueue(aTaskQueue),
-        mHardwareNotAllowed(aHwardwareNotAllowed),
-        mFramesCompleted(false),
+        mHardwareNotAllowed(aConfig.mHardwarePreference ==
+                            HardwarePreference::RequireSoftware),
         mError(NS_OK),
-        mSession(nullptr) {
+        mSession(nullptr),
+        mTimer(nullptr) {
     MOZ_ASSERT(mConfig.mSize.width > 0 && mConfig.mSize.height > 0);
     MOZ_ASSERT(mTaskQueue);
   }
 
   RefPtr<InitPromise> Init() override;
   RefPtr<EncodePromise> Encode(const MediaData* aSample) override;
+  RefPtr<ReconfigurationPromise> Reconfigure(
+      const RefPtr<const EncoderConfigurationChangeList>& aConfigurationChanges)
+      override;
   RefPtr<EncodePromise> Drain() override;
   RefPtr<ShutdownPromise> Shutdown() override;
-  RefPtr<GenericPromise> SetBitrate(Rate aBitsPerSec) override;
+  RefPtr<GenericPromise> SetBitrate(uint32_t aBitsPerSec) override;
 
   nsCString GetDescriptionName() const override {
     MOZ_ASSERT(mSession);
@@ -47,28 +50,36 @@ class AppleVTEncoder final : public MediaDataEncoder {
                                   : "apple software VT encoder"_ns;
   }
 
-  void OutputFrame(CMSampleBufferRef aBuffer);
+  void OutputFrame(OSStatus aStatus, VTEncodeInfoFlags aFlags,
+                   CMSampleBufferRef aBuffer);
 
  private:
+  enum class EncodeResult { Success, EncodeError, FrameDropped, EmptyBuffer };
+
   virtual ~AppleVTEncoder() { MOZ_ASSERT(!mSession); }
-  RefPtr<EncodePromise> ProcessEncode(RefPtr<const VideoData> aSample);
-  void ProcessOutput(RefPtr<MediaRawData>&& aOutput);
-  void ResolvePromise();
+  void ProcessEncode(const RefPtr<const VideoData>& aSample);
+  RefPtr<ReconfigurationPromise> ProcessReconfigure(
+      const RefPtr<const EncoderConfigurationChangeList>&
+          aConfigurationChanges);
+  void ProcessOutput(RefPtr<MediaRawData>&& aOutput, EncodeResult aResult);
+  void ForceOutputIfNeeded();
+  void MaybeResolveOrRejectEncodePromise();
   RefPtr<EncodePromise> ProcessDrain();
   RefPtr<ShutdownPromise> ProcessShutdown();
 
   CFDictionaryRef BuildSourceImageBufferAttributes();
-  CVPixelBufferRef CreateCVPixelBuffer(const layers::Image* aSource);
+  CVPixelBufferRef CreateCVPixelBuffer(layers::Image* aSource);
   bool WriteExtraData(MediaRawData* aDst, CMSampleBufferRef aSrc,
                       const bool aAsAnnexB);
   void AssertOnTaskQueue() { MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn()); }
 
-  const Config mConfig;
+  EncoderConfig mConfig;
   const RefPtr<TaskQueue> mTaskQueue;
   const bool mHardwareNotAllowed;
-  // Access only in mTaskQueue.
+  // Accessed only in mTaskQueue.
   EncodedData mEncodedData;
-  bool mFramesCompleted;
+  // Accessed only in mTaskQueue.
+  MozPromiseHolder<EncodePromise> mEncodePromise;
   RefPtr<MediaByteBuffer> mAvcc;  // Stores latest avcC data.
   MediaResult mError;
 
@@ -78,6 +89,8 @@ class AppleVTEncoder final : public MediaDataEncoder {
   Atomic<bool> mIsHardwareAccelerated;
   // Written during init and shutdown.
   Atomic<bool> mInited;
+  // Accessed only in mTaskQueue. Used for for OS versions < 11.
+  nsCOMPtr<nsITimer> mTimer;
 };
 
 }  // namespace mozilla

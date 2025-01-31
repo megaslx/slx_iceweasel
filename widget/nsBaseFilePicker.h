@@ -9,26 +9,26 @@
 
 #include "nsISupports.h"
 #include "nsIFilePicker.h"
-#include "nsISimpleEnumerator.h"
-#include "nsArrayEnumerator.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
-class nsPIDOMWindowOuter;
+class nsISimpleEnumerator;
 class nsIWidget;
 
-class nsBaseFilePicker : public nsIFilePicker {
-  class AsyncShowFilePicker;
+namespace mozilla::dom {
+class BrowsingContext;
+}
 
+class nsBaseFilePicker : public nsIFilePicker {
  public:
   nsBaseFilePicker();
-  virtual ~nsBaseFilePicker();
 
-  NS_IMETHOD Init(mozIDOMWindowProxy* aParent, const nsAString& aTitle,
-                  nsIFilePicker::Mode aMode) override;
-
-  NS_IMETHOD Open(nsIFilePickerShownCallback* aCallback) override;
+  // nsIFilePicker
+  NS_IMETHOD Init(mozilla::dom::BrowsingContext* aBrowsingContext,
+                  const nsAString& aTitle, nsIFilePicker::Mode aMode) override;
+  NS_IMETHOD IsModeSupported(nsIFilePicker::Mode aMode, JSContext* aCx,
+                             mozilla::dom::Promise** aPromise) override;
   NS_IMETHOD AppendFilters(int32_t filterMask) override;
   NS_IMETHOD AppendRawFilter(const nsAString& aFilter) override;
   NS_IMETHOD GetCapture(nsIFilePicker::CaptureTarget* aCapture) override;
@@ -52,17 +52,19 @@ class nsBaseFilePicker : public nsIFilePicker {
       nsISimpleEnumerator** aValue) override;
 
  protected:
+  virtual ~nsBaseFilePicker();
+
   virtual void InitNative(nsIWidget* aParent, const nsAString& aTitle) = 0;
-  virtual nsresult Show(nsIFilePicker::ResultCode* _retval) = 0;
 
   virtual nsresult ResolveSpecialDirectory(const nsAString& aSpecialDirectory);
+  bool MaybeBlockFilePicker(nsIFilePickerShownCallback* aCallback);
 
-  bool mAddToRecentDocs;
+  bool mAddToRecentDocs = true;
   nsCOMPtr<nsIFile> mDisplayDirectory;
   nsString mDisplaySpecialDirectory;
 
-  nsCOMPtr<nsPIDOMWindowOuter> mParent;
-  nsIFilePicker::Mode mMode;
+  RefPtr<mozilla::dom::BrowsingContext> mBrowsingContext;
+  nsIFilePicker::Mode mMode = nsIFilePicker::modeOpen;
   nsString mOkButtonLabel;
   nsTArray<nsString> mRawFilters;
 };

@@ -36,11 +36,9 @@ using mozilla::dom::GlobalObject;
 using mozilla::dom::Optional;
 
 // static
-already_AddRefed<FileReaderSync> FileReaderSync::Constructor(
+UniquePtr<FileReaderSync> FileReaderSync::Constructor(
     const GlobalObject& aGlobal) {
-  RefPtr<FileReaderSync> frs = new FileReaderSync();
-
-  return frs.forget();
+  return MakeUnique<FileReaderSync>();
 }
 
 bool FileReaderSync::WrapObject(JSContext* aCx,
@@ -315,9 +313,8 @@ namespace {
 // This runnable is used to terminate the sync event loop.
 class ReadReadyRunnable final : public WorkerSyncRunnable {
  public:
-  ReadReadyRunnable(WorkerPrivate* aWorkerPrivate,
-                    nsIEventTarget* aSyncLoopTarget)
-      : WorkerSyncRunnable(aWorkerPrivate, aSyncLoopTarget) {}
+  explicit ReadReadyRunnable(nsIEventTarget* aSyncLoopTarget)
+      : WorkerSyncRunnable(aSyncLoopTarget, "ReadReadyRunnable") {}
 
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -341,21 +338,18 @@ class ReadCallback final : public nsIInputStreamCallback {
   NS_DECL_THREADSAFE_ISUPPORTS
 
   ReadCallback(WorkerPrivate* aWorkerPrivate, nsIEventTarget* aEventTarget)
-      : mWorkerPrivate(aWorkerPrivate), mEventTarget(aEventTarget) {}
+      : mEventTarget(aEventTarget) {}
 
   NS_IMETHOD
   OnInputStreamReady(nsIAsyncInputStream* aStream) override {
     // I/O Thread. Now we need to block the sync event loop.
-    RefPtr<ReadReadyRunnable> runnable =
-        new ReadReadyRunnable(mWorkerPrivate, mEventTarget);
+    RefPtr<ReadReadyRunnable> runnable = new ReadReadyRunnable(mEventTarget);
     return mEventTarget->Dispatch(runnable.forget(), NS_DISPATCH_NORMAL);
   }
 
  private:
   ~ReadCallback() = default;
 
-  // The worker is kept alive because of the sync event loop.
-  WorkerPrivate* mWorkerPrivate;
   nsCOMPtr<nsIEventTarget> mEventTarget;
 };
 

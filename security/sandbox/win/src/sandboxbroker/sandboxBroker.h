@@ -26,58 +26,14 @@ class TargetPolicy;
 
 namespace mozilla {
 
-class AbstractSandboxBroker {
- public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AbstractSandboxBroker)
-
-  virtual void Shutdown() = 0;
-  virtual Result<Ok, mozilla::ipc::LaunchError> LaunchApp(
-      const wchar_t* aPath, const wchar_t* aArguments,
-      base::EnvironmentMap& aEnvironment, GeckoProcessType aProcessType,
-      const bool aEnableLogging, const IMAGE_THUNK_DATA* aCachedNtdllThunk,
-      void** aProcessHandle) = 0;
-
-  // Security levels for different types of processes
-  virtual void SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
-                                                 bool aIsFileProcess) = 0;
-
-  virtual void SetSecurityLevelForGPUProcess(int32_t aSandboxLevel) = 0;
-  virtual bool SetSecurityLevelForRDDProcess() = 0;
-  virtual bool SetSecurityLevelForSocketProcess() = 0;
-  virtual bool SetSecurityLevelForUtilityProcess(
-      mozilla::ipc::SandboxingKind aSandbox) = 0;
-
-  enum SandboxLevel { LockDown, Restricted };
-  virtual bool SetSecurityLevelForGMPlugin(SandboxLevel aLevel,
-                                           bool aIsRemoteLaunch = false) = 0;
-
-  // File system permissions
-  virtual bool AllowReadFile(wchar_t const* file) = 0;
-
-  /**
-   * Share a HANDLE with the child process. The HANDLE will be made available
-   * in the child process at the memory address
-   * |reinterpret_cast<uintptr_t>(aHandle)|. It is the caller's responsibility
-   * to communicate this address to the child.
-   */
-  virtual void AddHandleToShare(HANDLE aHandle) = 0;
-
-  /**
-   * @return true if policy has win32k locked down, otherwise false
-   */
-  virtual bool IsWin32kLockedDown() = 0;
-
- protected:
-  virtual ~AbstractSandboxBroker() {}
-};
-
-class SandboxBroker : public AbstractSandboxBroker {
+class SandboxBroker {
  public:
   SandboxBroker();
 
-  static void Initialize(sandbox::BrokerServices* aBrokerServices);
+  static void Initialize(sandbox::BrokerServices* aBrokerServices,
+                         const nsAString& aBinDir);
 
-  void Shutdown() override {}
+  static void EnsureLpacPermsissionsOnDir(const nsString& aDir);
 
   /**
    * Do initialization that depends on parts of the Gecko machinery having been
@@ -89,29 +45,24 @@ class SandboxBroker : public AbstractSandboxBroker {
       const wchar_t* aPath, const wchar_t* aArguments,
       base::EnvironmentMap& aEnvironment, GeckoProcessType aProcessType,
       const bool aEnableLogging, const IMAGE_THUNK_DATA* aCachedNtdllThunk,
-      void** aProcessHandle) override;
-  virtual ~SandboxBroker();
+      void** aProcessHandle);
+  ~SandboxBroker();
 
   // Security levels for different types of processes
   void SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
-                                         bool aIsFileProcess) override;
+                                         bool aIsFileProcess);
 
-  void SetSecurityLevelForGPUProcess(int32_t aSandboxLevel) override;
-  bool SetSecurityLevelForRDDProcess() override;
-  bool SetSecurityLevelForSocketProcess() override;
+  void SetSecurityLevelForGPUProcess(int32_t aSandboxLevel);
+  bool SetSecurityLevelForRDDProcess();
+  bool SetSecurityLevelForSocketProcess();
+
+  enum SandboxLevel { LockDown, Restricted };
   bool SetSecurityLevelForGMPlugin(SandboxLevel aLevel,
-                                   bool aIsRemoteLaunch = false) override;
-  bool SetSecurityLevelForUtilityProcess(
-      mozilla::ipc::SandboxingKind aSandbox) override;
+                                   bool aIsRemoteLaunch = false);
+  bool SetSecurityLevelForUtilityProcess(mozilla::ipc::SandboxingKind aSandbox);
 
   // File system permissions
-  bool AllowReadFile(wchar_t const* file) override;
-
-  /**
-   * Exposes AddTargetPeer from broker services, so that non-sandboxed
-   * processes can be added as handle duplication targets.
-   */
-  static bool AddTargetPeer(HANDLE aPeerProcess);
+  bool AllowReadFile(wchar_t const* file);
 
   /**
    * Share a HANDLE with the child process. The HANDLE will be made available
@@ -119,9 +70,9 @@ class SandboxBroker : public AbstractSandboxBroker {
    * |reinterpret_cast<uintptr_t>(aHandle)|. It is the caller's responsibility
    * to communicate this address to the child.
    */
-  void AddHandleToShare(HANDLE aHandle) override;
+  void AddHandleToShare(HANDLE aHandle);
 
-  bool IsWin32kLockedDown() final;
+  bool IsWin32kLockedDown();
 
   // Set up dummy interceptions via the broker, so we can log calls.
   void ApplyLoggingPolicy();

@@ -22,6 +22,7 @@
 #include "api/test/network_emulation_manager.h"
 #include "api/test/time_controller.h"
 #include "pc/test/frame_generator_capturer_video_track_source.h"
+#include "test/create_frame_generator_capturer.h"
 #include "test/logging/log_writer.h"
 
 namespace webrtc {
@@ -78,7 +79,7 @@ class PeerScenarioClient {
       struct PulsedNoise {
         double amplitude = 0.1;
       };
-      absl::optional<PulsedNoise> pulsed_noise = PulsedNoise();
+      std::optional<PulsedNoise> pulsed_noise = PulsedNoise();
     } audio;
     struct Video {
       bool use_fake_codecs = false;
@@ -146,6 +147,7 @@ class PeerScenarioClient {
       std::function<void(SessionDescriptionInterface*)> munge_offer,
       std::function<void(std::string)> offer_handler);
   void SetSdpOfferAndGetAnswer(std::string remote_offer,
+                               std::function<void()> remote_description_set,
                                std::function<void(std::string)> answer_handler);
   void SetSdpAnswer(
       std::string remote_answer,

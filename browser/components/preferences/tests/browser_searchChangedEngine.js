@@ -38,7 +38,9 @@ add_task(async function test_change_engine() {
     name: "Example",
     version: "1.0",
     keyword: "foo",
-    favicon_url: "img123.png",
+    icons: {
+      16: "img123.png",
+    },
   });
 
   let tree = doc.querySelector("#engineList");
@@ -46,6 +48,10 @@ add_task(async function test_change_engine() {
   let row = findRow(tree, "Example");
 
   Assert.notEqual(row, -1, "Should have found the entry");
+  await TestUtils.waitForCondition(
+    () => tree.view.getImageSrc(row, tree.columns.getNamedColumn("engineName")),
+    "Should have go an image URL"
+  );
   Assert.ok(
     tree.view
       .getImageSrc(row, tree.columns.getNamedColumn("engineName"))
@@ -67,13 +73,22 @@ add_task(async function test_change_engine() {
     name: "Example 2",
     version: "2.0",
     keyword: "bar",
-    favicon_url: "img456.png",
+    icons: {
+      16: "img456.png",
+    },
   });
   await updatedPromise;
 
   row = findRow(tree, "Example 2");
 
   Assert.notEqual(row, -1, "Should have found the updated entry");
+  await TestUtils.waitForCondition(
+    () =>
+      tree.view
+        .getImageSrc(row, tree.columns.getNamedColumn("engineName"))
+        ?.includes("img456.png"),
+    "Should have updated the image URL"
+  );
   Assert.ok(
     tree.view
       .getImageSrc(row, tree.columns.getNamedColumn("engineName"))

@@ -59,14 +59,14 @@ def write_interface(iface, fd):
     try:
         methods = ""
         for member in iface.members:
-            if type(member) == xpidl.Attribute:
+            if type(member) is xpidl.Attribute:
                 methods += "/* %s */\n" % member.toIDL()
                 methods += "%s,\n" % attrAsMethodStruct(iface, member, True)
                 if not member.readonly:
                     methods += "%s,\n" % attrAsMethodStruct(iface, member, False)
                 methods += "\n"
 
-            elif type(member) == xpidl.Method:
+            elif type(member) is xpidl.Method:
                 methods += "/* %s */\n" % member.toIDL()
                 methods += "%s,\n\n" % methodAsMethodStruct(iface, member)
         fd.write(
@@ -102,7 +102,7 @@ def print_rust_macros_bindings(idl, fd, relpath):
     fd = rust.AutoIndent(fd)
 
     fd.write(header % {"relpath": relpath})
-    fd.write("{static D: &'static [Interface] = &[\n")
+    fd.write("{static D: &[Interface] = &[\n")
 
     for p in idl.productions:
         if p.kind == "interface":

@@ -21,7 +21,8 @@
 #include "jit/AtomicOperations.h"
 #include "jit/JitContext.h"
 #include "jit/JitOptions.h"
-#include "util/StringBuffer.h"
+#include "js/Prefs.h"
+#include "util/StringBuilder.h"
 #include "vm/JSContext.h"
 #include "vm/Realm.h"
 #include "vm/StringType.h"
@@ -56,13 +57,13 @@ static inline bool WasmThreadsFlag(JSContext* cx) {
 JS_FOR_WASM_FEATURES(WASM_FEATURE);
 #undef WASM_FEATURE
 
-#define WASM_FEATURE(NAME, LOWER_NAME, STAGE, COMPILE_PRED, COMPILER_PRED, \
-                     FLAG_PRED, FLAG_FORCE_ON, ...)                        \
-  static inline bool Wasm##NAME##Flag(JSContext* cx) {                     \
-    if (!(COMPILE_PRED)) {                                                 \
-      return false;                                                        \
-    }                                                                      \
-    return ((FLAG_PRED) && cx->options().wasm##NAME()) || (FLAG_FORCE_ON); \
+#define WASM_FEATURE(NAME, LOWER_NAME, COMPILE_PRED, COMPILER_PRED, FLAG_PRED, \
+                     FLAG_FORCE_ON, FLAG_FUZZ_ON, PREF)                        \
+  static inline bool Wasm##NAME##Flag(JSContext* cx) {                         \
+    if (!(COMPILE_PRED)) {                                                     \
+      return false;                                                            \
+    }                                                                          \
+    return ((FLAG_PRED) && JS::Prefs::wasm_##PREF()) || (FLAG_FORCE_ON);       \
   }
 JS_FOR_WASM_FEATURES(WASM_FEATURE);
 #undef WASM_FEATURE
@@ -219,15 +220,14 @@ bool wasm::AnyCompilerAvailable(JSContext* cx) {
 // compiler that can support the feature.  Subsequent compiler selection must
 // ensure that only compilers that actually support the feature are used.
 
-#define WASM_FEATURE(NAME, LOWER_NAME, STAGE, COMPILE_PRED, COMPILER_PRED, \
-                     ...)                                                  \
-  bool wasm::NAME##Available(JSContext* cx) {                              \
-    return Wasm##NAME##Flag(cx) && (COMPILER_PRED);                        \
+#define WASM_FEATURE(NAME, LOWER_NAME, COMPILE_PRED, COMPILER_PRED, ...) \
+  bool wasm::NAME##Available(JSContext* cx) {                            \
+    return Wasm##NAME##Flag(cx) && (COMPILER_PRED);                      \
   }
 JS_FOR_WASM_FEATURES(WASM_FEATURE)
 #undef WASM_FEATURE
 
-bool wasm::IsSimdPrivilegedContext(JSContext* cx) {
+bool wasm::IsPrivilegedContext(JSContext* cx) {
   // This may be slightly more lenient than we want in an ideal world, but it
   // remains safe.
   return cx->realm() && cx->realm()->principals() &&
@@ -242,7 +242,7 @@ bool wasm::ThreadsAvailable(JSContext* cx) {
   return WasmThreadsFlag(cx) && AnyCompilerAvailable(cx);
 }
 
-bool wasm::HasPlatformSupport(JSContext* cx) {
+bool wasm::HasPlatformSupport() {
 #if !MOZ_LITTLE_ENDIAN()
   return false;
 #else
@@ -258,13 +258,6 @@ bool wasm::HasPlatformSupport(JSContext* cx) {
   if (!JitOptions.supportsUnalignedAccesses) {
     return false;
   }
-
-#  ifndef __wasi__
-  // WASI doesn't support signals so we don't have this function.
-  if (!wasm::EnsureFullSignalHandlers(cx)) {
-    return false;
-  }
-#  endif
 
   if (!jit::JitSupportsAtomics()) {
     return false;
@@ -292,7 +285,7 @@ bool wasm::HasSupport(JSContext* cx) {
   }
   // Do not check for compiler availability, as that may be run-time variant.
   // For HasSupport() we want a stable answer depending only on prefs.
-  return prefEnabled && HasPlatformSupport(cx);
+  return prefEnabled && HasPlatformSupport() && EnsureFullSignalHandlers(cx);
 }
 
 bool wasm::StreamingCompilationAvailable(JSContext* cx) {
@@ -309,6 +302,11 @@ bool wasm::CodeCachingAvailable(JSContext* cx) {
 #ifdef FUZZING_JS_FUZZILLI
   return false;
 #else
+
+  // TODO(bug 1913109): lazy tiering doesn't support serialization
+  if (JS::Prefs::wasm_lazy_tiering() || JS::Prefs::wasm_lazy_tiering_for_gc()) {
+    return false;
+  }
 
   // At the moment, we require Ion support for code caching.  The main reason
   // for this is that wasm::CompileAndSerialize() does not have access to

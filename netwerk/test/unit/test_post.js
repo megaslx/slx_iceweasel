@@ -8,7 +8,7 @@ const { HttpServer } = ChromeUtils.importESModule(
   "resource://testing-common/httpd.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -56,14 +56,14 @@ var listenerCallback = {
     }
   },
 
-  onStatus(request, status, statusArg) {},
+  onStatus() {},
 };
 
 function run_test() {
   var sstream1 = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  sstream1.data = teststring1;
+  sstream1.setByteStringData(teststring1);
 
   var fstream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(
     Ci.nsIFileInputStream
@@ -78,7 +78,7 @@ function run_test() {
   var sstream2 = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  sstream2.data = teststring2;
+  sstream2.setByteStringData(teststring2);
 
   var multi = Cc["@mozilla.org/io/multiplex-input-stream;1"].createInstance(
     Ci.nsIMultiplexInputStream
@@ -114,7 +114,7 @@ function setupChannel(path) {
   }).QueryInterface(Ci.nsIHttpChannel);
 }
 
-function serverHandler(metadata, response) {
+function serverHandler(metadata) {
   Assert.equal(metadata.method, "POST");
 
   var data = read_stream(
@@ -135,7 +135,7 @@ function serverHandler(metadata, response) {
   );
 }
 
-function checkRequest(request, data, context) {
+function checkRequest() {
   Assert.ok(correctOnProgress);
   httpserver.stop(do_test_finished);
 }

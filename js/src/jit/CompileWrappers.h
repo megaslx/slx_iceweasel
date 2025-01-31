@@ -11,6 +11,8 @@
 
 #include "gc/Pretenuring.h"
 #include "js/TypeDecls.h"
+#include "vm/Realm.h"
+#include "vm/RealmFuses.h"
 
 struct JSAtomState;
 
@@ -45,7 +47,7 @@ namespace jit {
 
 class JitRuntime;
 
-// During Ion compilation we need access to various bits of the current
+// During offthread compilation we need access to various bits of the current
 // compartment, runtime and so forth. However, since compilation can run off
 // thread while the main thread is mutating the VM, this access needs
 // to be restricted. The classes below give the compiler an interface to access
@@ -63,8 +65,7 @@ class CompileRuntime {
 
   const JitRuntime* jitRuntime();
 
-  // Compilation does not occur off thread when the Gecko Profiler is enabled.
-  GeckoProfilerRuntime& geckoProfiler();
+  const GeckoProfilerRuntime& geckoProfiler();
 
   bool hadOutOfMemory();
   bool profilingScripts();
@@ -76,13 +77,19 @@ class CompileRuntime {
   const JSClass* maybeWindowProxyClass();
 
   const void* mainContextPtr();
+  const void* addressOfJitActivation();
   const void* addressOfJitStackLimit();
   const void* addressOfInterruptBits();
+  const void* addressOfInlinedICScript();
+  const void* addressOfRealm();
   const void* addressOfZone();
   const void* addressOfMegamorphicCache();
   const void* addressOfMegamorphicSetPropCache();
   const void* addressOfStringToAtomCache();
   const void* addressOfLastBufferedWholeCell();
+
+  bool hasSeenObjectEmulateUndefinedFuseIntact();
+  const void* addressOfHasSeenObjectEmulateUndefinedFuse();
 
 #ifdef DEBUG
   const void* addressOfIonBailAfterCounter();
@@ -93,6 +100,8 @@ class CompileRuntime {
 
   bool runtimeMatches(JSRuntime* rt);
 };
+
+class JitZone;
 
 class CompileZone {
   friend class MacroAssembler;
@@ -119,9 +128,10 @@ class CompileZone {
 
   gc::AllocSite* catchAllAllocSite(JS::TraceKind traceKind,
                                    gc::CatchAllAllocSite siteKind);
-};
+  gc::AllocSite* tenuringAllocSite();
 
-class JitRealm;
+  bool hasRealmWithAllocMetadataBuilder();
+};
 
 class CompileRealm {
   JS::Realm* realm();
@@ -134,15 +144,13 @@ class CompileRealm {
 
   const void* realmPtr() { return realm(); }
 
+  RealmFuses& realmFuses() { return realm()->realmFuses; }
+
   const mozilla::non_crypto::XorShift128PlusRNG*
   addressOfRandomNumberGenerator();
 
-  const JitRealm* jitRealm();
-
   const GlobalObject* maybeGlobal();
   const uint32_t* addressOfGlobalWriteBarriered();
-
-  bool hasAllocationMetadataBuilder();
 };
 
 class JitCompileOptions {

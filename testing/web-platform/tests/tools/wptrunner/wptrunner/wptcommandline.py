@@ -6,10 +6,13 @@ import sys
 from collections import OrderedDict
 from shutil import which
 from datetime import timedelta
+from typing import Mapping, Optional
 
 from . import config
+from . import products
 from . import wpttest
 from .formatters import chromium, wptreport, wptscreenshot
+
 
 def abs_path(path):
     return os.path.abspath(os.path.expanduser(path))
@@ -37,8 +40,6 @@ def require_arg(kwargs, name, value_func=None):
 def create_parser(product_choices=None):
     from mozlog import commandline
 
-    from . import products
-
     if product_choices is None:
         product_choices = products.product_list
 
@@ -62,8 +63,12 @@ scheme host and port.""")
                         help="Split run into groups by directories. With a parameter,"
                         "limit the depth of splits e.g. --run-by-dir=1 to split by top-level"
                         "directory")
+    parser.add_argument("-f", "--fully-parallel", action='store_true',
+                        help='Run every test in a separate group for fully parallelism.')
     parser.add_argument("--processes", action="store", type=int, default=None,
                         help="Number of simultaneous processes to use")
+    parser.add_argument("--max-restarts", action="store", type=int, default=5,
+                        help="Maximum number of browser restart retries")
 
     parser.add_argument("--no-capture-stdio", action="store_true", default=False,
                         help="Don't capture stdio and write to logging")
@@ -140,18 +145,30 @@ scheme host and port.""")
                                       nargs="*", default=wpttest.enabled_tests,
                                       choices=wpttest.enabled_tests,
                                       help="Test types to run")
+    test_selection_group.add_argument("--subsuite-file", action="store",
+                                      help="Path to JSON file containing subsuite configuration")
+    # TODO use an empty string argument for the default subsuite
+    test_selection_group.add_argument("--subsuite", action="append", dest="subsuites",
+                                      help="Subsuite names to run. Runs all subsuites when omitted.")
+    test_selection_group.add_argument("--small-subsuite-size", default=50, type=int,
+                                      help="Maximum number of tests a subsuite can have to be treated as small subsuite."
+                                      "Tests from a small subsuite will be grouped in one group.")
     test_selection_group.add_argument("--include", action="append",
                                       help="URL prefix to include")
     test_selection_group.add_argument("--include-file", action="store",
                                       help="A file listing URL prefix for tests")
     test_selection_group.add_argument("--exclude", action="append",
                                       help="URL prefix to exclude")
+    test_selection_group.add_argument("--exclude-file", action="store",
+                                      help="A file listing URL prefix for tests")
     test_selection_group.add_argument("--include-manifest", type=abs_path,
                                       help="Path to manifest listing tests to include")
     test_selection_group.add_argument("--test-groups", dest="test_groups_file", type=abs_path,
                                       help="Path to json file containing a mapping {group_name: [test_ids]}")
     test_selection_group.add_argument("--skip-timeout", action="store_true",
                                       help="Skip tests that are expected to time out")
+    test_selection_group.add_argument("--skip-crash", action="store_true",
+                                      help="Skip tests that are expected to crash")
     test_selection_group.add_argument("--skip-implementation-status",
                                       action="append",
                                       choices=["not-implementing", "backlog", "implementing"],
@@ -209,6 +226,12 @@ scheme host and port.""")
                                  help="Path to stackwalker program used to analyse minidumps.")
     debugging_group.add_argument("--pdb", action="store_true",
                                  help="Drop into pdb on python exception")
+    debugging_group.add_argument("--leak-check", dest="leak_check", action="store_true", default=None,
+                                 help=("Enable leak checking for supported browsers "
+                                       "(Gecko: enabled by default for debug builds, "
+                                       "silently ignored for opt, mobile)"))
+    debugging_group.add_argument("--no-leak-check", dest="leak_check", action="store_false", default=None,
+                                 help="Disable leak checking")
 
     android_group = parser.add_argument_group("Android specific arguments")
     android_group.add_argument("--adb-binary", action="store",
@@ -269,6 +292,9 @@ scheme host and port.""")
     config_group.add_argument("--no-suppress-handler-traceback", action="store_false",
                               dest="supress_handler_traceback",
                               help="Write the stacktrace for exceptions in server handlers")
+    config_group.add_argument("--ws-extra", action="append", default=None,
+                              dest="ws_extra",
+                              help="Extra paths containing websockets handlers")
 
     build_type = parser.add_mutually_exclusive_group()
     build_type.add_argument("--debug-build", dest="debug", action="store_true",
@@ -322,11 +348,6 @@ scheme host and port.""")
     gecko_group.add_argument("--setpref", dest="extra_prefs", action='append',
                              default=[], metavar="PREF=VALUE",
                              help="Defines an extra user preference (overrides those in prefs_root)")
-    gecko_group.add_argument("--leak-check", dest="leak_check", action="store_true", default=None,
-                             help="Enable leak checking (enabled by default for debug builds, "
-                             "silently ignored for opt, mobile)")
-    gecko_group.add_argument("--no-leak-check", dest="leak_check", action="store_false", default=None,
-                             help="Disable leak checking")
     gecko_group.add_argument("--reftest-internal", dest="reftest_internal", action="store_true",
                              default=None, help="Enable reftest runner implemented inside Marionette")
     gecko_group.add_argument("--reftest-external", dest="reftest_internal", action="store_false",
@@ -451,85 +472,111 @@ def set_from_config(kwargs):
 
     kwargs["config"] = config.read(kwargs["config_path"])
 
-    keys = {"paths": [("prefs", "prefs_root", True),
-                      ("run_info", "run_info", True)],
-            "web-platform-tests": [("remote_url", "remote_url", False),
-                                   ("branch", "branch", False),
-                                   ("sync_path", "sync_path", True)],
-            "SSL": [("openssl_binary", "openssl_binary", True),
-                    ("certutil_binary", "certutil_binary", True),
-                    ("ca_cert_path", "ca_cert_path", True),
-                    ("host_cert_path", "host_cert_path", True),
-                    ("host_key_path", "host_key_path", True)]}
+    kwargs["product"] = products.Product(kwargs["config"], kwargs["product"])
+
+    keys = {"paths": [("prefs", "prefs_root", "path"),
+                      ("run_info", "run_info", "path"),
+                      ("ws_extra", "ws_extra", "paths")],
+            "web-platform-tests": [("remote_url", "remote_url", "str"),
+                                   ("branch", "branch", "str"),
+                                   ("sync_path", "sync_path", "path")],
+            "SSL": [("openssl_binary", "openssl_binary", "path"),
+                    ("certutil_binary", "certutil_binary", "path"),
+                    ("ca_cert_path", "ca_cert_path", "path"),
+                    ("host_cert_path", "host_cert_path", "path"),
+                    ("host_key_path", "host_key_path", "path")]}
+
+    getters = {
+        "str": "get",
+        "path": "get_path",
+        "paths": "get_paths"
+    }
 
     for section, values in keys.items():
-        for config_value, kw_value, is_path in values:
+        for config_value, kw_value, prop_type in values:
+            if prop_type not in getters:
+                raise ValueError(f"Unknown config property type {prop_type}")
+            getter_name = getters[prop_type]
             if kw_value in kwargs and kwargs[kw_value] is None:
-                if not is_path:
-                    new_value = kwargs["config"].get(section, config.ConfigDict({})).get(config_value)
-                else:
-                    new_value = kwargs["config"].get(section, config.ConfigDict({})).get_path(config_value)
+                new_value = getattr(kwargs["config"].get(section, config.ConfigDict({})), getter_name)(config_value)
                 kwargs[kw_value] = new_value
 
-    kwargs["test_paths"] = get_test_paths(kwargs["config"])
-
-    if kwargs["tests_root"]:
-        if "/" not in kwargs["test_paths"]:
-            kwargs["test_paths"]["/"] = {}
-        kwargs["test_paths"]["/"]["tests_path"] = kwargs["tests_root"]
-
-    if kwargs["metadata_root"]:
-        if "/" not in kwargs["test_paths"]:
-            kwargs["test_paths"]["/"] = {}
-        kwargs["test_paths"]["/"]["metadata_path"] = kwargs["metadata_root"]
-
-    if kwargs.get("manifest_path"):
-        if "/" not in kwargs["test_paths"]:
-            kwargs["test_paths"]["/"] = {}
-        kwargs["test_paths"]["/"]["manifest_path"] = kwargs["manifest_path"]
+    test_paths = get_test_paths(kwargs["config"],
+                                kwargs["tests_root"],
+                                kwargs["metadata_root"],
+                                kwargs["manifest_path"])
+    check_paths(test_paths)
+    kwargs["test_paths"] = test_paths
 
     kwargs["suite_name"] = kwargs["config"].get("web-platform-tests", {}).get("name", "web-platform-tests")
 
 
-    check_paths(kwargs)
+
+class TestRoot:
+    def __init__(self, tests_path: str, metadata_path: str, manifest_path: Optional[str] = None):
+        self.tests_path = tests_path
+        self.metadata_path = metadata_path
+        if manifest_path is None:
+            manifest_path = os.path.join(metadata_path, "MANIFEST.json")
+
+        self.manifest_path = manifest_path
 
 
-def get_test_paths(config):
+TestPaths = Mapping[str, TestRoot]
+
+
+def get_test_paths(config: Mapping[str, config.ConfigDict],
+                   tests_path_override: Optional[str] = None,
+                   metadata_path_override: Optional[str] = None,
+                   manifest_path_override: Optional[str] = None) -> TestPaths:
     # Set up test_paths
     test_paths = OrderedDict()
 
     for section in config.keys():
         if section.startswith("manifest:"):
-            manifest_opts = config.get(section)
+            manifest_opts = config[section]
             url_base = manifest_opts.get("url_base", "/")
-            test_paths[url_base] = {
-                "tests_path": manifest_opts.get_path("tests"),
-                "metadata_path": manifest_opts.get_path("metadata"),
-            }
-            if "manifest" in manifest_opts:
-                test_paths[url_base]["manifest_path"] = manifest_opts.get_path("manifest")
+            tests_path = manifest_opts.get_path("tests")
+            if tests_path is None:
+                raise ValueError(f"Missing `tests` key in configuration with url_base {url_base}")
+            metadata_path = manifest_opts.get_path("metadata")
+            if metadata_path is None:
+                raise ValueError(f"Missing `metadata` key in configuration with url_base {url_base}")
+            manifest_path = manifest_opts.get_path("manifest")
+
+            if url_base == "/":
+                if tests_path_override is not None:
+                    tests_path = tests_path_override
+                if metadata_path_override is not None:
+                    metadata_path = metadata_path_override
+                if manifest_path_override is not None:
+                    manifest_path = manifest_path_override
+
+            test_paths[url_base] = TestRoot(tests_path, metadata_path, manifest_path)
+
+    if "/" not in test_paths:
+        if tests_path_override is None or metadata_path_override is None:
+            raise ValueError("No ini file configures the root url, "
+                             "so --tests and --metadata arguments are mandatory")
+        test_paths["/"] = TestRoot(tests_path_override,
+                                   metadata_path_override,
+                                   manifest_path_override)
 
     return test_paths
 
 
-def exe_path(name):
+def exe_path(name: Optional[str]) -> Optional[str]:
     if name is None:
-        return
+        return None
 
     return which(name)
 
 
-def check_paths(kwargs):
-    for test_paths in kwargs["test_paths"].values():
-        if not ("tests_path" in test_paths and
-                "metadata_path" in test_paths):
-            print("Fatal: must specify both a test path and metadata path")
-            sys.exit(1)
-        if "manifest_path" not in test_paths:
-            test_paths["manifest_path"] = os.path.join(test_paths["metadata_path"],
-                                                       "MANIFEST.json")
-        for key, path in test_paths.items():
+def check_paths(test_paths: TestPaths) -> None:
+    for test_root in test_paths.values():
+        for key in ["tests_path", "metadata_path", "manifest_path"]:
             name = key.split("_", 1)[0]
+            path = getattr(test_root, key)
 
             if name == "manifest":
                 # For the manifest we can create it later, so just check the path
@@ -548,13 +595,10 @@ def check_paths(kwargs):
 def check_args(kwargs):
     set_from_config(kwargs)
 
-    if kwargs["product"] is None:
-        kwargs["product"] = "firefox"
-
     if kwargs["manifest_update"] is None:
         kwargs["manifest_update"] = True
 
-    if "sauce" in kwargs["product"]:
+    if "sauce" in kwargs["product"].name:
         kwargs["pause_after_test"] = False
 
     if kwargs["test_list"]:
@@ -575,13 +619,18 @@ def check_args(kwargs):
         else:
             kwargs["chunk_type"] = "none"
 
-    if kwargs["test_groups_file"] is not None:
-        if kwargs["run_by_dir"] is not False:
-            print("Can't pass --test-groups and --run-by-dir")
-            sys.exit(1)
-        if not os.path.exists(kwargs["test_groups_file"]):
-            print("--test-groups file %s not found" % kwargs["test_groups_file"])
-            sys.exit(1)
+    if sum([
+        kwargs["test_groups_file"] is not None,
+        kwargs["run_by_dir"] is not False,
+        kwargs["fully_parallel"],
+    ]) > 1:
+        print('Must pass up to one of: --test-groups, --run-by-dir, --fully-parallel')
+        sys.exit(1)
+
+    if (kwargs["test_groups_file"] is not None and
+        not os.path.exists(kwargs["test_groups_file"])):
+        print("--test-groups file %s not found" % kwargs["test_groups_file"])
+        sys.exit(1)
 
     # When running on Android, the number of workers is decided by the number of
     # emulators. Each worker will use one emulator to run the Android browser.
@@ -596,7 +645,8 @@ def check_args(kwargs):
             sys.exit(1)
 
     if kwargs["processes"] is None:
-        kwargs["processes"] = 1
+        from manifest import mputil  # type: ignore
+        kwargs["processes"] = mputil.max_parallelism() if kwargs["fully_parallel"] else 1
 
     if kwargs["debugger"] is not None:
         import mozdebug
@@ -637,7 +687,7 @@ def check_args(kwargs):
             sys.exit(1)
         kwargs["openssl_binary"] = path
 
-    if kwargs["ssl_type"] != "none" and kwargs["product"] == "firefox" and kwargs["certutil_binary"]:
+    if kwargs["ssl_type"] != "none" and kwargs["product"].name == "firefox" and kwargs["certutil_binary"]:
         path = exe_path(kwargs["certutil_binary"])
         if path is None:
             print("certutil-binary argument missing or not a valid executable", file=sys.stderr)
@@ -673,16 +723,13 @@ def check_args(kwargs):
 def check_args_metadata_update(kwargs):
     set_from_config(kwargs)
 
-    if kwargs["product"] is None:
-        kwargs["product"] = "firefox"
-
     for item in kwargs["run_log"]:
         if os.path.isdir(item):
             print("Log file %s is a directory" % item, file=sys.stderr)
             sys.exit(1)
 
     if kwargs["properties_file"] is None and not kwargs["no_properties_file"]:
-        default_file = os.path.join(kwargs["test_paths"]["/"]["metadata_path"],
+        default_file = os.path.join(kwargs["test_paths"]["/"].metadata_path,
                                     "update_properties.json")
         if os.path.exists(default_file):
             kwargs["properties_file"] = default_file
@@ -711,7 +758,7 @@ def create_parser_metadata_update(product_choices=None):
                                      description="Update script for web-platform-tests tests.")
     # This will be removed once all consumers are updated to the properties-file based system
     parser.add_argument("--product", action="store", choices=product_choices,
-                        default=None, help=argparse.SUPPRESS)
+                        default="firefox", help=argparse.SUPPRESS)
     parser.add_argument("--config", action="store", type=abs_path, help="Path to config file")
     parser.add_argument("--metadata", action="store", type=abs_path, dest="metadata_root",
                         help="Path to the folder containing test metadata"),

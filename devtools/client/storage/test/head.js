@@ -962,9 +962,8 @@ var focusSearchBoxUsingShortcut = async function (panelWin, callback) {
 
   panelWin.focus();
 
-  const shortcut = await panelWin.document.l10n.formatValue(
-    "storage-filter-key"
-  );
+  const shortcut =
+    await panelWin.document.l10n.formatValue("storage-filter-key");
   synthesizeKeyShortcut(shortcut);
 
   await focused;
@@ -974,8 +973,8 @@ var focusSearchBoxUsingShortcut = async function (panelWin, callback) {
   }
 };
 
-function getCookieId(name, domain, path) {
-  return `${name}${SEPARATOR_GUID}${domain}${SEPARATOR_GUID}${path}`;
+function getCookieId(name, domain, path, partitionKey = "") {
+  return `${name}${SEPARATOR_GUID}${domain}${SEPARATOR_GUID}${path}${SEPARATOR_GUID}${partitionKey}`;
 }
 
 function setPermission(url, permission) {
@@ -1008,9 +1007,17 @@ function sidebarToggleVisible() {
  */
 function sidebarParseTreeVisible(state) {
   if (state) {
-    ok(gUI.view._currHierarchy.size > 2, "Parse tree should be visible.");
+    Assert.greater(
+      gUI.view._currHierarchy.size,
+      2,
+      "Parse tree should be visible."
+    );
   } else {
-    ok(gUI.view._currHierarchy.size <= 2, "Parse tree should not be visible.");
+    Assert.lessOrEqual(
+      gUI.view._currHierarchy.size,
+      2,
+      "Parse tree should not be visible."
+    );
   }
 }
 
@@ -1019,6 +1026,7 @@ function sidebarParseTreeVisible(state) {
  * @param  {Array} store
  *         An array containing the path to the store to which we wish to add an
  *         item.
+ * @return {Promise} A Promise that resolves to the row id of the added item.
  */
 async function performAdd(store) {
   const storeName = store.join(" > ");
@@ -1035,7 +1043,7 @@ async function performAdd(store) {
       false,
       `performAdd called for ${storeName} but it is not supported`
     );
-    return;
+    return "";
   }
 
   const eventEdit = gUI.table.once("row-edit");
@@ -1050,6 +1058,8 @@ async function performAdd(store) {
   const value = getCellValue(rowId, key);
 
   is(rowId, value, `Row '${rowId}' was successfully added.`);
+
+  return rowId;
 }
 
 // Cell css selector that can be used to count or select cells.

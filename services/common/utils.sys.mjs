@@ -510,7 +510,7 @@ export var CommonUtils = {
       throw new Error("Default value is not a number: " + def);
     }
 
-    let valueStr = branch.getCharPref(pref, null);
+    let valueStr = branch.getStringPref(pref, null);
 
     if (valueStr !== null) {
       let valueInt = parseInt(valueStr, 10);
@@ -614,7 +614,7 @@ export var CommonUtils = {
       );
     }
 
-    branch.setCharPref(pref, "" + date.getTime());
+    branch.setStringPref(pref, "" + date.getTime());
   },
 
   /**
@@ -644,7 +644,7 @@ export var CommonUtils = {
     let is = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
       Ci.nsIStringInputStream
     );
-    is.setData(s, s.length);
+    is.setByteStringData(s);
 
     let listener = Cc["@mozilla.org/network/stream-loader;1"].createInstance(
       Ci.nsIStreamLoader

@@ -12,6 +12,9 @@
 #include "jit/x86-shared/MacroAssembler-x86-shared.h"
 #include "js/HeapAPI.h"
 #include "wasm/WasmBuiltins.h"
+#include "wasm/WasmCodegenTypes.h"
+
+using js::wasm::FaultingCodeOffsetPair;
 
 namespace js {
 namespace jit {
@@ -171,6 +174,16 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
     xorl(Operand(LowWord(address)), dest.low);
     xorl(Operand(HighWord(address)), dest.high);
   }
+
+  template <typename T1, typename T2>
+  inline void cmp64SetAliased(Condition cond, T1 lhs, T2 rhs, Register dest);
+
+  template <typename T1, typename T2>
+  inline void cmp64SetNonAliased(Condition cond, T1 lhs, T2 rhs, Register dest);
+
+  template <typename T1, typename T2>
+  inline void branch64Impl(Condition cond, T1 lhs, T2 rhs, Label* success,
+                           Label* fail);
 
   /////////////////////////////////////////////////////////////////
   // X86/X64-common interface.
@@ -567,21 +580,25 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
   }
 
   void testNullSet(Condition cond, const ValueOperand& value, Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testNull(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
   void testObjectSet(Condition cond, const ValueOperand& value, Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testObject(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
   void testUndefinedSet(Condition cond, const ValueOperand& value,
                         Register dest) {
+    bool destIsZero = maybeEmitSetZeroByteRegister(value, dest);
     cond = testUndefined(cond, value);
-    emitSet(cond, dest);
+    emitSet(cond, dest, destIsZero);
   }
 
+  void cmpPtr(Register lhs, const Imm32 rhs) { cmpl(rhs, lhs); }
   void cmpPtr(Register lhs, const ImmWord rhs) { cmpl(Imm32(rhs.value), lhs); }
   void cmpPtr(Register lhs, const ImmPtr imm) {
     cmpPtr(lhs, ImmWord(uintptr_t(imm.value)));
@@ -623,12 +640,16 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
   void movePtr(ImmPtr imm, Register dest) { movl(imm, dest); }
   void movePtr(wasm::SymbolicAddress imm, Register dest) { mov(imm, dest); }
   void movePtr(ImmGCPtr imm, Register dest) { movl(imm, dest); }
-  void loadPtr(const Address& address, Register dest) {
+  FaultingCodeOffset loadPtr(const Address& address, Register dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movl(Operand(address), dest);
+    return fco;
   }
   void loadPtr(const Operand& src, Register dest) { movl(src, dest); }
-  void loadPtr(const BaseIndex& src, Register dest) {
+  FaultingCodeOffset loadPtr(const BaseIndex& src, Register dest) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movl(Operand(src), dest);
+    return fco;
   }
   void loadPtr(AbsoluteAddress address, Register dest) {
     movl(Operand(address), dest);
@@ -639,29 +660,41 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
   void load32(AbsoluteAddress address, Register dest) {
     movl(Operand(address), dest);
   }
-  void load64(const Address& address, Register64 dest) {
+  FaultingCodeOffsetPair load64(const Address& address, Register64 dest) {
+    FaultingCodeOffset fco1, fco2;
     bool highBeforeLow = address.base == dest.low;
     if (highBeforeLow) {
+      fco1 = FaultingCodeOffset(currentOffset());
       movl(Operand(HighWord(address)), dest.high);
+      fco2 = FaultingCodeOffset(currentOffset());
       movl(Operand(LowWord(address)), dest.low);
     } else {
+      fco1 = FaultingCodeOffset(currentOffset());
       movl(Operand(LowWord(address)), dest.low);
+      fco2 = FaultingCodeOffset(currentOffset());
       movl(Operand(HighWord(address)), dest.high);
     }
+    return FaultingCodeOffsetPair(fco1, fco2);
   }
-  void load64(const BaseIndex& address, Register64 dest) {
+  FaultingCodeOffsetPair load64(const BaseIndex& address, Register64 dest) {
     // If you run into this, relax your register allocation constraints.
     MOZ_RELEASE_ASSERT(
         !((address.base == dest.low || address.base == dest.high) &&
           (address.index == dest.low || address.index == dest.high)));
+    FaultingCodeOffset fco1, fco2;
     bool highBeforeLow = address.base == dest.low || address.index == dest.low;
     if (highBeforeLow) {
+      fco1 = FaultingCodeOffset(currentOffset());
       movl(Operand(HighWord(address)), dest.high);
+      fco2 = FaultingCodeOffset(currentOffset());
       movl(Operand(LowWord(address)), dest.low);
     } else {
+      fco1 = FaultingCodeOffset(currentOffset());
       movl(Operand(LowWord(address)), dest.low);
+      fco2 = FaultingCodeOffset(currentOffset());
       movl(Operand(HighWord(address)), dest.high);
     }
+    return FaultingCodeOffsetPair(fco1, fco2);
   }
   template <typename T>
   void load64Unaligned(const T& address, Register64 dest) {
@@ -679,11 +712,15 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
   void storePtr(ImmGCPtr imm, T address) {
     movl(imm, Operand(address));
   }
-  void storePtr(Register src, const Address& address) {
+  FaultingCodeOffset storePtr(Register src, const Address& address) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movl(src, Operand(address));
+    return fco;
   }
-  void storePtr(Register src, const BaseIndex& address) {
+  FaultingCodeOffset storePtr(Register src, const BaseIndex& address) {
+    FaultingCodeOffset fco = FaultingCodeOffset(currentOffset());
     movl(src, Operand(address));
+    return fco;
   }
   void storePtr(Register src, const Operand& dest) { movl(src, dest); }
   void storePtr(Register src, AbsoluteAddress address) {
@@ -696,9 +733,12 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
     movw(src, Operand(address));
   }
   template <typename T>
-  void store64(Register64 src, const T& address) {
+  FaultingCodeOffsetPair store64(Register64 src, const T& address) {
+    FaultingCodeOffset fco1 = FaultingCodeOffset(currentOffset());
     movl(src.low, Operand(LowWord(address)));
+    FaultingCodeOffset fco2 = FaultingCodeOffset(currentOffset());
     movl(src.high, Operand(HighWord(address)));
+    return FaultingCodeOffsetPair(fco1, fco2);
   }
   void store64(Imm64 imm, Address address) {
     movl(imm.low(), Operand(LowWord(address)));
@@ -889,6 +929,17 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
     movl(payloadOf(src), dest);
   }
 
+  void unboxWasmAnyRefGCThingForGCBarrier(const Address& src, Register dest) {
+    movl(ImmWord(wasm::AnyRef::GCThingMask), dest);
+    andl(Operand(src), dest);
+  }
+
+  void getWasmAnyRefGCThingChunk(Register src, Register dest) {
+    MOZ_ASSERT(src != dest);
+    movl(ImmWord(wasm::AnyRef::GCThingChunkMask), dest);
+    andl(src, dest);
+  }
+
   void notBoolean(const ValueOperand& val) { xorl(Imm32(1), val.payloadReg()); }
 
   template <typename T>
@@ -932,19 +983,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
   void convertDoubleToPtr(FloatRegister src, Register dest, Label* fail,
                           bool negativeZeroCheck = true) {
     convertDoubleToInt32(src, dest, fail, negativeZeroCheck);
-  }
-
-  void boolValueToDouble(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToDouble(operand.payloadReg(), dest);
-  }
-  void boolValueToFloat32(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToFloat32(operand.payloadReg(), dest);
-  }
-  void int32ValueToDouble(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToDouble(operand.payloadReg(), dest);
-  }
-  void int32ValueToFloat32(const ValueOperand& operand, FloatRegister dest) {
-    convertInt32ToFloat32(operand.payloadReg(), dest);
   }
 
   void loadConstantDouble(double d, FloatRegister dest);
@@ -1128,20 +1166,17 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared {
     addl(Imm32(1), payloadOf(addr));
   }
 
-  inline void ensureDouble(const ValueOperand& source, FloatRegister dest,
-                           Label* failure);
-
  public:
   // Used from within an Exit frame to handle a pending exception.
-  void handleFailureWithHandlerTail(Label* profilerExitTail,
-                                    Label* bailoutTail);
+  void handleFailureWithHandlerTail(Label* profilerExitTail, Label* bailoutTail,
+                                    uint32_t* returnValueCheckOffset);
 
   // Instrumentation for entering and leaving the profiler.
   void profilerEnterFrame(Register framePtr, Register scratch);
   void profilerExitFrame();
 };
 
-typedef MacroAssemblerX86 MacroAssemblerSpecific;
+using MacroAssemblerSpecific = MacroAssemblerX86;
 
 }  // namespace jit
 }  // namespace js

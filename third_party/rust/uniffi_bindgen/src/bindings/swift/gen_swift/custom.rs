@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::backend::CodeType;
+use super::CodeType;
 
 #[derive(Debug)]
 pub struct CustomCodeType {
@@ -17,7 +17,7 @@ impl CustomCodeType {
 
 impl CodeType for CustomCodeType {
     fn type_label(&self) -> String {
-        self.name.clone()
+        super::SwiftCodeOracle.class_name(&self.name)
     }
 
     fn canonical_name(&self) -> String {

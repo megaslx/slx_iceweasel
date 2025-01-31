@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 
 import itertools
 import json
@@ -43,25 +41,25 @@ class SingleTestMixin(object):
     def _find_misc_tests(self, dirs, changed_files, gpu=False):
         manifests = [
             (
-                os.path.join(dirs["abs_mochitest_dir"], "tests", "mochitest.ini"),
+                os.path.join(dirs["abs_mochitest_dir"], "tests", "mochitest.toml"),
                 "mochitest-plain",
             ),
             (
-                os.path.join(dirs["abs_mochitest_dir"], "chrome", "chrome.ini"),
+                os.path.join(dirs["abs_mochitest_dir"], "chrome", "chrome.toml"),
                 "mochitest-chrome",
             ),
             (
                 os.path.join(
-                    dirs["abs_mochitest_dir"], "browser", "browser-chrome.ini"
+                    dirs["abs_mochitest_dir"], "browser", "browser-chrome.toml"
                 ),
                 "mochitest-browser-chrome",
             ),
             (
-                os.path.join(dirs["abs_mochitest_dir"], "a11y", "a11y.ini"),
+                os.path.join(dirs["abs_mochitest_dir"], "a11y", "a11y.toml"),
                 "mochitest-a11y",
             ),
             (
-                os.path.join(dirs["abs_xpcshell_dir"], "tests", "xpcshell.ini"),
+                os.path.join(dirs["abs_xpcshell_dir"], "tests", "xpcshell.toml"),
                 "xpcshell",
             ),
         ]
@@ -71,7 +69,7 @@ class SingleTestMixin(object):
         #  HACK: import here so we don't need import for rest of class
         from manifestparser import TestManifest
 
-        for (path, suite) in manifests:
+        for path, suite in manifests:
             if os.path.exists(path):
                 man = TestManifest([path], strict=False)
                 active = man.active_tests(
@@ -122,7 +120,7 @@ class SingleTestMixin(object):
         import manifest
 
         self.reftest_test_dir = os.path.join(dirs["abs_reftest_dir"], "tests")
-        for (path, suite, subsuite) in ref_manifests:
+        for path, suite, subsuite in ref_manifests:
             if os.path.exists(path):
                 man = manifest.ReftestManifest()
                 man.load(path)
@@ -228,6 +226,11 @@ class SingleTestMixin(object):
                 ): "mochitest-browser-media",
                 (
                     "mochitest-browser-chrome",
+                    "translations",
+                    None,
+                ): "mochitest-browser-translations",
+                (
+                    "mochitest-browser-chrome",
                     "devtools",
                     None,
                 ): "mochitest-devtools-chrome",
@@ -236,7 +239,7 @@ class SingleTestMixin(object):
                     "mochitest-browser-chrome",
                     "screenshots",
                     None,
-                ): "mochitest-browser-chrome-screenshots",  # noqa
+                ): "mochitest-browser-screenshots",  # noqa
                 ("mochitest-plain", "media", None): "mochitest-media",
                 # below should be on test-verify-gpu job
                 ("mochitest-chrome", "gpu", None): "mochitest-chrome-gpu",
@@ -282,8 +285,14 @@ class SingleTestMixin(object):
 
             repo_tests_path = os.path.join("testing", "web-platform", extra, "tests")
             tests_path = os.path.join("tests", "web-platform", extra, "tests")
-            for (type, path, test) in man:
-                if type not in ["testharness", "reftest", "wdspec"]:
+            for type, path, test in man:
+                if type not in [
+                    "testharness",
+                    "reftest",
+                    "wdspec",
+                    "crashtest",
+                    "print-reftest",
+                ]:
                     continue
                 repo_path = os.path.join(repo_tests_path, path)
                 # manifest paths use os.sep (like backslash on Windows) but

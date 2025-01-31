@@ -1,71 +1,121 @@
-From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Wed, 10 May 2023 08:01:00 +0000
-Subject: Bug 1828065 - cherry-pick upstream libwebrtc commit 6fc1ae58be.
- r=webrtc-reviewers,mjf
+From: Jan Grulich <jgrulich@redhat.com>
+Date: Thu, 30 Nov 2023 11:49:00 +0000
+Subject: Bug 1844020 - Add option to DeviceInfo::GetDeviceName() identifying a
+ placeholder device r=pehrsons,webrtc-reviewers
 
-Upstream commit: https://webrtc.googlesource.com/src/+/6fc1ae58be7cbb61ad0431d90eb7a7dc333de2f2
-    In DeviceInfoDS check that out vars were set
+Adds a new parameter "deviceIsPlaceholder" that will be set to true in
+case the returned device is not a real device but a placeholder that is
+just used to inform about camera device existence.
 
-    Bug: chromium:1441804
-    Change-Id: Id07cb61519315d77c2d7cdab1053efaaf7473e1a
-    Reviewed-on: https://webrtc-review.googlesource.com/c/src/+/304060
-    Reviewed-by: Ilya Nikolaevskiy <ilnik@webrtc.org>
-    Reviewed-by: Per Kjellander <perkj@webrtc.org>
-    Commit-Queue: Ilya Nikolaevskiy <ilnik@webrtc.org>
-    Cr-Commit-Position: refs/heads/main@{#39982}
-
-Differential Revision: https://phabricator.services.mozilla.com/D177236
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/60d381b6016ae5af0181b44c6a31b41eab094793
+Differential Revision: https://phabricator.services.mozilla.com/D189929
+Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/ed31b2acb5fbca3e2d0691a64bc52e65952070c0
 ---
- modules/video_capture/windows/device_info_ds.cc    | 13 +++++++------
- modules/video_capture/windows/help_functions_ds.cc |  3 +++
- 2 files changed, 10 insertions(+), 6 deletions(-)
+ modules/video_capture/linux/device_info_pipewire.cc | 4 +++-
+ modules/video_capture/linux/device_info_pipewire.h  | 3 ++-
+ modules/video_capture/linux/device_info_v4l2.cc     | 3 ++-
+ modules/video_capture/linux/device_info_v4l2.h      | 3 ++-
+ modules/video_capture/video_capture.h               | 3 ++-
+ modules/video_capture/windows/device_info_ds.cc     | 3 ++-
+ modules/video_capture/windows/device_info_ds.h      | 3 ++-
+ 7 files changed, 15 insertions(+), 7 deletions(-)
 
+diff --git a/modules/video_capture/linux/device_info_pipewire.cc b/modules/video_capture/linux/device_info_pipewire.cc
+index b802fe580c..db2a3c7099 100644
+--- a/modules/video_capture/linux/device_info_pipewire.cc
++++ b/modules/video_capture/linux/device_info_pipewire.cc
+@@ -50,8 +50,10 @@ int32_t DeviceInfoPipeWire::GetDeviceName(uint32_t deviceNumber,
+                                           uint32_t deviceUniqueIdUTF8Length,
+                                           char* productUniqueIdUTF8,
+                                           uint32_t productUniqueIdUTF8Length,
+-                                          pid_t* pid) {
++                                          pid_t* pid,
++                                          bool* deviceIsPlaceholder) {
+   RTC_CHECK(pipewire_session_);
++
+   if (deviceNumber >= NumberOfDevices())
+     return -1;
+ 
+diff --git a/modules/video_capture/linux/device_info_pipewire.h b/modules/video_capture/linux/device_info_pipewire.h
+index 8a33d75892..00715c94bc 100644
+--- a/modules/video_capture/linux/device_info_pipewire.h
++++ b/modules/video_capture/linux/device_info_pipewire.h
+@@ -30,7 +30,8 @@ class DeviceInfoPipeWire : public DeviceInfoImpl {
+                         uint32_t deviceUniqueIdUTF8Length,
+                         char* productUniqueIdUTF8 = nullptr,
+                         uint32_t productUniqueIdUTF8Length = 0,
+-                        pid_t* pid = 0) override;
++                        pid_t* pid = 0,
++                        bool* deviceIsPlaceholder = 0) override;
+   /*
+    * Fills the membervariable _captureCapabilities with capabilites for the
+    * given device name.
+diff --git a/modules/video_capture/linux/device_info_v4l2.cc b/modules/video_capture/linux/device_info_v4l2.cc
+index 04caaea592..401c38f9c5 100644
+--- a/modules/video_capture/linux/device_info_v4l2.cc
++++ b/modules/video_capture/linux/device_info_v4l2.cc
+@@ -232,7 +232,8 @@ int32_t DeviceInfoV4l2::GetDeviceName(uint32_t deviceNumber,
+                                       uint32_t deviceUniqueIdUTF8Length,
+                                       char* /*productUniqueIdUTF8*/,
+                                       uint32_t /*productUniqueIdUTF8Length*/,
+-                                      pid_t* /*pid*/) {
++                                      pid_t* /*pid*/,
++                                      bool* /*deviceIsPlaceholder*/) {
+   // Travel through /dev/video [0-63]
+   uint32_t count = 0;
+   char device[20];
+diff --git a/modules/video_capture/linux/device_info_v4l2.h b/modules/video_capture/linux/device_info_v4l2.h
+index 0bec3eb765..55415845ad 100644
+--- a/modules/video_capture/linux/device_info_v4l2.h
++++ b/modules/video_capture/linux/device_info_v4l2.h
+@@ -36,7 +36,8 @@ class DeviceInfoV4l2 : public DeviceInfoImpl {
+                         uint32_t deviceUniqueIdUTF8Length,
+                         char* productUniqueIdUTF8 = 0,
+                         uint32_t productUniqueIdUTF8Length = 0,
+-                        pid_t* pid=0) override;
++                        pid_t* pid = 0,
++                        bool* deviceIsPlaceholder = 0) override;
+   /*
+    * Fills the membervariable _captureCapabilities with capabilites for the
+    * given device name.
+diff --git a/modules/video_capture/video_capture.h b/modules/video_capture/video_capture.h
+index 43a6a7f832..f59c34f8b2 100644
+--- a/modules/video_capture/video_capture.h
++++ b/modules/video_capture/video_capture.h
+@@ -74,7 +74,8 @@ class VideoCaptureModule : public RefCountInterface {
+                                   uint32_t deviceUniqueIdUTF8Length,
+                                   char* productUniqueIdUTF8 = 0,
+                                   uint32_t productUniqueIdUTF8Length = 0,
+-                                  pid_t* pid = 0) = 0;
++                                  pid_t* pid = 0,
++                                  bool* deviceIsPlaceholder = 0) = 0;
+ 
+     // Returns the number of capabilities this device.
+     virtual int32_t NumberOfCapabilities(const char* deviceUniqueIdUTF8) = 0;
 diff --git a/modules/video_capture/windows/device_info_ds.cc b/modules/video_capture/windows/device_info_ds.cc
-index 6b4c57d01e..2c192fe4f6 100644
+index f6927281f3..8ca741239c 100644
 --- a/modules/video_capture/windows/device_info_ds.cc
 +++ b/modules/video_capture/windows/device_info_ds.cc
-@@ -505,9 +505,9 @@ int32_t DeviceInfoDS::CreateCapabilityMap(const char* deviceUniqueIdUTF8)
-       }
+@@ -173,7 +173,8 @@ int32_t DeviceInfoDS::GetDeviceName(uint32_t deviceNumber,
+                                     uint32_t deviceUniqueIdUTF8Length,
+                                     char* productUniqueIdUTF8,
+                                     uint32_t productUniqueIdUTF8Length,
+-                                    pid_t* pid) {
++                                    pid_t* pid,
++                                    bool* deviceIsPlaceholder) {
+   MutexLock lock(&_apiLock);
+   const int32_t result = GetDeviceInfo(
+       deviceNumber, deviceNameUTF8, deviceNameLength, deviceUniqueIdUTF8,
+diff --git a/modules/video_capture/windows/device_info_ds.h b/modules/video_capture/windows/device_info_ds.h
+index e6dfaed366..a9a1449b99 100644
+--- a/modules/video_capture/windows/device_info_ds.h
++++ b/modules/video_capture/windows/device_info_ds.h
+@@ -51,7 +51,8 @@ class DeviceInfoDS : public DeviceInfoImpl {
+                         uint32_t deviceUniqueIdUTF8Length,
+                         char* productUniqueIdUTF8,
+                         uint32_t productUniqueIdUTF8Length,
+-                        pid_t* pid) override;
++                        pid_t* pid,
++                        bool* deviceIsPlaceholder) override;
  
-       if (hrVC == S_OK) {
--        LONGLONG* frameDurationList;
--        LONGLONG maxFPS;
--        long listSize;
-+        LONGLONG* frameDurationList = NULL;
-+        LONGLONG maxFPS = 0;
-+        long listSize = 0;
-         SIZE size;
-         size.cx = capability.width;
-         size.cy = capability.height;
-@@ -520,9 +520,10 @@ int32_t DeviceInfoDS::CreateCapabilityMap(const char* deviceUniqueIdUTF8)
-         hrVC = videoControlConfig->GetFrameRateList(
-             outputCapturePin, tmp, size, &listSize, &frameDurationList);
- 
--        // On some odd cameras, you may get a 0 for duration.
--        // GetMaxOfFrameArray returns the lowest duration (highest FPS)
--        if (hrVC == S_OK && listSize > 0 &&
-+        // On some odd cameras, you may get a 0 for duration. Some others may
-+        // not update the out vars. GetMaxOfFrameArray returns the lowest
-+        // duration (highest FPS), or 0 if there was no list with elements.
-+        if (hrVC == S_OK &&
-             0 != (maxFPS = GetMaxOfFrameArray(frameDurationList, listSize))) {
-           capability.maxFPS = static_cast<int>(10000000 / maxFPS);
-           capability.supportFrameRateControl = true;
-diff --git a/modules/video_capture/windows/help_functions_ds.cc b/modules/video_capture/windows/help_functions_ds.cc
-index b767726107..47fecfe4a1 100644
---- a/modules/video_capture/windows/help_functions_ds.cc
-+++ b/modules/video_capture/windows/help_functions_ds.cc
-@@ -21,6 +21,9 @@ namespace webrtc {
- namespace videocapturemodule {
- // This returns minimum :), which will give max frame rate...
- LONGLONG GetMaxOfFrameArray(LONGLONG* maxFps, long size) {
-+  if (!maxFps || size <= 0) {
-+    return 0;
-+  }
-   LONGLONG maxFPS = maxFps[0];
-   for (int i = 0; i < size; i++) {
-     if (maxFPS > maxFps[i])
--- 
-2.34.1
-
+   /*
+    * Display OS /capture device specific settings dialog

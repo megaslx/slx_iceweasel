@@ -132,6 +132,7 @@ class nsMultiMixedConv : public nsIStreamConverter {
   NS_DECL_ISUPPORTS
   NS_DECL_NSISTREAMCONVERTER
   NS_DECL_NSISTREAMLISTENER
+  NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
   NS_DECL_NSIREQUESTOBSERVER
 
   explicit nsMultiMixedConv();
@@ -150,15 +151,17 @@ class nsMultiMixedConv : public nsIStreamConverter {
   nsCOMPtr<nsIStreamListener> mFinalListener;  // this guy gets the converted
                                                // data via his OnDataAvailable()
 
-  nsCOMPtr<nsIChannel>
-      mChannel;  // The channel as we get in in OnStartRequest call
-  RefPtr<nsPartChannel> mPartChannel;  // the channel for the given part we're
-                                       // processing. one channel per part.
+  // The channel as we get it in OnStartRequest call
+  nsCOMPtr<nsIChannel> mChannel;
+  // the channel for the given part we're
+  // processing. one channel per part.
+  RefPtr<nsPartChannel> mPartChannel;
   nsCOMPtr<nsISupports> mContext;
   nsCString mContentType;
   nsCString mContentDisposition;
   nsCString mContentSecurityPolicy;
   nsCString mRootContentSecurityPolicy;
+  nsCString mRootContentDisposition;
   uint64_t mContentLength{UINT64_MAX};
   uint64_t mTotalSent{0};
 

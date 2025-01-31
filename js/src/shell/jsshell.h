@@ -24,7 +24,7 @@
 
 // Some platform hooks must be implemented for single-step profiling.
 #if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS64) || \
-    defined(JS_SIMULATOR_MIPS32)
+    defined(JS_SIMULATOR_MIPS32) || defined(JS_SIMULATOR_ARM64)
 #  define SINGLESTEP_PROFILING
 #endif
 
@@ -112,11 +112,6 @@ extern bool enableWasm;
 extern bool enableSharedMemory;
 extern bool enableWasmBaseline;
 extern bool enableWasmOptimizing;
-
-#define WASM_FEATURE(NAME, ...) extern bool enableWasm##NAME;
-JS_FOR_WASM_FEATURES(WASM_FEATURE);
-#undef WASM_FEATURE
-
 extern bool enableWasmVerbose;
 extern bool enableTestWasmAwaitTier2;
 extern bool enableSourcePragmas;
@@ -128,17 +123,13 @@ extern bool enablePropertyErrorMessageFix;
 extern bool enableIteratorHelpers;
 extern bool enableShadowRealms;
 extern bool enableArrayGrouping;
-extern bool enableArrayFromAsync;
 extern bool enableWellFormedUnicodeStrings;
 extern bool enableArrayBufferTransfer;
-extern bool enablePrivateClassFields;
-extern bool enablePrivateClassMethods;
-extern bool enableChangeArrayByCopy;
-#ifdef ENABLE_NEW_SET_METHODS
+extern bool enableArrayBufferResizable;
+extern bool enableSymbolsAsWeakMapKeys;
 extern bool enableNewSetMethods;
-#endif
-extern bool enableClassStaticBlocks;
-extern bool enableImportAssertions;
+extern bool enableImportAttributes;
+extern bool enableDestructuringFuse;
 #ifdef JS_GC_ZEAL
 extern uint32_t gZealBits;
 extern uint32_t gZealFrequency;
@@ -193,10 +184,15 @@ class OffThreadJob;
 
 // Per-context shell state.
 struct ShellContext {
-  explicit ShellContext(JSContext* cx);
+  enum IsWorkerEnum { Worker = true, MainThread = false };
+
+  explicit ShellContext(JSContext* cx, IsWorkerEnum isWorker_);
+  bool registerWithCx(JSContext* cx);
   ~ShellContext();
 
-  bool isWorker;
+  JSContext* cx_;
+
+  const IsWorkerEnum isWorker;
   bool lastWarningEnabled;
 
   // Track promise rejections and report unhandled rejections.

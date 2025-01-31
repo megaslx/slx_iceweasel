@@ -8,7 +8,6 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
   SearchUtils: "resource://gre/modules/SearchUtils.sys.mjs",
 });
 
@@ -20,10 +19,6 @@ const BROWSER_RICH_SUGGEST_PREF = "browser.urlbar.richSuggestions.featureGate";
 const REMOTE_TIMEOUT_PREF = "browser.search.suggest.timeout";
 const REMOTE_TIMEOUT_DEFAULT = 500; // maximum time (ms) to wait before giving up on a remote suggestions
 
-const SEARCH_DATA_TRANSFERRED_SCALAR = "browser.search.data_transferred";
-const SEARCH_TELEMETRY_KEY_PREFIX = "sggt";
-const SEARCH_TELEMETRY_PRIVATE_BROWSING_KEY_SUFFIX = "pb";
-
 const SEARCH_TELEMETRY_LATENCY = "SEARCH_SUGGESTIONS_LATENCY_MS";
 
 /**
@@ -33,8 +28,10 @@ const SEARCH_TELEMETRY_LATENCY = "SEARCH_SUGGESTIONS_LATENCY_MS";
  *   An UUID string, without leading or trailing braces.
  */
 function uuid() {
-  let uuid = Services.uuid.generateUUID().toString();
-  return uuid.slice(1, uuid.length - 1);
+  return Services.uuid
+    .generateUUID()
+    .toString()
+    .slice(1, uuid.length - 1);
 }
 
 /**
@@ -390,8 +387,6 @@ export class SearchSuggestionController {
    *   The search context.
    */
   #reportTelemetryForEngine(context) {
-    this.#reportBandwidthForEngine(context);
-
     // Stop the latency stopwatch.
     if (!context.telemetryHandled) {
       if (context.abort) {
@@ -412,44 +407,6 @@ export class SearchSuggestionController {
   }
 
   /**
-   * Report bandwidth used by search activities. It only reports when it matches
-   * search provider information.
-   *
-   * @param {object} context
-   *   The search context.
-   * @param {boolean} context.abort
-   *   If the request should be aborted.
-   * @param {string} context.engineId
-   *   The search engine identifier.
-   * @param {object} context.request
-   *   Request information
-   * @param {boolean} context.privateMode
-   *   Set to true if this is coming from a private browsing mode request.
-   */
-  #reportBandwidthForEngine(context) {
-    if (context.abort || !context.request.channel) {
-      return;
-    }
-
-    let channel = ChannelWrapper.get(context.request.channel);
-    let bytesTransferred = channel.requestSize + channel.responseSize;
-    if (bytesTransferred == 0) {
-      return;
-    }
-
-    let telemetryKey = `${SEARCH_TELEMETRY_KEY_PREFIX}-${context.engineId}`;
-    if (context.privateMode) {
-      telemetryKey += `-${SEARCH_TELEMETRY_PRIVATE_BROWSING_KEY_SUFFIX}`;
-    }
-
-    Services.telemetry.keyedScalarAdd(
-      SEARCH_DATA_TRANSFERRED_SCALAR,
-      telemetryKey,
-      bytesTransferred
-    );
-  }
-
-  /**
    * Fetch suggestions from the search engine over the network.
    *
    * @param {object} context
@@ -459,7 +416,7 @@ export class SearchSuggestionController {
    *   rejected if there is an error.
    */
   #fetchRemote(context) {
-    let deferredResponse = lazy.PromiseUtils.defer();
+    let deferredResponse = Promise.withResolvers();
     let request = (context.request = new XMLHttpRequest());
     // Expect the response type to be JSON, so that the network layer will
     // decode it for us. This will also ignore incorrect Mime Types, as we are
@@ -526,14 +483,14 @@ export class SearchSuggestionController {
       this.#onRemoteLoaded(context, deferredResponse);
     });
 
-    request.addEventListener("error", evt => {
+    request.addEventListener("error", () => {
       this.#reportTelemetryForEngine(context);
       deferredResponse.resolve("HTTP error");
     });
 
     // Reject for an abort assuming it's always from .stop() in which case we
     // shouldn't return local or remote results for existing searches.
-    request.addEventListener("abort", evt => {
+    request.addEventListener("abort", () => {
       context.timer.cancel();
       this.#reportTelemetryForEngine(context);
       deferredResponse.reject("HTTP request aborted");
@@ -747,13 +704,13 @@ export class SearchSuggestionController {
   #newSearchSuggestionEntry(suggestion, richSuggestionData, trending) {
     if (richSuggestionData && (!trending || this.richSuggestionsEnabled)) {
       // We have valid rich suggestions.
-      let args = {
-        matchPrefix: richSuggestionData?.mp,
-        tail: richSuggestionData?.t,
-        trending,
-      };
+      let args = { trending };
 
-      if (this.richSuggestionsEnabled) {
+      // RichSuggestions come with icon and tail data, we only want one or the other
+      if (!richSuggestionData?.i) {
+        args.matchPrefix = richSuggestionData?.mp;
+        args.tail = richSuggestionData?.t;
+      } else if (this.richSuggestionsEnabled) {
         args.icon = richSuggestionData?.i;
         args.description = richSuggestionData?.a;
       }

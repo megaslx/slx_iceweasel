@@ -24,6 +24,7 @@
 #include "nsCOMPtr.h"
 #include "PLDHashTable.h"
 #include "nsCycleCollectionParticipant.h"
+#include "mozilla/intl/Localization.h"
 
 #include "mozilla/LinkedList.h"
 #include "mozilla/UniquePtr.h"
@@ -120,18 +121,6 @@ class nsDocLoader : public nsIDocumentLoader,
   void OnSecurityChange(nsISupports* aContext, uint32_t aState);
 
   void SetDocumentOpenedButNotLoaded() { mDocumentOpenedButNotLoaded = true; }
-
-  bool TreatAsBackgroundLoad();
-
-  void SetFakeOnLoadDispatched() { mHasFakeOnLoadDispatched = true; };
-
-  bool HasFakeOnLoadDispatched() { return mHasFakeOnLoadDispatched; };
-
-  void ResetToFirstLoad() {
-    mHasFakeOnLoadDispatched = false;
-    mIsReadyToHandlePostMessage = false;
-    mTreatAsBackgroundLoad = false;
-  };
 
   uint32_t ChildCount() const { return mChildList.Length(); }
 
@@ -333,12 +322,7 @@ class nsDocLoader : public nsIDocumentLoader,
      flushing. */
   bool mIsFlushingLayout;
 
-  bool mTreatAsBackgroundLoad;
-
  private:
-  bool mHasFakeOnLoadDispatched;
-
-  bool mIsReadyToHandlePostMessage;
   /**
    * This flag indicates that the loader is waiting for completion of
    * a document.open-triggered "document load".  This is set when
@@ -379,6 +363,11 @@ class nsDocLoader : public nsIDocumentLoader,
   bool IsBlockingLoadEvent() const {
     return mIsLoadingDocument || mDocumentOpenedButNotLoaded;
   }
+
+  RefPtr<mozilla::intl::Localization> mL10n;
+  static mozilla::Maybe<nsLiteralCString> StatusCodeToL10nId(nsresult aStatus);
+  nsresult FormatStatusMessage(nsresult aStatus, const nsAString& aHost,
+                               nsAString& aRetVal);
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsDocLoader, NS_THIS_DOCLOADER_IMPL_CID)

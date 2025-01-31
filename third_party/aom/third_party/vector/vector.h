@@ -3,7 +3,7 @@ The MIT License(MIT)
 Copyright(c) 2016 Peter Goldsborough
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files(the "Software"), to deal in
+this software and associated documentation files (the "Software"), to deal in
 the Software without restriction, including without limitation the rights to
 use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
 the Software, and to permit persons to whom the Software is furnished to do so,
@@ -59,6 +59,7 @@ typedef struct Iterator {
 /* Constructor */
 int aom_vector_setup(Vector *vector, size_t capacity, size_t element_size);
 
+#if 0
 /* Copy Constructor */
 int aom_vector_copy(Vector *destination, Vector *source);
 
@@ -72,16 +73,20 @@ int aom_vector_move(Vector *destination, Vector *source);
 int aom_vector_move_assign(Vector *destination, Vector *source);
 
 int aom_vector_swap(Vector *destination, Vector *source);
+#endif  // 0
 
 /* Destructor */
 int aom_vector_destroy(Vector *vector);
 
 /* Insertion */
 int aom_vector_push_back(Vector *vector, void *element);
+#if 0
 int aom_vector_push_front(Vector *vector, void *element);
 int aom_vector_insert(Vector *vector, size_t index, void *element);
 int aom_vector_assign(Vector *vector, size_t index, void *element);
+#endif  // 0
 
+#if 0
 /* Deletion */
 int aom_vector_pop_back(Vector *vector);
 int aom_vector_pop_front(Vector *vector);
@@ -95,10 +100,12 @@ void *aom_vector_front(Vector *vector);
 void *aom_vector_back(Vector *vector);
 #define VECTOR_GET_AS(type, aom_vector_pointer, index) \
   *((type *)aom_vector_get((aom_vector_pointer), (index)))
+#endif  // 0
 
 /* Information */
 bool aom_vector_is_initialized(const Vector *vector);
 size_t aom_vector_byte_size(const Vector *vector);
+#if 0
 size_t aom_vector_free_space(const Vector *vector);
 bool aom_vector_is_empty(const Vector *vector);
 
@@ -106,54 +113,40 @@ bool aom_vector_is_empty(const Vector *vector);
 int aom_vector_resize(Vector *vector, size_t new_size);
 int aom_vector_reserve(Vector *vector, size_t minimum_capacity);
 int aom_vector_shrink_to_fit(Vector *vector);
+#endif  // 0
 
 /* Iterators */
 Iterator aom_vector_begin(Vector *vector);
+#if 0
 Iterator aom_vector_end(Vector *vector);
+#endif  // 0
 Iterator aom_vector_iterator(Vector *vector, size_t index);
 
-void *iterator_get(Iterator *iterator);
-#define ITERATOR_GET_AS(type, iterator) *((type *)iterator_get((iterator)))
+void *aom_iterator_get(Iterator *iterator);
+#if 0
+#define ITERATOR_GET_AS(type, iterator) *((type *)aom_iterator_get((iterator)))
 
-int iterator_erase(Vector *vector, Iterator *iterator);
+int aom_iterator_erase(Vector *vector, Iterator *iterator);
+#endif  // 0
 
-void iterator_increment(Iterator *iterator);
-void iterator_decrement(Iterator *iterator);
+void aom_iterator_increment(Iterator *iterator);
+#if 0
+void aom_iterator_decrement(Iterator *iterator);
 
-void *iterator_next(Iterator *iterator);
-void *iterator_previous(Iterator *iterator);
+void *aom_iterator_next(Iterator *iterator);
+void *aom_iterator_previous(Iterator *iterator);
 
-bool iterator_equals(Iterator *first, Iterator *second);
-bool iterator_is_before(Iterator *first, Iterator *second);
-bool iterator_is_after(Iterator *first, Iterator *second);
+bool aom_iterator_equals(Iterator *first, Iterator *second);
+bool aom_iterator_is_before(Iterator *first, Iterator *second);
+bool aom_iterator_is_after(Iterator *first, Iterator *second);
 
-size_t iterator_index(Vector *vector, Iterator *iterator);
+size_t aom_iterator_index(Vector *vector, Iterator *iterator);
 
-#define VECTOR_FOR_EACH(aom_vector_pointer, iterator_name)           \
+#define VECTOR_FOR_EACH(aom_vector_pointer, iterator_name)               \
   for (Iterator(iterator_name) = aom_vector_begin((aom_vector_pointer)), \
       end = aom_vector_end((aom_vector_pointer));                        \
-       !iterator_equals(&(iterator_name), &end);                 \
-       iterator_increment(&(iterator_name)))
-
-/***** PRIVATE *****/
-
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-
-bool _vector_should_grow(Vector *vector);
-bool _vector_should_shrink(Vector *vector);
-
-size_t _vector_free_bytes(const Vector *vector);
-void *_vector_offset(Vector *vector, size_t index);
-const void *_vector_const_offset(const Vector *vector, size_t index);
-
-void _vector_assign(Vector *vector, size_t index, void *element);
-
-int _vector_move_right(Vector *vector, size_t index);
-void _vector_move_left(Vector *vector, size_t index);
-
-int _vector_adjust_capacity(Vector *vector);
-int _vector_reallocate(Vector *vector, size_t new_capacity);
-
-void _vector_swap(size_t *first, size_t *second);
+       !aom_iterator_equals(&(iterator_name), &end);                     \
+       aom_iterator_increment(&(iterator_name)))
+#endif  // 0
 
 #endif /* VECTOR_H */

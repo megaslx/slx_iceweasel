@@ -63,8 +63,6 @@ const TEST_CASES = [
 ];
 
 add_setup(async function () {
-  Services.telemetry.setEventRecordingEnabled("security.ui.xfocsperror", true);
-
   await SpecialPowers.pushPrefEnv({
     set: [
       ["security.xfocsp.errorReporting.enabled", true],
@@ -98,7 +96,7 @@ async function testReporting(test) {
     test.frame_uri,
     true
   );
-  BrowserTestUtils.loadURIString(browser, test.test_uri);
+  BrowserTestUtils.startLoadingURIString(browser, test.test_uri);
   await loaded;
 
   let { type } = test;
@@ -108,11 +106,11 @@ async function testReporting(test) {
     return iframe.browsingContext;
   });
 
-  await SpecialPowers.spawn(frameBC, [type], async obj => {
+  await SpecialPowers.spawn(frameBC, [type], async () => {
     // Wait until the reporting UI is visible.
     await ContentTaskUtils.waitForCondition(() => {
       let reportUI = content.document.getElementById("blockingErrorReporting");
-      return ContentTaskUtils.is_visible(reportUI);
+      return ContentTaskUtils.isVisible(reportUI);
     });
 
     let reportCheckBox = content.document.getElementById(
@@ -134,7 +132,7 @@ async function testReporting(test) {
   browser = tab.linkedBrowser;
 
   loaded = BrowserTestUtils.browserLoaded(browser, true, test.frame_uri, true);
-  BrowserTestUtils.loadURIString(browser, test.test_uri);
+  BrowserTestUtils.startLoadingURIString(browser, test.test_uri);
   await loaded;
 
   frameBC = await SpecialPowers.spawn(browser, [], async _ => {
@@ -146,7 +144,7 @@ async function testReporting(test) {
     // Wait until the reporting UI is visible.
     await ContentTaskUtils.waitForCondition(() => {
       let reportUI = content.document.getElementById("blockingErrorReporting");
-      return ContentTaskUtils.is_visible(reportUI);
+      return ContentTaskUtils.isVisible(reportUI);
     });
 
     let reportCheckBox = content.document.getElementById(
@@ -174,7 +172,7 @@ async function testReporting(test) {
   browser = tab.linkedBrowser;
 
   loaded = BrowserTestUtils.browserLoaded(browser, true, test.frame_uri, true);
-  BrowserTestUtils.loadURIString(browser, test.test_uri);
+  BrowserTestUtils.startLoadingURIString(browser, test.test_uri);
   await loaded;
 
   frameBC = await SpecialPowers.spawn(browser, [], async _ => {
@@ -186,7 +184,7 @@ async function testReporting(test) {
     // Wait until the reporting UI is visible.
     await ContentTaskUtils.waitForCondition(() => {
       let reportUI = content.document.getElementById("blockingErrorReporting");
-      return ContentTaskUtils.is_visible(reportUI);
+      return ContentTaskUtils.isVisible(reportUI);
     });
 
     let reportCheckBox = content.document.getElementById(

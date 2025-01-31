@@ -4,7 +4,7 @@
 
 :host {
   border-inline-end: 1px solid var(--in-content-border-color);
-  background-color: var(--in-content-box-background);
+  background-color: var(--background-color-box);
   display: flex;
   flex-direction: column;
   overflow: auto;
@@ -15,9 +15,7 @@
   align-items: center;
   padding: 0 16px 16px;
   border-bottom: 1px solid var(--in-content-border-color);
-  background-color: var(--in-content-box-background);
-  color: var(--text-color-deemphasized);
-  font-size: 0.8em;
+  background-color: var(--background-color-box);
 }
 
 .meta > label > span {
@@ -36,7 +34,7 @@
 }
 
 #login-sort > option {
-  font-weight: normal;
+  font-weight: var(--font-weight);
 }
 
 .count {
@@ -109,10 +107,10 @@ ol {
   position: sticky;
   top: 0;
   font-size: .85em;
-  font-weight: 600;
+  font-weight: var(--font-weight-bold);
   padding: 4px 16px;
   border-bottom: 1px solid var(--in-content-border-color);
-  background-color: var(--in-content-box-background);
+  background-color: var(--background-color-box);
   margin-block-start: 2px;
   margin-inline: 2px;
 }
@@ -133,12 +131,12 @@ ol {
 }
 
 .login-list-item.selected {
-  border-inline-start-color: var(--in-content-accent-color);
+  border-inline-start-color: var(--color-accent-primary);
   background-color: var(--in-content-page-background);
 }
 
 .login-list-item.selected .title {
-  font-weight: 600;
+  font-weight: var(--font-weight-bold);
 }
 
 .labels {
@@ -148,14 +146,6 @@ ol {
   display: flex;
   flex-direction: column;
   justify-content: center;
-}
-
-.title,
-.username {
-  display: block;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
 }
 
 .favicon {
@@ -170,20 +160,4 @@ ol {
 .username {
   font-size: 0.85em;
   color: var(--text-color-deemphasized);
-}
-
-.alert-icon {
-  min-width: 16px;
-  width: 16px;
-  margin-inline-start: 12px;
-  -moz-context-properties: fill, fill-opacity;
-  fill: currentColor;
-  fill-opacity: 0.75;
-}
-
-@media not (prefers-contrast) {
-  .breached > .alert-icon {
-    fill: var(--red-60);
-    fill-opacity: 1;
-  }
 }

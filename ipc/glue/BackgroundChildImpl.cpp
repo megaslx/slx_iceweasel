@@ -19,16 +19,15 @@
 #include "mozilla/dom/PBackgroundLSRequestChild.h"
 #include "mozilla/dom/PBackgroundLSSimpleRequestChild.h"
 #include "mozilla/dom/PBackgroundSDBConnectionChild.h"
+#include "mozilla/dom/CookieStoreChild.h"
 #include "mozilla/dom/PFileSystemRequestChild.h"
 #include "mozilla/dom/EndpointForReportChild.h"
-#include "mozilla/dom/PMediaTransportChild.h"
 #include "mozilla/dom/PVsync.h"
 #include "mozilla/dom/TemporaryIPCBlobChild.h"
 #include "mozilla/dom/cache/ActorUtils.h"
 #include "mozilla/dom/indexedDB/PBackgroundIndexedDBUtilsChild.h"
 #include "mozilla/dom/indexedDB/ThreadLocal.h"
 #include "mozilla/dom/quota/PQuotaChild.h"
-#include "mozilla/dom/RemoteWorkerChild.h"
 #include "mozilla/dom/RemoteWorkerControllerChild.h"
 #include "mozilla/dom/RemoteWorkerServiceChild.h"
 #include "mozilla/dom/ServiceWorkerChild.h"
@@ -70,11 +69,9 @@ namespace mozilla::ipc {
 using mozilla::dom::UDPSocketChild;
 using mozilla::net::PUDPSocketChild;
 
-using mozilla::dom::PRemoteWorkerChild;
 using mozilla::dom::PServiceWorkerChild;
 using mozilla::dom::PServiceWorkerContainerChild;
 using mozilla::dom::PServiceWorkerRegistrationChild;
-using mozilla::dom::RemoteWorkerChild;
 using mozilla::dom::StorageDBChild;
 using mozilla::dom::cache::PCacheChild;
 using mozilla::dom::cache::PCacheStreamControlChild;
@@ -130,7 +127,6 @@ void BackgroundChildImpl::ProcessingError(Result aCode, const char* aReason) {
       HANDLE_CASE(MsgNotAllowed);
       HANDLE_CASE(MsgPayloadError);
       HANDLE_CASE(MsgProcessingError);
-      HANDLE_CASE(MsgRouteError);
       HANDLE_CASE(MsgValueError);
 
 #undef HANDLE_CASE
@@ -138,6 +134,9 @@ void BackgroundChildImpl::ProcessingError(Result aCode, const char* aReason) {
     default:
       MOZ_CRASH("Unknown error code!");
   }
+
+  CrashReporter::RecordAnnotationCString(
+      CrashReporter::Annotation::ipc_channel_error, aReason);
 
   MOZ_CRASH_UNSAFE_PRINTF("%s: %s", abortMessage.get(), aReason);
 }
@@ -168,38 +167,6 @@ BackgroundChildImpl::AllocPBackgroundIndexedDBUtilsChild() {
 
 bool BackgroundChildImpl::DeallocPBackgroundIndexedDBUtilsChild(
     PBackgroundIndexedDBUtilsChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  delete aActor;
-  return true;
-}
-
-BackgroundChildImpl::PBackgroundSDBConnectionChild*
-BackgroundChildImpl::AllocPBackgroundSDBConnectionChild(
-    const PersistenceType& aPersistenceType,
-    const PrincipalInfo& aPrincipalInfo) {
-  MOZ_CRASH(
-      "PBackgroundSDBConnectionChild actor should be manually "
-      "constructed!");
-}
-
-bool BackgroundChildImpl::DeallocPBackgroundSDBConnectionChild(
-    PBackgroundSDBConnectionChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  delete aActor;
-  return true;
-}
-
-BackgroundChildImpl::PBackgroundLSDatabaseChild*
-BackgroundChildImpl::AllocPBackgroundLSDatabaseChild(
-    const PrincipalInfo& aPrincipalInfo, const uint32_t& aPrivateBrowsingId,
-    const uint64_t& aDatastoreId) {
-  MOZ_CRASH("PBackgroundLSDatabaseChild actor should be manually constructed!");
-}
-
-bool BackgroundChildImpl::DeallocPBackgroundLSDatabaseChild(
-    PBackgroundLSDatabaseChild* aActor) {
   MOZ_ASSERT(aActor);
 
   delete aActor;
@@ -282,35 +249,6 @@ bool BackgroundChildImpl::DeallocPBackgroundStorageChild(
   return true;
 }
 
-already_AddRefed<PRemoteWorkerChild>
-BackgroundChildImpl::AllocPRemoteWorkerChild(const RemoteWorkerData& aData) {
-  return MakeAndAddRef<RemoteWorkerChild>(aData);
-}
-
-IPCResult BackgroundChildImpl::RecvPRemoteWorkerConstructor(
-    PRemoteWorkerChild* aActor, const RemoteWorkerData& aData) {
-  dom::RemoteWorkerChild* actor = static_cast<dom::RemoteWorkerChild*>(aActor);
-  actor->ExecWorker(aData);
-  return IPC_OK();
-}
-
-dom::PRemoteWorkerControllerChild*
-BackgroundChildImpl::AllocPRemoteWorkerControllerChild(
-    const dom::RemoteWorkerData& aRemoteWorkerData) {
-  MOZ_CRASH(
-      "PRemoteWorkerControllerChild actors must be manually constructed!");
-  return nullptr;
-}
-
-bool BackgroundChildImpl::DeallocPRemoteWorkerControllerChild(
-    dom::PRemoteWorkerControllerChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  RefPtr<dom::RemoteWorkerControllerChild> actor =
-      dont_AddRef(static_cast<dom::RemoteWorkerControllerChild*>(aActor));
-  return true;
-}
-
 dom::PSharedWorkerChild* BackgroundChildImpl::AllocPSharedWorkerChild(
     const dom::RemoteWorkerData& aData, const uint64_t& aWindowID,
     const dom::MessagePortIdentifier& aPortIdentifier) {
@@ -381,6 +319,26 @@ bool BackgroundChildImpl::DeallocPBroadcastChannelChild(
   return true;
 }
 
+// -----------------------------------------------------------------------------
+// CookieStore API
+// -----------------------------------------------------------------------------
+
+dom::PCookieStoreChild* BackgroundChildImpl::AllocPCookieStoreChild() {
+  RefPtr<dom::CookieStoreChild> child = new dom::CookieStoreChild();
+  return child.forget().take();
+}
+
+bool BackgroundChildImpl::DeallocPCookieStoreChild(PCookieStoreChild* aActor) {
+  RefPtr<dom::CookieStoreChild> child =
+      dont_AddRef(static_cast<dom::CookieStoreChild*>(aActor));
+  MOZ_ASSERT(child);
+  return true;
+}
+
+// -----------------------------------------------------------------------------
+// Camera API
+// -----------------------------------------------------------------------------
+
 camera::PCamerasChild* BackgroundChildImpl::AllocPCamerasChild() {
 #ifdef MOZ_WEBRTC
   RefPtr<camera::CamerasChild> agent = new camera::CamerasChild();
@@ -450,26 +408,6 @@ bool BackgroundChildImpl::DeallocPMessagePortChild(PMessagePortChild* aActor) {
   return true;
 }
 
-BackgroundChildImpl::PQuotaChild* BackgroundChildImpl::AllocPQuotaChild() {
-  MOZ_CRASH("PQuotaChild actor should be manually constructed!");
-}
-
-bool BackgroundChildImpl::DeallocPQuotaChild(PQuotaChild* aActor) {
-  MOZ_ASSERT(aActor);
-  delete aActor;
-  return true;
-}
-
-mozilla::dom::PClientManagerChild*
-BackgroundChildImpl::AllocPClientManagerChild() {
-  return mozilla::dom::AllocClientManagerChild();
-}
-
-bool BackgroundChildImpl::DeallocPClientManagerChild(
-    mozilla::dom::PClientManagerChild* aActor) {
-  return mozilla::dom::DeallocClientManagerChild(aActor);
-}
-
 dom::PWebAuthnTransactionChild*
 BackgroundChildImpl::AllocPWebAuthnTransactionChild() {
   MOZ_CRASH("PWebAuthnTransaction actor should be manually constructed!");
@@ -512,21 +450,6 @@ bool BackgroundChildImpl::DeallocPEndpointForReportChild(
     PEndpointForReportChild* aActor) {
   MOZ_ASSERT(aActor);
   delete static_cast<dom::EndpointForReportChild*>(aActor);
-  return true;
-}
-
-dom::PMediaTransportChild* BackgroundChildImpl::AllocPMediaTransportChild() {
-  // We don't allocate here: MediaTransportHandlerIPC is in charge of that,
-  // so we don't need to know the implementation particulars here.
-  MOZ_ASSERT_UNREACHABLE(
-      "The only thing that ought to be creating a PMediaTransportChild is "
-      "MediaTransportHandlerIPC!");
-  return nullptr;
-}
-
-bool BackgroundChildImpl::DeallocPMediaTransportChild(
-    dom::PMediaTransportChild* aActor) {
-  delete aActor;
   return true;
 }
 

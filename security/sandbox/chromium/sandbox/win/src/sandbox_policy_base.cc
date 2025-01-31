@@ -17,7 +17,6 @@
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/acl.h"
 #include "sandbox/win/src/filesystem_policy.h"
-#include "sandbox/win/src/handle_policy.h"
 #include "sandbox/win/src/interception.h"
 #include "sandbox/win/src/job.h"
 #include "sandbox/win/src/line_break_policy.h"
@@ -161,6 +160,10 @@ TokenLevel PolicyBase::GetLockdownTokenLevel() const {
 
 void PolicyBase::SetDoNotUseRestrictingSIDs() {
   use_restricting_sids_ = false;
+}
+
+void PolicyBase::SetAllowEveryoneForUserRestricted() {
+  allow_everyone_for_user_restricted_ = true;
 }
 
 ResultCode PolicyBase::SetJobLevel(JobLevel job_level, uint32_t ui_exceptions) {
@@ -433,7 +436,8 @@ ResultCode PolicyBase::MakeTokens(base::win::ScopedHandle* initial,
   // with the process and therefore with any thread that is not impersonating.
   DWORD result = CreateRestrictedToken(
       effective_token_, lockdown_level_, integrity_level_, PRIMARY,
-      lockdown_default_dacl_, random_sid_ptr, use_restricting_sids_, lockdown);
+      lockdown_default_dacl_, random_sid_ptr, use_restricting_sids_,
+      allow_everyone_for_user_restricted_, lockdown);
   if (ERROR_SUCCESS != result)
     return SBOX_ERROR_CANNOT_CREATE_RESTRICTED_TOKEN;
 
@@ -502,7 +506,8 @@ ResultCode PolicyBase::MakeTokens(base::win::ScopedHandle* initial,
   // what we need (before reaching main( ))
   result = CreateRestrictedToken(
       effective_token_, initial_level_, integrity_level_, IMPERSONATION,
-      lockdown_default_dacl_, random_sid_ptr, use_restricting_sids_, initial);
+      lockdown_default_dacl_, random_sid_ptr, use_restricting_sids_,
+      allow_everyone_for_user_restricted_, initial);
   if (ERROR_SUCCESS != result)
     return SBOX_ERROR_CANNOT_CREATE_RESTRICTED_IMP_TOKEN;
 
@@ -775,14 +780,6 @@ ResultCode PolicyBase::AddRuleInternal(SubSystem subsystem,
       }
       break;
     }
-    case SUBSYS_HANDLES: {
-      if (!HandlePolicy::GenerateRules(pattern, semantics, policy_maker_)) {
-        NOTREACHED();
-        return SBOX_ERROR_BAD_PARAMS;
-      }
-      break;
-    }
-
     case SUBSYS_WIN32K_LOCKDOWN: {
       // Win32k intercept rules only supported on Windows 8 and above. This must
       // match the version checks in process_mitigations.cc for consistency.

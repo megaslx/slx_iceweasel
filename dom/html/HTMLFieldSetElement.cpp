@@ -90,8 +90,7 @@ void HTMLFieldSetElement::GetType(nsAString& aType) const {
 bool HTMLFieldSetElement::MatchListedElements(Element* aElement,
                                               int32_t aNamespaceID,
                                               nsAtom* aAtom, void* aData) {
-  nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(aElement);
-  return formControl;
+  return nsIFormControl::FromNodeOrNull(aElement) != nullptr;
 }
 
 nsIHTMLCollection* HTMLFieldSetElement::Elements() {
@@ -294,25 +293,16 @@ void HTMLFieldSetElement::UpdateValidity(bool aElementValidity) {
   // - or there is one invalid elmement and an element just became invalid.
   if (!mInvalidElementsCount ||
       (mInvalidElementsCount == 1 && !aElementValidity)) {
-    UpdateState(true);
+    AutoStateChangeNotifier notifier(*this, true);
+    RemoveStatesSilently(ElementState::VALID | ElementState::INVALID);
+    AddStatesSilently(mInvalidElementsCount ? ElementState::INVALID
+                                            : ElementState::VALID);
   }
 
   // We should propagate the change to the fieldset parent chain.
   if (mFieldSet) {
     mFieldSet->UpdateValidity(aElementValidity);
   }
-}
-
-ElementState HTMLFieldSetElement::IntrinsicState() const {
-  ElementState state = nsGenericHTMLFormControlElement::IntrinsicState();
-
-  if (mInvalidElementsCount) {
-    state |= ElementState::INVALID;
-  } else {
-    state |= ElementState::VALID;
-  }
-
-  return state;
 }
 
 JSObject* HTMLFieldSetElement::WrapNode(JSContext* aCx,

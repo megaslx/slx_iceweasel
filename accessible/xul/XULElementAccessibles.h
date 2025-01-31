@@ -6,7 +6,7 @@
 #ifndef mozilla_a11y_XULElementAccessibles_h__
 #define mozilla_a11y_XULElementAccessibles_h__
 
-#include "HyperTextAccessibleWrap.h"
+#include "HyperTextAccessible.h"
 #include "TextLeafAccessible.h"
 
 namespace mozilla {
@@ -17,7 +17,7 @@ class XULLabelTextLeafAccessible;
 /**
  * Used for XUL description and label elements.
  */
-class XULLabelAccessible : public HyperTextAccessibleWrap {
+class XULLabelAccessible : public HyperTextAccessible {
  public:
   XULLabelAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
@@ -32,8 +32,7 @@ class XULLabelAccessible : public HyperTextAccessibleWrap {
  protected:
   // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
-  virtual void DispatchClickEvent(nsIContent* aContent,
-                                  uint32_t aActionIndex) const override;
+  virtual void DispatchClickEvent(uint32_t aActionIndex) const override;
 
  private:
   RefPtr<XULLabelTextLeafAccessible> mValueTextLeaf;

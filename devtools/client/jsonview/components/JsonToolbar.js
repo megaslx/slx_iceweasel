@@ -4,18 +4,24 @@
 
 "use strict";
 
-define(function (require, exports, module) {
-  const { Component } = require("devtools/client/shared/vendor/react");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+define(function (require, exports) {
+  const {
+    Component,
+  } = require("resource://devtools/client/shared/vendor/react.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-  const { createFactories } = require("devtools/client/shared/react-utils");
-  const { div } = require("devtools/client/shared/vendor/react-dom-factories");
+  const {
+    createFactories,
+  } = require("resource://devtools/client/shared/react-utils.js");
+  const {
+    div,
+  } = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
   const { SearchBox } = createFactories(
-    require("devtools/client/jsonview/components/SearchBox")
+    require("resource://devtools/client/jsonview/components/SearchBox.js")
   );
   const { Toolbar, ToolbarButton } = createFactories(
-    require("devtools/client/jsonview/components/reps/Toolbar")
+    require("resource://devtools/client/jsonview/components/reps/Toolbar.js")
   );
 
   /* 100kB file */
@@ -42,19 +48,19 @@ define(function (require, exports, module) {
 
     // Commands
 
-    onSave(event) {
+    onSave() {
       this.props.actions.onSaveJson();
     }
 
-    onCopy(event) {
+    onCopy() {
       this.props.actions.onCopyJson();
     }
 
-    onCollapse(event) {
+    onCollapse() {
       this.props.actions.onCollapse();
     }
 
-    onExpand(event) {
+    onExpand() {
       this.props.actions.onExpand();
     }
 

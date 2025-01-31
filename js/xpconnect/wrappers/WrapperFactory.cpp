@@ -22,6 +22,7 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/MaybeCrossOriginObject.h"
 #include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
 #include "nsXULAppAPI.h"
 
 using namespace JS;
@@ -273,7 +274,7 @@ void WrapperFactory::PrepareForWrapping(JSContext* cx, HandleObject scope,
     // that we don't create a second JS object for it: create a security
     // wrapper.
     //
-    // Note: The only two objects that still use PreCreate are BackstagePass
+    // Note: The only two objects that still use PreCreate are SystemGlobal
     // and Components, both of which unconditionally request their canonical
     // scope. Since SpiderMonkey only invokes the prewrap callback in
     // situations where the object is nominally cross-compartment, we should
@@ -392,7 +393,8 @@ static void DEBUG_CheckUnwrapSafety(HandleObject obj,
 }
 #else
 #  define DEBUG_CheckUnwrapSafety(obj, handler, origin, target) \
-    {}
+    {                                                           \
+    }
 #endif
 
 const CrossOriginObjectWrapper CrossOriginObjectWrapper::singleton;
@@ -796,7 +798,7 @@ nsIGlobalObject* NativeGlobal(JSObject* obj) {
     MOZ_ASSERT(native);
 
     // In some cases (like for windows) it is a wrapped native,
-    // in other cases (sandboxes, backstage passes) it's just
+    // in other cases (sandboxes, system globals) it's just
     // a direct pointer to the native. If it's a wrapped native
     // let's unwrap it first.
     if (nsCOMPtr<nsIXPConnectWrappedNative> wn = do_QueryInterface(native)) {

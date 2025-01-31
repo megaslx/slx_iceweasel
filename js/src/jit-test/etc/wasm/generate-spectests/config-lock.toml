@@ -1,35 +1,15 @@
 [[repos]]
 name = 'spec'
-commit = 'b1fbe1a8'
-
-[[repos]]
-name = 'threads'
-commit = '85b562cd'
-
-[[repos]]
-name = 'simd'
-commit = 'a78b98a6'
-
-[[repos]]
-name = 'exception-handling'
-commit = '76419ef8'
+commit = '1e1010249'
 
 [[repos]]
 name = 'memory64'
-commit = '8d8f532d'
+commit = '179566900'
 
 [[repos]]
-name = 'function-references'
-commit = 'c4eef9a8'
+name = 'exception-handling'
+commit = 'da1e90701'
 
 [[repos]]
-name = 'relaxed-simd'
-commit = 'c4c9ddaf'
-
-[[repos]]
-name = 'extended-const'
-commit = 'dd72ab96'
-
-[[repos]]
-name = 'multi-memory'
-commit = '4f6b8f53'
+name = 'gc'
+commit = '88463e822'

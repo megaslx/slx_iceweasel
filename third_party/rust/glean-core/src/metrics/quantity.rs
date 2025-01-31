@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::sync::Arc;
+
 use crate::common_metric_data::CommonMetricDataInternal;
 use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorType};
 use crate::metrics::Metric;
@@ -15,12 +17,28 @@ use crate::Glean;
 /// Used to store explicit non-negative integers.
 #[derive(Clone, Debug)]
 pub struct QuantityMetric {
-    meta: CommonMetricDataInternal,
+    meta: Arc<CommonMetricDataInternal>,
 }
 
 impl MetricType for QuantityMetric {
     fn meta(&self) -> &CommonMetricDataInternal {
         &self.meta
+    }
+
+    fn with_name(&self, name: String) -> Self {
+        let mut meta = (*self.meta).clone();
+        meta.inner.name = name;
+        Self {
+            meta: Arc::new(meta),
+        }
+    }
+
+    fn with_dynamic_label(&self, label: String) -> Self {
+        let mut meta = (*self.meta).clone();
+        meta.inner.dynamic_label = Some(label);
+        Self {
+            meta: Arc::new(meta),
+        }
     }
 }
 
@@ -31,7 +49,9 @@ impl MetricType for QuantityMetric {
 impl QuantityMetric {
     /// Creates a new quantity metric.
     pub fn new(meta: CommonMetricData) -> Self {
-        Self { meta: meta.into() }
+        Self {
+            meta: Arc::new(meta.into()),
+        }
     }
 
     /// Sets the value. Must be non-negative.
@@ -98,6 +118,15 @@ impl QuantityMetric {
     /// Gets the currently stored value as an integer.
     ///
     /// This doesn't clear the stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
     pub fn test_get_value(&self, ping_name: Option<String>) -> Option<i64> {
         crate::block_on_dispatcher();
         crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
@@ -110,8 +139,6 @@ impl QuantityMetric {
     /// # Arguments
     ///
     /// * `error` - The type of error
-    /// * `ping_name` - represents the optional name of the ping to retrieve the
-    ///   metric for. Defaults to the first value in `send_in_pings`.
     ///
     /// # Returns
     ///

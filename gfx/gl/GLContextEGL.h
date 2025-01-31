@@ -30,6 +30,15 @@ inline std::shared_ptr<EglDisplay> DefaultEglDisplay(
   return lib->DefaultDisplay(out_failureId);
 }
 
+inline std::shared_ptr<EglDisplay> CreateSoftwareEglDisplay(
+    nsACString* const out_failureId) {
+  const auto lib = GLLibraryEGL::Get(out_failureId);
+  if (!lib) {
+    return nullptr;
+  }
+  return lib->CreateDisplay(false, true, out_failureId);
+}
+
 // -
 
 class GLContextEGL final : public GLContext {
@@ -111,6 +120,8 @@ class GLContextEGL final : public GLContext {
   static EGLSurface CreateEGLSurfaceForCompositorWidget(
       widget::CompositorWidget* aCompositorWidget, const EGLConfig aConfig);
 
+  static void DestroySurface(EglDisplay&, const EGLSurface aSurface);
+
 #ifdef MOZ_X11
   static bool FindVisual(int* const out_visualId);
 #endif
@@ -146,8 +157,8 @@ class GLContextEGL final : public GLContext {
       gfx::IntSize& pbsize);
 
 #ifdef MOZ_WAYLAND
-  static EGLSurface CreateWaylandBufferSurface(EglDisplay&, EGLConfig,
-                                               gfx::IntSize& pbsize);
+  static EGLSurface CreateWaylandOffscreenSurface(EglDisplay&, EGLConfig,
+                                                  gfx::IntSize& pbsize);
 #endif
 
  public:

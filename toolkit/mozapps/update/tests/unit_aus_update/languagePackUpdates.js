@@ -4,11 +4,8 @@ const { AddonTestUtils } = ChromeUtils.importESModule(
 const { getAppInfo } = ChromeUtils.importESModule(
   "resource://testing-common/AppInfo.sys.mjs"
 );
-const { XPIInstall } = ChromeUtils.import(
-  "resource://gre/modules/addons/XPIInstall.jsm"
-);
-const { PromiseUtils } = ChromeUtils.importESModule(
-  "resource://gre/modules/PromiseUtils.sys.mjs"
+const { XPIExports } = ChromeUtils.importESModule(
+  "resource://gre/modules/addons/XPIExports.sys.mjs"
 );
 const { setTimeout } = ChromeUtils.importESModule(
   "resource://gre/modules/Timer.sys.mjs"
@@ -26,31 +23,18 @@ setUpdateChannel("test_channel");
 Services.prefs.setBoolPref(PREF_APP_UPDATE_LANGPACK_ENABLED, true);
 
 /**
- * Checks for updates and waits for the update to download.
- */
-async function downloadUpdate() {
-  let patches = getRemotePatchString({});
-  let updateString = getRemoteUpdateString({}, patches);
-  gResponseBody = getRemoteUpdatesXMLString(updateString);
-
-  let { updates } = await waitForUpdateCheck(true);
-
-  initMockIncrementalDownload();
-  gIncrementalDownloadErrorType = 3;
-
-  await waitForUpdateDownload(updates, Cr.NS_OK);
-}
-
-/**
  * Returns a promise that will resolve when the add-ons manager attempts to
  * stage langpack updates. The returned object contains the appVersion and
  * platformVersion parameters as well as resolve and reject functions to
  * complete the mocked langpack update.
  */
 function mockLangpackUpdate() {
-  let stagingCall = PromiseUtils.defer();
-  XPIInstall.stageLangpacksForAppUpdate = (appVersion, platformVersion) => {
-    let result = PromiseUtils.defer();
+  let stagingCall = Promise.withResolvers();
+  XPIExports.XPIInstall.stageLangpacksForAppUpdate = (
+    appVersion,
+    platformVersion
+  ) => {
+    let result = Promise.withResolvers();
     stagingCall.resolve({
       appVersion,
       platformVersion,
@@ -123,7 +107,7 @@ add_task(async function testLangpackUpdateSuccess() {
   );
 
   // Reload the update manager so that we can download the same update again
-  reloadUpdateManagerData(true);
+  await reloadUpdateManagerData(true);
 });
 
 add_task(async function testLangpackUpdateFails() {
@@ -162,7 +146,7 @@ add_task(async function testLangpackUpdateFails() {
   await notified;
 
   // Reload the update manager so that we can download the same update again
-  reloadUpdateManagerData(true);
+  await reloadUpdateManagerData(true);
 });
 
 add_task(async function testLangpackStaged() {
@@ -177,9 +161,12 @@ add_task(async function testLangpackStaged() {
   copyTestUpdaterToBinDir();
 
   let greDir = getGREDir();
-  let updateSettingsIni = greDir.clone();
-  updateSettingsIni.append(FILE_UPDATE_SETTINGS_INI);
-  writeFile(updateSettingsIni, UPDATE_SETTINGS_CONTENTS);
+
+  if (AppConstants.platform != "macosx") {
+    let updateSettingsIni = greDir.clone();
+    updateSettingsIni.append(FILE_UPDATE_SETTINGS_INI);
+    writeFile(updateSettingsIni, UPDATE_SETTINGS_CONTENTS);
+  }
 
   await downloadUpdate();
 
@@ -209,7 +196,7 @@ add_task(async function testLangpackStaged() {
   await notified;
 
   // Reload the update manager so that we can download the same update again
-  reloadUpdateManagerData(true);
+  await reloadUpdateManagerData(true);
 });
 
 add_task(async function testRedownload() {
@@ -236,16 +223,16 @@ add_task(async function testRedownload() {
   gIncrementalDownloadErrorType = 3;
 
   let stageCount = 0;
-  XPIInstall.stageLangpacksForAppUpdate = () => {
+  XPIExports.XPIInstall.stageLangpacksForAppUpdate = () => {
     stageCount++;
     return Promise.resolve();
   };
 
   let downloadCount = 0;
   let listener = {
-    onStartRequest: aRequest => {},
-    onProgress: (aRequest, aContext, aProgress, aMaxProgress) => {},
-    onStatus: (aRequest, aStatus, aStatusText) => {},
+    onStartRequest: _aRequest => {},
+    onProgress: (_aRequest, _aContext, _aProgress, _aMaxProgress) => {},
+    onStatus: (_aRequest, _aStatus, _aStatusText) => {},
     onStopRequest: (request, status) => {
       Assert.equal(
         status,
@@ -264,7 +251,7 @@ add_task(async function testRedownload() {
   };
   gAUS.addDownloadListener(listener);
 
-  let bestUpdate = gAUS.selectUpdate(updates);
+  let bestUpdate = await gAUS.selectUpdate(updates);
   await gAUS.downloadUpdate(bestUpdate, false);
 
   await waitForEvent("update-downloaded");
@@ -283,7 +270,7 @@ add_task(async function testRedownload() {
   );
 
   // Reload the update manager so that we can download the same update again
-  reloadUpdateManagerData(true);
+  await reloadUpdateManagerData(true);
 });
 
 add_task(async function finish() {

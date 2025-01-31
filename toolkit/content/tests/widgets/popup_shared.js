@@ -477,12 +477,28 @@ function compareEdge(anchor, popup, edge, offsetX, offsetY, testname) {
         cornerX += offsetX;
         cornerY += offsetY;
         break;
+      case "topcenter":
+        cornerX += -popuprect.width / 2 + offsetX;
+        cornerY += offsetY;
+        break;
       case "topright":
         cornerX += -popuprect.width + offsetX;
         cornerY += offsetY;
         break;
+      case "leftcenter":
+        cornerX += offsetX;
+        cornerY += -popuprect.height / 2 + offsetY;
+        break;
+      case "rightcenter":
+        cornerX += -popuprect.width + offsetX;
+        cornerY += -popuprect.height / 2 + offsetY;
+        break;
       case "bottomleft":
         cornerX += offsetX;
+        cornerY += -popuprect.height + offsetY;
+        break;
+      case "bottomcenter":
+        cornerX += -popuprect.width / 2 + offsetX;
         cornerY += -popuprect.height + offsetY;
         break;
       case "bottomright":
@@ -499,20 +515,6 @@ function compareEdge(anchor, popup, edge, offsetX, offsetY, testname) {
     is(
       Math.round(popuprect.top),
       Math.round(cornerY),
-      testname + " y position"
-    );
-    return;
-  }
-
-  if (edge == "after_pointer") {
-    is(
-      Math.round(popuprect.left),
-      Math.round(anchorrect.left) + offsetX,
-      testname + " x position"
-    );
-    is(
-      Math.round(popuprect.top),
-      Math.round(anchorrect.top) + offsetY + 21,
       testname + " y position"
     );
     return;

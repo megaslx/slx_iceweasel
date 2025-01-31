@@ -11,6 +11,18 @@ SOURCES += [
     "nsRemoteService.cpp",
 ]
 
+BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.toml"]
+
+XPCOM_MANIFESTS += [
+    "components.conf",
+]
+
+XPIDL_SOURCES += [
+    "nsIRemoteService.idl",
+]
+
+XPIDL_MODULE = "toolkitremote"
+
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
     SOURCES += [
         "nsUnixRemoteServer.cpp",
@@ -21,11 +33,11 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
             "nsDBusRemoteClient.cpp",
             "nsDBusRemoteServer.cpp",
         ]
-        CXXFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]
         EXPORTS += [
             "nsUnixRemoteServer.h",
             "RemoteUtils.h",
         ]
+        CXXFLAGS += CONFIG["MOZ_DBUS_CFLAGS"]
     else:
         SOURCES += [
             "nsGTKRemoteServer.cpp",

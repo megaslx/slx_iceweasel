@@ -1,13 +1,10 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """ buildbase.py.
 
 provides a base class for fx desktop builds
-author: Jordan Lund
 
 """
 import copy
@@ -302,7 +299,6 @@ class BuildOptionParser(object):
         "arm-debug": path_base + "%s_arm_debug.py",
         "arm-lite-debug": path_base + "%s_arm_debug_lite.py",
         "arm-debug-ccov": path_base + "%s_arm_debug_ccov.py",
-        "arm-debug-searchfox": path_base + "%s_arm_debug_searchfox.py",
         "arm-gradle": path_base + "%s_arm_gradle.py",
         "rusttests": path_base + "%s_rusttests.py",
         "rusttests-debug": path_base + "%s_rusttests_debug.py",
@@ -329,7 +325,10 @@ class BuildOptionParser(object):
         "aarch64-beta-debug": path_base + "%s_aarch64_beta_debug.py",
         "aarch64-pgo": path_base + "%s_aarch64_pgo.py",
         "aarch64-debug": path_base + "%s_aarch64_debug.py",
+        "aarch64-fenix-debug": path_base + "%s_aarch64_fenix_debug.py",
         "aarch64-lite-debug": path_base + "%s_aarch64_debug_lite.py",
+        "aarch64-debug-searchfox": path_base + "%s_aarch64_debug_searchfox.py",
+        "aarch64-profile-generate": path_base + "%s_aarch64_profile_generate.py",
         "android-geckoview-docs": path_base + "%s_geckoview_docs.py",
         "valgrind": path_base + "%s_valgrind.py",
     }
@@ -729,14 +728,18 @@ items from that key's value."
 
         # print its contents
         content = self.read_from_file(abs_mozconfig_path, error_level=FATAL)
+
+        extra_content = self.config.get("extra_mozconfig_content")
+        if extra_content:
+            content += "\n".join(extra_content)
+
         self.info("mozconfig content:")
         self.info(content)
 
         # finally, copy the mozconfig to a path that 'mach build' expects it to
         # be
-        self.copyfile(
-            abs_mozconfig_path, os.path.join(dirs["abs_src_dir"], ".mozconfig")
-        )
+        with open(os.path.join(dirs["abs_src_dir"], ".mozconfig"), "w") as fh:
+            fh.write(content)
 
     def _run_tooltool(self):
         env = self.query_build_env()
@@ -870,6 +873,8 @@ items from that key's value."
             work_dir,
             "--config-file",
             "multi_locale/android-mozharness-build.json",
+            "--config-file",
+            "multi_locale/tc_common.py",
             "--pull-locale-source",
             "--package-multi",
             "--summary",
@@ -984,10 +989,9 @@ items from that key's value."
         if self.config.get("debug_build"):
             return False
 
-        # OS X opt builds without a variant are shipped.
-        if self.config.get("platform") == "macosx64":
-            if not self.config.get("build_variant"):
-                return True
+        # shippable builds set nightly_build
+        if self.query_is_nightly():
+            return True
 
         # Android opt builds without a variant are shipped.
         if self.config.get("platform") == "android":
@@ -997,16 +1001,27 @@ items from that key's value."
         return False
 
     def _load_build_resources(self):
-        p = self.config.get("build_resources_path") % self.query_abs_dirs()
+        p = self.config.get("profile_build_resources_path") % self.query_abs_dirs()
         if not os.path.exists(p):
-            self.info("%s does not exist; not loading build resources" % p)
+            self.info("%s does not exist; not loading build profile data" % p)
             return None
 
         with open(p, "r") as fh:
-            resources = json.load(fh)
+            profile = json.load(fh)
 
-        if "duration" not in resources:
-            self.info("resource usage lacks duration; ignoring")
+        try:
+            thread = profile.get("threads", [])[0]
+            times = thread.get("samples", {}).get("time", [])
+            duration = times[-1] / 1000
+            markers = thread["markers"]
+            phases = {}
+            for n, marker in enumerate(markers["data"]):
+                if marker.get("type") == "Phase":
+                    phases[marker["phase"]] = (
+                        markers["endTime"][n] - markers["startTime"][n]
+                    ) / 1000
+        except Exception:
+            self.info("build profile lacks data; ignoring")
             return None
 
         # We want to always collect metrics. But alerts with sccache enabled
@@ -1015,19 +1030,17 @@ items from that key's value."
 
         data = {
             "name": "build times",
-            "value": resources["duration"],
+            "value": duration,
             "extraOptions": self.perfherder_resource_options(),
             "shouldAlert": should_alert,
             "subtests": [],
         }
 
-        for phase in resources["phases"]:
-            if "duration" not in phase:
-                continue
+        for name, duration in phases.items():
             data["subtests"].append(
                 {
-                    "name": phase["name"],
-                    "value": phase["duration"],
+                    "name": name,
+                    "value": duration,
                 }
             )
 
@@ -1098,7 +1111,7 @@ items from that key's value."
         dirs = self.query_abs_dirs()
 
         dist_dir = os.path.join(dirs["abs_obj_dir"], "dist")
-        for ext in ["apk", "dmg", "tar.bz2", "zip"]:
+        for ext in ["apk", "dmg", "tar.bz2", "zip", "tar.xz"]:
             name = "target." + ext
             if os.path.exists(os.path.join(dist_dir, name)):
                 packageName = name
@@ -1472,8 +1485,10 @@ items from that key's value."
             if build_platform == "android-geckoview-docs":
                 return
             main_platform = "android"
+        elif build_platform.startswith("ios"):
+            return
         else:
-            err = "Build platform {} didn't start with 'mac', 'linux', 'win', or 'android'".format(
+            err = "Build platform {} didn't start with 'mac', 'linux', 'win', 'android' or 'ios'".format(
                 build_platform
             )
             self.fatal(err)

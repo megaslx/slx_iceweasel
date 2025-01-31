@@ -9,6 +9,7 @@
 #ifndef vm_JSContext_h
 #define vm_JSContext_h
 
+#include "mozilla/BaseProfilerUtils.h"  // BaseProfilerThreadId
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 
@@ -17,9 +18,9 @@
 #include "builtin/AtomicsObject.h"
 #include "ds/TraceableFifo.h"
 #include "frontend/NameCollections.h"
+#include "gc/GCEnum.h"
 #include "gc/Memory.h"
 #include "irregexp/RegExpTypes.h"
-#include "jit/PcScriptCache.h"
 #include "js/ContextOptions.h"  // JS::ContextOptions
 #include "js/Exception.h"
 #include "js/GCVector.h"
@@ -45,6 +46,11 @@ namespace js {
 class AutoAllocInAtomsZone;
 class AutoMaybeLeaveAtomsZone;
 class AutoRealm;
+struct PortableBaselineStack;
+
+#ifdef MOZ_EXECUTION_TRACING
+class ExecutionTracer;
+#endif
 
 namespace jit {
 class ICScript;
@@ -82,17 +88,22 @@ class InternalJobQueue : public JS::JobQueue {
   ~InternalJobQueue() = default;
 
   // JS::JobQueue methods.
-  JSObject* getIncumbentGlobal(JSContext* cx) override;
+  bool getHostDefinedData(JSContext* cx,
+                          JS::MutableHandle<JSObject*> data) const override;
+
   bool enqueuePromiseJob(JSContext* cx, JS::HandleObject promise,
                          JS::HandleObject job, JS::HandleObject allocationSite,
-                         JS::HandleObject incumbentGlobal) override;
+                         JS::HandleObject hostDefinedData) override;
   void runJobs(JSContext* cx) override;
   bool empty() const override;
+  bool isDrainingStopped() const override { return interrupted_; }
 
   // If we are currently in a call to runJobs(), make that call stop processing
   // jobs once the current one finishes, and return. If we are not currently in
   // a call to runJobs, make all future calls return immediately.
   void interrupt() { interrupted_ = true; }
+
+  void uninterrupt() { interrupted_ = false; }
 
   // Return the front element of the queue, or nullptr if the queue is empty.
   // This is only used by shell testing functions.
@@ -213,10 +224,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   // Allocate a GC thing.
   template <typename T, js::AllowGC allowGC = js::CanGC, typename... Args>
-  T* newCell(Args&&... args) {
-    return js::gc::CellAllocator::template NewCell<T, allowGC>(
-        this, std::forward<Args>(args)...);
-  }
+  T* newCell(Args&&... args);
 
   /* Clear the pending exception (if any) due to OOM. */
   void recoverFromOutOfMemory();
@@ -293,7 +301,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   JS::Zone* zone() const {
     MOZ_ASSERT_IF(!realm() && zone_, inAtomsZone());
     MOZ_ASSERT_IF(realm(), js::GetRealmZone(realm()) == zone_);
-    return zoneUnchecked();
+    return zone_;
   }
 
   // For JIT use.
@@ -384,7 +392,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return offsetof(JSContext, jitActivation);
   }
 
-#ifdef DEBUG
+#ifdef JS_CHECK_UNSAFE_CALL_WITH_ABI
   static size_t offsetOfInUnsafeCallWithABI() {
     return offsetof(JSContext, inUnsafeCallWithABI);
   }
@@ -398,6 +406,11 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::InterpreterStack& interpreterStack() {
     return runtime()->interpreterStack();
   }
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+  js::PortableBaselineStack& portableBaselineStack() {
+    return runtime()->portableBaselineStack();
+  }
+#endif
 
  private:
   // Base address of the native stack for the current thread.
@@ -407,8 +420,15 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   JS::NativeStackBase nativeStackBase() const { return *nativeStackBase_; }
 
  public:
-  /* If non-null, report JavaScript entry points to this monitor. */
-  js::ContextData<JS::dbg::AutoEntryMonitor*> entryMonitor;
+  // In brittle mode, any failure will produce a diagnostic assertion rather
+  // than propagating an error or throwing an exception. This is used for
+  // intermittent crash diagnostics: if an operation is failing for unknown
+  // reasons, turn on brittle mode and annotate the operations within
+  // SpiderMonkey that the failing operation uses with:
+  //
+  //   MOZ_DIAGNOSTIC_ASSERT(!cx->brittleMode, "specific failure");
+  //
+  bool brittleMode = false;
 
   /*
    * Stack of debuggers that currently disallow debuggee execution.
@@ -419,9 +439,13 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
    */
   js::ContextData<js::EnterDebuggeeNoExecute*> noExecuteDebuggerTop;
 
-#ifdef DEBUG
+#ifdef JS_CHECK_UNSAFE_CALL_WITH_ABI
   js::ContextData<uint32_t> inUnsafeCallWithABI;
   js::ContextData<bool> hasAutoUnsafeCallWithABI;
+#endif
+
+#ifdef DEBUG
+  js::ContextData<uint32_t> liveArraySortDataInstances;
 #endif
 
 #ifdef JS_SIMULATOR
@@ -496,6 +520,16 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // with AutoDisableCompactingGC which uses this counter.
   js::ContextData<unsigned> compactingDisabledCount;
 
+  // Match limit result for the most recent call to RegExpSearcher.
+  js::ContextData<uint32_t> regExpSearcherLastLimit;
+
+  static constexpr size_t offsetOfRegExpSearcherLastLimit() {
+    return offsetof(JSContext, regExpSearcherLastLimit);
+  }
+
+  // Whether we are currently executing the top level of a module.
+  js::ContextData<uint32_t> isEvaluatingModule;
+
  private:
   // Pools used for recycling name maps and vectors when parsing and
   // emitting bytecode. Purged on GC when there are no active script
@@ -515,7 +549,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   bool isInUnsafeRegion() const { return bool(inUnsafeRegion); }
 
   // For JIT use.
-  void resetInUnsafeRegion() {
+  MOZ_NEVER_INLINE void resetInUnsafeRegion() {
     MOZ_ASSERT(inUnsafeRegion >= 0);
     inUnsafeRegion = 0;
   }
@@ -552,9 +586,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   js::ContextData<uint32_t> debuggerMutations;
 
-  // Cache for jit::GetPcScript().
-  js::ContextData<js::UniquePtr<js::jit::PcScriptCache>> ionPcScriptCache;
-
  private:
   // Indicates if an exception is pending and the reason for it.
   js::ContextData<JS::ExceptionStatus> status;
@@ -585,16 +616,29 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // exhaustion are generally not interesting.
   js::ContextData<bool> hadResourceExhaustion_;
 
+  // True if this context has ever thrown an uncatchable exception to terminate
+  // execution from the interrupt callback.
+  js::ContextData<bool> hadUncatchableException_;
+
  public:
   bool hadResourceExhaustion() const {
     return hadResourceExhaustion_ || js::oom::simulator.isThreadSimulatingAny();
   }
+  bool hadUncatchableException() const { return hadUncatchableException_; }
 #endif
 
  public:
   void reportResourceExhaustion() {
 #ifdef DEBUG
     hadResourceExhaustion_ = true;
+#endif
+  }
+  void reportUncatchableException() {
+    // Make sure the context has no pending exception. See also the comment for
+    // JS::ReportUncatchableException.
+    clearPendingException();
+#ifdef DEBUG
+    hadUncatchableException_ = true;
 #endif
   }
 
@@ -682,9 +726,9 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
    * overridden by passing AllowCrossRealm::Allow.
    */
   enum class AllowCrossRealm { DontAllow = false, Allow = true };
-  inline JSScript* currentScript(
-      jsbytecode** pc = nullptr,
-      AllowCrossRealm allowCrossRealm = AllowCrossRealm::DontAllow) const;
+  JSScript* currentScript(
+      jsbytecode** ppc = nullptr,
+      AllowCrossRealm allowCrossRealm = AllowCrossRealm::DontAllow);
 
   inline void minorGC(JS::GCReason reason);
 
@@ -693,9 +737,31 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return JS::IsCatchableExceptionStatus(status);
   }
 
+  /**
+   * Return the pending exception and wrap it into the current compartment.
+   */
   [[nodiscard]] bool getPendingException(JS::MutableHandleValue rval);
 
+  /**
+   * Return the pending exception stack and wrap it into the current
+   * compartment. Return |JS::NullValue| when the pending exception has no stack
+   * attached.
+   */
+  [[nodiscard]] bool getPendingExceptionStack(JS::MutableHandleValue rval);
+
+  /**
+   * Return the pending exception stack, but does not wrap it into the current
+   * compartment. Return |nullptr| when the pending exception has no stack
+   * attached.
+   */
   js::SavedFrame* getPendingExceptionStack();
+
+#ifdef DEBUG
+  /**
+   * Return the pending exception (without wrapping).
+   */
+  const JS::Value& getPendingExceptionUnwrapped();
+#endif
 
   bool isThrowingDebuggeeWouldRun();
   bool isClosingGenerator();
@@ -737,7 +803,17 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   // Checks if the page's Content-Security-Policy (CSP) allows
   // runtime code generation "unsafe-eval", or "wasm-unsafe-eval" for Wasm.
-  bool isRuntimeCodeGenEnabled(JS::RuntimeCode kind, js::HandleString code);
+  bool isRuntimeCodeGenEnabled(
+      JS::RuntimeCode kind, JS::Handle<JSString*> codeString,
+      JS::CompilationType compilationType,
+      JS::Handle<JS::StackGCVector<JSString*>> parameterStrings,
+      JS::Handle<JSString*> bodyString,
+      JS::Handle<JS::StackGCVector<JS::Value>> parameterArgs,
+      JS::Handle<JS::Value> bodyArg, bool* outCanCompileStrings);
+
+  // Get code to be used by eval for Object argument.
+  bool getCodeForEval(JS::HandleObject code,
+                      JS::MutableHandle<JSString*> outCode);
 
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
@@ -801,14 +877,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // caller and read in the callee's prologue.
   js::ContextData<js::jit::ICScript*> inlinedICScript_;
 
-  // The following two fields are a pair of associated scripts. If they are
-  // non-null, the child has been inlined into the parent, and we have bailed
-  // out due to a MonomorphicInlinedStubFolding bailout. If it wasn't
-  // trial-inlined, we need to track for the parent if we attach a new case to
-  // the corresponding folded stub which belongs to the child.
-  js::ContextData<JSScript*> lastStubFoldingBailoutChild_;
-  js::ContextData<JSScript*> lastStubFoldingBailoutParent_;
-
  public:
   void* addressOfInterruptBits() { return &interruptBits_; }
   void* addressOfJitStackLimit() { return &jitStackLimit; }
@@ -820,6 +888,8 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   const void* addressOfRealm() const { return &realm_; }
 
   void* addressOfInlinedICScript() { return &inlinedICScript_; }
+
+  const void* addressOfJitActivation() const { return &jitActivation; }
 
   // Futex state, used by Atomics.wait() and Atomics.wake() on the Atomics
   // object.
@@ -888,11 +958,51 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::StructuredSpewer& spewer() { return structuredSpewer_.ref(); }
 #endif
 
-  // During debugger evaluations which need to observe native calls, JITs are
-  // completely disabled. This flag indicates whether we are in this state, and
-  // the debugger which initiated the evaluation. This debugger has other
-  // references on the stack and does not need to be traced.
-  js::ContextData<js::Debugger*> insideDebuggerEvaluationWithOnNativeCallHook;
+  // Debugger having set `exclusiveDebuggerOnEval` property to true
+  // want their evaluations and calls to be ignore by all other Debuggers
+  // except themself. This flag indicates whether we are in such debugger
+  // evaluation, and which debugger initiated the evaluation. This debugger
+  // has other references on the stack and does not need to be traced.
+  js::ContextData<js::Debugger*> insideExclusiveDebuggerOnEval;
+
+#ifdef MOZ_EXECUTION_TRACING
+ private:
+  // This holds onto the JS execution tracer, a system which when turned on
+  // records function calls and other information about the JS which has been
+  // run under this context.
+  js::UniquePtr<js::ExecutionTracer> executionTracer_;
+
+  // See suspendExecutionTracing
+  bool executionTracerSuspended_ = false;
+
+  // Cleans up caches and realm flags associated with execution tracing, while
+  // leaving the underlying tracing buffers intact to be read from later.
+  void cleanUpExecutionTracingState();
+
+ public:
+  js::ExecutionTracer& getExecutionTracer() {
+    MOZ_ASSERT(hasExecutionTracer());
+    return *executionTracer_;
+  }
+
+  // See the latter clause of the comment over executionTracer_
+  [[nodiscard]] bool enableExecutionTracing();
+  void disableExecutionTracing();
+
+  // suspendExecutionTracing will turn off tracing, and clean up the relevant
+  // flags on this context's realms, but still leave the trace around to be
+  // collected. This currently is only called when an error occurs during
+  // tracing.
+  void suspendExecutionTracing();
+
+  // Returns true if there is currently an ExecutionTracer tracing this
+  // context's execution.
+  bool hasExecutionTracer() {
+    return !!executionTracer_ && !executionTracerSuspended_;
+  }
+#else
+  bool hasExecutionTracer() { return false; }
+#endif
 
 }; /* struct JSContext */
 
@@ -905,11 +1015,8 @@ namespace js {
 
 struct MOZ_RAII AutoResolving {
  public:
-  enum Kind { LOOKUP, WATCH };
-
-  AutoResolving(JSContext* cx, HandleObject obj, HandleId id,
-                Kind kind = LOOKUP)
-      : context(cx), object(obj), id(id), kind(kind), link(cx->resolvingList) {
+  AutoResolving(JSContext* cx, HandleObject obj, HandleId id)
+      : context(cx), object(obj), id(id), link(cx->resolvingList) {
     MOZ_ASSERT(obj);
     cx->resolvingList = this;
   }
@@ -927,7 +1034,6 @@ struct MOZ_RAII AutoResolving {
   JSContext* const context;
   HandleObject object;
   HandleId id;
-  Kind const kind;
   AutoResolving* const link;
 };
 
@@ -1013,18 +1119,18 @@ class AutoAssertNoPendingException {
 #endif
 };
 
-class MOZ_RAII AutoNoteDebuggerEvaluationWithOnNativeCallHook {
+class MOZ_RAII AutoNoteExclusiveDebuggerOnEval {
   JSContext* cx;
   Debugger* oldValue;
 
  public:
-  AutoNoteDebuggerEvaluationWithOnNativeCallHook(JSContext* cx, Debugger* dbg)
-      : cx(cx), oldValue(cx->insideDebuggerEvaluationWithOnNativeCallHook) {
-    cx->insideDebuggerEvaluationWithOnNativeCallHook = dbg;
+  AutoNoteExclusiveDebuggerOnEval(JSContext* cx, Debugger* dbg)
+      : cx(cx), oldValue(cx->insideExclusiveDebuggerOnEval) {
+    cx->insideExclusiveDebuggerOnEval = dbg;
   }
 
-  ~AutoNoteDebuggerEvaluationWithOnNativeCallHook() {
-    cx->insideDebuggerEvaluationWithOnNativeCallHook = oldValue;
+  ~AutoNoteExclusiveDebuggerOnEval() {
+    cx->insideExclusiveDebuggerOnEval = oldValue;
   }
 };
 
@@ -1035,19 +1141,22 @@ enum UnsafeABIStrictness {
 };
 
 // Should be used in functions called directly from JIT code (with
-// masm.callWithABI) to assert invariants in debug builds.
-// In debug mode, masm.callWithABI inserts code to verify that the
-// callee function uses AutoUnsafeCallWithABI.
-// While this object is live:
-// 1. cx->hasAutoUnsafeCallWithABI must be true.
-// 2. We can't GC.
-// 3. Exceptions should not be pending/thrown.
+// masm.callWithABI). This assert invariants in debug builds. Resets
+// JSContext::inUnsafeCallWithABI on destruction.
 //
-// Note that #3 is a precaution, not a requirement. By default, we
-// assert that the function is not called with a pending exception,
-// and that it does not throw an exception itself.
+// In debug mode, masm.callWithABI inserts code to verify that the callee
+// function uses AutoUnsafeCallWithABI.
+//
+// While this object is live:
+//   1. cx->hasAutoUnsafeCallWithABI must be true.
+//   2. We can't GC.
+//   3. Exceptions should not be pending/thrown.
+//
+// Note that #3 is a precaution, not a requirement. By default, we assert that
+// the function is not called with a pending exception, and that it does not
+// throw an exception itself.
 class MOZ_RAII AutoUnsafeCallWithABI {
-#ifdef DEBUG
+#ifdef JS_CHECK_UNSAFE_CALL_WITH_ABI
   JSContext* cx_;
   bool nested_;
   bool checkForPendingException_;
@@ -1055,7 +1164,7 @@ class MOZ_RAII AutoUnsafeCallWithABI {
   JS::AutoCheckCannotGC nogc;
 
  public:
-#ifdef DEBUG
+#ifdef JS_CHECK_UNSAFE_CALL_WITH_ABI
   explicit AutoUnsafeCallWithABI(
       UnsafeABIStrictness strictness = UnsafeABIStrictness::NoExceptions);
   ~AutoUnsafeCallWithABI();

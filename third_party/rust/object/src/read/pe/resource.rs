@@ -1,10 +1,13 @@
 use alloc::string::String;
 use core::char;
 
+use crate::endian::{LittleEndian as LE, U16Bytes};
+use crate::pe;
 use crate::read::{ReadError, ReadRef, Result};
-use crate::{pe, LittleEndian as LE, U16Bytes};
 
 /// The `.rsrc` section of a PE file.
+///
+/// Returned by [`DataDirectories::resource_directory`](super::DataDirectories::resource_directory).
 #[derive(Debug, Clone, Copy)]
 pub struct ResourceDirectory<'data> {
     data: &'data [u8],
@@ -143,7 +146,7 @@ pub struct ResourceName {
 
 impl ResourceName {
     /// Converts to a `String`.
-    pub fn to_string_lossy(&self, directory: ResourceDirectory) -> Result<String> {
+    pub fn to_string_lossy(&self, directory: ResourceDirectory<'_>) -> Result<String> {
         let d = self.data(directory)?.iter().map(|c| c.get(LE));
 
         Ok(char::decode_utf16(d)

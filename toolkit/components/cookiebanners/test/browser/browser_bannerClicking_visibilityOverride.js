@@ -52,9 +52,10 @@ add_task(async function test_clicking_with_delayed_banner() {
   });
 
   for (let skipPresenceVisibilityCheck of [false, true]) {
-    insertVisibilityTestRules(skipPresenceVisibilityCheck);
+    // Clear the executed records before testing.
+    Services.cookieBanners.removeAllExecutedRecords(false);
 
-    await testClickResultTelemetry({});
+    insertVisibilityTestRules(skipPresenceVisibilityCheck);
 
     await openPageAndVerify({
       win: window,
@@ -63,19 +64,5 @@ add_task(async function test_clicking_with_delayed_banner() {
       visible: false,
       expected: skipPresenceVisibilityCheck ? "OptOut" : "NoClick",
     });
-
-    let expectedTelemetry;
-    if (skipPresenceVisibilityCheck) {
-      expectedTelemetry = {
-        success: 1,
-        success_dom_content_loaded: 1,
-      };
-    } else {
-      expectedTelemetry = {
-        fail: 1,
-        fail_banner_not_visible: 1,
-      };
-    }
-    await testClickResultTelemetry(expectedTelemetry);
   }
 });

@@ -7,36 +7,21 @@
 #include "nsDeviceContext.h"
 #include <algorithm>  // for max
 #include "gfxContext.h"
-#include "gfxImageSurface.h"  // for gfxImageSurface
-#include "gfxPoint.h"         // for gfxSize
-#include "gfxTextRun.h"       // for gfxFontGroup
+#include "gfxPoint.h"    // for gfxSize
+#include "gfxTextRun.h"  // for gfxFontGroup
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/gfx/PathHelpers.h"
 #include "mozilla/gfx/PrintTarget.h"
-#include "mozilla/Preferences.h"  // for Preferences
-#include "mozilla/Services.h"     // for GetObserverService
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPrefs_layout.h"
-#include "mozilla/mozalloc.h"       // for operator new
+#include "mozilla/Try.h"            // for MOZ_TRY
 #include "mozilla/widget/Screen.h"  // for Screen
-#include "nsCRT.h"                  // for nsCRT
 #include "nsDebug.h"                // for NS_ASSERTION, etc
-#include "nsFont.h"                 // for nsFont
-#include "nsFontCache.h"            // for nsFontCache
 #include "nsFontMetrics.h"          // for nsFontMetrics
-#include "nsAtom.h"                 // for nsAtom, NS_Atomize
-#include "nsID.h"
 #include "nsIDeviceContextSpec.h"   // for nsIDeviceContextSpec
-#include "nsLanguageAtomService.h"  // for nsLanguageAtomService
-#include "nsIObserver.h"            // for nsIObserver, etc
-#include "nsIObserverService.h"     // for nsIObserverService
-#include "nsISupportsImpl.h"        // for MOZ_COUNT_CTOR, etc
-#include "nsISupportsUtils.h"       // for NS_ADDREF, NS_RELEASE
 #include "nsIWidget.h"              // for nsIWidget, NS_NATIVE_WINDOW
 #include "nsRect.h"                 // for nsRect
-#include "nsServiceManagerUtils.h"  // for do_GetService
-#include "nsString.h"               // for nsDependentString
 #include "nsTArray.h"               // for nsTArray, nsTArray_Impl
-#include "nsThreadUtils.h"          // for NS_IsMainThread
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/widget/ScreenManager.h"  // for ScreenManager
 
@@ -164,11 +149,6 @@ UniquePtr<gfxContext> nsDeviceContext::CreateRenderingContextCommon(
 
 uint32_t nsDeviceContext::GetDepth() {
   RefPtr<widget::Screen> screen = FindScreen();
-  if (!screen) {
-    ScreenManager& screenManager = ScreenManager::GetSingleton();
-    screen = screenManager.GetPrimaryScreen();
-    MOZ_ASSERT(screen);
-  }
   int32_t depth = 0;
   screen->GetColorDepth(&depth);
   return uint32_t(depth);
@@ -176,11 +156,6 @@ uint32_t nsDeviceContext::GetDepth() {
 
 dom::ScreenColorGamut nsDeviceContext::GetColorGamut() {
   RefPtr<widget::Screen> screen = FindScreen();
-  if (!screen) {
-    auto& screenManager = ScreenManager::GetSingleton();
-    screen = screenManager.GetPrimaryScreen();
-    MOZ_ASSERT(screen);
-  }
   dom::ScreenColorGamut colorGamut;
   screen->GetColorGamut(&colorGamut);
   return colorGamut;
@@ -188,55 +163,39 @@ dom::ScreenColorGamut nsDeviceContext::GetColorGamut() {
 
 hal::ScreenOrientation nsDeviceContext::GetScreenOrientationType() {
   RefPtr<widget::Screen> screen = FindScreen();
-  if (!screen) {
-    auto& screenManager = ScreenManager::GetSingleton();
-    screen = screenManager.GetPrimaryScreen();
-    MOZ_ASSERT(screen);
-  }
   return screen->GetOrientationType();
 }
 
 uint16_t nsDeviceContext::GetScreenOrientationAngle() {
   RefPtr<widget::Screen> screen = FindScreen();
-  if (!screen) {
-    auto& screenManager = ScreenManager::GetSingleton();
-    screen = screenManager.GetPrimaryScreen();
-    MOZ_ASSERT(screen);
-  }
   return screen->GetOrientationAngle();
 }
 
-nsresult nsDeviceContext::GetDeviceSurfaceDimensions(nscoord& aWidth,
-                                                     nscoord& aHeight) {
+bool nsDeviceContext::GetScreenIsHDR() {
+  RefPtr<widget::Screen> screen = FindScreen();
+  return screen->GetIsHDR();
+}
+
+nsSize nsDeviceContext::GetDeviceSurfaceDimensions() {
+  return GetRect().Size();
+}
+
+nsRect nsDeviceContext::GetRect() {
   if (IsPrinterContext()) {
-    aWidth = mWidth;
-    aHeight = mHeight;
-  } else {
-    nsRect area;
-    ComputeFullAreaUsingScreen(&area);
-    aWidth = area.Width();
-    aHeight = area.Height();
+    return {0, 0, mWidth, mHeight};
   }
-
-  return NS_OK;
+  RefPtr<widget::Screen> screen = FindScreen();
+  return LayoutDeviceIntRect::ToAppUnits(screen->GetRect(),
+                                         AppUnitsPerDevPixel());
 }
 
-nsresult nsDeviceContext::GetRect(nsRect& aRect) {
+nsRect nsDeviceContext::GetClientRect() {
   if (IsPrinterContext()) {
-    aRect.SetRect(0, 0, mWidth, mHeight);
-  } else
-    ComputeFullAreaUsingScreen(&aRect);
-
-  return NS_OK;
-}
-
-nsresult nsDeviceContext::GetClientRect(nsRect& aRect) {
-  if (IsPrinterContext()) {
-    aRect.SetRect(0, 0, mWidth, mHeight);
-  } else
-    ComputeClientRectUsingScreen(&aRect);
-
-  return NS_OK;
+    return {0, 0, mWidth, mHeight};
+  }
+  RefPtr<widget::Screen> screen = FindScreen();
+  return LayoutDeviceIntRect::ToAppUnits(screen->GetAvailRect(),
+                                         AppUnitsPerDevPixel());
 }
 
 nsresult nsDeviceContext::InitForPrinting(nsIDeviceContextSpec* aDevice) {
@@ -268,6 +227,8 @@ nsresult nsDeviceContext::BeginDocument(const nsAString& aTitle,
                                         int32_t aStartPage, int32_t aEndPage) {
   MOZ_DIAGNOSTIC_ASSERT(!mIsCurrentlyPrintingDoc,
                         "Mismatched BeginDocument/EndDocument calls");
+  AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
+                            "nsDeviceContext::BeginDocument"_ns);
 
   nsresult rv = mPrintTarget->BeginPrinting(aTitle, aPrintToFileName,
                                             aStartPage, aEndPage);
@@ -291,6 +252,8 @@ RefPtr<PrintEndDocumentPromise> nsDeviceContext::EndDocument() {
   MOZ_DIAGNOSTIC_ASSERT(mIsCurrentlyPrintingDoc,
                         "Mismatched BeginDocument/EndDocument calls");
   MOZ_DIAGNOSTIC_ASSERT(mPrintTarget);
+  AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
+                            "nsDeviceContext::EndDocument"_ns);
 
   mIsCurrentlyPrintingDoc = false;
 
@@ -314,6 +277,8 @@ RefPtr<PrintEndDocumentPromise> nsDeviceContext::EndDocument() {
 nsresult nsDeviceContext::AbortDocument() {
   MOZ_DIAGNOSTIC_ASSERT(mIsCurrentlyPrintingDoc,
                         "Mismatched BeginDocument/EndDocument calls");
+  AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
+                            "nsDeviceContext::AbortDocument"_ns);
 
   nsresult rv = mPrintTarget->AbortPrinting();
   mIsCurrentlyPrintingDoc = false;
@@ -330,6 +295,9 @@ nsresult nsDeviceContext::AbortDocument() {
 nsresult nsDeviceContext::BeginPage(const IntSize& aSizeInPoints) {
   MOZ_DIAGNOSTIC_ASSERT(!mIsCurrentlyPrintingDoc || mPrintTarget,
                         "What nulled out our print target while printing?");
+  AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
+                            "nsDeviceContext::BeginPage"_ns);
+
   if (mDeviceContextSpec) {
     MOZ_TRY(mDeviceContextSpec->BeginPage(aSizeInPoints));
   }
@@ -342,6 +310,9 @@ nsresult nsDeviceContext::BeginPage(const IntSize& aSizeInPoints) {
 nsresult nsDeviceContext::EndPage() {
   MOZ_DIAGNOSTIC_ASSERT(!mIsCurrentlyPrintingDoc || mPrintTarget,
                         "What nulled out our print target while printing?");
+  AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
+                            "nsDeviceContext::EndPage"_ns);
+
   if (mPrintTarget) {
     MOZ_TRY(mPrintTarget->EndPage());
   }
@@ -351,50 +322,14 @@ nsresult nsDeviceContext::EndPage() {
   return NS_OK;
 }
 
-void nsDeviceContext::ComputeClientRectUsingScreen(nsRect* outRect) {
-  // we always need to recompute the clientRect
-  // because the window may have moved onto a different screen. In the single
-  // monitor case, we only need to do the computation if we haven't done it
-  // once already, and remember that we have because we're assured it won't
-  // change.
-  if (RefPtr<widget::Screen> screen = FindScreen()) {
-    *outRect = LayoutDeviceIntRect::ToAppUnits(screen->GetAvailRect(),
-                                               AppUnitsPerDevPixel());
-  }
-}
-
-void nsDeviceContext::ComputeFullAreaUsingScreen(nsRect* outRect) {
-  // if we have more than one screen, we always need to recompute the clientRect
-  // because the window may have moved onto a different screen. In the single
-  // monitor case, we only need to do the computation if we haven't done it
-  // once already, and remember that we have because we're assured it won't
-  // change.
-  if (RefPtr<widget::Screen> screen = FindScreen()) {
-    *outRect = LayoutDeviceIntRect::ToAppUnits(screen->GetRect(),
-                                               AppUnitsPerDevPixel());
-    mWidth = outRect->Width();
-    mHeight = outRect->Height();
-  }
-}
-
-//
-// FindScreen
-//
-// Determines which screen intersects the largest area of the given surface.
-//
 already_AddRefed<widget::Screen> nsDeviceContext::FindScreen() {
-  if (!mWidget) {
-    return nullptr;
+  if (mWidget) {
+    CheckDPIChange();
+    if (RefPtr<widget::Screen> screen = mWidget->GetWidgetScreen()) {
+      return screen.forget();
+    }
   }
-
-  CheckDPIChange();
-
-  if (RefPtr<widget::Screen> screen = mWidget->GetWidgetScreen()) {
-    return screen.forget();
-  }
-
-  ScreenManager& screenManager = ScreenManager::GetSingleton();
-  return screenManager.GetPrimaryScreen();
+  return ScreenManager::GetSingleton().GetPrimaryScreen();
 }
 
 bool nsDeviceContext::CalcPrintingSize() {
@@ -451,7 +386,8 @@ void nsDeviceContext::UpdateAppUnitsForFullZoom() {
 }
 
 DesktopToLayoutDeviceScale nsDeviceContext::GetDesktopToDeviceScale() {
-  if (RefPtr<widget::Screen> screen = FindScreen()) {
+  if (mWidget) {
+    RefPtr<widget::Screen> screen = FindScreen();
     return screen->GetDesktopToLayoutDeviceScale();
   }
   return DesktopToLayoutDeviceScale(1.0);

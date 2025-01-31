@@ -37,7 +37,7 @@ Structure:
       settings: {
         addonCompatibilityCheckEnabled: <bool>, // Whether application compatibility is respected for add-ons
         blocklistEnabled: <bool>, // true on failure
-        isDefaultBrowser: <bool>, // whether Firefox is the default browser. On Windows, this is operationalized as whether Firefox is the default HTTP protocol handler and the default HTML file handler.
+        isDefaultBrowser: <bool>, // whether Firefox is the default browser. Checked once near startup. On Windows, this is operationalized as whether Firefox is the default HTTP protocol handler and the default HTML file handler.
         defaultSearchEngine: <string>, // e.g. "yahoo"
         defaultSearchEngineData: {, // data about the current default engine
           name: <string>, // engine name, e.g. "Yahoo"; or "NONE" if no default
@@ -104,6 +104,7 @@ Structure:
         creationDate: <integer>, // integer days since UNIX epoch, e.g. 16446
         resetDate: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
         firstUseDate: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
+        recoveredFromBackup: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
       },
       partner: { // This section may not be immediately available on startup
         distributionId: <string>, // pref "distribution.id", null on failure
@@ -160,7 +161,9 @@ Structure:
             installYear: <number>, // windows only or null on failure
             locale: <string>, // "en" or null on failure
             hasPrefetch: <bool>, // windows only, or null on failure
-            hasSuperfetch: <bool>, // windows only, or nul on failure
+            hasSuperfetch: <bool>, // windows only, or null on failure
+            distro: <string>, // linux only, or null on failure
+            distroVersion: <string>, // linux only, or null on failure
         },
         hdd: {
           profile: { // hdd where the profile folder is located
@@ -279,7 +282,8 @@ Structure:
             hasBinaryComponents: <bool>,
             installDay: <number>, // days since UNIX epoch, 0 on failure
             updateDay: <number>, // days since UNIX epoch, 0 on failure
-            signedState: <integer>, // whether the add-on is signed by AMO, only present for extensions
+            signedState: <integer>, // whether the add-on is signed by AMO
+            signedTypes: <string>, // JSON-stringified array of signature types found (see nsIAppSignatureInfo's SignatureAlgorithm enum)
             isSystem: <bool>, // true if this is a System Add-on
             isWebExtension: <bool>, // true if this is a WebExtension
             multiprocessCompatible: <bool>, // true if this add-on does *not* require e10s shims
@@ -299,6 +303,8 @@ Structure:
           hasBinaryComponents: <bool>
           installDay: <number>, // days since UNIX epoch, 0 on failure
           updateDay: <number>, // days since UNIX epoch, 0 on failure
+          signedState: <integer>, // whether the add-on is signed by AMO
+          signedTypes: <string>, // JSON-stringified array of signature types found (see nsIAppSignatureInfo's SignatureAlgorithm enum)
         },
         activeGMPlugins: {
             <gmp id>: {
@@ -383,8 +389,6 @@ Each key in the object is the name of a preference. A key's value depends on the
 
 The following is a partial list of `collected preferences <https://searchfox.org/mozilla-central/search?q=const+DEFAULT_ENVIRONMENT_PREFS&path=>`_.
 
-- ``browser.fixup.alternate.enabled``: Whether the browser should try to modify unknown hosts by adding a prefix (e.g. www) and a suffix (.com). Defaults to false.
-
 - ``browser.migrate.interactions.bookmarks``: True if the user has imported bookmarks from another browser before. This preference gets transferred during profile resets.
 
 - ``browser.migrate.interactions.csvpasswords``: True if the user has imported passwords through the migration wizard from a CSV file. This preference gets transferred during profile resets.
@@ -409,8 +413,6 @@ The following is a partial list of `collected preferences <https://searchfox.org
 
 - ``browser.urlbar.showSearchTerms.enabled``: True if to show the search term in the urlbar while on a default search engine results page.
 
-- ``browser.urlbar.suggest.bestmatch``: True if to show best match result is enabled in the urlbar.
-
 - ``browser.urlbar.suggest.quicksuggest.nonsponsored``: True if non-sponsored Firefox Suggest suggestions are enabled in the urlbar.
 
 - ``browser.urlbar.suggest.quicksuggest.sponsored``: True if sponsored Firefox Suggest suggestions are enabled in the urlbar.
@@ -424,8 +426,6 @@ The following is a partial list of `collected preferences <https://searchfox.org
 - ``privacy.firstparty.isolate``: True if the user has changed the (unsupported, hidden) First Party Isolation preference. Defaults to false.
 
 - ``privacy.resistFingerprinting``: True if the user has changed the (unsupported, hidden) Resist Fingerprinting preference. Defaults to false.
-
-- ``toolkit.telemetry.pioneerId``: The state of the Pioneer ID. If set, then user is enrolled in Pioneer. Note that this does *not* collect the value.
 
 - ``app.normandy.test-prefs.bool``: Test pref that will help troubleshoot uneven unenrollment in experiments. Defaults to false.
 
@@ -472,6 +472,14 @@ The following is a partial list of `collected preferences <https://searchfox.org
 - ``nimbus.qa.pref-2``: Used to monitor the results of pref-setting test experiments.
 
 - ``signon.firefoxRelay.feature``: User choice regarding Firefox Relay integration with Firefox Password Manager. Can be one of undefined, "available", "offered", "enabled" or "disabled".
+
+- ``dom.popup_allowed_events``: Which events should allow popups. Only exposed with about:config.
+
+- ``intl.ime.use_composition_events_for_insert_text``: Whether a set of composition events is fired when user inserts text without keyboard events nor composing state of a composition (only on Linux and macOS).
+
+- ``xpinstall.signatures.required``: Whether XPI files cryptographic signatures are being verified and enforced.
+
+- ``xpinstall.signatures.weakSignaturesTemporarilyAllowed``: Whether new XPI files only signed with weak signature algorithms are still allowed to be installed
 
 attribution
 ~~~~~~~~~~~
@@ -538,6 +546,13 @@ firstUseDate
 
 The time of the first use of profile. If this is an old profile where we can't
 determine this this field will not be present.
+It's read from a file-stored timestamp from the client's profile directory.
+
+recoveredFromBackup
+~~~~~~~~~~~~~~~~~~~
+
+The time that this profile was recovered from a backup. If the profile was never
+recovered from a backup, this field will not be present.
 It's read from a file-stored timestamp from the client's profile directory.
 
 partner

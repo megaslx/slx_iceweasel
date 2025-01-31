@@ -75,8 +75,9 @@ void WebRenderTextureHost::UnbindTextureSource() {
   TextureHost::UnbindTextureSource();
 }
 
-already_AddRefed<gfx::DataSourceSurface> WebRenderTextureHost::GetAsSurface() {
-  return mWrappedTextureHost->GetAsSurface();
+already_AddRefed<gfx::DataSourceSurface> WebRenderTextureHost::GetAsSurface(
+    gfx::DataSourceSurface* aSurface) {
+  return mWrappedTextureHost->GetAsSurface(aSurface);
 }
 
 gfx::ColorDepth WebRenderTextureHost::GetColorDepth() const {
@@ -99,6 +100,12 @@ gfx::SurfaceFormat WebRenderTextureHost::GetFormat() const {
   return mWrappedTextureHost->GetFormat();
 }
 
+void WebRenderTextureHost::MaybeDestroyRenderTexture() {
+  // WebRenderTextureHost does not create RenderTexture, then
+  // WebRenderTextureHost does not need to destroy RenderTexture.
+  mExternalImageId = Nothing();
+}
+
 void WebRenderTextureHost::NotifyNotUsed() {
 #ifdef MOZ_WIDGET_ANDROID
   // When SurfaceTextureHost is wrapped by RemoteTextureHostWrapper,
@@ -108,7 +115,8 @@ void WebRenderTextureHost::NotifyNotUsed() {
     wr::RenderThread::Get()->NotifyNotUsed(GetExternalImageKey());
   }
 #endif
-  if (mWrappedTextureHost->AsRemoteTextureHostWrapper()) {
+  if (mWrappedTextureHost->AsRemoteTextureHostWrapper() ||
+      mWrappedTextureHost->AsTextureHostWrapperD3D11()) {
     mWrappedTextureHost->NotifyNotUsed();
   }
   TextureHost::NotifyNotUsed();
@@ -147,7 +155,7 @@ gfx::SurfaceFormat WebRenderTextureHost::GetReadFormat() const {
 
 int32_t WebRenderTextureHost::GetRGBStride() {
   gfx::SurfaceFormat format = GetFormat();
-  if (GetFormat() == gfx::SurfaceFormat::YUV) {
+  if (GetFormat() == gfx::SurfaceFormat::YUV420) {
     // XXX this stride is used until yuv image rendering by webrender is used.
     // Software converted RGB buffers strides are aliened to 16
     return gfx::GetAlignedStride<16>(

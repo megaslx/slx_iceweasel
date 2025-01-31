@@ -16,6 +16,10 @@ class nsIDOMEventListener;
 class nsIObserver;
 class nsISupports;
 
+namespace mozilla::dom {
+enum class InteractiveWidget : uint8_t;
+}  // namespace mozilla::dom
+
 namespace mozilla {
 
 /**
@@ -49,10 +53,11 @@ class MVMContext {
   virtual bool IsResolutionUpdatedByApz() const = 0;
   virtual LayoutDeviceMargin ScrollbarAreaToExcludeFromCompositionBounds()
       const = 0;
-  virtual Maybe<LayoutDeviceIntSize> GetContentViewerSize() const = 0;
+  virtual Maybe<LayoutDeviceIntSize> GetDocumentViewerSize() const = 0;
   virtual bool AllowZoomingForDocument() const = 0;
   virtual bool IsInReaderMode() const = 0;
   virtual bool IsDocumentLoading() const = 0;
+  virtual bool IsDocumentFullscreen() const = 0;
 
   virtual void SetResolutionAndScaleTo(float aResolution,
                                        ResolutionChangeOrigin aOrigin) = 0;
@@ -61,6 +66,8 @@ class MVMContext {
   virtual void UpdateDisplayPortMargins() = 0;
 
   virtual void Reflow(const CSSSize& aNewSize) = 0;
+  virtual ScreenIntCoord GetDynamicToolbarOffset() = 0;
+  virtual dom::InteractiveWidget GetInteractiveWidgetMode() const = 0;
 };
 
 }  // namespace mozilla

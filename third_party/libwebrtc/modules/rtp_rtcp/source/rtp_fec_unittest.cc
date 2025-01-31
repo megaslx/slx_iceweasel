@@ -14,7 +14,7 @@
 #include "absl/algorithm/container.h"
 #include "modules/rtp_rtcp/source/byte_io.h"
 #include "modules/rtp_rtcp/source/fec_test_helper.h"
-#include "modules/rtp_rtcp/source/flexfec_header_reader_writer.h"
+#include "modules/rtp_rtcp/source/flexfec_03_header_reader_writer.h"
 #include "modules/rtp_rtcp/source/forward_error_correction.h"
 #include "modules/rtp_rtcp/source/ulpfec_header_reader_writer.h"
 #include "rtc_base/random.h"
@@ -173,12 +173,12 @@ bool RtpFecTest<ForwardErrorCorrectionType>::IsRecoveryComplete() {
 
 class FlexfecForwardErrorCorrection : public ForwardErrorCorrection {
  public:
-  static const uint32_t kFecSsrc = kFlexfecSsrc;
+  static constexpr uint32_t kFecSsrc = kFlexfecSsrc;
 
   FlexfecForwardErrorCorrection()
       : ForwardErrorCorrection(
-            std::unique_ptr<FecHeaderReader>(new FlexfecHeaderReader()),
-            std::unique_ptr<FecHeaderWriter>(new FlexfecHeaderWriter()),
+            std::unique_ptr<FecHeaderReader>(new Flexfec03HeaderReader()),
+            std::unique_ptr<FecHeaderWriter>(new Flexfec03HeaderWriter()),
             kFecSsrc,
             kMediaSsrc) {}
 
@@ -192,7 +192,7 @@ class FlexfecForwardErrorCorrection : public ForwardErrorCorrection {
 
 class UlpfecForwardErrorCorrection : public ForwardErrorCorrection {
  public:
-  static const uint32_t kFecSsrc = kMediaSsrc;
+  static constexpr uint32_t kFecSsrc = kMediaSsrc;
 
   UlpfecForwardErrorCorrection()
       : ForwardErrorCorrection(

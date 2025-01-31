@@ -12,7 +12,6 @@
 #include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/gfx/gfxVars.h"
-#include "mozilla/layers/CanvasTranslator.h"
 #include "mozilla/layers/CompositorManagerParent.h"
 #include "mozilla/layers/ImageBridgeParent.h"
 #include "mozilla/layers/VideoBridgeParent.h"
@@ -28,7 +27,7 @@ static Atomic<bool> sFinishedCompositorShutDown(false);
 static mozilla::BackgroundHangMonitor* sBackgroundHangMonitor;
 static ProfilerThreadId sProfilerThreadId;
 
-nsISerialEventTarget* CompositorThread() {
+nsIThread* CompositorThread() {
   return sCompositorThreadHolder
              ? sCompositorThreadHolder->GetCompositorThread()
              : nullptr;
@@ -104,7 +103,6 @@ CompositorThreadHolder::CreateCompositorThread() {
     return nullptr;
   }
 
-  CompositorBridgeParent::Setup();
   ImageBridgeParent::Setup();
 
   return compositorThread.forget();
@@ -140,7 +138,6 @@ void CompositorThreadHolder::Shutdown() {
   gfx::VRManagerParent::Shutdown();
   MediaSystemResourceService::Shutdown();
   CompositorManagerParent::Shutdown();
-  CanvasTranslator::Shutdown();
   gfx::gfxGradientCache::Shutdown();
 
   // Ensure there are no pending tasks that would cause an access to the
@@ -177,7 +174,11 @@ void CompositorThreadHolder::Shutdown() {
 /* static */
 bool CompositorThreadHolder::IsInCompositorThread() {
   if (!CompositorThread()) {
-    return false;
+    // We no longer have a pointer to the compositor thread, but we might
+    // still be running in the compositor thread. In we ever had a
+    // compositor thread, we logged the thread id in sProfilerThreadId,
+    // so we compare that value against the current thread id.
+    return (sProfilerThreadId == profiler_current_thread_id());
   }
   bool in = false;
   MOZ_ALWAYS_SUCCEEDS(CompositorThread()->IsOnCurrentThread(&in));

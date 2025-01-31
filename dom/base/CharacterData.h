@@ -63,6 +63,10 @@ enum {
   // This bit is set if the node may be masked because of being in a password
   // field.
   NS_MAYBE_MASKED = CHARACTER_DATA_FLAG_BIT(7),
+
+  // Set if this text might be responsible for setting the directionality
+  // of a dir="auto" ancestor.
+  NS_MAY_SET_DIR_AUTO = CHARACTER_DATA_FLAG_BIT(8),
 };
 
 // Make sure we have enough space for those bits
@@ -89,6 +93,10 @@ class CharacterData : public nsIContent {
   }
   void MarkAsMaybeMasked() { SetFlags(NS_MAYBE_MASKED); }
 
+  void SetMaySetDirAuto() { SetFlags(NS_MAY_SET_DIR_AUTO); }
+  bool MaySetDirAuto() const { return HasFlag(NS_MAY_SET_DIR_AUTO); }
+  void ClearMaySetDirAuto() { UnsetFlags(NS_MAY_SET_DIR_AUTO); }
+
   NS_IMPL_FROMNODE_HELPER(CharacterData, IsCharacterData())
 
   void GetNodeValueInternal(nsAString& aNodeValue) override;
@@ -106,7 +114,7 @@ class CharacterData : public nsIContent {
   // Implementation for nsIContent
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
 
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
   const nsTextFragment* GetText() override { return &mText; }
   uint32_t TextLength() const final { return TextDataLength(); }

@@ -48,6 +48,8 @@ namespace jit {
 // non-argument Values the VM wrapper should pop from the stack. This is used
 // for tail calls for Baseline ICs. This list must be sorted on the name field.
 #define VMFUNCTION_LIST(_)                                                     \
+  IF_EXPLICIT_RESOURCE_MANAGEMENT(_(AddDisposableResourceToCapability,         \
+                                    js::AddDisposableResourceToCapability))    \
   _(AddOrUpdateSparseElementHelper, js::AddOrUpdateSparseElementHelper)        \
   _(AddSlotAndCallAddPropHook, js::AddSlotAndCallAddPropHook)                  \
   _(ArgumentsObjectCreateForInlinedIon,                                        \
@@ -59,6 +61,7 @@ namespace jit {
   _(ArrayJoin, js::jit::ArrayJoin)                                             \
   _(ArraySliceDense, js::ArraySliceDense)                                      \
   _(AsyncFunctionAwait, js::AsyncFunctionAwait)                                \
+  _(AsyncFunctionReject, js::AsyncFunctionReject)                              \
   _(AsyncFunctionResolve, js::AsyncFunctionResolve)                            \
   _(AtomicsAdd64, js::jit::AtomicsAdd64)                                       \
   _(AtomicsAnd64, js::jit::AtomicsAnd64)                                       \
@@ -80,6 +83,7 @@ namespace jit {
   _(BigIntBitNot, JS::BigInt::bitNot)                                          \
   _(BigIntBitOr, JS::BigInt::bitOr)                                            \
   _(BigIntBitXor, JS::BigInt::bitXor)                                          \
+  _(BigIntCreateFromIntPtr, JS::BigInt::createFromIntPtr)                      \
   _(BigIntDec, JS::BigInt::dec)                                                \
   _(BigIntDiv, JS::BigInt::div)                                                \
   _(BigIntInc, JS::BigInt::inc)                                                \
@@ -101,7 +105,7 @@ namespace jit {
   _(BindVarOperation, js::BindVarOperation)                                    \
   _(BlockLexicalEnvironmentObjectCreateWithoutEnclosing,                       \
     js::BlockLexicalEnvironmentObject::createWithoutEnclosing)                 \
-  _(BoxBoxableValue, js::wasm::BoxBoxableValue)                                \
+  _(BoxBoxableValue, js::wasm::AnyRef::boxValue)                               \
   _(BoxNonStrictThis, js::BoxNonStrictThis)                                    \
   _(BuiltinObjectOperation, js::BuiltinObjectOperation)                        \
   _(CallDOMGetter, js::jit::CallDOMGetter)                                     \
@@ -111,30 +115,36 @@ namespace jit {
   _(CallObjectCreateWithShape, js::CallObject::createWithShape)                \
   _(CanSkipAwait, js::CanSkipAwait)                                            \
   _(CharCodeAt, js::jit::CharCodeAt)                                           \
+  _(CharCodeToLowerCase, js::jit::CharCodeToLowerCase)                         \
+  _(CharCodeToUpperCase, js::jit::CharCodeToUpperCase)                         \
   _(CheckClassHeritageOperation, js::CheckClassHeritageOperation)              \
   _(CheckOverRecursed, js::jit::CheckOverRecursed)                             \
   _(CheckOverRecursedBaseline, js::jit::CheckOverRecursedBaseline)             \
   _(CheckPrivateFieldOperation, js::CheckPrivateFieldOperation)                \
+  _(CheckProxyGetByValueResult, js::jit::CheckProxyGetByValueResult)           \
   _(ClassBodyLexicalEnvironmentObjectCreateWithoutEnclosing,                   \
     js::ClassBodyLexicalEnvironmentObject::createWithoutEnclosing)             \
   _(CloneRegExpObject, js::CloneRegExpObject)                                  \
   _(CloseIterOperation, js::CloseIterOperation)                                \
+  _(CodePointAt, js::jit::CodePointAt)                                         \
   _(ConcatStrings, js::ConcatStrings<CanGC>)                                   \
   _(CreateAsyncFromSyncIterator, js::CreateAsyncFromSyncIterator)              \
+  _(CreateBigIntFromInt32, js::jit::CreateBigIntFromInt32)                     \
   _(CreateBigIntFromInt64, js::jit::CreateBigIntFromInt64)                     \
   _(CreateBigIntFromUint64, js::jit::CreateBigIntFromUint64)                   \
   _(CreateGenerator, js::jit::CreateGenerator)                                 \
   _(CreateGeneratorFromFrame, js::jit::CreateGeneratorFromFrame)               \
+  IF_EXPLICIT_RESOURCE_MANAGEMENT(                                             \
+      _(CreateSuppressedError, js::CreateSuppressedError))                     \
   _(CreateThisFromIC, js::jit::CreateThisFromIC)                               \
   _(CreateThisFromIon, js::jit::CreateThisFromIon)                             \
   _(DebugAfterYield, js::jit::DebugAfterYield)                                 \
   _(DebugEpilogueOnBaselineReturn, js::jit::DebugEpilogueOnBaselineReturn)     \
   _(DebugLeaveLexicalEnv, js::jit::DebugLeaveLexicalEnv)                       \
-  _(DebugLeaveThenFreshenLexicalEnv, js::jit::DebugLeaveThenFreshenLexicalEnv) \
   _(DebugLeaveThenPopLexicalEnv, js::jit::DebugLeaveThenPopLexicalEnv)         \
-  _(DebugLeaveThenRecreateLexicalEnv,                                          \
-    js::jit::DebugLeaveThenRecreateLexicalEnv)                                 \
   _(Debug_CheckSelfHosted, js::Debug_CheckSelfHosted)                          \
+  _(DebuggeeFreshenLexicalEnv, js::jit::DebuggeeFreshenLexicalEnv)             \
+  _(DebuggeeRecreateLexicalEnv, js::jit::DebuggeeRecreateLexicalEnv)           \
   _(DelElemOperationNonStrict, js::DelElemOperation<false>)                    \
   _(DelElemOperationStrict, js::DelElemOperation<true>)                        \
   _(DelPropOperationNonStrict, js::DelPropOperation<false>)                    \
@@ -149,7 +159,6 @@ namespace jit {
   _(DoConcatStringObject, js::jit::DoConcatStringObject)                       \
   _(DoGetElemFallback, js::jit::DoGetElemFallback, 2)                          \
   _(DoGetElemSuperFallback, js::jit::DoGetElemSuperFallback, 3)                \
-  _(DoGetIntrinsicFallback, js::jit::DoGetIntrinsicFallback)                   \
   _(DoGetIteratorFallback, js::jit::DoGetIteratorFallback, 1)                  \
   _(DoGetNameFallback, js::jit::DoGetNameFallback)                             \
   _(DoGetPropFallback, js::jit::DoGetPropFallback, 1)                          \
@@ -157,8 +166,11 @@ namespace jit {
   _(DoHasOwnFallback, js::jit::DoHasOwnFallback, 2)                            \
   _(DoInFallback, js::jit::DoInFallback, 2)                                    \
   _(DoInstanceOfFallback, js::jit::DoInstanceOfFallback, 2)                    \
+  _(DoLambdaFallback, js::jit::DoLambdaFallback)                               \
+  _(DoLazyConstantFallback, js::jit::DoLazyConstantFallback)                   \
   _(DoNewArrayFallback, js::jit::DoNewArrayFallback)                           \
   _(DoNewObjectFallback, js::jit::DoNewObjectFallback)                         \
+  _(DoOptimizeGetIteratorFallback, js::jit::DoOptimizeGetIteratorFallback)     \
   _(DoOptimizeSpreadCallFallback, js::jit::DoOptimizeSpreadCallFallback)       \
   _(DoRestFallback, js::jit::DoRestFallback)                                   \
   _(DoSetElemFallback, js::jit::DoSetElemFallback, 2)                          \
@@ -168,6 +180,7 @@ namespace jit {
   _(DoToBoolFallback, js::jit::DoToBoolFallback)                               \
   _(DoToPropertyKeyFallback, js::jit::DoToPropertyKeyFallback)                 \
   _(DoTrialInlining, js::jit::DoTrialInlining)                                 \
+  _(DoTypeOfEqFallback, js::jit::DoTypeOfEqFallback)                           \
   _(DoTypeOfFallback, js::jit::DoTypeOfFallback)                               \
   _(DoUnaryArithFallback, js::jit::DoUnaryArithFallback, 1)                    \
   _(EnterWith, js::jit::EnterWith)                                             \
@@ -182,6 +195,7 @@ namespace jit {
   VMFUNCTION_FUZZILLI_LIST(_)                                                  \
   _(GeneratorThrowOrReturn, js::jit::GeneratorThrowOrReturn)                   \
   _(GetAndClearException, js::GetAndClearException)                            \
+  _(GetElemMaybeCached, js::jit::GetElemMaybeCached)                           \
   _(GetFirstDollarIndexRaw, js::GetFirstDollarIndexRaw)                        \
   _(GetImportOperation, js::GetImportOperation)                                \
   _(GetIntrinsicValue, js::jit::GetIntrinsicValue)                             \
@@ -189,6 +203,8 @@ namespace jit {
   _(GetIteratorWithIndices, js::GetIteratorWithIndices)                        \
   _(GetNonSyntacticGlobalThis, js::GetNonSyntacticGlobalThis)                  \
   _(GetOrCreateModuleMetaObject, js::GetOrCreateModuleMetaObject)              \
+  _(GetPendingExceptionStack, js::GetPendingExceptionStack)                    \
+  _(GetPropMaybeCached, js::jit::GetPropMaybeCached)                           \
   _(GetPrototypeOf, js::jit::GetPrototypeOf)                                   \
   _(GetSparseElementHelper, js::GetSparseElementHelper)                        \
   _(GlobalDeclInstantiationFromIon, js::jit::GlobalDeclInstantiationFromIon)   \
@@ -201,7 +217,7 @@ namespace jit {
   _(InitPropGetterSetterOperation, js::InitPropGetterSetterOperation)          \
   _(InitRestParameter, js::jit::InitRestParameter)                             \
   _(Int32ToString, js::Int32ToString<CanGC>)                                   \
-  _(Int32ToStringWithBase, js::Int32ToStringWithBase)                          \
+  _(Int32ToStringWithBase, js::Int32ToStringWithBase<CanGC>)                   \
   _(InterpretResume, js::jit::InterpretResume)                                 \
   _(InterruptCheck, js::jit::InterruptCheck)                                   \
   _(InvokeFunction, js::jit::InvokeFunction)                                   \
@@ -220,6 +236,7 @@ namespace jit {
   _(IonHasOwnICUpdate, js::jit::IonHasOwnIC::update)                           \
   _(IonInICUpdate, js::jit::IonInIC::update)                                   \
   _(IonInstanceOfICUpdate, js::jit::IonInstanceOfIC::update)                   \
+  _(IonOptimizeGetIteratorICUpdate, js::jit::IonOptimizeGetIteratorIC::update) \
   _(IonOptimizeSpreadCallICUpdate, js::jit::IonOptimizeSpreadCallIC::update)   \
   _(IonSetPropertyICUpdate, js::jit::IonSetPropertyIC::update)                 \
   _(IonToPropertyKeyICUpdate, js::jit::IonToPropertyKeyIC::update)             \
@@ -231,8 +248,13 @@ namespace jit {
   _(LeaveWith, js::jit::LeaveWith)                                             \
   _(LinearizeForCharAccess, js::jit::LinearizeForCharAccess)                   \
   _(LoadAliasedDebugVar, js::LoadAliasedDebugVar)                              \
+  _(MapObjectCreate, js::MapObject::create)                                    \
+  _(MapObjectCreateFromIterable, js::MapObject::createFromIterable)            \
+  _(MapObjectDelete, js::jit::MapObjectDelete)                                 \
   _(MapObjectGet, js::jit::MapObjectGet)                                       \
   _(MapObjectHas, js::jit::MapObjectHas)                                       \
+  _(MapObjectSet, js::jit::MapObjectSet)                                       \
+  _(MapObjectSetFromIC, js::jit::MapObjectSetFromIC)                           \
   _(MutatePrototype, js::jit::MutatePrototype)                                 \
   _(NamedLambdaObjectCreateWithoutEnclosing,                                   \
     js::NamedLambdaObject::createWithoutEnclosing)                             \
@@ -261,6 +283,8 @@ namespace jit {
   _(NumberParseInt, js::NumberParseInt)                                        \
   _(NumberToString, js::NumberToString<CanGC>)                                 \
   _(ObjectCreateWithTemplate, js::ObjectCreateWithTemplate)                    \
+  _(ObjectKeys, js::jit::ObjectKeys)                                           \
+  _(ObjectKeysLength, js::jit::ObjectKeysLength)                               \
   _(ObjectWithProtoOperation, js::ObjectWithProtoOperation)                    \
   _(OnDebuggerStatement, js::jit::OnDebuggerStatement)                         \
   _(ProxyGetProperty, js::ProxyGetProperty)                                    \
@@ -275,6 +299,7 @@ namespace jit {
   _(RecreateLexicalEnv, js::jit::RecreateLexicalEnv)                           \
   _(RegExpBuiltinExecMatchFromJit, js::RegExpBuiltinExecMatchFromJit)          \
   _(RegExpBuiltinExecTestFromJit, js::RegExpBuiltinExecTestFromJit)            \
+  _(RegExpHasCaptureGroups, js::RegExpHasCaptureGroups)                        \
   _(RegExpMatcherRaw, js::RegExpMatcherRaw)                                    \
   _(RegExpSearcherRaw, js::RegExpSearcherRaw)                                  \
   _(SameValue, js::SameValue)                                                  \
@@ -284,6 +309,11 @@ namespace jit {
   _(SetElementSuper, js::SetElementSuper)                                      \
   _(SetFunctionName, js::SetFunctionName)                                      \
   _(SetIntrinsicOperation, js::SetIntrinsicOperation)                          \
+  _(SetObjectAdd, js::jit::SetObjectAdd)                                       \
+  _(SetObjectAddFromIC, js::jit::SetObjectAddFromIC)                           \
+  _(SetObjectCreate, js::SetObject::create)                                    \
+  _(SetObjectCreateFromIterable, js::SetObject::createFromIterable)            \
+  _(SetObjectDelete, js::jit::SetObjectDelete)                                 \
   _(SetObjectHas, js::jit::SetObjectHas)                                       \
   _(SetPropertyMegamorphicNoCache, js::jit::SetPropertyMegamorphic<false>)     \
   _(SetPropertyMegamorphicYesCache, js::jit::SetPropertyMegamorphic<true>)     \
@@ -295,15 +325,20 @@ namespace jit {
     js::jit::StringBigIntCompare<js::jit::ComparisonKind::LessThan>)           \
   _(StringEndsWith, js::StringEndsWith)                                        \
   _(StringFlatReplaceString, js::StringFlatReplaceString)                      \
-  _(StringFromCharCode, js::jit::StringFromCharCode)                           \
-  _(StringFromCodePoint, js::jit::StringFromCodePoint)                         \
+  _(StringFromCharCode, js::StringFromCharCode)                                \
+  _(StringFromCodePoint, js::StringFromCodePoint)                              \
+  _(StringIncludes, js::StringIncludes)                                        \
   _(StringIndexOf, js::StringIndexOf)                                          \
+  _(StringLastIndexOf, js::StringLastIndexOf)                                  \
   _(StringReplace, js::jit::StringReplace)                                     \
   _(StringSplitString, js::StringSplitString)                                  \
   _(StringStartsWith, js::StringStartsWith)                                    \
   _(StringToLowerCase, js::StringToLowerCase)                                  \
   _(StringToNumber, js::StringToNumber)                                        \
   _(StringToUpperCase, js::StringToUpperCase)                                  \
+  _(StringTrim, js::StringTrim)                                                \
+  _(StringTrimEnd, js::StringTrimEnd)                                          \
+  _(StringTrimStart, js::StringTrimStart)                                      \
   _(StringsCompareGreaterThanOrEquals,                                         \
     js::jit::StringsCompare<ComparisonKind::GreaterThanOrEqual>)               \
   _(StringsCompareLessThan, js::jit::StringsCompare<ComparisonKind::LessThan>) \
@@ -319,6 +354,7 @@ namespace jit {
   _(ThrowOperation, js::ThrowOperation)                                        \
   _(ThrowRuntimeLexicalError, js::jit::ThrowRuntimeLexicalError)               \
   _(ThrowUninitializedThis, js::ThrowUninitializedThis)                        \
+  _(ThrowWithStackOperation, js::ThrowWithStackOperation)                      \
   _(ToBigInt, js::ToBigInt)                                                    \
   _(ToStringSlow, js::ToStringSlow<CanGC>)                                     \
   _(ValueToIterator, js::ValueToIterator)                                      \

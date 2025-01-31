@@ -14,6 +14,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   MockFilePicker: "resource://testing-common/MockFilePicker.sys.mjs",
   MockPermissionPrompt:
     "resource://testing-common/MockPermissionPrompt.sys.mjs",
+  MockSound: "resource://testing-common/MockSound.sys.mjs",
   NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
   PerTestCoverageUtils:
     "resource://testing-common/PerTestCoverageUtils.sys.mjs",
@@ -69,13 +70,12 @@ function SPConsoleListener(callback, contentWindow) {
 SPConsoleListener.prototype = {
   // Overload the observe method for both nsIConsoleListener and nsIObserver.
   // The topic will be null for nsIConsoleListener.
-  observe(msg, topic) {
+  observe(msg) {
     let m = {
       message: msg.message,
       errorMessage: null,
       cssSelectors: null,
       sourceName: null,
-      sourceLine: null,
       lineNumber: null,
       columnNumber: null,
       category: null,
@@ -88,7 +88,6 @@ SPConsoleListener.prototype = {
       m.errorMessage = msg.errorMessage;
       m.cssSelectors = msg.cssSelectors;
       m.sourceName = msg.sourceName;
-      m.sourceLine = msg.sourceLine;
       m.lineNumber = msg.lineNumber;
       m.columnNumber = msg.columnNumber;
       m.category = msg.category;
@@ -158,12 +157,11 @@ export class SpecialPowersChild extends JSWindowActorChild {
       this.nondeterministicGetWeakMapKeys,
       this.snapshotWindowWithOptions,
       this.snapshotWindow,
-      this.snapshotRect,
-      this.getDOMRequestService
+      this.snapshotRect
     );
   }
 
-  observe(aSubject, aTopic, aData) {
+  observe() {
     // Ignore the "{chrome/content}-document-global-created" event. It
     // is only observed to force creation of the actor.
   }
@@ -448,6 +446,10 @@ export class SpecialPowersChild extends JSWindowActorChild {
     return lazy.MockPermissionPrompt;
   }
 
+  get MockSound() {
+    return lazy.MockSound;
+  }
+
   quit() {
     this.sendAsyncMessage("SpecialPowers.Quit", {});
   }
@@ -473,10 +475,10 @@ export class SpecialPowersChild extends JSWindowActorChild {
     return this.sendQuery("Ping").then(aCallback);
   }
 
-  async registeredServiceWorkers() {
-    // Please see the comment in SpecialPowersObserver.jsm above
+  async registeredServiceWorkers(aForceCheck) {
+    // Please see the comment in SpecialPowersParent.sys.mjs above
     // this._serviceWorkerListener's assignment for what this returns.
-    if (this._serviceWorkerRegistered) {
+    if (this._serviceWorkerRegistered || aForceCheck) {
       // This test registered at least one service worker. Send a synchronous
       // call to the parent to make sure that it called unregister on all of its
       // service workers.
@@ -634,16 +636,6 @@ export class SpecialPowersChild extends JSWindowActorChild {
     this._addMessageListener("SPChromeScriptMessage", chromeScript);
 
     return chromeScript;
-  }
-
-  async importInMainProcess(importString) {
-    var message = await this.sendQuery("SPImportInMainProcess", importString);
-    if (message.hadError) {
-      throw new Error(
-        "SpecialPowers.importInMainProcess failed with error " +
-          message.errorMessage
-      );
-    }
   }
 
   get Services() {
@@ -836,14 +828,14 @@ export class SpecialPowersChild extends JSWindowActorChild {
    * This function should be used when specialpowers is in content process but
    * it want to get the notification from chrome space.
    *
-   * This function will call Services.obs.addObserver in SpecialPowersObserver
+   * This function will call Services.obs.addObserver in SpecialPowersParent
    * (that is in chrome process) and forward the data received to SpecialPowers
    * via messageManager.
    * You can use this._addMessageListener("specialpowers-YOUR_TOPIC") to fire
    * the callback.
    *
    * To get the expected data, you should modify
-   * SpecialPowersObserver.prototype._registerObservers.observe. Or the message
+   * SpecialPowersParent.prototype._registerObservers.observe. Or the message
    * you received from messageManager will only contain 'aData' from Service.obs.
    */
   registerObservers(topic) {
@@ -1100,7 +1092,7 @@ export class SpecialPowersChild extends JSWindowActorChild {
     }
     return val;
   }
-  _getPref(prefName, prefType, { defaultValue }) {
+  _getPref(prefName, prefType) {
     switch (prefType) {
       case "BOOL":
         return Services.prefs.getBoolPref(prefName);
@@ -1125,7 +1117,7 @@ export class SpecialPowersChild extends JSWindowActorChild {
   }
 
   _getMUDV(window) {
-    return window.docShell.contentViewer;
+    return window.docShell.docViewer;
   }
   // XXX: these APIs really ought to be removed, they're not e10s-safe.
   // (also they're pretty Firefox-specific)
@@ -1143,19 +1135,10 @@ export class SpecialPowersChild extends JSWindowActorChild {
   removeAutoCompletePopupEventListener(window, eventname, listener) {
     this._getAutoCompletePopup(window).removeEventListener(eventname, listener);
   }
-  getFormFillController(window) {
+  getFormFillController() {
     return Cc["@mozilla.org/satchel/form-fill-controller;1"].getService(
       Ci.nsIFormFillController
     );
-  }
-  attachFormFillControllerTo(window) {
-    this.getFormFillController().attachPopupElementToDocument(
-      window.document,
-      this._getAutoCompletePopup(window)
-    );
-  }
-  detachFormFillControllerFrom(window) {
-    this.getFormFillController().detachFromDocument(window.document);
   }
   isBackButtonEnabled(window) {
     return !this._getTopChromeWindow(window)
@@ -1447,11 +1430,18 @@ export class SpecialPowersChild extends JSWindowActorChild {
     return this.docShell.nsILoadContext.useRemoteSubframes;
   }
 
-  addSystemEventListener(target, type, listener, useCapture) {
-    Services.els.addSystemEventListener(target, type, listener, useCapture);
-  }
-  removeSystemEventListener(target, type, listener, useCapture) {
-    Services.els.removeSystemEventListener(target, type, listener, useCapture);
+  ISOLATION_STRATEGY = {
+    IsolateNothing: 0,
+    IsolateEverything: 1,
+    IsolateHighValue: 2,
+  };
+
+  effectiveIsolationStrategy() {
+    // If remote subframes are disabled, we always use the IsolateNothing strategy.
+    if (!this.useRemoteSubframes) {
+      return this.ISOLATION_STRATEGY.IsolateNothing;
+    }
+    return this.getIntPref("fission.webContentIsolationStrategy");
   }
 
   // helper method to check if the event is consumed by either default group's
@@ -1460,26 +1450,6 @@ export class SpecialPowersChild extends JSWindowActorChild {
     // FYI: Event.defaultPrevented returns false in content context if the
     //      event is consumed only by system group's event listeners.
     return event.defaultPrevented;
-  }
-
-  getDOMRequestService() {
-    var serv = Services.DOMRequest;
-    var res = {};
-    var props = [
-      "createRequest",
-      "createCursor",
-      "fireError",
-      "fireSuccess",
-      "fireDone",
-      "fireDetailedError",
-    ];
-    for (var i in props) {
-      let prop = props[i];
-      res[prop] = function () {
-        return serv[prop].apply(serv, arguments);
-      };
-    }
-    return Cu.cloneInto(res, this.contentWindow, { cloneFunctions: true });
   }
 
   addCategoryEntry(category, entry, value, persists, replace) {
@@ -1672,11 +1642,11 @@ export class SpecialPowersChild extends JSWindowActorChild {
     this._xpcshellScope = val;
   }
 
-  async evictAllContentViewers() {
+  async evictAllDocumentViewers() {
     if (Services.appinfo.sessionHistoryInParent) {
-      await this.sendQuery("EvictAllContentViewers");
+      await this.sendQuery("EvictAllDocumentViewers");
     } else {
-      this.browsingContext.top.childSessionHistory.legacySHistory.evictAllContentViewers();
+      this.browsingContext.top.childSessionHistory.legacySHistory.evictAllDocumentViewers();
     }
   }
 
@@ -1744,7 +1714,11 @@ export class SpecialPowersChild extends JSWindowActorChild {
     );
     xferable.init(this.docShell);
     xferable.addDataFlavor(flavor);
-    Services.clipboard.getData(xferable, whichClipboard);
+    Services.clipboard.getData(
+      xferable,
+      whichClipboard,
+      this.browsingContext.currentWindowContext
+    );
     var data = {};
     try {
       xferable.getTransferData(flavor, data);
@@ -1761,6 +1735,24 @@ export class SpecialPowersChild extends JSWindowActorChild {
     Cc["@mozilla.org/widget/clipboardhelper;1"]
       .getService(Ci.nsIClipboardHelper)
       .copyString(str);
+  }
+
+  cleanupAllClipboard() {
+    // copied from widget/tests/clipboard_helper.js
+    // there is a write there I didn't want to copy
+    const clipboard = Services.clipboard;
+    const clipboardTypes = [
+      clipboard.kGlobalClipboard,
+      clipboard.kSelectionClipboard,
+      clipboard.kFindClipboard,
+      clipboard.kSelectionCache,
+    ];
+
+    clipboardTypes.forEach(function (type) {
+      if (clipboard.isClipboardTypeSupported(type)) {
+        clipboard.emptyClipboard(type);
+      }
+    });
   }
 
   supportsSelectionClipboard() {
@@ -1940,11 +1932,11 @@ export class SpecialPowersChild extends JSWindowActorChild {
     return this.sendQuery("SPRemoveServiceWorkerDataForExampleDomain", {});
   }
 
-  cleanUpSTSData(origin, flags) {
+  cleanUpSTSData(origin) {
     return this.sendQuery("SPCleanUpSTSData", { origin });
   }
 
-  async requestDumpCoverageCounters(cb) {
+  async requestDumpCoverageCounters() {
     // We want to avoid a roundtrip between child and parent.
     if (!lazy.PerTestCoverageUtils.enabled) {
       return;
@@ -1953,7 +1945,7 @@ export class SpecialPowersChild extends JSWindowActorChild {
     await this.sendQuery("SPRequestDumpCoverageCounters", {});
   }
 
-  async requestResetCoverageCounters(cb) {
+  async requestResetCoverageCounters() {
     // We want to avoid a roundtrip between child and parent.
     if (!lazy.PerTestCoverageUtils.enabled) {
       return;
@@ -2188,11 +2180,11 @@ export class SpecialPowersChild extends JSWindowActorChild {
   }
 
   /**
-   * See \ref nsIContentViewerEdit.setCommandNode(in Node).
+   * See \ref nsIDocumentViewerEdit.setCommandNode(in Node).
    */
   setCommandNode(window, node) {
-    return window.docShell.contentViewer
-      .QueryInterface(Ci.nsIContentViewerEdit)
+    return window.docShell.docViewer
+      .QueryInterface(Ci.nsIDocumentViewerEdit)
       .setCommandNode(node);
   }
 
@@ -2288,7 +2280,7 @@ SpecialPowersChild.prototype._proxiedObservers = {
     );
   },
 
-  "specialpowers-service-worker-shutdown": function (aMessage) {
+  "specialpowers-service-worker-shutdown": function () {
     Services.obs.notifyObservers(null, "specialpowers-service-worker-shutdown");
   },
 

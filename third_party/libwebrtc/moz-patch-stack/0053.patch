@@ -1,32 +1,29 @@
-From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Fri, 20 Aug 2021 13:52:00 +0200
-Subject: Bug 1654112 - Don't check the calling thread in
- webrtc::AudioReceiveStream::GetSources. r=ng
+From: Michael Froman <mjfroman@mac.com>
+Date: Fri, 8 Apr 2022 11:36:36 -0500
+Subject: Bug 1766646 - (fix-b556b08668) avoid InlinedVector method that can
+ throw exception
 
-source_tracker_ is thread safe with its own internal mutex, so this call is safe
-as long as the caller has a guarantee for the lifetime of the
-AudioReceiveStream. This is similar to webrtc::VideoReceiveStream.
-
-Upliftable.
-
-Differential Revision: https://phabricator.services.mozilla.com/D123226
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/c186df8a088e46285a15e40149182daa34cc6805
 ---
- audio/audio_receive_stream.cc | 1 -
- 1 file changed, 1 deletion(-)
+ api/video_codecs/video_encoder.cc | 8 ++++++++
+ 1 file changed, 8 insertions(+)
 
-diff --git a/audio/audio_receive_stream.cc b/audio/audio_receive_stream.cc
-index 85fe185d90..d76c1856d8 100644
---- a/audio/audio_receive_stream.cc
-+++ b/audio/audio_receive_stream.cc
-@@ -369,7 +369,6 @@ int AudioReceiveStreamImpl::GetBaseMinimumPlayoutDelayMs() const {
- }
- 
- std::vector<RtpSource> AudioReceiveStreamImpl::GetSources() const {
--  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
-   return source_tracker_.GetSources();
- }
- 
--- 
-2.34.1
-
+diff --git a/api/video_codecs/video_encoder.cc b/api/video_codecs/video_encoder.cc
+index c3b5f3a4e9..22a532d328 100644
+--- a/api/video_codecs/video_encoder.cc
++++ b/api/video_codecs/video_encoder.cc
+@@ -192,7 +192,15 @@ std::string VideoEncoder::EncoderInfo::ToString() const {
+   for (size_t i = 0; i < preferred_pixel_formats.size(); ++i) {
+     if (i > 0)
+       oss << ", ";
++#if defined(WEBRTC_MOZILLA_BUILD)
++    // This could assert, as opposed to throw using the form in the
++    // else, but since we're in a for loop that uses .size() we can
++    // be fairly sure that this is safe without doing a further
++    // check to make sure 'i' is in-range.
++    oss << VideoFrameBufferTypeToString(preferred_pixel_formats[i]);
++#else
+     oss << VideoFrameBufferTypeToString(preferred_pixel_formats.at(i));
++#endif
+   }
+   oss << "]";
+   if (is_qp_trusted.has_value()) {

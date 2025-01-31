@@ -16,12 +16,6 @@ DIRS += [
     "jni",
 ]
 
-XPIDL_SOURCES += [
-    "nsIAndroidBridge.idl",
-]
-
-XPIDL_MODULE = "widget_android"
-
 EXPORTS += [
     "AndroidBridge.h",
 ]
@@ -33,6 +27,7 @@ classes_with_WrapForJNI = [
     "Clipboard",
     "CodecProxy",
     "CompositorSurfaceManager",
+    "ContentInputStream",
     "EnterpriseRoots",
     "EventCallback",
     "EventDispatcher",
@@ -40,6 +35,7 @@ classes_with_WrapForJNI = [
     "GeckoAudioInfo",
     "GeckoBatteryManager",
     "GeckoBundle",
+    "GeckoDragAndDrop",
     "GeckoEditableChild",
     "GeckoHLSDemuxerWrapper",
     "GeckoHLSResourceWrapper",
@@ -58,6 +54,7 @@ classes_with_WrapForJNI = [
     "GeckoSurfaceTexture",
     "GeckoSystemStateListener",
     "GeckoThread",
+    "GeckoViewInputStream",
     "GeckoVRManager",
     "GeckoVideoInfo",
     "GeckoWebExecutor",
@@ -66,7 +63,6 @@ classes_with_WrapForJNI = [
     "ImageDecoder",
     "MediaDrmProxy",
     "PanZoomController",
-    "RuntimeTelemetry",
     "Sample",
     "SampleBuffer",
     "ScreenManagerHelper",
@@ -80,6 +76,7 @@ classes_with_WrapForJNI = [
     "SurfaceTextureListener",
     "TelemetryUtils",
     "WebAuthnTokenManager",
+    "WebAuthnUtils",
     "WebMessage",
     "WebNotification",
     "WebNotificationDelegate",
@@ -106,6 +103,7 @@ EXPORTS.mozilla.widget += [
     "AndroidUiThread.h",
     "AndroidView.h",
     "AndroidVsync.h",
+    "AndroidWidgetUtils.h",
     "CompositorWidgetChild.h",
     "CompositorWidgetParent.h",
     "EventDispatcher.h",
@@ -132,6 +130,7 @@ UNIFIED_SOURCES += [
     "AndroidContentController.cpp",
     "AndroidUiThread.cpp",
     "AndroidVsync.cpp",
+    "AndroidWidgetUtils.cpp",
     "CompositorWidgetChild.cpp",
     "CompositorWidgetParent.cpp",
     "EventDispatcher.cpp",
@@ -143,6 +142,7 @@ UNIFIED_SOURCES += [
     "nsAppShell.cpp",
     "nsClipboard.cpp",
     "nsDeviceContextAndroid.cpp",
+    "nsDragService.cpp",
     "nsLookAndFeel.cpp",
     "nsPrintSettingsServiceAndroid.cpp",
     "nsUserIdleServiceAndroid.cpp",
@@ -187,7 +187,6 @@ LOCAL_INCLUDES += [
     "/layout/forms",
     "/layout/painting",
     "/netwerk/base",
-    "/toolkit/components/telemetry",
     "/widget",
     "/widget/headless",
     "/xpcom/threads",

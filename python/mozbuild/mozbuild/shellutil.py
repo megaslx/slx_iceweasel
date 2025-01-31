@@ -35,7 +35,7 @@ UNQUOTED_TOKENS_RE = _tokens2re(
 DOUBLY_QUOTED_TOKENS_RE = _tokens2re(
     quote='"',
     backslashedquote=r'\\"',
-    special="\$",
+    special=r"\$",
     backslashed=r'\\[^\\"]',
 )
 
@@ -181,11 +181,11 @@ def _quote(s):
     As a special case, if given an int, returns a string containing the int,
     not enclosed in quotes.
     """
-    if type(s) == int:
-        return "%d" % s
+    if type(s) is int:
+        return f"{s}"
 
     # Empty strings need to be quoted to have any significance
-    if s and not SHELL_QUOTE_RE.search(s) and not s.startswith("~"):
+    if s and not SHELL_QUOTE_RE.search(s) and s[0] != "~":
         return s
 
     # Single quoted strings can contain any characters unescaped except the

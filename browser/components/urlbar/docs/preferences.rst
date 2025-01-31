@@ -29,12 +29,6 @@ browser.urlbar.showSearchTerms.enabled (boolean, default: true)
   on a default search engine results page.
   Can be controlled from Search Preferences.
 
-browser.urlbar.suggest.bestmatch (boolean, default: true)
-  When ``browser.urlbar.bestMatch.enabled`` is true, a "Top pick" checkbox
-  corresponding to this pref is shown in Firefox settings. It controls whether
-  results can be shown using the "Top pick" UI treatment. Otherwise the checkbox
-  is hidden and the "Top pick" UI treatment is disabled.
-
 browser.urlbar.suggest.bookmark (boolean, default: true)
   Whether results will include the user's bookmarks.
   Can be controlled from Privacy Preferences.
@@ -102,9 +96,6 @@ browser.urlbar.autoFill.adaptiveHistory.useCountThreshold (float, default: 1.0)
   Threshold for use count of input history that we handle as adaptive history
   autofill. If the use count is this value or more, it will be a candidate.
 
-browser.urlbar.bestMatch.enabled (boolean, default: false)
-  Whether the best match feature is enabled.
-
 browser.urlbar.autoFill.stddevMultiplier (float, default: 0.0)
   Affects the frecency threshold of the autofill algorithm.  The threshold is
   the mean of all origin frecencies, plus one standard deviation multiplied by
@@ -131,10 +122,6 @@ browser.urlbar.dnsResolveSingleWordsAfterSearch (number, default: 0)
   "Did you mean to go to 'host'" prompt.
   Set to 0. 0: Never resolve, 1: Use heuristics, 2. Always resolve.
 
-browser.urlbar.eventTelemetry.enabled (boolean, default: false)
-  Whether telemetry events should be recorded. This is expensive and should only
-  be enabled by experiments with a small population.
-
 browser.urlbar.extension.timeout (integer, default: 400)
   When sending events to extensions, they have this amount of time in
   milliseconds to respond before timing out. This affects the omnibox API.
@@ -142,6 +129,10 @@ browser.urlbar.extension.timeout (integer, default: 400)
 browser.urlbar.filter.javascript (boolean, default: true)
   When true, `javascript:` URLs are not included in search results for safety
   reasons.
+
+browser.urlbar.focusContentDocumentOnEsc (boolean, default: true)
+  Focus the content document when pressing the Escape key, if there's no
+  remaining typed history.
 
 browser.urlbar.formatting.enabled (boolean, default: true)
   Applies URL highlighting and other styling to the text in the urlbar input
@@ -164,9 +155,6 @@ browser.urlbar.merino.clientVariants (string, default: "")
   for more details. This is intended to be used by experiments, not directly set
   by users.
 
-browser.urlbar.merino.enabled (boolean, default: false)
-  Whether Merino is enabled as a quick suggest source.
-
 browser.urlbar.merino.providers (string, default: "")
   Comma-separated list of providers to request from the Merino server. Merino
   will return suggestions only for these providers. See `Merino API docs`_ for
@@ -186,13 +174,10 @@ browser.urlbar.quicksuggest.enabled (boolean, default: false)
   the individual prefs ``browser.urlbar.suggest.quicksuggest.nonsponsored`` and
   ``browser.urlbar.suggest.quicksuggest.sponsored``.
 
-browser.urlbar.quicksuggest.remoteSettings.enabled (boolean, default: true)
-  Whether remote settings is enabled as a quick suggest source.
-
 browser.urlbar.quicksuggest.dataCollection.enabled (boolean, default: false)
   Whether data collection is enabled for quick suggest results.
 
-browser.urlbar.quicksuggest.shouldShowOnboardingDialog (boolean, default: true)
+browser.urlbar.quicksuggest.shouldShowOnboardingDialog (boolean, default: false)
   Whether to show the quick suggest onboarding dialog.
 
 browser.urlbar.richSuggestions.tail (boolean, default: true)
@@ -217,6 +202,10 @@ browser.urlbar.suggest.addons (boolean, default: true)
 
 browser.urlbar.suggest.pocket (boolean, default: true)
   If ``browser.urlbar.pocket.featureGate`` is true, this controls whether Pocket
+  suggestions are turned on. Otherwise they won't be shown.
+
+browser.urlbar.suggest.yelp (boolean, default: true)
+  If ``browser.urlbar.yelp.featureGate`` is true, this controls whether Yelp
   suggestions are turned on. Otherwise they won't be shown.
 
 browser.urlbar.switchTabs.adoptIntoActiveWindow (boolean, default: false)
@@ -253,9 +242,6 @@ browser.urlbar.unitConversion.suggestedIndex (integer, default: 1)
 browser.urlbar.experimental.expandTextOnFocus (boolean, default: false)
   Whether we expand the font size when the urlbar is focused.
 
-browser.urlbar.experimental.searchButton (boolean, default: false)
-  Whether to displays a permanent search button before the urlbar.
-
 browser.urlbar.keepPanelOpenDuringImeComposition (boolean, default: false)
   Whether the results panel should be kept open during IME composition. The
   panel may overlap with the IME compositor panel.
@@ -263,7 +249,3 @@ browser.urlbar.keepPanelOpenDuringImeComposition (boolean, default: false)
 browser.urlbar.restyleSearches (boolean, default: false)
   When true, URLs in the user's history that look like search result pages
   are restyled to look like search engine results instead of history results.
-
-browser.urlbar.update2.emptySearchBehavior (integer, default: 0)
-  Controls the empty search behavior in Search Mode: 0. Show nothing, 1. Show
-  search history, 2. Show search and browsing history

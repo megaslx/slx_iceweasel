@@ -6,6 +6,12 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 // This is redefined below, for strange and unfortunate reasons.
 import { PromptUtils } from "resource://gre/modules/PromptUtils.sys.mjs";
+import { BrowserUtils } from "resource://gre/modules/BrowserUtils.sys.mjs";
+
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  ClipboardContextMenu: "resource://gre/modules/ClipboardContextMenu.sys.mjs",
+});
 
 const {
   MODAL_TYPE_TAB,
@@ -346,7 +352,7 @@ Prompter.prototype = {
    *        Null if no checkbox.
    * @param {Boolean} checkValue - The initial checked state of the checkbox.
    * @param {Object} [extraArgs] - Extra arguments for the prompt metadata.
-   * @returns {Promise<nsIPropertyBag<{ buttonNumClicked: Number, checked: Boolean }>>}
+   * @returns {Promise<nsIPropertyBag<{ buttonNumClicked: Number, checked: Boolean, isExtra1Secondary: Boolean }>>}
    */
   asyncConfirmEx(browsingContext, modalType, ...promptArgs) {
     let p = this.pickPrompter({ browsingContext, modalType, async: true });
@@ -652,6 +658,19 @@ Prompter.prototype = {
     let p = this.pickPrompter({ browsingContext, modalType, async: true });
     return p.promptAuth(...promptArgs);
   },
+
+  /**
+   * Displays a contextmenu to get user confirmation for clipboard read. Only
+   * one context menu can be opened at a time.
+   *
+   * @param {WindowContext} windowContext - The window context that initiates
+   *        the clipboard operation.
+   * @returns {Promise<nsIPropertyBag<{ ok: Boolean }>>}
+   *          A promise which resolves when the contextmenu is dismissed.
+   */
+  confirmUserPaste() {
+    return lazy.ClipboardContextMenu.confirmUserPaste(...arguments);
+  },
 };
 
 // Common utils not specific to a particular prompter style.
@@ -667,6 +686,26 @@ var InternalPromptUtils = {
     const BUTTON_DEFAULT_MASK = 0x03000000;
     let defaultButtonNum = (flags & BUTTON_DEFAULT_MASK) >> 24;
     let isDelayEnabled = flags & Ci.nsIPrompt.BUTTON_DELAY_ENABLE;
+
+    // Sanity check: If the flags indicate there should be no button0 then flags
+    // must contain BUTTON_NONE (notably, it must include BUTTON_NONE_ENABLE_BIT).
+    let allowNoButtons =
+      (flags & Ci.nsIPromptService.BUTTON_NONE) ==
+      Ci.nsIPromptService.BUTTON_NONE;
+    const NO_BUTTON0 =
+      Ci.nsIPrompt.BUTTON_POS_0 * Ci.nsIPrompt.BUTTON_TITLE_IS_STRING;
+    if (!allowNoButtons && !button0 && (flags & NO_BUTTON0) == NO_BUTTON0) {
+      throw new Error(
+        `Request for modal prompt with no buttons requires flags to be ` +
+          `BUTTON_NONE.  Got ${flags}`
+      );
+    }
+    if (allowNoButtons && (button0 || button1 || button2)) {
+      throw new Error(
+        `Request for modal prompt with no buttons requires button names to be ` +
+          `null.  Got ${button0}, ${button1}, ${button2}`
+      );
+    }
 
     // Flags can be used to select a specific pre-defined button label or
     // a caller-supplied string (button0/button1/button2). If no flags are
@@ -713,6 +752,7 @@ var InternalPromptUtils = {
       buttonLabels[2],
       defaultButtonNum,
       isDelayEnabled,
+      allowNoButtons,
     ];
   },
 
@@ -1040,7 +1080,7 @@ class ModalPrompter {
         closed = true;
       });
     Services.tm.spinEventLoopUntilOrQuit(
-      "prompts/Prompter.jsm:openPromptSync",
+      "prompts/Prompter.sys.mjs:openPromptSync",
       () => closed
     );
   }
@@ -1110,13 +1150,14 @@ class ModalPrompter {
      */
     if (args.channel) {
       try {
-        args.authOrigin = args.channel.URI.hostPort;
+        // Bug 1767292: Display scheme if it is HTTP, otherwise omit it.
+        args.authOrigin = BrowserUtils.formatURIForDisplay(args.channel.URI, {
+          showInsecureHTTP: true,
+        });
       } catch (ex) {
         args.authOrigin = args.channel.URI.prePath;
       }
-      args.isInsecureAuth =
-        args.channel.URI.schemeIs("http") &&
-        !args.channel.loadInfo.isTopLevelLoad;
+      args.isInsecureAuth = args.channel.URI.schemeIs("http");
       // whether we are going to prompt the user for their credentials for a different base domain.
       // When true, auth prompt spoofing protection mechanisms will be triggered (see bug 791594).
       args.isTopLevelCrossDomainAuth = false;
@@ -1142,7 +1183,7 @@ class ModalPrompter {
     }
     if (IS_CONTENT) {
       let docShell = this.browsingContext.docShell;
-      let inPermitUnload = docShell?.contentViewer?.inPermitUnload;
+      let inPermitUnload = docShell?.docViewer?.inPermitUnload;
       args.inPermitUnload = inPermitUnload;
       let eventDetail = Cu.cloneInto(
         {
@@ -1173,7 +1214,7 @@ class ModalPrompter {
     // differentiate between the different prompts.
     let id = "id" + Services.uuid.generateUUID().toString();
 
-    args._remoteId = id;
+    args._remoteId = args.promptID ?? id;
 
     let returnedArgs;
     try {
@@ -1239,7 +1280,7 @@ class ModalPrompter {
   }
 
   async openInternalWindowPrompt(parentWindow, args) {
-    if (!parentWindow?.gDialogBox || !ModalPrompter.windowPromptSubDialog) {
+    if (!parentWindow?.gDialogBox) {
       this.openWindowPrompt(parentWindow, args);
       return;
     }
@@ -1439,11 +1480,18 @@ class ModalPrompter {
       ...extraArgs,
     };
 
-    let [label0, label1, label2, defaultButtonNum, isDelayEnabled] =
-      InternalPromptUtils.confirmExHelper(flags, button0, button1, button2);
+    let [
+      label0,
+      label1,
+      label2,
+      defaultButtonNum,
+      isDelayEnabled,
+      allowNoButtons,
+    ] = InternalPromptUtils.confirmExHelper(flags, button0, button1, button2);
 
     args.defaultButtonNum = defaultButtonNum;
     args.enableDelay = isDelayEnabled;
+    args.allowNoButtons = allowNoButtons;
 
     if (label0) {
       args.button0Label = label0;
@@ -1455,10 +1503,19 @@ class ModalPrompter {
       }
     }
 
+    if (flags & Ci.nsIPrompt.BUTTON_POS_1_IS_SECONDARY) {
+      args.isExtra1Secondary = true;
+    }
+
+    if (flags & Ci.nsIPrompt.SHOW_SPINNER) {
+      args.headerIconCSSValue = "url('chrome://global/skin/icons/loading.svg')";
+    }
+
     if (this.async) {
       return this.openPromptAsync(args, result => ({
         checked: !!result.checked,
         buttonNumClicked: result.buttonNumClicked,
+        isExtra1Secondary: result.isExtra1Secondary,
       }));
     }
 
@@ -1677,9 +1734,11 @@ class ModalPrompter {
       return result.then(bag => {
         let ok = bag.getProperty("ok");
         if (ok) {
-          let username = bag.getProperty("user");
-          let password = bag.getProperty("pass");
-          InternalPromptUtils.setAuthInfo(authInfo, username, password);
+          InternalPromptUtils.setAuthInfo(
+            authInfo,
+            bag.getProperty("user"),
+            bag.getProperty("pass")
+          );
         }
         return ok;
       });
@@ -1697,15 +1756,7 @@ class ModalPrompter {
     return result;
   }
 
-  asyncPromptAuth(
-    channel,
-    callback,
-    context,
-    level,
-    authInfo,
-    checkLabel,
-    checkValue
-  ) {
+  asyncPromptAuth() {
     // Nothing calls this directly; netwerk ends up going through
     // nsIPromptService::GetPrompt, which delegates to login manager.
     // Login manger handles the async bits itself, and only calls out
@@ -1734,13 +1785,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
   MODAL_TYPE_WINDOW
 );
 
-XPCOMUtils.defineLazyPreferenceGetter(
-  ModalPrompter,
-  "windowPromptSubDialog",
-  "prompts.windowPromptSubDialog",
-  false
-);
-
 export function AuthPromptAdapterFactory() {}
 AuthPromptAdapterFactory.prototype = {
   classID: Components.ID("{6e134924-6c3a-4d86-81ac-69432dd971dc}"),
@@ -1763,7 +1807,7 @@ AuthPromptAdapter.prototype = {
 
   /* ----------  nsIAuthPrompt2 ---------- */
 
-  promptAuth(channel, level, authInfo, checkLabel, checkValue) {
+  promptAuth(channel, level, authInfo) {
     let message = InternalPromptUtils.makeAuthMessage(
       this.oldPrompter,
       channel,
@@ -1810,15 +1854,7 @@ AuthPromptAdapter.prototype = {
     return ok;
   },
 
-  asyncPromptAuth(
-    channel,
-    callback,
-    context,
-    level,
-    authInfo,
-    checkLabel,
-    checkValue
-  ) {
+  asyncPromptAuth() {
     throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   },
 };

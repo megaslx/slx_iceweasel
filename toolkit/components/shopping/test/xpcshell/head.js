@@ -4,8 +4,6 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 /* exported createHttpServer, loadJSONfromFile, readFile */
 
-Cu.importGlobalProperties(["fetch"]);
-
 const { AddonTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/AddonTestUtils.sys.mjs"
 );
@@ -48,13 +46,12 @@ var API_OHTTP_RELAY = "http://example.com/relay/";
 var API_OHTTP_CONFIG = "http://example.com/ohttp-config";
 
 function enableOHTTP(configURL = API_OHTTP_CONFIG) {
-  Services.prefs.setBoolPref("toolkit.shopping.useOHTTP", true);
   Services.prefs.setCharPref("toolkit.shopping.ohttpConfigURL", configURL);
   Services.prefs.setCharPref("toolkit.shopping.ohttpRelayURL", API_OHTTP_RELAY);
 }
 
 function disableOHTTP() {
-  for (let pref of ["useOHTTP", "ohttpRelayURL", "ohttpConfigURL"]) {
-    Services.prefs.clearUserPref(`toolkit.shopping.${pref}`);
+  for (let pref of ["ohttpRelayURL", "ohttpConfigURL"]) {
+    Services.prefs.setCharPref(`toolkit.shopping.${pref}`, "");
   }
 }

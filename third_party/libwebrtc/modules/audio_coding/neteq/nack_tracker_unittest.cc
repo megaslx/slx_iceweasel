@@ -16,11 +16,13 @@
 #include <memory>
 
 #include "modules/audio_coding/include/audio_coding_module_typedefs.h"
-#include "test/field_trial.h"
+#include "test/explicit_key_value_config.h"
 #include "test/gtest.h"
 
 namespace webrtc {
 namespace {
+
+using test::ExplicitKeyValueConfig;
 
 const int kSampleRateHz = 16000;
 const int kPacketSizeMs = 30;
@@ -54,7 +56,8 @@ bool IsNackListCorrect(const std::vector<uint16_t>& nack_list,
 }  // namespace
 
 TEST(NackTrackerTest, EmptyListWhenNoPacketLoss) {
-  NackTracker nack;
+  ExplicitKeyValueConfig field_trials("");
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
 
   int seq_num = 1;
@@ -72,12 +75,13 @@ TEST(NackTrackerTest, EmptyListWhenNoPacketLoss) {
 }
 
 TEST(NackTrackerTest, LatePacketsMovedToNackThenNackListDoesNotChange) {
+  ExplicitKeyValueConfig field_trials("");
   const uint16_t kSequenceNumberLostPackets[] = {2, 3, 4, 5, 6, 7, 8, 9};
   static const int kNumAllLostPackets = sizeof(kSequenceNumberLostPackets) /
                                         sizeof(kSequenceNumberLostPackets[0]);
 
   for (int k = 0; k < 2; k++) {  // Two iteration with/without wrap around.
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
 
     uint16_t sequence_num_lost_packets[kNumAllLostPackets];
@@ -119,12 +123,13 @@ TEST(NackTrackerTest, LatePacketsMovedToNackThenNackListDoesNotChange) {
 }
 
 TEST(NackTrackerTest, ArrivedPacketsAreRemovedFromNackList) {
+  ExplicitKeyValueConfig field_trials("");
   const uint16_t kSequenceNumberLostPackets[] = {2, 3, 4, 5, 6, 7, 8, 9};
   static const int kNumAllLostPackets = sizeof(kSequenceNumberLostPackets) /
                                         sizeof(kSequenceNumberLostPackets[0]);
 
   for (int k = 0; k < 2; ++k) {  // Two iteration with/without wrap around.
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
 
     uint16_t sequence_num_lost_packets[kNumAllLostPackets];
@@ -180,13 +185,14 @@ TEST(NackTrackerTest, ArrivedPacketsAreRemovedFromNackList) {
 // Assess if estimation of timestamps and time-to-play is correct. Introduce all
 // combinations that timestamps and sequence numbers might have wrap around.
 TEST(NackTrackerTest, EstimateTimestampAndTimeToPlay) {
+  ExplicitKeyValueConfig field_trials("");
   const uint16_t kLostPackets[] = {2, 3,  4,  5,  6,  7,  8,
                                    9, 10, 11, 12, 13, 14, 15};
   static const int kNumAllLostPackets =
       sizeof(kLostPackets) / sizeof(kLostPackets[0]);
 
   for (int k = 0; k < 4; ++k) {
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
 
     // Sequence number wrap around if `k` is 2 or 3;
@@ -238,27 +244,15 @@ TEST(NackTrackerTest, EstimateTimestampAndTimeToPlay) {
       EXPECT_EQ((index + 2) * kPacketSizeMs, it->second.time_to_play_ms);
       ++it;
     }
-
-    // Pretend 10 ms is passed, and we had pulled audio from NetEq, it still
-    // reports the same sequence number as decoded, time-to-play should be
-    // updated by 10 ms.
-    nack.UpdateLastDecodedPacket(first_seq_num, first_timestamp);
-    nack_list = nack.GetNackList();
-    it = nack_list.begin();
-    while (it != nack_list.end()) {
-      seq_num = it->first - seq_num_offset;
-      int index = seq_num - kLostPackets[0];
-      EXPECT_EQ((index + 2) * kPacketSizeMs - 10, it->second.time_to_play_ms);
-      ++it;
-    }
   }
 }
 
 TEST(NackTrackerTest,
      MissingPacketsPriorToLastDecodedRtpShouldNotBeInNackList) {
+  ExplicitKeyValueConfig field_trials("");
   for (int m = 0; m < 2; ++m) {
     uint16_t seq_num_offset = (m == 0) ? 0 : 65531;  // Wrap around if `m` is 1.
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
 
     // Two consecutive packets to have a correct estimate of timestamp increase.
@@ -309,7 +303,8 @@ TEST(NackTrackerTest,
 }
 
 TEST(NackTrackerTest, Reset) {
-  NackTracker nack;
+  ExplicitKeyValueConfig field_trials("");
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
 
   // Two consecutive packets to have a correct estimate of timestamp increase.
@@ -333,10 +328,11 @@ TEST(NackTrackerTest, Reset) {
 }
 
 TEST(NackTrackerTest, ListSizeAppliedFromBeginning) {
+  ExplicitKeyValueConfig field_trials("");
   const size_t kNackListSize = 10;
   for (int m = 0; m < 2; ++m) {
     uint16_t seq_num_offset = (m == 0) ? 0 : 65525;  // Wrap around if `m` is 1.
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
     nack.SetMaxNackListSize(kNackListSize);
 
@@ -357,10 +353,11 @@ TEST(NackTrackerTest, ListSizeAppliedFromBeginning) {
 }
 
 TEST(NackTrackerTest, ChangeOfListSizeAppliedAndOldElementsRemoved) {
+  ExplicitKeyValueConfig field_trials("");
   const size_t kNackListSize = 10;
   for (int m = 0; m < 2; ++m) {
     uint16_t seq_num_offset = (m == 0) ? 0 : 65525;  // Wrap around if `m` is 1.
-    NackTracker nack;
+    NackTracker nack(field_trials);
     nack.UpdateSampleRate(kSampleRateHz);
 
     uint16_t seq_num = seq_num_offset;
@@ -412,8 +409,9 @@ TEST(NackTrackerTest, ChangeOfListSizeAppliedAndOldElementsRemoved) {
 }
 
 TEST(NackTrackerTest, RoudTripTimeIsApplied) {
+  ExplicitKeyValueConfig field_trials("");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
 
@@ -443,12 +441,12 @@ TEST(NackTrackerTest, RoudTripTimeIsApplied) {
 // Set never_nack_multiple_times to true with a field trial and verify that
 // packets are not nacked multiple times.
 TEST(NackTrackerTest, DoNotNackMultipleTimes) {
-  test::ScopedFieldTrials field_trials(
+  ExplicitKeyValueConfig field_trials(
       "WebRTC-Audio-NetEqNackTrackerConfig/"
       "packet_loss_forget_factor:0.996,ms_per_loss_percent:20,"
       "never_nack_multiple_times:true/");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
 
@@ -474,8 +472,9 @@ TEST(NackTrackerTest, DoNotNackMultipleTimes) {
 
 // Test if estimated packet loss rate is correct.
 TEST(NackTrackerTest, PacketLossRateCorrect) {
+  ExplicitKeyValueConfig field_trials("");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
   uint16_t seq_num = 0;
@@ -500,8 +499,9 @@ TEST(NackTrackerTest, PacketLossRateCorrect) {
 }
 
 TEST(NackTrackerTest, DoNotNackAfterDtx) {
+  ExplicitKeyValueConfig field_trials("");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
   uint16_t seq_num = 0;
@@ -515,10 +515,10 @@ TEST(NackTrackerTest, DoNotNackAfterDtx) {
 }
 
 TEST(NackTrackerTest, DoNotNackIfLossRateIsTooHigh) {
-  test::ScopedFieldTrials field_trials(
+  ExplicitKeyValueConfig field_trials(
       "WebRTC-Audio-NetEqNackTrackerConfig/max_loss_rate:0.4/");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
   uint16_t seq_num = 0;
@@ -540,10 +540,10 @@ TEST(NackTrackerTest, DoNotNackIfLossRateIsTooHigh) {
 }
 
 TEST(NackTrackerTest, OnlyNackIfRttIsValid) {
-  test::ScopedFieldTrials field_trials(
+  ExplicitKeyValueConfig field_trials(
       "WebRTC-Audio-NetEqNackTrackerConfig/require_valid_rtt:true/");
   const int kNackListSize = 200;
-  NackTracker nack;
+  NackTracker nack(field_trials);
   nack.UpdateSampleRate(kSampleRateHz);
   nack.SetMaxNackListSize(kNackListSize);
   uint16_t seq_num = 0;

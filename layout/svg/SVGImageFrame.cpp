@@ -28,6 +28,7 @@
 #include "mozilla/SVGUtils.h"
 #include "mozilla/dom/MutationEventBinding.h"
 #include "mozilla/dom/SVGImageElement.h"
+#include "mozilla/dom/LargestContentfulPaint.h"
 #include "nsIReflowCallback.h"
 
 using namespace mozilla::dom;
@@ -121,8 +122,7 @@ void SVGImageFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
 }
 
 /* virtual */
-void SVGImageFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                PostDestroyData& aPostDestroyData) {
+void SVGImageFrame::Destroy(DestroyContext& aContext) {
   if (HasAnyStateBits(NS_FRAME_IS_NONDISPLAY)) {
     DecApproximateVisibleCount();
   }
@@ -132,14 +132,13 @@ void SVGImageFrame::DestroyFrom(nsIFrame* aDestructRoot,
     mReflowCallbackPosted = false;
   }
 
-  nsCOMPtr<nsIImageLoadingContent> imageLoader =
-      do_QueryInterface(nsIFrame::mContent);
+  nsCOMPtr<nsIImageLoadingContent> imageLoader = do_QueryInterface(mContent);
 
   if (imageLoader) {
     imageLoader->FrameDestroyed(this);
   }
 
-  nsIFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+  nsIFrame::Destroy(aContext);
 }
 
 /* virtual */
@@ -171,9 +170,9 @@ void SVGImageFrame::DidSetComputedStyle(ComputedStyle* aOldStyle) {
   // TODO(heycam): We should handle aspect-ratio, like nsImageFrame does.
 }
 
-bool SVGImageFrame::IsSVGTransformed(gfx::Matrix* aOwnTransform,
-                                     gfx::Matrix* aFromParentTransform) const {
-  return SVGUtils::IsSVGTransformed(this, aOwnTransform, aFromParentTransform);
+bool SVGImageFrame::DoGetParentSVGTransforms(
+    gfx::Matrix* aFromParentTransform) const {
+  return SVGUtils::GetParentSVGTransforms(this, aFromParentTransform);
 }
 
 //----------------------------------------------------------------------
@@ -191,24 +190,15 @@ nsresult SVGImageFrame::AttributeChanged(int32_t aNameSpaceID,
       return NS_OK;
     }
   }
-
-  // Currently our SMIL implementation does not modify the DOM attributes. Once
-  // we implement the SVG 2 SMIL behaviour this can be removed
-  // SVGImageElement::AfterSetAttr's implementation will be sufficient.
-  if (aModType == MutationEvent_Binding::SMIL &&
-      aAttribute == nsGkAtoms::href &&
-      (aNameSpaceID == kNameSpaceID_XLink ||
-       aNameSpaceID == kNameSpaceID_None)) {
-    SVGImageElement* element = static_cast<SVGImageElement*>(GetContent());
-
-    bool hrefIsSet =
-        element->mStringAttributes[SVGImageElement::HREF].IsExplicitlySet() ||
-        element->mStringAttributes[SVGImageElement::XLINK_HREF]
-            .IsExplicitlySet();
-    if (hrefIsSet) {
-      element->LoadSVGImage(true, true);
-    } else {
-      element->CancelImageRequests(true);
+  if (aModType == dom::MutationEvent_Binding::REMOVAL &&
+      (aNameSpaceID == kNameSpaceID_None ||
+       aNameSpaceID == kNameSpaceID_XLink) &&
+      aAttribute == nsGkAtoms::href) {
+    auto* element = static_cast<SVGImageElement*>(GetContent());
+    if (aNameSpaceID == kNameSpaceID_None ||
+        !element->mStringAttributes[SVGImageElement::HREF].IsExplicitlySet()) {
+      mImageContainer = nullptr;
+      InvalidateFrame();
     }
   }
 
@@ -259,7 +249,6 @@ bool SVGImageFrame::GetIntrinsicImageDimensions(
   }
 
   ImageResolution resolution = mImageContainer->GetResolution();
-
   int32_t width, height;
   if (NS_FAILED(mImageContainer->GetWidth(&width))) {
     aSize.width = -1;
@@ -275,9 +264,7 @@ bool SVGImageFrame::GetIntrinsicImageDimensions(
     resolution.ApplyYTo(aSize.height);
   }
 
-  Maybe<AspectRatio> asp = mImageContainer->GetIntrinsicRatio();
-  aAspectRatio = asp.valueOr(AspectRatio{});
-
+  aAspectRatio = mImageContainer->GetIntrinsicRatio();
   return true;
 }
 
@@ -333,12 +320,14 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
     nsCOMPtr<imgIRequest> currentRequest;
     nsCOMPtr<nsIImageLoadingContent> imageLoader =
         do_QueryInterface(GetContent());
-    if (imageLoader)
+    if (imageLoader) {
       imageLoader->GetRequest(nsIImageLoadingContent::CURRENT_REQUEST,
                               getter_AddRefs(currentRequest));
+    }
 
-    if (currentRequest)
+    if (currentRequest) {
       currentRequest->GetImage(getter_AddRefs(mImageContainer));
+    }
   }
 
   if (mImageContainer) {
@@ -392,6 +381,12 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
       LayoutDeviceSize devPxSize(width, height);
       nsRect destRect(nsPoint(), LayoutDevicePixel::ToAppUnits(
                                      devPxSize, appUnitsPerDevPx));
+      nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest();
+      if (currentRequest) {
+        LCPHelpers::FinalizeLCPEntryForImage(
+            GetContent()->AsElement(),
+            static_cast<imgRequestProxy*>(currentRequest.get()), destRect);
+      }
 
       // Note: Can't use DrawSingleUnscaledImage for the TYPE_VECTOR case.
       // That method needs our image to have a fixed native width & height,
@@ -419,7 +414,7 @@ void SVGImageFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     if (!IsVisibleForPainting()) {
       return;
     }
-    if (StyleEffects()->IsTransparent()) {
+    if (StyleEffects()->IsTransparent() && SVGUtils::CanOptimizeOpacity(this)) {
       return;
     }
     aBuilder->BuildCompositorHitTestInfoIfNeeded(this,
@@ -438,7 +433,8 @@ bool SVGImageFrame::IsInvisible() const {
   // Anything below will round to zero later down the pipeline.
   constexpr float opacity_threshold = 1.0 / 128.0;
 
-  return StyleEffects()->mOpacity <= opacity_threshold;
+  return StyleEffects()->mOpacity <= opacity_threshold &&
+         SVGUtils::CanOptimizeOpacity(this);
 }
 
 bool SVGImageFrame::CreateWebRenderCommands(
@@ -468,14 +464,7 @@ bool SVGImageFrame::CreateWebRenderCommands(
 
   // try to setup the image
   if (!mImageContainer) {
-    nsCOMPtr<imgIRequest> currentRequest;
-    nsCOMPtr<nsIImageLoadingContent> imageLoader =
-        do_QueryInterface(GetContent());
-    if (imageLoader) {
-      imageLoader->GetRequest(nsIImageLoadingContent::CURRENT_REQUEST,
-                              getter_AddRefs(currentRequest));
-    }
-
+    nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest();
     if (currentRequest) {
       currentRequest->GetImage(getter_AddRefs(mImageContainer));
     }
@@ -634,6 +623,14 @@ bool SVGImageFrame::CreateWebRenderCommands(
       mImageContainer, this, destRect, clipRect, aSc, flags, svgContext,
       region);
 
+  if (nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest()) {
+    LCPHelpers::FinalizeLCPEntryForImage(
+        GetContent()->AsElement(),
+        static_cast<imgRequestProxy*>(currentRequest.get()),
+        LayoutDeviceRect::ToAppUnits(destRect, appUnitsPerDevPx) -
+            toReferenceFrame);
+  }
+
   RefPtr<image::WebRenderImageProvider> provider;
   ImgDrawResult drawResult = mImageContainer->GetImageProvider(
       aManager->LayerManager(), decodeSize, svgContext, region, flags,
@@ -783,6 +780,17 @@ bool SVGImageFrame::ReflowFinished() {
 }
 
 void SVGImageFrame::ReflowCallbackCanceled() { mReflowCallbackPosted = false; }
+
+already_AddRefed<imgIRequest> SVGImageFrame::GetCurrentRequest() const {
+  nsCOMPtr<imgIRequest> request;
+  nsCOMPtr<nsIImageLoadingContent> imageLoader =
+      do_QueryInterface(GetContent());
+  if (imageLoader) {
+    imageLoader->GetRequest(nsIImageLoadingContent::CURRENT_REQUEST,
+                            getter_AddRefs(request));
+  }
+  return request.forget();
+}
 
 bool SVGImageFrame::IgnoreHitTest() const {
   switch (Style()->PointerEvents()) {

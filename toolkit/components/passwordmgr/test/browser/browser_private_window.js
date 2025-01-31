@@ -32,7 +32,7 @@ function getDialogDoc() {
       if (childDocShell.busyFlags != Ci.nsIDocShell.BUSY_FLAGS_NONE) {
         continue;
       }
-      var childDoc = childDocShell.contentViewer.DOMDocument;
+      var childDoc = childDocShell.docViewer.DOMDocument;
       if (
         childDoc.location.href !=
           "chrome://global/content/commonDialog.xhtml" &&
@@ -72,12 +72,12 @@ function getAuthPrompt() {
 
 async function loadAccessRestrictedURL(browser, url, username, password) {
   let browserLoaded = BrowserTestUtils.browserLoaded(browser);
-  BrowserTestUtils.loadURIString(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
 
   // Wait for the auth prompt, enter the login details and close the prompt
   await PromptTestUtils.handleNextPrompt(
     browser,
-    { modalType: authPromptModalType, promptType: "promptUserAndPass" },
+    { modalType: Ci.nsIPrompt.MODAL_TYPE_TAB, promptType: "promptUserAndPass" },
     { buttonNumClick: 0, loginInput: username, passwordInput: password }
   );
 
@@ -106,13 +106,11 @@ const authUrl = `https://example.com/${DIRECTORY_PATH}authenticate.sjs`;
 
 let normalWin;
 let privateWin;
-let authPromptModalType;
 
 // XXX: Note that tasks are currently run in sequence. Some tests may assume the state
 // resulting from successful or unsuccessful logins in previous tasks
 
 add_task(async function test_setup() {
-  authPromptModalType = Services.prefs.getIntPref("prompts.modalType.httpAuth");
   normalWin = await BrowserTestUtils.openNewBrowserWindow({ private: false });
   privateWin = await BrowserTestUtils.openNewBrowserWindow({ private: true });
   Services.logins.removeAllUserFacingLogins();
@@ -639,7 +637,7 @@ add_task(async function test_normal_autofilled_7() {
       // Add the observer before loading the form page
       let formFilled = listenForTestNotification("FormProcessed");
       await SimpleTest.promiseFocus(browser.ownerGlobal);
-      BrowserTestUtils.loadURIString(browser, form1Url);
+      BrowserTestUtils.startLoadingURIString(browser, form1Url);
       await formFilled;
 
       // the form should have been autofilled, so submit without updating field values

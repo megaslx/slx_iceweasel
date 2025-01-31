@@ -28,7 +28,8 @@ using namespace mozilla;
 bool nsMenuUtilsX::gIsSynchronouslyActivatingNativeMenuItemDuringTest = false;
 
 void nsMenuUtilsX::DispatchCommandTo(nsIContent* aTargetContent,
-                                     NSEventModifierFlags aModifierFlags, int16_t aButton) {
+                                     NSEventModifierFlags aModifierFlags,
+                                     int16_t aButton) {
   MOZ_ASSERT(aTargetContent, "null ptr");
 
   dom::Document* doc = aTargetContent->OwnerDoc();
@@ -43,8 +44,9 @@ void nsMenuUtilsX::DispatchCommandTo(nsIContent* aTargetContent,
 
     IgnoredErrorResult rv;
     event->InitCommandEvent(u"command"_ns, true, true,
-                            nsGlobalWindowInner::Cast(doc->GetInnerWindow()), 0, ctrlKey, altKey,
-                            shiftKey, cmdKey, aButton, nullptr, 0, rv);
+                            nsGlobalWindowInner::Cast(doc->GetInnerWindow()), 0,
+                            ctrlKey, altKey, shiftKey, cmdKey, aButton, nullptr,
+                            0, rv);
     if (!rv.Failed()) {
       event->SetTrusted(true);
       aTargetContent->DispatchEvent(*event);
@@ -55,17 +57,19 @@ void nsMenuUtilsX::DispatchCommandTo(nsIContent* aTargetContent,
 NSString* nsMenuUtilsX::GetTruncatedCocoaLabel(const nsString& itemLabel) {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  // We want to truncate long strings to some reasonable pixel length but there is no
-  // good API for doing that which works for all OS versions and architectures. For now
-  // we'll do nothing for consistency and depend on good user interface design to limit
-  // string lengths.
-  return [NSString stringWithCharacters:reinterpret_cast<const unichar*>(itemLabel.get())
-                                 length:itemLabel.Length()];
+  // We want to truncate long strings to some reasonable pixel length but there
+  // is no good API for doing that which works for all OS versions and
+  // architectures. For now we'll do nothing for consistency and depend on good
+  // user interface design to limit string lengths.
+  return [NSString
+      stringWithCharacters:reinterpret_cast<const unichar*>(itemLabel.get())
+                    length:itemLabel.Length()];
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-uint8_t nsMenuUtilsX::GeckoModifiersForNodeAttribute(const nsString& modifiersAttribute) {
+uint8_t nsMenuUtilsX::GeckoModifiersForNodeAttribute(
+    const nsString& modifiersAttribute) {
   uint8_t modifiers = knsMenuItemNoModifier;
   char* str = ToNewCString(modifiersAttribute);
   char* newStr;
@@ -87,7 +91,8 @@ uint8_t nsMenuUtilsX::GeckoModifiersForNodeAttribute(const nsString& modifiersAt
   return modifiers;
 }
 
-unsigned int nsMenuUtilsX::MacModifiersForGeckoModifiers(uint8_t geckoModifiers) {
+unsigned int nsMenuUtilsX::MacModifiersForGeckoModifiers(
+    uint8_t geckoModifiers) {
   unsigned int macModifiers = 0;
 
   if (geckoModifiers & knsMenuItemShiftModifier) {
@@ -107,9 +112,13 @@ unsigned int nsMenuUtilsX::MacModifiersForGeckoModifiers(uint8_t geckoModifiers)
 }
 
 nsMenuBarX* nsMenuUtilsX::GetHiddenWindowMenuBar() {
+  if (gfxPlatform::IsHeadless()) {
+    return nullptr;
+  }
   nsIWidget* hiddenWindowWidgetNoCOMPtr = nsCocoaUtils::GetHiddenWindowWidget();
   if (hiddenWindowWidgetNoCOMPtr) {
-    return static_cast<nsCocoaWindow*>(hiddenWindowWidgetNoCOMPtr)->GetMenuBar();
+    return static_cast<nsCocoaWindow*>(hiddenWindowWidgetNoCOMPtr)
+        ->GetMenuBar();
   }
   return nullptr;
 }
@@ -123,24 +132,25 @@ NSMenuItem* nsMenuUtilsX::GetStandardEditMenuItem() {
   // app-modal dialogs and Gecko-modal dialogs that open above them.  So what
   // we return here isn't always released before it needs to be added to
   // another menu.  See bmo bug 468393.
-  NSMenuItem* standardEditMenuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit"
-                                                                 action:nil
-                                                          keyEquivalent:@""] autorelease];
-  NSMenu* standardEditMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+  NSMenuItem* standardEditMenuItem =
+      [[[GeckoNSMenuItem alloc] initWithTitle:@"Edit"
+                                       action:nil
+                                keyEquivalent:@""] autorelease];
+  NSMenu* standardEditMenu = [[GeckoNSMenu alloc] initWithTitle:@"Edit"];
   standardEditMenuItem.submenu = standardEditMenu;
   [standardEditMenu release];
 
   // Add Undo
-  NSMenuItem* undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo"
-                                                    action:@selector(undo:)
-                                             keyEquivalent:@"z"];
+  NSMenuItem* undoItem = [[GeckoNSMenuItem alloc] initWithTitle:@"Undo"
+                                                         action:@selector(undo:)
+                                                  keyEquivalent:@"z"];
   [standardEditMenu addItem:undoItem];
   [undoItem release];
 
   // Add Redo
-  NSMenuItem* redoItem = [[NSMenuItem alloc] initWithTitle:@"Redo"
-                                                    action:@selector(redo:)
-                                             keyEquivalent:@"Z"];
+  NSMenuItem* redoItem = [[GeckoNSMenuItem alloc] initWithTitle:@"Redo"
+                                                         action:@selector(redo:)
+                                                  keyEquivalent:@"Z"];
   [standardEditMenu addItem:redoItem];
   [redoItem release];
 
@@ -148,37 +158,40 @@ NSMenuItem* nsMenuUtilsX::GetStandardEditMenuItem() {
   [standardEditMenu addItem:[NSMenuItem separatorItem]];
 
   // Add Cut
-  NSMenuItem* cutItem = [[NSMenuItem alloc] initWithTitle:@"Cut"
-                                                   action:@selector(cut:)
-                                            keyEquivalent:@"x"];
+  NSMenuItem* cutItem = [[GeckoNSMenuItem alloc] initWithTitle:@"Cut"
+                                                        action:@selector(cut:)
+                                                 keyEquivalent:@"x"];
   [standardEditMenu addItem:cutItem];
   [cutItem release];
 
   // Add Copy
-  NSMenuItem* copyItem = [[NSMenuItem alloc] initWithTitle:@"Copy"
-                                                    action:@selector(copy:)
-                                             keyEquivalent:@"c"];
+  NSMenuItem* copyItem = [[GeckoNSMenuItem alloc] initWithTitle:@"Copy"
+                                                         action:@selector(copy:)
+                                                  keyEquivalent:@"c"];
   [standardEditMenu addItem:copyItem];
   [copyItem release];
 
   // Add Paste
-  NSMenuItem* pasteItem = [[NSMenuItem alloc] initWithTitle:@"Paste"
-                                                     action:@selector(paste:)
-                                              keyEquivalent:@"v"];
+  NSMenuItem* pasteItem =
+      [[GeckoNSMenuItem alloc] initWithTitle:@"Paste"
+                                      action:@selector(paste:)
+                               keyEquivalent:@"v"];
   [standardEditMenu addItem:pasteItem];
   [pasteItem release];
 
   // Add Delete
-  NSMenuItem* deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete"
-                                                      action:@selector(delete:)
-                                               keyEquivalent:@""];
+  NSMenuItem* deleteItem =
+      [[GeckoNSMenuItem alloc] initWithTitle:@"Delete"
+                                      action:@selector(delete:)
+                               keyEquivalent:@""];
   [standardEditMenu addItem:deleteItem];
   [deleteItem release];
 
   // Add Select All
-  NSMenuItem* selectAllItem = [[NSMenuItem alloc] initWithTitle:@"Select All"
-                                                         action:@selector(selectAll:)
-                                                  keyEquivalent:@"a"];
+  NSMenuItem* selectAllItem =
+      [[GeckoNSMenuItem alloc] initWithTitle:@"Select All"
+                                      action:@selector(selectAll:)
+                               keyEquivalent:@"a"];
   [standardEditMenu addItem:selectAllItem];
   [selectAllItem release];
 
@@ -188,16 +201,19 @@ NSMenuItem* nsMenuUtilsX::GetStandardEditMenuItem() {
 }
 
 bool nsMenuUtilsX::NodeIsHiddenOrCollapsed(nsIContent* aContent) {
-  return aContent->IsElement() &&
-         (aContent->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::hidden, nsGkAtoms::_true,
-                                             eCaseMatters) ||
-          aContent->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::collapsed,
-                                             nsGkAtoms::_true, eCaseMatters));
+  return aContent->IsElement() && (aContent->AsElement()->AttrValueIs(
+                                       kNameSpaceID_None, nsGkAtoms::hidden,
+                                       nsGkAtoms::_true, eCaseMatters) ||
+                                   aContent->AsElement()->AttrValueIs(
+                                       kNameSpaceID_None, nsGkAtoms::collapsed,
+                                       nsGkAtoms::_true, eCaseMatters));
 }
 
-NSMenuItem* nsMenuUtilsX::NativeMenuItemWithLocation(NSMenu* aRootMenu, NSString* aLocationString,
+NSMenuItem* nsMenuUtilsX::NativeMenuItemWithLocation(NSMenu* aRootMenu,
+                                                     NSString* aLocationString,
                                                      bool aIsMenuBar) {
-  NSArray<NSString*>* indexes = [aLocationString componentsSeparatedByString:@"|"];
+  NSArray<NSString*>* indexes =
+      [aLocationString componentsSeparatedByString:@"|"];
   unsigned int pathLength = indexes.count;
   if (pathLength == 0) {
     return nil;
@@ -207,7 +223,8 @@ NSMenuItem* nsMenuUtilsX::NativeMenuItemWithLocation(NSMenu* aRootMenu, NSString
   for (unsigned int depth = 0; depth < pathLength; depth++) {
     NSInteger targetIndex = [indexes objectAtIndex:depth].integerValue;
     if (aIsMenuBar && depth == 0) {
-      // We remove the application menu from consideration for the top-level menu.
+      // We remove the application menu from consideration for the top-level
+      // menu.
       targetIndex++;
     }
     int itemCount = currentSubmenu.numberOfItems;
@@ -230,20 +247,46 @@ NSMenuItem* nsMenuUtilsX::NativeMenuItemWithLocation(NSMenu* aRootMenu, NSString
   return nil;
 }
 
-static void CheckNativeMenuConsistencyImpl(NSMenu* aMenu, std::unordered_set<void*>& aSeenObjects);
+static void CheckNativeMenuConsistencyImpl(
+    NSMenu* aMenu, std::unordered_set<void*>& aSeenObjects);
 
-static void CheckNativeMenuItemConsistencyImpl(NSMenuItem* aMenuItem,
-                                               std::unordered_set<void*>& aSeenObjects) {
+static void CheckNativeMenuItemConsistencyImpl(
+    NSMenuItem* aMenuItem, std::unordered_set<void*>& aSeenObjects) {
   bool inserted = aSeenObjects.insert(aMenuItem).second;
-  MOZ_RELEASE_ASSERT(inserted, "Duplicate NSMenuItem object in native menu structure");
+  MOZ_RELEASE_ASSERT(inserted,
+                     "Duplicate NSMenuItem object in native menu structure");
+
+  id representedObject = aMenuItem.representedObject;
+  if ([representedObject isKindOfClass:[MOZMenuItemRepresentedObject class]]) {
+    nsMenuGroupOwnerX* owner =
+        ((MOZMenuItemRepresentedObject*)representedObject).menuGroupOwner;
+    nsMenuItemX* menuItemX = owner->GetMenuItemForCommandID(aMenuItem.tag);
+    if (menuItemX) {
+      inserted = aSeenObjects.insert(menuItemX).second;
+      MOZ_RELEASE_ASSERT(
+          inserted,
+          "Duplicate represented nsMenuItemX object in native menu structure");
+
+      nsIContent* menuItemContent = menuItemX->Content();
+      inserted = aSeenObjects.insert(menuItemContent).second;
+      MOZ_RELEASE_ASSERT(inserted, "Duplicate represented <menuitem> "
+                                   "nsIContent in native menu structure");
+    } else {
+      // The NSMenuItems created in nsMenuBar::CreateNativeAppMenuItem don't
+      // have corresponding nsMenuItemX objects. Ignore those.
+    }
+  }
+
   if (aMenuItem.hasSubmenu) {
     CheckNativeMenuConsistencyImpl(aMenuItem.submenu, aSeenObjects);
   }
 }
 
-static void CheckNativeMenuConsistencyImpl(NSMenu* aMenu, std::unordered_set<void*>& aSeenObjects) {
+static void CheckNativeMenuConsistencyImpl(
+    NSMenu* aMenu, std::unordered_set<void*>& aSeenObjects) {
   bool inserted = aSeenObjects.insert(aMenu).second;
-  MOZ_RELEASE_ASSERT(inserted, "Duplicate NSMenu object in native menu structure");
+  MOZ_RELEASE_ASSERT(inserted,
+                     "Duplicate NSMenu object in native menu structure");
   for (NSMenuItem* item in aMenu.itemArray) {
     CheckNativeMenuItemConsistencyImpl(item, aSeenObjects);
   }
@@ -278,16 +321,20 @@ static void DumpNativeNSMenuItemImpl(NSMenuItem* aItem, uint32_t aIndent,
   if (aIndexInParentMenu) {
     printf("[%d] ", *aIndexInParentMenu);
   }
-  printf("NSMenuItem [%p] %-16s%s\n", aItem,
-         aItem.isSeparatorItem ? "----"
-                               : (aItem.title.length == 0 ? "(no title)" : aItem.title.UTF8String),
-         aItem.hasSubmenu ? " [hasSubmenu]" : "");
+  printf(
+      "NSMenuItem [%p] %-16s%s\n", aItem,
+      aItem.isSeparatorItem
+          ? "----"
+          : (aItem.title.length == 0 ? "(no title)" : aItem.title.UTF8String),
+      aItem.hasSubmenu ? " [hasSubmenu]" : "");
   if (aItem.hasSubmenu) {
     DumpNativeNSMenuImpl(aItem.submenu, aIndent + 1);
   }
 }
 
-void nsMenuUtilsX::DumpNativeMenu(NSMenu* aMenu) { DumpNativeNSMenuImpl(aMenu, 0); }
+void nsMenuUtilsX::DumpNativeMenu(NSMenu* aMenu) {
+  DumpNativeNSMenuImpl(aMenu, 0);
+}
 
 void nsMenuUtilsX::DumpNativeMenuItem(NSMenuItem* aMenuItem) {
   DumpNativeNSMenuItemImpl(aMenuItem, 0, Nothing());

@@ -19,15 +19,16 @@
 
 namespace webrtc {
 namespace test {
+
 TestVideoCapturer::~TestVideoCapturer() = default;
 
 void TestVideoCapturer::OnOutputFormatRequest(
     int width,
     int height,
-    const absl::optional<int>& max_fps) {
-  absl::optional<std::pair<int, int>> target_aspect_ratio =
+    const std::optional<int>& max_fps) {
+  std::optional<std::pair<int, int>> target_aspect_ratio =
       std::make_pair(width, height);
-  absl::optional<int> max_pixel_count = width * height;
+  std::optional<int> max_pixel_count = width * height;
   video_adapter_.OnOutputFormatRequest(target_aspect_ratio, max_pixel_count,
                                        max_fps);
 }
@@ -40,13 +41,14 @@ void TestVideoCapturer::OnFrame(const VideoFrame& original_frame) {
 
   VideoFrame frame = MaybePreprocess(original_frame);
 
-  bool disable_adaptation;
+  bool enable_adaptation;
   {
     MutexLock lock(&lock_);
-    disable_adaptation = disable_adaptation_;
+    enable_adaptation = enable_adaptation_;
   }
-  if (disable_adaptation) {
+  if (!enable_adaptation) {
     broadcaster_.OnFrame(frame);
+    return;
   }
 
   if (!video_adapter_.AdaptFrameResolution(

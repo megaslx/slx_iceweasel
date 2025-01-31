@@ -3,7 +3,6 @@ const { AppConstants } = ChromeUtils.importESModule(
 );
 
 const kForceDNSLookup = "browser.fixup.dns_first_for_single_words";
-const kFixupEnabled = "browser.fixup.alternate.enabled";
 
 // TODO(bug 1522134), this test should also use
 // combinations of the following flags.
@@ -12,7 +11,6 @@ var flagInputs = [
   Services.uriFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP |
     Services.uriFixup.FIXUP_FLAG_PRIVATE_CONTEXT,
   Services.uriFixup.FIXUP_FLAGS_MAKE_ALTERNATE_URI,
-  Services.uriFixup.FIXUP_FLAG_FORCE_ALTERNATE_URI,
   Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS,
   // This should not really generate a search, but it does, see Bug 1588118.
   Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS |
@@ -412,17 +410,11 @@ var testcases = [
   },
   {
     input: "47.6182,-122.830",
-    fixedURI: "http://47.6182,-122.830/",
     keywordLookup: true,
-    protocolChange: true,
-    affectedByDNSForSingleWordHosts: true,
   },
   {
     input: "-47.6182,-23.51",
-    fixedURI: "http://-47.6182,-23.51/",
     keywordLookup: true,
-    protocolChange: true,
-    affectedByDNSForSingleWordHosts: true,
   },
   {
     input: "-22.14,23.51-",
@@ -779,6 +771,23 @@ var testcases = [
     input: "jar:file:///omni.ja!/",
     fixedURI: "jar:file:///omni.ja!/",
   },
+  {
+    input: "example.comm.",
+    fixedURI: "http://example.comm./",
+    protocolChange: true,
+  },
+  {
+    input: "example。com。",
+    fixedURI: "http://example.com./",
+    protocolChange: true,
+  },
+  {
+    input: "example。comm。",
+    fixedURI: "http://example.comm./",
+    protocolChange: true,
+    keywordLookup: true,
+    affectedByDNSForSingleWordHosts: true,
+  },
 ];
 
 if (AppConstants.platform == "win") {
@@ -802,6 +811,29 @@ if (AppConstants.platform == "win") {
     affectedByDNSForSingleWordHosts: true,
   });
 } else {
+  const homeDir = Services.dirsvc.get("Home", Ci.nsIFile).path;
+  const homeBase = AppConstants.platform == "macosx" ? "/Users" : "/home";
+
+  testcases.push({
+    input: "~",
+    fixedURI: `file://${homeDir}`,
+    protocolChange: true,
+  });
+  testcases.push({
+    input: "~/foo",
+    fixedURI: `file://${homeDir}/foo`,
+    protocolChange: true,
+  });
+  testcases.push({
+    input: "~foo",
+    fixedURI: `file://${homeBase}/foo`,
+    protocolChange: true,
+  });
+  testcases.push({
+    input: "~foo/bar",
+    fixedURI: `file://${homeBase}/foo/bar`,
+    protocolChange: true,
+  });
   testcases.push({
     input: "/some/file.txt",
     fixedURI: "file:///some/file.txt",
@@ -866,22 +898,18 @@ add_task(async function run_test() {
   }
   Assert.equal(affectedTests.length, 0);
   await do_single_test_run();
-  await do_single_test_run(true);
   gSingleWordDNSLookup = true;
   await do_single_test_run();
-  await do_single_test_run(true);
   gSingleWordDNSLookup = false;
   await Services.search.setDefault(
     Services.search.getEngineByName(kPostSearchEngineID),
     Ci.nsISearchService.CHANGE_REASON_UNKNOWN
   );
   await do_single_test_run();
-  await do_single_test_run(true);
 });
 
-async function do_single_test_run(browserFixupAlternateEnabled = false) {
+async function do_single_test_run() {
   Services.prefs.setBoolPref(kForceDNSLookup, gSingleWordDNSLookup);
-  Services.prefs.setBoolPref(kFixupEnabled, browserFixupAlternateEnabled);
   let relevantTests = gSingleWordDNSLookup
     ? testcases.filter(t => t.keywordLookup)
     : testcases;
@@ -922,9 +950,6 @@ async function do_single_test_run(browserFixupAlternateEnabled = false) {
           flags +
           " (DNS lookup for single words: " +
           (gSingleWordDNSLookup ? "yes" : "no") +
-          "," +
-          " browser fixup alt enabled: " +
-          (browserFixupAlternateEnabled ? "yes" : "no") +
           ")"
       );
 
@@ -943,12 +968,8 @@ async function do_single_test_run(browserFixupAlternateEnabled = false) {
       }
 
       // Check the fixedURI:
-      let fixupFlag = browserFixupAlternateEnabled
-        ? Services.uriFixup.FIXUP_FLAGS_MAKE_ALTERNATE_URI
-        : Services.uriFixup.FIXUP_FLAG_NONE;
-      let forceAlternativeURI =
-        flags & Services.uriFixup.FIXUP_FLAG_FORCE_ALTERNATE_URI;
-      let makeAlternativeURI = flags & fixupFlag || forceAlternativeURI;
+      let makeAlternativeURI =
+        flags & Services.uriFixup.FIXUP_FLAGS_MAKE_ALTERNATE_URI;
 
       if (makeAlternativeURI && alternativeURI != null) {
         Assert.equal(

@@ -4,6 +4,7 @@ Tests for GPU.requestAdapter.
 Test all possible options to requestAdapter.
 default, low-power, and high performance should all always return adapters.
 forceFallbackAdapter may or may not return an adapter.
+invalid featureLevel values should not return an adapter.
 
 GPU.requestAdapter can technically return null for any reason
 but we need test functionality so the test requires an adapter except
@@ -26,10 +27,12 @@ const powerPreferenceModes: Array<GPUPowerPreference | undefined> = [
   'high-performance',
 ];
 const forceFallbackOptions: Array<boolean | undefined> = [undefined, false, true];
+const validFeatureLevels: Array<string | undefined> = [undefined, 'core', 'compatibility'];
+const invalidFeatureLevels: Array<string> = ['cor', 'Core', 'compatability', '', ' '];
 
-async function testAdapter(adapter: GPUAdapter | null) {
+async function testAdapter(t: Fixture, adapter: GPUAdapter | null) {
   assert(adapter !== null, 'Failed to get adapter.');
-  const device = await adapter.requestDevice();
+  const device = await t.requestDeviceTracked(adapter);
 
   assert(device !== null, 'Failed to get device.');
 
@@ -54,15 +57,19 @@ async function testAdapter(adapter: GPUAdapter | null) {
 
   const kNumElements = 64;
   const kBufferSize = kNumElements * 4;
-  const buffer = device.createBuffer({
-    size: kBufferSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-  });
+  const buffer = t.trackForCleanup(
+    device.createBuffer({
+      size: kBufferSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    })
+  );
 
-  const resultBuffer = device.createBuffer({
-    size: kBufferSize,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
+  const resultBuffer = t.trackForCleanup(
+    device.createBuffer({
+      size: kBufferSize,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    })
+  );
 
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
@@ -102,7 +109,7 @@ g.test('requestAdapter')
   )
   .fn(async t => {
     const { powerPreference, forceFallbackAdapter } = t.params;
-    const adapter = await getGPU().requestAdapter({
+    const adapter = await getGPU(t.rec).requestAdapter({
       ...(powerPreference !== undefined && { powerPreference }),
       ...(forceFallbackAdapter !== undefined && { forceFallbackAdapter }),
     });
@@ -113,12 +120,26 @@ g.test('requestAdapter')
       return;
     }
 
-    await testAdapter(adapter);
+    await testAdapter(t, adapter);
+  });
+
+g.test('requestAdapter_invalid_featureLevel')
+  .desc(`request adapter with invalid featureLevel string values return null`)
+  .params(u => u.combine('featureLevel', [...validFeatureLevels, ...invalidFeatureLevels]))
+  .fn(async t => {
+    const { featureLevel } = t.params;
+    const adapter = await getGPU(t.rec).requestAdapter({ featureLevel });
+
+    if (!validFeatureLevels.includes(featureLevel)) {
+      assert(adapter === null);
+    } else {
+      await testAdapter(t, adapter);
+    }
   });
 
 g.test('requestAdapter_no_parameters')
   .desc(`request adapter with no parameters`)
-  .fn(async () => {
-    const adapter = await getGPU().requestAdapter();
-    await testAdapter(adapter);
+  .fn(async t => {
+    const adapter = await getGPU(t.rec).requestAdapter();
+    await testAdapter(t, adapter);
   });

@@ -46,13 +46,20 @@ class imgRequestProxy;
 struct nsCSSValueSharedList;
 
 class gfxFontFeatureValueSet;
-struct gfxFontFeature;
+struct GeckoFontMetrics;
 namespace mozilla {
+
+// Forward declaration for `StyleLengthPercentageUnion::AsCalc`, which
+// references the type below in the generated code.
+struct StyleCalcLengthPercentage;
+
 namespace gfx {
 struct FontVariation;
+struct FontFeature;
 }  // namespace gfx
 }  // namespace mozilla
-typedef mozilla::gfx::FontVariation gfxFontVariation;
+using gfxFontVariation = mozilla::gfx::FontVariation;
+using gfxFontFeature = mozilla::gfx::FontFeature;
 
 enum nsCSSUnit : uint32_t;
 enum nsChangeHint : uint32_t;
@@ -82,23 +89,25 @@ struct PropertyStyleAnimationValuePair;
 using ComputedKeyframeValues = nsTArray<PropertyStyleAnimationValuePair>;
 
 class ComputedStyle;
-enum LogicalAxis : uint8_t;
+enum class LogicalAxis : uint8_t;
 class SeenPtrs;
 class SharedFontList;
 class StyleSheet;
 class WritingMode;
 class ServoElementSnapshotTable;
+class StyleParserState;
 
 template <typename T>
 struct StyleForgottenArcSlicePtr;
 
+struct AnimatedPropertyID;
 struct AnimationPropertySegment;
 struct AspectRatio;
 struct ComputedTiming;
 struct URLExtraData;
 
 enum HalfCorner : uint8_t;
-enum LogicalSide : uint8_t;
+enum class LogicalSide : uint8_t;
 enum class PseudoStyleType : uint8_t;
 enum class OriginFlags : uint8_t;
 enum class UseBoxSizing : uint8_t;
@@ -120,10 +129,6 @@ class Document;
 class ImageTracker;
 
 }  // namespace dom
-
-namespace ipc {
-class ByteBuf;
-}  // namespace ipc
 
 // Replacement for a Rust Box<T> for a non-dynamically-sized-type.
 //
@@ -221,7 +226,6 @@ using StyleAtomicUsize = std::atomic<size_t>;
     uint16_t UnsignedRaw() const { return uint16_t(Raw()); }                   \
     float ToFloat() const { return Raw() * kInverseScale; }                    \
     RawT ToIntRounded() const { return (Raw() + kPointFive) >> FractionBits; } \
-    bool IsNormal() const { return *this == NORMAL; }                          \
     inline void ToString(nsACString&) const;
 
 }  // namespace mozilla

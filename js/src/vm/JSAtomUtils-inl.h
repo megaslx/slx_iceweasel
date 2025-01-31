@@ -47,17 +47,12 @@ inline bool PrimitiveValueToId(
   MOZ_ASSERT(v.isPrimitive());
 
   if (v.isString()) {
-    JSAtom* atom;
-    if (v.toString()->isAtom()) {
-      atom = &v.toString()->asAtom();
-    } else {
-      atom = AtomizeString(cx, v.toString());
-      if (!atom) {
-        if constexpr (!allowGC) {
-          cx->recoverFromOutOfMemory();
-        }
-        return false;
+    JSAtom* atom = AtomizeString(cx, v.toString());
+    if (!atom) {
+      if constexpr (!allowGC) {
+        cx->recoverFromOutOfMemory();
       }
+      return false;
     }
     idp.set(AtomToId(atom));
     return true;
@@ -76,34 +71,6 @@ inline bool PrimitiveValueToId(
   return PrimitiveValueToIdSlow<allowGC>(cx, v, idp);
 }
 
-/*
- * Write out character representing |index| to the memory just before |end|.
- * Thus |*end| is not touched, but |end[-1]| and earlier are modified as
- * appropriate.  There must be at least js::UINT32_CHAR_BUFFER_LENGTH elements
- * before |end| to avoid buffer underflow.  The start of the characters written
- * is returned and is necessarily before |end|.
- */
-template <typename T>
-inline mozilla::RangedPtr<T> BackfillIndexInCharBuffer(
-    uint32_t index, mozilla::RangedPtr<T> end) {
-#ifdef DEBUG
-  /*
-   * Assert that the buffer we're filling will hold as many characters as we
-   * could write out, by dereferencing the index that would hold the most
-   * significant digit.
-   */
-  (void)*(end - UINT32_CHAR_BUFFER_LENGTH);
-#endif
-
-  do {
-    uint32_t next = index / 10, digit = index % 10;
-    *--end = '0' + digit;
-    index = next;
-  } while (index > 0);
-
-  return end;
-}
-
 bool IndexToIdSlow(JSContext* cx, uint32_t index, MutableHandleId idp);
 
 inline bool IndexToId(JSContext* cx, uint32_t index, MutableHandleId idp) {
@@ -115,13 +82,14 @@ inline bool IndexToId(JSContext* cx, uint32_t index, MutableHandleId idp) {
   return IndexToIdSlow(cx, index, idp);
 }
 
-static MOZ_ALWAYS_INLINE JSLinearString* IdToString(JSContext* cx, jsid id) {
+static MOZ_ALWAYS_INLINE JSLinearString* IdToString(
+    JSContext* cx, jsid id, gc::Heap heap = gc::Heap::Default) {
   if (id.isString()) {
     return id.toAtom();
   }
 
   if (MOZ_LIKELY(id.isInt())) {
-    return Int32ToString<CanGC>(cx, id.toInt());
+    return Int32ToStringWithHeap<CanGC>(cx, id.toInt(), heap);
   }
 
   RootedValue idv(cx, IdToValue(id));

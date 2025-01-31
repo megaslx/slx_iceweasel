@@ -1,3 +1,4 @@
+/* eslint-disable no-shadow */
 import { ContextMenu } from "content-src/components/ContextMenu/ContextMenu";
 import { _LinkMenu as LinkMenu } from "content-src/components/LinkMenu/LinkMenu";
 import React from "react";
@@ -415,7 +416,18 @@ describe("<LinkMenu>", () => {
         {
           url: FAKE_SITE.url,
           pocket_id: FAKE_SITE.pocket_id,
+          tile_id: 12345,
+          recommendation_id: undefined,
+          scheduled_corpus_item_id: undefined,
+          corpus_item_id: undefined,
+          recommended_at: undefined,
+          received_rank: undefined,
           isSponsoredTopSite: undefined,
+          type: "bookmark",
+          card_type: undefined,
+          position: 3,
+          is_pocket_card: false,
+          is_list_card: undefined,
         },
       ],
       menu_action_webext_dismiss: {
@@ -577,6 +589,106 @@ describe("<LinkMenu>", () => {
         site: FAKE_SITE,
         index: FAKE_INDEX,
       });
+    });
+    it(`should create a proper BLOCK_URL action for a sponsored tile`, () => {
+      const site = {
+        hostname: "foo",
+        path: "foo",
+        referrer: "https://foo.com/ref",
+        title: "bar",
+        type: "bookmark",
+        typedBonus: true,
+        url: "https://foo.com",
+        sponsored_position: 1,
+      };
+      const { options: blockOptions } = shallow(
+        <LinkMenu
+          site={site}
+          siteInfo={{ value: { card_type: site.type } }}
+          dispatch={dispatch}
+          index={FAKE_INDEX}
+          isPrivateBrowsingEnabled={true}
+          platform={"default"}
+          options={["BlockUrl"]}
+          source={FAKE_SOURCE}
+          shouldSendImpressionStats={true}
+        />
+      )
+        .find(ContextMenu)
+        .props();
+      const [blockUrlOption] = blockOptions;
+
+      blockUrlOption.onClick(FAKE_EVENT);
+
+      assert.calledThrice(dispatch);
+      assert.ok(dispatch.firstCall.calledWith(blockUrlOption.action));
+      const expected = {
+        url: site.url,
+        pocket_id: undefined,
+        tile_id: undefined,
+        recommendation_id: undefined,
+        scheduled_corpus_item_id: undefined,
+        corpus_item_id: undefined,
+        recommended_at: undefined,
+        received_rank: undefined,
+        advertiser_name: site.hostname,
+        isSponsoredTopSite: 1,
+        type: "bookmark",
+        card_type: undefined,
+        position: 3,
+        is_pocket_card: false,
+        is_list_card: undefined,
+      };
+      assert.deepEqual(blockUrlOption.action.data[0], expected);
+    });
+    it(`should create a proper BLOCK_URL action for a pocket item`, () => {
+      const site = {
+        hostname: "foo",
+        path: "foo",
+        referrer: "https://foo.com/ref",
+        title: "bar",
+        type: "CardGrid",
+        typedBonus: true,
+        url: "https://foo.com",
+      };
+      const { options: blockOptions } = shallow(
+        <LinkMenu
+          site={site}
+          siteInfo={{ value: { card_type: site.type } }}
+          dispatch={dispatch}
+          index={FAKE_INDEX}
+          isPrivateBrowsingEnabled={true}
+          platform={"default"}
+          options={["BlockUrl"]}
+          source={FAKE_SOURCE}
+          shouldSendImpressionStats={true}
+        />
+      )
+        .find(ContextMenu)
+        .props();
+      const [blockUrlOption] = blockOptions;
+
+      blockUrlOption.onClick(FAKE_EVENT);
+
+      assert.calledThrice(dispatch);
+      assert.ok(dispatch.firstCall.calledWith(blockUrlOption.action));
+      const expected = {
+        url: site.url,
+        pocket_id: undefined,
+        tile_id: undefined,
+        recommendation_id: undefined,
+        scheduled_corpus_item_id: undefined,
+        corpus_item_id: undefined,
+        recommended_at: undefined,
+        received_rank: undefined,
+        isSponsoredTopSite: undefined,
+        type: "CardGrid",
+        card_type: undefined,
+        position: 3,
+        is_pocket_card: true,
+        is_list_card: undefined,
+      };
+      assert.deepEqual(blockUrlOption.action.data[0], expected);
     });
   });
 });

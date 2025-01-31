@@ -1,22 +1,16 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
 esid: sec-temporal.plainyearmonth.from
-description: A number as calendar in a property bag is converted to a string, then to a calendar
-includes: [temporalHelpers.js]
+description: A number as calendar in a property bag is not accepted
 features: [Temporal]
 ---*/
 
-const calendar = 19970327;
-
-const arg = { year: 2019, monthCode: "M06", calendar };
-const result = Temporal.PlainYearMonth.from(arg);
-TemporalHelpers.assertPlainYearMonth(result, 2019, 6, "M06", "19970327 is a valid ISO string for calendar");
-
 const numbers = [
   1,
+  19970327,
   -19970327,
   1234567890,
 ];
@@ -24,9 +18,9 @@ const numbers = [
 for (const calendar of numbers) {
   const arg = { year: 2019, monthCode: "M06", calendar };
   assert.throws(
-    RangeError,
+    TypeError,
     () => Temporal.PlainYearMonth.from(arg),
-    `Number ${calendar} does not convert to a valid ISO string for calendar`
+    "Numbers cannot be used as a calendar"
   );
 }
 

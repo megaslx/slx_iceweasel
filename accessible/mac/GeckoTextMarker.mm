@@ -88,6 +88,13 @@ GeckoTextMarker GeckoTextMarker::MarkerFromIndex(Accessible* aRoot,
   // Iterate through all segments until we exhausted the index sum
   // so we can find the segment the index lives in.
   for (TextLeafRange segment : range) {
+    if (segment.Start().mAcc->IsMenuPopup() &&
+        (segment.Start().mAcc->State() & states::COLLAPSED)) {
+      // XXX: Menu collapsed XUL menu popups are in our tree and we need to skip
+      // them.
+      continue;
+    }
+
     if (segment.End().mAcc->Role() == roles::LISTITEM_MARKER) {
       // XXX: MacOS expects bullets to be in the range's text, but not in
       // the calculated length!
@@ -392,6 +399,12 @@ NSString* GeckoTextMarkerRange::Text() const {
 
   for (TextLeafRange segment : range) {
     TextLeafPoint start = segment.Start();
+    if (start.mAcc->IsMenuPopup() &&
+        (start.mAcc->State() & states::COLLAPSED)) {
+      // XXX: Menu collapsed XUL menu popups are in our tree and we need to skip
+      // them.
+      continue;
+    }
     if (start.mAcc->IsTextField() && start.mAcc->ChildCount() == 0) {
       continue;
     }
@@ -412,6 +425,21 @@ static void AppendTextToAttributedString(
                          aAttributes, aAccessible)] autorelease];
 
   [aAttributedString appendAttributedString:substr];
+}
+
+static RefPtr<AccAttributes> GetTextAttributes(TextLeafPoint aPoint) {
+  RefPtr<AccAttributes> attrs = aPoint.GetTextAttributes();
+  // Mac expects some object properties to be exposed as text attributes. We
+  // add these here rather than in utils::StringAttributesFromAccAttributes so
+  // we can use AccAttributes::Equal to determine whether we need to start a new
+  // run, rather than needing additional special case comparisons.
+  for (Accessible* ancestor = aPoint.mAcc->Parent();
+       ancestor && !ancestor->IsDoc(); ancestor = ancestor->Parent()) {
+    if (ancestor->Role() == roles::MARK) {
+      attrs->SetAttribute(nsGkAtoms::mark, true);
+    }
+  }
+  return attrs;
 }
 
 NSAttributedString* GeckoTextMarkerRange::AttributedText() const {
@@ -436,27 +464,34 @@ NSAttributedString* GeckoTextMarkerRange::AttributedText() const {
           : mRange;
 
   nsAutoString text;
-  RefPtr<AccAttributes> currentRun = nullptr;
+  RefPtr<AccAttributes> currentRun = GetTextAttributes(range.Start());
   Accessible* runAcc = range.Start().mAcc;
   for (TextLeafRange segment : range) {
     TextLeafPoint start = segment.Start();
-    if (start.mAcc->IsTextField() && start.mAcc->ChildCount() == 0) {
+    TextLeafPoint attributesNext;
+    if (start.mAcc->IsMenuPopup() &&
+        (start.mAcc->State() & states::COLLAPSED)) {
+      // XXX: Menu collapsed XUL menu popups are in our tree and we need to skip
+      // them.
       continue;
     }
-    if (!currentRun) {
-      // This is the first segment that isn't an empty input.
-      currentRun = start.GetTextAttributes();
-    }
-    TextLeafPoint attributesNext;
     do {
-      attributesNext = start.FindTextAttrsStart(eDirNext, false);
+      if (start.mAcc->IsText()) {
+        attributesNext = start.FindTextAttrsStart(eDirNext, false);
+      } else {
+        // If this segment isn't a text leaf, but another kind of inline element
+        // like a control, just consider this full segment one "attributes run".
+        attributesNext = segment.End();
+      }
       if (attributesNext == start) {
         // XXX: FindTextAttrsStart should not return the same point.
         break;
       }
-      RefPtr<AccAttributes> attributes = start.GetTextAttributes();
-      MOZ_ASSERT(attributes);
-      if (attributes && !attributes->Equal(currentRun)) {
+      RefPtr<AccAttributes> attributes = GetTextAttributes(start);
+      if (!currentRun || !attributes || !attributes->Equal(currentRun)) {
+        // If currentRun is null this is a non-text control and we will
+        // append a run with no text or attributes, just an AXAttachment
+        // referencing this accessible.
         AppendTextToAttributedString(str, runAcc, text, currentRun);
         text.Truncate();
         currentRun = attributes;

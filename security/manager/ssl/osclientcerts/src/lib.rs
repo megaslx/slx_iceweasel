@@ -6,11 +6,11 @@
 #![allow(non_snake_case)]
 
 extern crate byteorder;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[macro_use]
 extern crate core_foundation;
 extern crate env_logger;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[macro_use]
 extern crate lazy_static;
 #[cfg(target_os = "macos")]
@@ -30,12 +30,12 @@ use std::ffi::CStr;
 use std::sync::Mutex;
 use std::thread;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod backend_macos;
 #[cfg(target_os = "windows")]
 mod backend_windows;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use crate::backend_macos::Backend;
 #[cfg(target_os = "windows")]
 use crate::backend_windows::Backend;
@@ -143,7 +143,7 @@ extern "C" fn C_Initialize(pInitArgs: CK_VOID_PTR) -> CK_RV {
         mechanisms,
     }) {
         Some(_unexpected_previous_module_state) => {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 log_with_thread_id!(info, "C_Initialize: module state previously set (this is expected on macOS - replacing it)");
             }
@@ -594,6 +594,21 @@ fn trace_attr(prefix: &str, attr: &CK_ATTRIBUTE) {
     );
 }
 
+const RELEVANT_ATTRIBUTES: &[CK_ATTRIBUTE_TYPE] = &[
+    CKA_CLASS,
+    CKA_EC_PARAMS,
+    CKA_ID,
+    CKA_ISSUER,
+    CKA_KEY_TYPE,
+    CKA_LABEL,
+    CKA_MODULUS,
+    CKA_PRIVATE,
+    CKA_SERIAL_NUMBER,
+    CKA_SUBJECT,
+    CKA_TOKEN,
+    CKA_VALUE,
+];
+
 /// This gets called to initialize a search for objects matching a given list of attributes. This
 /// module implements this by gathering the attributes and passing them to the `ManagerProxy` to
 /// start the search.
@@ -611,10 +626,19 @@ extern "C" fn C_FindObjectsInit(
     for i in 0..ulCount as usize {
         let attr = unsafe { &*pTemplate.add(i) };
         trace_attr("  ", attr);
+        // Copy out the attribute type to avoid making a reference to an unaligned field.
+        let attr_type = attr.type_;
+        if !RELEVANT_ATTRIBUTES.contains(&attr_type) {
+            log_with_thread_id!(
+                debug,
+                "C_FindObjectsInit: irrelevant attribute, returning CKR_ATTRIBUTE_TYPE_INVALID"
+            );
+            return CKR_ATTRIBUTE_TYPE_INVALID;
+        }
         let slice = unsafe {
             std::slice::from_raw_parts(attr.pValue as *const u8, attr.ulValueLen as usize)
         };
-        attrs.push((attr.type_, slice.to_owned()));
+        attrs.push((attr_type, slice.to_owned()));
     }
     let mut module_state_guard = try_to_get_module_state_guard!();
     let manager = module_state_guard_to_manager!(module_state_guard);
@@ -1145,7 +1169,7 @@ extern "C" fn C_WaitForSlotEvent(
 
 /// To be a valid PKCS #11 module, this list of functions must be supported. At least cryptoki 2.2
 /// must be supported for this module to work in NSS.
-static mut FUNCTION_LIST: CK_FUNCTION_LIST = CK_FUNCTION_LIST {
+static FUNCTION_LIST: CK_FUNCTION_LIST = CK_FUNCTION_LIST {
     version: CK_VERSION { major: 2, minor: 2 },
     C_Initialize: Some(C_Initialize),
     C_Finalize: Some(C_Finalize),
@@ -1227,9 +1251,14 @@ pub unsafe extern "C" fn C_GetFunctionList(ppFunctionList: CK_FUNCTION_LIST_PTR_
     if ppFunctionList.is_null() {
         return CKR_ARGUMENTS_BAD;
     }
-    *ppFunctionList = &mut FUNCTION_LIST;
+    // CK_FUNCTION_LIST_PTR is a *mut CK_FUNCTION_LIST, but as per the
+    // specification, the caller must treat it as *const CK_FUNCTION_LIST.
+    *ppFunctionList = std::ptr::addr_of!(FUNCTION_LIST) as CK_FUNCTION_LIST_PTR;
     CKR_OK
 }
 
-#[cfg_attr(target_os = "macos", link(name = "Security", kind = "framework"))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios"),
+    link(name = "Security", kind = "framework")
+)]
 extern "C" {}

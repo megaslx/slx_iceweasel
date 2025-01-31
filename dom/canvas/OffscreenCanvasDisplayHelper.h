@@ -15,6 +15,7 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsISupportsImpl.h"
 #include "nsThreadUtils.h"
 
@@ -29,7 +30,6 @@ struct OffscreenCanvasDisplayData final {
   bool mIsOpaque = true;
   bool mIsAlphaPremult = true;
   mozilla::gl::OriginPos mOriginPos = gl::OriginPos::TopLeft;
-  Maybe<layers::RemoteTextureOwnerId> mOwnerId;
 };
 
 class OffscreenCanvasDisplayHelper final {
@@ -50,24 +50,27 @@ class OffscreenCanvasDisplayHelper final {
   void FlushForDisplay();
 
   bool CommitFrameToCompositor(nsICanvasRenderingContextInternal* aContext,
-                               layers::TextureType aTextureType,
                                const Maybe<OffscreenCanvasDisplayData>& aData);
 
   void DestroyCanvas();
   void DestroyElement();
 
+  bool CanElementCaptureStream() const;
+  bool UsingElementCaptureStream() const;
+
   already_AddRefed<mozilla::gfx::SourceSurface> GetSurfaceSnapshot();
   already_AddRefed<mozilla::layers::Image> GetAsImage();
+  UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aOutFormat,
+                                      gfx::IntSize* aOutImageSize);
 
  private:
   ~OffscreenCanvasDisplayHelper();
   void MaybeQueueInvalidateElement() MOZ_REQUIRES(mMutex);
   void InvalidateElement();
 
-  bool TransformSurface(const gfx::DataSourceSurface::ScopedMap& aSrcMap,
-                        const gfx::DataSourceSurface::ScopedMap& aDstMap,
-                        gfx::SurfaceFormat aFormat, const gfx::IntSize& aSize,
-                        bool aNeedsPremult, gl::OriginPos aOriginPos) const;
+  already_AddRefed<gfx::SourceSurface> TransformSurface(
+      gfx::SourceSurface* aSurface, bool aHasAlpha, bool aIsAlphaPremult,
+      gl::OriginPos aOriginPos) const;
 
   mutable Mutex mMutex;
   HTMLCanvasElement* MOZ_NON_OWNING_REF mCanvasElement MOZ_GUARDED_BY(mMutex);

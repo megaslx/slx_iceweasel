@@ -16,6 +16,9 @@ var { FormLikeFactory } = ChromeUtils.importESModule(
 var { FormAutofillHandler } = ChromeUtils.importESModule(
   "resource://gre/modules/shared/FormAutofillHandler.sys.mjs"
 );
+var { FormAutofillHeuristics } = ChromeUtils.importESModule(
+  "resource://gre/modules/shared/FormAutofillHeuristics.sys.mjs"
+);
 var { AddonTestUtils, MockAsyncShutdown } = ChromeUtils.importESModule(
   "resource://testing-common/AddonTestUtils.sys.mjs"
 );
@@ -256,8 +259,8 @@ function verifySectionFieldDetails(sections, expectedSectionsInfo) {
   });
 }
 
-var FormAutofillHeuristics, LabelUtils;
-var AddressDataLoader, FormAutofillUtils;
+var LabelUtils;
+var AddressMetaDataLoader, FormAutofillUtils;
 
 function autofillFieldSelector(doc) {
   return doc.querySelectorAll("input, select");
@@ -290,7 +293,8 @@ function getSyncChangeCounter(records, guid) {
 
 /**
  * Performs a partial deep equality check to determine if an object contains
- * the given fields.
+ * the given fields. To ensure the object doesn't contain a property, set the
+ * property of the `fields` object to `undefined`
  *
  * @param   {object} object
  *          The object to check. Unlike `ObjectUtils.deepEqual`, properties in
@@ -302,9 +306,11 @@ function getSyncChangeCounter(records, guid) {
  */
 function objectMatches(object, fields) {
   let actual = {};
-  for (let key in fields) {
+  for (const key in fields) {
     if (!object.hasOwnProperty(key)) {
-      return false;
+      if (fields[key] != undefined) {
+        return false;
+      }
     }
     actual[key] = object[key];
   }

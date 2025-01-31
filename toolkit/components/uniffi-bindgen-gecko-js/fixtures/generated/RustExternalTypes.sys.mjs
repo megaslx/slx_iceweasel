@@ -153,6 +153,20 @@ class ArrayBufferDataStream {
       this.pos += size;
       return value;
     }
+
+    readBytes() {
+      const size = this.readInt32();
+      const bytes = new Uint8Array(this.dataView.buffer, this.pos, size);
+      this.pos += size;
+      return bytes
+    }
+
+    writeBytes(uint8Array) {
+      this.writeUint32(uint8Array.length);
+      value.forEach((elt) => {
+        dataStream.writeUint8(elt);
+      })
+    }
 }
 
 function handleRustResult(result, liftCallback, liftErrCallback) {
@@ -164,9 +178,8 @@ function handleRustResult(result, liftCallback, liftErrCallback) {
             throw liftErrCallback(result.data);
 
         case "internal-error":
-            let message = result.internalErrorMessage;
-            if (message) {
-                throw new UniFFIInternalError(message);
+            if (result.data) {
+                throw new UniFFIInternalError(FfiConverterString.lift(result.data));
             } else {
                 throw new UniFFIInternalError("Unknown error");
             }
@@ -310,6 +323,43 @@ export class FfiConverterOptionalTypeLine extends FfiConverterArrayBuffer {
     }
 }
 
+// Export the FFIConverter object to make external types work.
+export class FfiConverterOptionalTypePoint extends FfiConverterArrayBuffer {
+    static checkType(value) {
+        if (value !== undefined && value !== null) {
+            FfiConverterTypePoint.checkType(value)
+        }
+    }
+
+    static read(dataStream) {
+        const code = dataStream.readUint8(0);
+        switch (code) {
+            case 0:
+                return null
+            case 1:
+                return FfiConverterTypePoint.read(dataStream)
+            default:
+                throw UniFFIError(`Unexpected code: ${code}`);
+        }
+    }
+
+    static write(dataStream, value) {
+        if (value === null || value === undefined) {
+            dataStream.writeUint8(0);
+            return;
+        }
+        dataStream.writeUint8(1);
+        FfiConverterTypePoint.write(dataStream, value)
+    }
+
+    static computeSize(value) {
+        if (value === null || value === undefined) {
+            return 1;
+        }
+        return 1 + FfiConverterTypePoint.computeSize(value)
+    }
+}
+
 import {
   FfiConverterTypeLine,
   Line,
@@ -326,10 +376,22 @@ import {
 // Export the FFIConverter object to make external types work.
 export { FfiConverterTypePoint, Point };
 
+import {
+  FfiConverterTypeSprite,
+  Sprite,
+} from "resource://gre/modules/RustSprites.sys.mjs";
+
+// Export the FFIConverter object to make external types work.
+export { FfiConverterTypeSprite, Sprite };
 
 
 
 
+
+/**
+ * gradient
+ * @returns {number}
+ */
 export function gradient(value) {
 
         const liftResult = (result) => FfiConverterF64.lift(result);
@@ -343,9 +405,75 @@ export function gradient(value) {
                 }
                 throw e;
             }
-            return UniFFIScaffolding.callAsync(
-                108, // external_types:uniffi_external_types_fn_func_gradient
+            return UniFFIScaffolding.callAsyncWrapper(
+                96, // external_types:uniffi_uniffi_fixture_external_types_fn_func_gradient
                 FfiConverterOptionalTypeLine.lower(value),
+            )
+        }
+        try {
+            return functionCall().then((result) => handleRustResult(result, liftResult, liftError));
+        }  catch (error) {
+            return Promise.reject(error)
+        }
+}
+
+/**
+ * intersection
+ * @returns {?Point}
+ */
+export function intersection(ln1,ln2) {
+
+        const liftResult = (result) => FfiConverterOptionalTypePoint.lift(result);
+        const liftError = null;
+        const functionCall = () => {
+            try {
+                FfiConverterTypeLine.checkType(ln1)
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart("ln1");
+                }
+                throw e;
+            }
+            try {
+                FfiConverterTypeLine.checkType(ln2)
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart("ln2");
+                }
+                throw e;
+            }
+            return UniFFIScaffolding.callAsyncWrapper(
+                97, // external_types:uniffi_uniffi_fixture_external_types_fn_func_intersection
+                FfiConverterTypeLine.lower(ln1),
+                FfiConverterTypeLine.lower(ln2),
+            )
+        }
+        try {
+            return functionCall().then((result) => handleRustResult(result, liftResult, liftError));
+        }  catch (error) {
+            return Promise.reject(error)
+        }
+}
+
+/**
+ * moveSpriteToOrigin
+ */
+export function moveSpriteToOrigin(sprite) {
+
+        const liftResult = (result) => undefined;
+        const liftError = null;
+        const functionCall = () => {
+            try {
+                FfiConverterTypeSprite.checkType(sprite)
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart("sprite");
+                }
+                throw e;
+            }
+            return UniFFIScaffolding.callAsyncWrapper(
+                98, // external_types:uniffi_uniffi_fixture_external_types_fn_func_move_sprite_to_origin
+                FfiConverterTypeSprite.lower(sprite),
             )
         }
         try {

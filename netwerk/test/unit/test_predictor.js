@@ -38,11 +38,11 @@ ValidityChecker.prototype = {
 
   QueryInterface: ChromeUtils.generateQI(["nsICacheEntryOpenCallback"]),
 
-  onCacheEntryCheck(entry) {
+  onCacheEntryCheck() {
     return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
   },
 
-  onCacheEntryAvailable(entry, isnew, status) {
+  onCacheEntryAvailable(entry) {
     // Check if forced valid
     Assert.equal(entry.isForcedValid, this.httpStatus === 200);
     this.verifier.maybe_run_next_test();
@@ -155,7 +155,7 @@ var prepListener = {
     this.continueCallback = cb;
   },
 
-  onCacheEntryCheck(entry) {
+  onCacheEntryCheck() {
     return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
   },
 
@@ -492,9 +492,9 @@ function continue_test_origin() {
         origin_attributes
       );
       do_timeout(0, () => {
-        var origin = extract_origin(sruri);
-        if (!preconns.includes(origin)) {
-          preconns.push(origin);
+        var origin1 = extract_origin(sruri);
+        if (!preconns.includes(origin1)) {
+          preconns.push(origin1);
         }
 
         sruri = newURI(subresources[2]);
@@ -505,9 +505,9 @@ function continue_test_origin() {
           origin_attributes
         );
         do_timeout(0, () => {
-          var origin = extract_origin(sruri);
-          if (!preconns.includes(origin)) {
-            preconns.push(origin);
+          var origin2 = extract_origin(sruri);
+          if (!preconns.includes(origin2)) {
+            preconns.push(origin2);
           }
 
           var loaduri = newURI("http://localhost:4444/anotherpage.html");
@@ -555,7 +555,7 @@ var prefetchListener = {
     read_stream(stream, cnt);
   },
 
-  onStopRequest(request, status) {
+  onStopRequest() {
     run_next_test();
   },
 };
@@ -708,9 +708,9 @@ function test_visitor_doom() {
         console.debug("asyncDoomURI", aURI.spec);
         let doomTask = Promise.all(
           storages.map(storage => {
-            return new Promise(resolve => {
+            return new Promise(resolve1 => {
               storage.asyncDoomURI(aURI, aIdEnhance, {
-                onCacheEntryDoomed: resolve,
+                onCacheEntryDoomed: resolve1,
               });
             });
           })
@@ -736,17 +736,7 @@ function test_visitor_doom() {
       let entryCount = 0;
       let visitor = {
         onCacheStorageInfo() {},
-        async onCacheEntryInfo(
-          aURI,
-          aIdEnhance,
-          aDataSize,
-          aAltDataSize,
-          aFetchCount,
-          aLastModifiedTime,
-          aExpirationTime,
-          aPinned,
-          aInfo
-        ) {
+        async onCacheEntryInfo() {
           entryCount++;
         },
         onCacheEntryVisitCompleted() {
@@ -797,7 +787,7 @@ var observer = {
 
   QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     if (topic != "predictor-reset-complete") {
       return;
     }

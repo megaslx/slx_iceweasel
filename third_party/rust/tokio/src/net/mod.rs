@@ -13,7 +13,10 @@
 //! Unix Domain Stream Socket **(available on Unix only)**
 //! * [`UnixDatagram`] provides functionality for communication
 //! over Unix Domain Datagram Socket **(available on Unix only)**
-
+//! * [`tokio::net::unix::pipe`] for FIFO pipes **(available on Unix only)**
+//! * [`tokio::net::windows::named_pipe`] for Named Pipes **(available on Windows only)**
+//!
+//! For IO resources not available in `tokio::net`, you can use [`AsyncFd`].
 //!
 //! [`TcpListener`]: TcpListener
 //! [`TcpStream`]: TcpStream
@@ -21,10 +24,15 @@
 //! [`UnixListener`]: UnixListener
 //! [`UnixStream`]: UnixStream
 //! [`UnixDatagram`]: UnixDatagram
+//! [`tokio::net::unix::pipe`]: unix::pipe
+//! [`tokio::net::windows::named_pipe`]: windows::named_pipe
+//! [`AsyncFd`]: crate::io::unix::AsyncFd
 
 mod addr;
-#[cfg(feature = "net")]
-pub(crate) use addr::to_socket_addrs;
+cfg_not_wasi! {
+    #[cfg(feature = "net")]
+    pub(crate) use addr::to_socket_addrs;
+}
 pub use addr::ToSocketAddrs;
 
 cfg_net! {
@@ -33,11 +41,13 @@ cfg_net! {
 
     pub mod tcp;
     pub use tcp::listener::TcpListener;
-    pub use tcp::socket::TcpSocket;
     pub use tcp::stream::TcpStream;
+    cfg_not_wasi! {
+        pub use tcp::socket::TcpSocket;
 
-    mod udp;
-    pub use udp::UdpSocket;
+        mod udp;
+        pub use udp::UdpSocket;
+    }
 }
 
 cfg_net_unix! {
@@ -45,6 +55,7 @@ cfg_net_unix! {
     pub use unix::datagram::socket::UnixDatagram;
     pub use unix::listener::UnixListener;
     pub use unix::stream::UnixStream;
+    pub use unix::socket::UnixSocket;
 }
 
 cfg_net_windows! {

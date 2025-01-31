@@ -11,13 +11,11 @@
 #ifndef MODULES_AUDIO_PROCESSING_AEC3_MULTI_CHANNEL_CONTENT_DETECTOR_H_
 #define MODULES_AUDIO_PROCESSING_AEC3_MULTI_CHANNEL_CONTENT_DETECTOR_H_
 
-#include <memory>
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
-
-#include "absl/types/optional.h"
 
 namespace webrtc {
 
@@ -77,7 +75,7 @@ class MultiChannelContentDetector {
 
   const bool detect_stereo_content_;
   const float detection_threshold_;
-  const absl::optional<int> detection_timeout_threshold_frames_;
+  const std::optional<int> detection_timeout_threshold_frames_;
   const int stereo_detection_hysteresis_frames_;
 
   // Collects and reports metrics on the amount of multichannel content

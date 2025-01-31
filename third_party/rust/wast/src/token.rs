@@ -58,10 +58,15 @@ pub struct Id<'a> {
 }
 
 impl<'a> Id<'a> {
-    fn new(name: &'a str, span: Span) -> Id<'a> {
+    /// Construct a new identifier from given string.
+    ///
+    /// Note that `name` can be any arbitrary string according to the
+    /// WebAssembly/annotations proposal.
+    pub fn new(name: &'a str, span: Span) -> Id<'a> {
         Id { name, gen: 0, span }
     }
 
+    #[cfg(feature = "wasm-module")]
     pub(crate) fn gensym(span: Span, gen: u32) -> Id<'a> {
         Id {
             name: "gensym",
@@ -82,6 +87,7 @@ impl<'a> Id<'a> {
         self.span
     }
 
+    #[cfg(feature = "wasm-module")]
     pub(crate) fn is_gensym(&self) -> bool {
         self.gen != 0
     }
@@ -106,7 +112,14 @@ impl<'a> Parse<'a> for Id<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
         parser.step(|c| {
             if let Some((name, rest)) = c.id()? {
-                return Ok((Id::new(name, c.cur_span()), rest));
+                return Ok((
+                    Id {
+                        name,
+                        gen: 0,
+                        span: c.cur_span(),
+                    },
+                    rest,
+                ));
             }
             Err(c.error("expected an identifier"))
         })
@@ -160,6 +173,7 @@ impl Index<'_> {
         }
     }
 
+    #[cfg(feature = "wasm-module")]
     pub(crate) fn is_resolved(&self) -> bool {
         matches!(self, Index::Num(..))
     }
@@ -619,13 +633,13 @@ macro_rules! float {
 }
 
 float! {
-    Float32 => {
+    F32 => {
         bits: u32,
         float: f32,
         exponent_bits: 8,
         name: strtof,
     }
-    Float64 => {
+    F64 => {
         bits: u64,
         float: f64,
         exponent_bits: 11,
@@ -654,6 +668,22 @@ impl Peek for LParen {
 
     fn display() -> &'static str {
         "left paren"
+    }
+}
+
+/// A convenience type to use with [`Parser::peek`](crate::parser::Parser::peek)
+/// to see if the next token is the end of an s-expression.
+pub struct RParen {
+    _priv: (),
+}
+
+impl Peek for RParen {
+    fn peek(cursor: Cursor<'_>) -> Result<bool> {
+        cursor.peek_rparen()
+    }
+
+    fn display() -> &'static str {
+        "right paren"
     }
 }
 

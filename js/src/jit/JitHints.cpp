@@ -5,6 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/JitHints-inl.h"
+
+#include "gc/Pretenuring.h"
+
+#include "vm/BytecodeLocation-inl.h"
 #include "vm/JSScript-inl.h"
 
 using namespace js;
@@ -20,23 +24,24 @@ JitHintsMap::~JitHintsMap() {
 
 JitHintsMap::IonHint* JitHintsMap::addIonHint(ScriptKey key,
                                               ScriptToHintMap::AddPtr& p) {
-  if (ionHintMap_.count() >= IonHintMaxEntries) {
+  UniquePtr<IonHint> hint = MakeUnique<IonHint>(key);
+  if (!hint) {
+    return nullptr;
+  }
+
+  if (!ionHintMap_.add(p, key, hint.get())) {
+    return nullptr;
+  }
+
+  ionHintQueue_.insertBack(hint.get());
+
+  if (ionHintMap_.count() > IonHintMaxEntries) {
     IonHint* h = ionHintQueue_.popFirst();
     ionHintMap_.remove(h->key());
     js_delete(h);
   }
 
-  IonHint* hint = js_new<IonHint>(key);
-  if (!hint) {
-    return nullptr;
-  }
-
-  if (!ionHintMap_.add(p, key, hint)) {
-    return nullptr;
-  }
-
-  ionHintQueue_.insertBack(hint);
-  return hint;
+  return hint.release();
 }
 
 void JitHintsMap::updateAsRecentlyUsed(IonHint* hint) {
@@ -47,6 +52,11 @@ void JitHintsMap::updateAsRecentlyUsed(IonHint* hint) {
 bool JitHintsMap::recordIonCompilation(JSScript* script) {
   ScriptKey key = getScriptKey(script);
   if (!key) {
+    return true;
+  }
+
+  // Only add hints for scripts that will be eager baseline compiled.
+  if (!baselineHintMap_.mightContain(key)) {
     return true;
   }
 
@@ -63,7 +73,33 @@ bool JitHintsMap::recordIonCompilation(JSScript* script) {
     }
   }
 
+  uint32_t threshold = IonHintEagerThresholdValue(
+      script->warmUpCountAtLastICStub(),
+      script->jitScript()->hasPretenuredAllocSites());
+
+  hint->initThreshold(threshold);
   return true;
+}
+
+// static
+uint32_t JitHintsMap::IonHintEagerThresholdValue(uint32_t lastStubCounter,
+                                                 bool hasPretenuredAllocSites) {
+  // Use the counter when the last IC stub was attached as the initial
+  // threshold.
+  uint32_t eagerThreshold = lastStubCounter;
+
+  // Ensure we stay in baseline long enough to pretenure alloc sites.
+  if (hasPretenuredAllocSites) {
+    eagerThreshold =
+        std::max(eagerThreshold, uint32_t(gc::NormalSiteAttentionThreshold));
+  }
+
+  // Add 10 for some wiggle room and to safeguard against cases where the
+  // lastStubCounter is 0.
+  eagerThreshold += 10;
+
+  // Do not exceed the default Ion threshold value set in the options.
+  return std::min(eagerThreshold, JitOptions.normalIonWarmUpThreshold);
 }
 
 bool JitHintsMap::getIonThresholdHint(JSScript* script,
@@ -73,12 +109,16 @@ bool JitHintsMap::getIonThresholdHint(JSScript* script,
     auto p = ionHintMap_.lookup(key);
     if (p) {
       IonHint* hint = p->value();
-      updateAsRecentlyUsed(hint);
-      thresholdOut = hint->threshold();
-      return true;
+      // If the threshold is 0, the hint only contains
+      // monomorphic inlining location information and
+      // may not have entered Ion before.
+      if (hint->threshold() != 0) {
+        updateAsRecentlyUsed(hint);
+        thresholdOut = hint->threshold();
+        return true;
+      }
     }
   }
-
   return false;
 }
 
@@ -90,4 +130,50 @@ void JitHintsMap::recordInvalidation(JSScript* script) {
       p->value()->incThreshold(InvalidationThresholdIncrement);
     }
   }
+}
+
+bool JitHintsMap::addMonomorphicInlineLocation(JSScript* script,
+                                               BytecodeLocation loc) {
+  ScriptKey key = getScriptKey(script);
+  if (!key) {
+    return true;
+  }
+
+  // Only add inline hints for scripts that will be eager baseline compiled.
+  if (!baselineHintMap_.mightContain(key)) {
+    return true;
+  }
+
+  auto p = ionHintMap_.lookupForAdd(key);
+  IonHint* hint = nullptr;
+  if (p) {
+    hint = p->value();
+  } else {
+    hint = addIonHint(key, p);
+    if (!hint) {
+      return false;
+    }
+  }
+
+  if (!hint->hasSpaceForMonomorphicInlineEntry()) {
+    return true;
+  }
+
+  uint32_t offset = loc.bytecodeToOffset(script);
+  return hint->addMonomorphicInlineOffset(offset);
+}
+
+bool JitHintsMap::hasMonomorphicInlineHintAtOffset(JSScript* script,
+                                                   uint32_t offset) {
+  ScriptKey key = getScriptKey(script);
+  if (!key) {
+    return false;
+  }
+
+  auto p = ionHintMap_.lookup(key);
+  if (p) {
+    return p->value()->hasMonomorphicInlineOffset(offset);
+  }
+
+  return false;
 }

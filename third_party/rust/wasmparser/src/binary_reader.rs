@@ -13,13 +13,12 @@
  * limitations under the License.
  */
 
+use crate::prelude::*;
 use crate::{limits::*, *};
-use std::convert::TryInto;
-use std::error::Error;
-use std::fmt;
-use std::marker;
-use std::ops::Range;
-use std::str;
+use core::fmt;
+use core::marker;
+use core::ops::Range;
+use core::str;
 
 pub(crate) const WASM_MAGIC_NUMBER: &[u8; 4] = b"\0asm";
 
@@ -35,14 +34,22 @@ pub struct BinaryReaderError {
 #[derive(Debug, Clone)]
 pub(crate) struct BinaryReaderErrorInner {
     pub(crate) message: String,
+    pub(crate) kind: BinaryReaderErrorKind,
     pub(crate) offset: usize,
     pub(crate) needed_hint: Option<usize>,
 }
 
-/// The result for `BinaryReader` operations.
-pub type Result<T, E = BinaryReaderError> = std::result::Result<T, E>;
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BinaryReaderErrorKind {
+    Custom,
+    Invalid,
+}
 
-impl Error for BinaryReaderError {}
+/// The result for `BinaryReader` operations.
+pub type Result<T, E = BinaryReaderError> = core::result::Result<T, E>;
+
+#[cfg(feature = "std")]
+impl std::error::Error for BinaryReaderError {}
 
 impl fmt::Display for BinaryReaderError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -56,15 +63,25 @@ impl fmt::Display for BinaryReaderError {
 
 impl BinaryReaderError {
     #[cold]
-    pub(crate) fn new(message: impl Into<String>, offset: usize) -> Self {
-        let message = message.into();
+    pub(crate) fn _new(kind: BinaryReaderErrorKind, message: String, offset: usize) -> Self {
         BinaryReaderError {
             inner: Box::new(BinaryReaderErrorInner {
+                kind,
                 message,
                 offset,
                 needed_hint: None,
             }),
         }
+    }
+
+    #[cold]
+    pub(crate) fn new(message: impl Into<String>, offset: usize) -> Self {
+        Self::_new(BinaryReaderErrorKind::Custom, message.into(), offset)
+    }
+
+    #[cold]
+    pub(crate) fn invalid(msg: &'static str, offset: usize) -> Self {
+        Self::_new(BinaryReaderErrorKind::Invalid, msg.into(), offset)
     }
 
     #[cold]
@@ -74,13 +91,13 @@ impl BinaryReaderError {
 
     #[cold]
     pub(crate) fn eof(offset: usize, needed_hint: usize) -> Self {
-        BinaryReaderError {
-            inner: Box::new(BinaryReaderErrorInner {
-                message: "unexpected end-of-file".to_string(),
-                offset,
-                needed_hint: Some(needed_hint),
-            }),
-        }
+        let mut err = BinaryReaderError::new("unexpected end-of-file", offset);
+        err.inner.needed_hint = Some(needed_hint);
+        err
+    }
+
+    pub(crate) fn kind(&mut self) -> BinaryReaderErrorKind {
+        self.inner.kind
     }
 
     /// Get this error's message.
@@ -93,49 +110,120 @@ impl BinaryReaderError {
         self.inner.offset
     }
 
-    pub(crate) fn add_context(&mut self, mut context: String) {
-        context.push_str("\n");
-        self.inner.message.insert_str(0, &context);
+    #[cfg(all(feature = "validate", feature = "component-model"))]
+    pub(crate) fn add_context(&mut self, context: String) {
+        self.inner.message = format!("{context}\n{}", self.inner.message);
+    }
+
+    pub(crate) fn set_message(&mut self, message: &str) {
+        self.inner.message = message.to_string();
     }
 }
 
 /// A binary reader of the WebAssembly structures and types.
 #[derive(Clone, Debug, Hash)]
 pub struct BinaryReader<'a> {
-    pub(crate) buffer: &'a [u8],
-    pub(crate) position: usize,
+    buffer: &'a [u8],
+    position: usize,
     original_offset: usize,
-    allow_memarg64: bool,
+
+    // When the `features` feature is disabled then the `WasmFeatures` type
+    // still exists but this field is still omitted. When `features` is
+    // disabled then the only constructor of this type is `BinaryReader::new`
+    // which documents all known features being active. All known features
+    // being active isn't represented by `WasmFeatures` when the feature is
+    // disabled so the field is omitted here to prevent accidentally using the
+    // wrong listing of features.
+    //
+    // Feature accessors are defined by `foreach_wasm_feature!` below with a
+    // method-per-feature on `BinaryReader` which when the `features` feature
+    // is disabled returns `true` by default.
+    #[cfg(feature = "features")]
+    features: WasmFeatures,
 }
 
 impl<'a> BinaryReader<'a> {
-    /// Constructs `BinaryReader` type.
+    /// Creates a new binary reader which will parse the `data` provided.
     ///
-    /// # Examples
-    /// ```
-    /// let fn_body = &vec![0x41, 0x00, 0x10, 0x00, 0x0B];
-    /// let mut reader = wasmparser::BinaryReader::new(fn_body);
-    /// while !reader.eof() {
-    ///     let op = reader.read_operator();
-    ///     println!("{:?}", op)
-    /// }
-    /// ```
-    pub fn new(data: &[u8]) -> BinaryReader {
-        BinaryReader {
-            buffer: data,
-            position: 0,
-            original_offset: 0,
-            allow_memarg64: false,
-        }
-    }
-
-    /// Constructs a `BinaryReader` with an explicit starting offset.
-    pub fn new_with_offset(data: &[u8], original_offset: usize) -> BinaryReader {
+    /// The `original_offset` provided is used for byte offsets in errors that
+    /// are generated. That offset is added to the current position in `data`.
+    /// This can be helpful when `data` is just a window of a view into a larger
+    /// wasm binary perhaps not even entirely stored locally.
+    ///
+    /// The returned binary reader will have all features known to this crate
+    /// enabled. To reject binaries that aren't valid unless a certain feature
+    /// is enabled use the [`BinaryReader::new_features`] constructor instead.
+    pub fn new(data: &[u8], original_offset: usize) -> BinaryReader {
         BinaryReader {
             buffer: data,
             position: 0,
             original_offset,
-            allow_memarg64: false,
+            #[cfg(feature = "features")]
+            features: WasmFeatures::all(),
+        }
+    }
+
+    /// Creates a new binary reader which will parse the `data` provided.
+    ///
+    /// The `original_offset` provided is used for byte offsets in errors that
+    /// are generated. That offset is added to the current position in `data`.
+    /// This can be helpful when `data` is just a window of a view into a larger
+    /// wasm binary perhaps not even entirely stored locally.
+    ///
+    /// The `features` argument provided controls which WebAssembly features are
+    /// active when parsing this data. Wasm features typically don't affect
+    /// parsing too too much and are generally more applicable during
+    /// validation, but features and proposals will often reinterpret
+    /// previously-invalid constructs as now-valid things meaning something
+    /// slightly different. This means that invalid bytes before a feature may
+    /// now be interpreted differently after a feature is implemented. This
+    /// means that the set of activated features can affect what errors are
+    /// generated and when they are generated.
+    ///
+    /// In general it's safe to pass `WasmFeatures::all()` here. There's no
+    /// downside to enabling all features while parsing and only enabling a
+    /// subset of features during validation.
+    ///
+    /// Note that the activated set of features does not guarantee that
+    /// `BinaryReader` will return an error for disabled features. For example
+    /// if SIMD is disabled then SIMD instructions will still be parsed via
+    /// [`BinaryReader::visit_operator`]. Validation must still be performed to
+    /// provide a strict guarantee that if a feature is disabled that a binary
+    /// doesn't leverage the feature. The activated set of features here instead
+    /// only affects locations where preexisting bytes are reinterpreted in
+    /// different ways with future proposals, such as the `memarg` moving from a
+    /// 32-bit offset to a 64-bit offset with the `memory64` proposal.
+    #[cfg(feature = "features")]
+    pub fn new_features(
+        data: &[u8],
+        original_offset: usize,
+        features: WasmFeatures,
+    ) -> BinaryReader {
+        BinaryReader {
+            buffer: data,
+            position: 0,
+            original_offset,
+            features,
+        }
+    }
+
+    /// "Shrinks" this binary reader to retain only the buffer left-to-parse.
+    ///
+    /// The primary purpose of this method is to change the return value of the
+    /// `range()` method. That method returns the range of the original buffer
+    /// within the wasm binary so calling `range()` on the returned
+    /// `BinaryReader` will return a smaller range than if `range()` is called
+    /// on `self`.
+    ///
+    /// Otherwise parsing values from either `self` or the return value should
+    /// return the same thing.
+    pub(crate) fn shrink(&self) -> BinaryReader<'a> {
+        BinaryReader {
+            buffer: &self.buffer[self.position..],
+            position: 0,
+            original_offset: self.original_offset + self.position,
+            #[cfg(feature = "features")]
+            features: self.features,
         }
     }
 
@@ -145,12 +233,21 @@ impl<'a> BinaryReader<'a> {
         self.original_offset + self.position
     }
 
-    /// Whether or not to allow 64-bit memory arguments in functions.
+    /// Returns the currently active set of wasm features that this reader is
+    /// using while parsing.
     ///
-    /// This is intended to be `true` when support for the memory64
-    /// WebAssembly proposal is also enabled.
-    pub fn allow_memarg64(&mut self, allow: bool) {
-        self.allow_memarg64 = allow;
+    /// For more information see [`BinaryReader::new`].
+    #[cfg(feature = "features")]
+    pub fn features(&self) -> WasmFeatures {
+        self.features
+    }
+
+    /// Sets the wasm features active while parsing to the `features` specified.
+    ///
+    /// For more information see [`BinaryReader::new`].
+    #[cfg(feature = "features")]
+    pub fn set_features(&mut self, features: WasmFeatures) {
+        self.features = features;
     }
 
     /// Returns a range from the starting offset to the end of the buffer.
@@ -245,27 +342,25 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn read_first_byte_and_var_u32(&mut self) -> Result<(u8, u32)> {
-        let pos = self.position;
-        let val = self.read_var_u32()?;
-        Ok((self.buffer[pos], val))
-    }
-
     fn read_memarg(&mut self, max_align: u8) -> Result<MemArg> {
         let flags_pos = self.original_position();
         let mut flags = self.read_var_u32()?;
-        let memory = if flags & (1 << 6) != 0 {
+
+        let memory = if self.multi_memory() && flags & (1 << 6) != 0 {
             flags ^= 1 << 6;
             self.read_var_u32()?
         } else {
             0
         };
         let align = if flags >= (1 << 6) {
-            return Err(BinaryReaderError::new("alignment too large", flags_pos));
+            return Err(BinaryReaderError::new(
+                "malformed memop alignment: alignment too large",
+                flags_pos,
+            ));
         } else {
             flags as u8
         };
-        let offset = if self.allow_memarg64 {
+        let offset = if self.memory64() {
             self.read_var_u64()?
         } else {
             u64::from(self.read_var_u32()?)
@@ -278,16 +373,29 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
+    fn read_ordering(&mut self) -> Result<Ordering> {
+        let byte = self.read_var_u32()?;
+        match byte {
+            0 => Ok(Ordering::SeqCst),
+            1 => Ok(Ordering::AcqRel),
+            x => Err(BinaryReaderError::new(
+                &format!("invalid atomic consistency ordering {}", x),
+                self.original_position() - 1,
+            )),
+        }
+    }
+
     fn read_br_table(&mut self) -> Result<BrTable<'a>> {
         let cnt = self.read_size(MAX_WASM_BR_TABLE_SIZE, "br_table")?;
-        let start = self.position;
-        for _ in 0..cnt {
-            self.read_var_u32()?;
-        }
-        let end = self.position;
+        let reader = self.skip(|reader| {
+            for _ in 0..cnt {
+                reader.read_var_u32()?;
+            }
+            Ok(())
+        })?;
         let default = self.read_var_u32()?;
         Ok(BrTable {
-            reader: BinaryReader::new_with_offset(&self.buffer[start..end], start),
+            reader,
             cnt: cnt as u32,
             default,
         })
@@ -325,25 +433,12 @@ impl<'a> BinaryReader<'a> {
 
     /// Reads a length-prefixed list of bytes from this reader and returns a
     /// new `BinaryReader` to read that list of bytes.
-    ///
-    /// Advances the position of this reader by the number of bytes read.
-    pub fn read_reader(&mut self, err: &str) -> Result<BinaryReader<'a>> {
+    pub fn read_reader(&mut self) -> Result<BinaryReader<'a>> {
         let size = self.read_var_u32()? as usize;
-        let body_start = self.position;
-        let buffer = match self.buffer.get(self.position..).and_then(|s| s.get(..size)) {
-            Some(buf) => buf,
-            None => {
-                return Err(BinaryReaderError::new(
-                    err,
-                    self.original_offset + self.buffer.len(),
-                ))
-            }
-        };
-        self.position += size;
-        Ok(BinaryReader::new_with_offset(
-            buffer,
-            self.original_offset + body_start,
-        ))
+        self.skip(|reader| {
+            reader.read_bytes(size)?;
+            Ok(())
+        })
     }
 
     /// Advances the `BinaryReader` four bytes and returns a `u32`.
@@ -481,10 +576,11 @@ impl<'a> BinaryReader<'a> {
     pub fn skip(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<Self> {
         let start = self.position;
         f(self)?;
-        Ok(BinaryReader::new_with_offset(
-            &self.buffer[start..self.position],
-            self.original_offset + start,
-        ))
+        let mut ret = self.clone();
+        ret.buffer = &self.buffer[start..self.position];
+        ret.position = 0;
+        ret.original_offset = self.original_offset + start;
+        Ok(ret)
     }
 
     /// Advances the `BinaryReader` past a WebAssembly string. This method does
@@ -620,28 +716,36 @@ impl<'a> BinaryReader<'a> {
         Ok((result << ashift) >> ashift)
     }
 
-    /// Advances the `BinaryReader` up to four bytes to parse a variable
-    /// length integer as a 32 bit floating point integer, returned as `Ieee32`.
+    /// Advances the `BinaryReader` four bytes to parse a 32 bit floating point
+    /// number, returned as `Ieee32`.
     /// # Errors
-    /// If `BinaryReader` has less than one or up to four bytes remaining, or
-    /// the integer is larger than 32 bits.
+    /// If `BinaryReader` has less than four bytes remaining.
     pub fn read_f32(&mut self) -> Result<Ieee32> {
         let value = self.read_u32()?;
         Ok(Ieee32(value))
     }
 
-    /// Advances the `BinaryReader` up to four bytes to parse a variable
-    /// length integer as a 32 bit floating point integer, returned as `Ieee32`.
+    /// Advances the `BinaryReader` eight bytes to parse a 64 bit floating point
+    /// number, returned as `Ieee64`.
     /// # Errors
-    /// If `BinaryReader` has less than one or up to four bytes remaining, or
-    /// the integer is larger than 32 bits.
+    /// If `BinaryReader` has less than eight bytes remaining.
     pub fn read_f64(&mut self) -> Result<Ieee64> {
         let value = self.read_u64()?;
         Ok(Ieee64(value))
     }
 
+    /// (internal) Reads a fixed-size WebAssembly string from the module.
+    fn internal_read_string(&mut self, len: usize) -> Result<&'a str> {
+        let bytes = self.read_bytes(len)?;
+        str::from_utf8(bytes).map_err(|_| {
+            BinaryReaderError::new("malformed UTF-8 encoding", self.original_position() - 1)
+        })
+    }
+
     /// Reads a WebAssembly string from the module.
+    ///
     /// # Errors
+    ///
     /// If `BinaryReader` has less than up to four bytes remaining, the string's
     /// length exceeds the remaining bytes, the string's length exceeds
     /// `limits::MAX_WASM_STRING_SIZE`, or the string contains invalid utf-8.
@@ -653,10 +757,17 @@ impl<'a> BinaryReader<'a> {
                 self.original_position() - 1,
             ));
         }
-        let bytes = self.read_bytes(len)?;
-        str::from_utf8(bytes).map_err(|_| {
-            BinaryReaderError::new("invalid UTF-8 encoding", self.original_position() - 1)
-        })
+        return self.internal_read_string(len);
+    }
+
+    /// Reads a unlimited WebAssembly string from the module.
+    ///
+    /// Note that this is similar to [`BinaryReader::read_string`] except that
+    /// it will not limit the size of the returned string by
+    /// `limits::MAX_WASM_STRING_SIZE`.
+    pub fn read_unlimited_string(&mut self) -> Result<&'a str> {
+        let len = self.read_var_u32()? as usize;
+        return self.internal_read_string(len);
     }
 
     #[cold]
@@ -681,17 +792,30 @@ impl<'a> BinaryReader<'a> {
         Ok(self.buffer[self.position])
     }
 
-    fn read_block_type(&mut self) -> Result<BlockType> {
+    pub(crate) fn read_block_type(&mut self) -> Result<BlockType> {
         let b = self.peek()?;
 
-        // Check for empty block
-        if b == 0x40 {
-            self.position += 1;
-            return Ok(BlockType::Empty);
-        }
-
-        // Check for a block type of form [] -> [t].
-        if ValType::is_valtype_byte(b) {
+        // Block types are encoded as either 0x40, a `valtype`, or `s33`. All
+        // current `valtype` encodings are negative numbers when encoded with
+        // sleb128, but it's also required that valtype encodings are in their
+        // canonical form. For example an overlong encoding of -1 as `0xff 0x7f`
+        // is not valid and it is required to be `0x7f`. This means that we
+        // can't simply match on the `s33` that pops out below since reading the
+        // whole `s33` might read an overlong encoding.
+        //
+        // To test for this the first byte `b` is inspected. The highest bit,
+        // the continuation bit in LEB128 encoding, must be clear. The next bit,
+        // the sign bit, must be set to indicate that the number is negative. If
+        // these two conditions hold then we're guaranteed that this is a
+        // negative number.
+        //
+        // After this a value type is read directly instead of looking for an
+        // indexed value type.
+        if b & 0x80 == 0 && b & 0x40 != 0 {
+            if b == 0x40 {
+                self.position += 1;
+                return Ok(BlockType::Empty);
+            }
             return Ok(BlockType::Type(self.read()?));
         }
 
@@ -738,7 +862,7 @@ impl<'a> BinaryReader<'a> {
     /// }
     ///
     /// macro_rules! define_visit_operator {
-    ///     ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ///     ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
     ///         $(
     ///             fn $visit(&mut self $($(,$arg: $argty)*)?) -> Self::Output {
     ///                 println!("{}: {}", self.offset, stringify!($visit));
@@ -770,6 +894,7 @@ impl<'a> BinaryReader<'a> {
             0x07 => visitor.visit_catch(self.read_var_u32()?),
             0x08 => visitor.visit_throw(self.read_var_u32()?),
             0x09 => visitor.visit_rethrow(self.read_var_u32()?),
+            0x0a => visitor.visit_throw_ref(),
             0x0b => visitor.visit_end(),
             0x0c => visitor.visit_br(self.read_var_u32()?),
             0x0d => visitor.visit_br_if(self.read_var_u32()?),
@@ -778,8 +903,8 @@ impl<'a> BinaryReader<'a> {
             0x10 => visitor.visit_call(self.read_var_u32()?),
             0x11 => {
                 let index = self.read_var_u32()?;
-                let (table_byte, table_index) = self.read_first_byte_and_var_u32()?;
-                visitor.visit_call_indirect(index, table_index, table_byte)
+                let table = self.read_table_index_or_zero_if_not_reference_types()?;
+                visitor.visit_call_indirect(index, table)
             }
             0x12 => visitor.visit_return_call(self.read_var_u32()?),
             0x13 => visitor.visit_return_call_indirect(self.read_var_u32()?, self.read_var_u32()?),
@@ -799,6 +924,7 @@ impl<'a> BinaryReader<'a> {
                 }
                 visitor.visit_typed_select(self.read()?)
             }
+            0x1f => visitor.visit_try_table(self.read()?),
 
             0x20 => visitor.visit_local_get(self.read_var_u32()?),
             0x21 => visitor.visit_local_set(self.read_var_u32()?),
@@ -832,12 +958,12 @@ impl<'a> BinaryReader<'a> {
             0x3d => visitor.visit_i64_store16(self.read_memarg(1)?),
             0x3e => visitor.visit_i64_store32(self.read_memarg(2)?),
             0x3f => {
-                let (mem_byte, mem) = self.read_first_byte_and_var_u32()?;
-                visitor.visit_memory_size(mem, mem_byte)
+                let mem = self.read_memory_index_or_zero_if_not_multi_memory()?;
+                visitor.visit_memory_size(mem)
             }
             0x40 => {
-                let (mem_byte, mem) = self.read_first_byte_and_var_u32()?;
-                visitor.visit_memory_grow(mem, mem_byte)
+                let mem = self.read_memory_index_or_zero_if_not_multi_memory()?;
+                visitor.visit_memory_grow(mem)
             }
 
             0x41 => visitor.visit_i32_const(self.read_var_i32()?),
@@ -978,9 +1104,19 @@ impl<'a> BinaryReader<'a> {
             0xd0 => visitor.visit_ref_null(self.read()?),
             0xd1 => visitor.visit_ref_is_null(),
             0xd2 => visitor.visit_ref_func(self.read_var_u32()?),
-            0xd3 => visitor.visit_ref_as_non_null(),
-            0xd4 => visitor.visit_br_on_null(self.read_var_u32()?),
+            0xd3 => visitor.visit_ref_eq(),
+            0xd4 => visitor.visit_ref_as_non_null(),
+            0xd5 => visitor.visit_br_on_null(self.read_var_u32()?),
             0xd6 => visitor.visit_br_on_non_null(self.read_var_u32()?),
+
+            0xe0 => visitor.visit_cont_new(self.read_var_u32()?),
+            0xe1 => visitor.visit_cont_bind(self.read_var_u32()?, self.read_var_u32()?),
+            0xe2 => visitor.visit_suspend(self.read_var_u32()?),
+            0xe3 => visitor.visit_resume(self.read_var_u32()?, self.read()?),
+            0xe4 => {
+                visitor.visit_resume_throw(self.read_var_u32()?, self.read_var_u32()?, self.read()?)
+            }
+            0xe5 => visitor.visit_switch(self.read_var_u32()?, self.read_var_u32()?),
 
             0xfb => self.visit_0xfb_operator(pos, visitor)?,
             0xfc => self.visit_0xfc_operator(pos, visitor)?,
@@ -1001,9 +1137,150 @@ impl<'a> BinaryReader<'a> {
     {
         let code = self.read_var_u32()?;
         Ok(match code {
-            0x20 => visitor.visit_i31_new(),
-            0x21 => visitor.visit_i31_get_s(),
-            0x22 => visitor.visit_i31_get_u(),
+            0x0 => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_struct_new(type_index)
+            }
+            0x01 => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_struct_new_default(type_index)
+            }
+            0x02 => {
+                let type_index = self.read_var_u32()?;
+                let field_index = self.read_var_u32()?;
+                visitor.visit_struct_get(type_index, field_index)
+            }
+            0x03 => {
+                let type_index = self.read_var_u32()?;
+                let field_index = self.read_var_u32()?;
+                visitor.visit_struct_get_s(type_index, field_index)
+            }
+            0x04 => {
+                let type_index = self.read_var_u32()?;
+                let field_index = self.read_var_u32()?;
+                visitor.visit_struct_get_u(type_index, field_index)
+            }
+            0x05 => {
+                let type_index = self.read_var_u32()?;
+                let field_index = self.read_var_u32()?;
+                visitor.visit_struct_set(type_index, field_index)
+            }
+            0x06 => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_new(type_index)
+            }
+            0x07 => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_new_default(type_index)
+            }
+            0x08 => {
+                let type_index = self.read_var_u32()?;
+                let n = self.read_var_u32()?;
+                visitor.visit_array_new_fixed(type_index, n)
+            }
+            0x09 => {
+                let type_index = self.read_var_u32()?;
+                let data_index = self.read_var_u32()?;
+                visitor.visit_array_new_data(type_index, data_index)
+            }
+            0x0a => {
+                let type_index = self.read_var_u32()?;
+                let elem_index = self.read_var_u32()?;
+                visitor.visit_array_new_elem(type_index, elem_index)
+            }
+            0x0b => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_get(type_index)
+            }
+            0x0c => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_get_s(type_index)
+            }
+            0x0d => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_get_u(type_index)
+            }
+            0x0e => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_set(type_index)
+            }
+            0x0f => visitor.visit_array_len(),
+            0x10 => {
+                let type_index = self.read_var_u32()?;
+                visitor.visit_array_fill(type_index)
+            }
+            0x11 => {
+                let type_index_dst = self.read_var_u32()?;
+                let type_index_src = self.read_var_u32()?;
+                visitor.visit_array_copy(type_index_dst, type_index_src)
+            }
+            0x12 => {
+                let type_index = self.read_var_u32()?;
+                let data_index = self.read_var_u32()?;
+                visitor.visit_array_init_data(type_index, data_index)
+            }
+            0x13 => {
+                let type_index = self.read_var_u32()?;
+                let elem_index = self.read_var_u32()?;
+                visitor.visit_array_init_elem(type_index, elem_index)
+            }
+            0x14 => visitor.visit_ref_test_non_null(self.read()?),
+            0x15 => visitor.visit_ref_test_nullable(self.read()?),
+            0x16 => visitor.visit_ref_cast_non_null(self.read()?),
+            0x17 => visitor.visit_ref_cast_nullable(self.read()?),
+            0x18 => {
+                let pos = self.original_position();
+                let cast_flags = self.read_u8()?;
+                let relative_depth = self.read_var_u32()?;
+                let (from_type_nullable, to_type_nullable) = match cast_flags {
+                    0b00 => (false, false),
+                    0b01 => (true, false),
+                    0b10 => (false, true),
+                    0b11 => (true, true),
+                    _ => bail!(pos, "invalid cast flags: {cast_flags:08b}"),
+                };
+                let from_heap_type = self.read()?;
+                let from_ref_type =
+                    RefType::new(from_type_nullable, from_heap_type).ok_or_else(|| {
+                        format_err!(pos, "implementation error: type index too large")
+                    })?;
+                let to_heap_type = self.read()?;
+                let to_ref_type =
+                    RefType::new(to_type_nullable, to_heap_type).ok_or_else(|| {
+                        format_err!(pos, "implementation error: type index too large")
+                    })?;
+                visitor.visit_br_on_cast(relative_depth, from_ref_type, to_ref_type)
+            }
+            0x19 => {
+                let pos = self.original_position();
+                let cast_flags = self.read_u8()?;
+                let relative_depth = self.read_var_u32()?;
+                let (from_type_nullable, to_type_nullable) = match cast_flags {
+                    0 => (false, false),
+                    1 => (true, false),
+                    2 => (false, true),
+                    3 => (true, true),
+                    _ => bail!(pos, "invalid cast flags: {cast_flags:08b}"),
+                };
+                let from_heap_type = self.read()?;
+                let from_ref_type =
+                    RefType::new(from_type_nullable, from_heap_type).ok_or_else(|| {
+                        format_err!(pos, "implementation error: type index too large")
+                    })?;
+                let to_heap_type = self.read()?;
+                let to_ref_type =
+                    RefType::new(to_type_nullable, to_heap_type).ok_or_else(|| {
+                        format_err!(pos, "implementation error: type index too large")
+                    })?;
+                visitor.visit_br_on_cast_fail(relative_depth, from_ref_type, to_ref_type)
+            }
+
+            0x1a => visitor.visit_any_convert_extern(),
+            0x1b => visitor.visit_extern_convert_any(),
+
+            0x1c => visitor.visit_ref_i31(),
+            0x1d => visitor.visit_i31_get_s(),
+            0x1e => visitor.visit_i31_get_u(),
 
             _ => bail!(pos, "unknown 0xfb subopcode: 0x{code:x}"),
         })
@@ -1079,6 +1356,11 @@ impl<'a> BinaryReader<'a> {
                 let mem = self.read_var_u32()?;
                 visitor.visit_memory_discard(mem)
             }
+
+            0x13 => visitor.visit_i64_add128(),
+            0x14 => visitor.visit_i64_sub128(),
+            0x15 => visitor.visit_i64_mul_wide_s(),
+            0x16 => visitor.visit_i64_mul_wide_u(),
 
             _ => bail!(pos, "unknown 0xfc subopcode: 0x{code:x}"),
         })
@@ -1483,6 +1765,108 @@ impl<'a> BinaryReader<'a> {
             0x4d => visitor.visit_i64_atomic_rmw16_cmpxchg_u(self.read_memarg(1)?),
             0x4e => visitor.visit_i64_atomic_rmw32_cmpxchg_u(self.read_memarg(2)?),
 
+            // Decode shared-everything-threads proposal.
+            0x4f => visitor.visit_global_atomic_get(self.read_ordering()?, self.read_var_u32()?),
+            0x50 => visitor.visit_global_atomic_set(self.read_ordering()?, self.read_var_u32()?),
+            0x51 => {
+                visitor.visit_global_atomic_rmw_add(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x52 => {
+                visitor.visit_global_atomic_rmw_sub(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x53 => {
+                visitor.visit_global_atomic_rmw_and(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x54 => visitor.visit_global_atomic_rmw_or(self.read_ordering()?, self.read_var_u32()?),
+            0x55 => {
+                visitor.visit_global_atomic_rmw_xor(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x56 => {
+                visitor.visit_global_atomic_rmw_xchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x57 => {
+                visitor.visit_global_atomic_rmw_cmpxchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x58 => visitor.visit_table_atomic_get(self.read_ordering()?, self.read_var_u32()?),
+            0x59 => visitor.visit_table_atomic_set(self.read_ordering()?, self.read_var_u32()?),
+            0x5a => {
+                visitor.visit_table_atomic_rmw_xchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x5b => {
+                visitor.visit_table_atomic_rmw_cmpxchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x5c => visitor.visit_struct_atomic_get(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x5d => visitor.visit_struct_atomic_get_s(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x5e => visitor.visit_struct_atomic_get_u(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x5f => visitor.visit_struct_atomic_set(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x60 => visitor.visit_struct_atomic_rmw_add(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x61 => visitor.visit_struct_atomic_rmw_sub(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x62 => visitor.visit_struct_atomic_rmw_and(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x63 => visitor.visit_struct_atomic_rmw_or(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x64 => visitor.visit_struct_atomic_rmw_xor(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x65 => visitor.visit_struct_atomic_rmw_xchg(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x66 => visitor.visit_struct_atomic_rmw_cmpxchg(
+                self.read_ordering()?,
+                self.read_var_u32()?,
+                self.read_var_u32()?,
+            ),
+            0x67 => visitor.visit_array_atomic_get(self.read_ordering()?, self.read_var_u32()?),
+            0x68 => visitor.visit_array_atomic_get_s(self.read_ordering()?, self.read_var_u32()?),
+            0x69 => visitor.visit_array_atomic_get_u(self.read_ordering()?, self.read_var_u32()?),
+            0x6a => visitor.visit_array_atomic_set(self.read_ordering()?, self.read_var_u32()?),
+            0x6b => visitor.visit_array_atomic_rmw_add(self.read_ordering()?, self.read_var_u32()?),
+            0x6c => visitor.visit_array_atomic_rmw_sub(self.read_ordering()?, self.read_var_u32()?),
+            0x6d => visitor.visit_array_atomic_rmw_and(self.read_ordering()?, self.read_var_u32()?),
+            0x6e => visitor.visit_array_atomic_rmw_or(self.read_ordering()?, self.read_var_u32()?),
+            0x6f => visitor.visit_array_atomic_rmw_xor(self.read_ordering()?, self.read_var_u32()?),
+            0x70 => {
+                visitor.visit_array_atomic_rmw_xchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x71 => {
+                visitor.visit_array_atomic_rmw_cmpxchg(self.read_ordering()?, self.read_var_u32()?)
+            }
+            0x72 => visitor.visit_ref_i31_shared(),
+
             _ => bail!(pos, "unknown 0xfe subopcode: 0x{code:x}"),
         })
     }
@@ -1495,6 +1879,12 @@ impl<'a> BinaryReader<'a> {
     /// the `Operator`.
     pub fn read_operator(&mut self) -> Result<Operator<'a>> {
         self.visit_operator(&mut OperatorFactory::new())
+    }
+
+    /// Returns whether there is an `end` opcode followed by eof remaining in
+    /// this reader.
+    pub fn is_end_then_eof(&self) -> bool {
+        self.remaining_buffer() == &[0x0b]
     }
 
     fn read_lane_index(&mut self, max: u8) -> Result<u8> {
@@ -1518,7 +1908,7 @@ impl<'a> BinaryReader<'a> {
         let magic_number = self.read_bytes(4)?;
         if magic_number != WASM_MAGIC_NUMBER {
             return Err(BinaryReaderError::new(
-                "magic header not detected: bad magic number",
+                format!("magic header not detected: bad magic number - expected={WASM_MAGIC_NUMBER:#x?} actual={magic_number:#x?}"),
                 self.original_position() - 4,
             ));
         }
@@ -1533,7 +1923,56 @@ impl<'a> BinaryReader<'a> {
             }
         }
     }
+
+    fn read_memory_index_or_zero_if_not_multi_memory(&mut self) -> Result<u32> {
+        if self.multi_memory() {
+            self.read_var_u32()
+        } else {
+            // Before bulk memory this byte was required to be a single zero
+            // byte, not a LEB-encoded zero, so require a precise zero byte.
+            match self.read_u8()? {
+                0 => Ok(0),
+                _ => bail!(self.original_position() - 1, "zero byte expected"),
+            }
+        }
+    }
+
+    fn read_table_index_or_zero_if_not_reference_types(&mut self) -> Result<u32> {
+        if self.reference_types() {
+            self.read_var_u32()
+        } else {
+            // Before reference types this byte was required to be a single zero
+            // byte, not a LEB-encoded zero, so require a precise zero byte.
+            match self.read_u8()? {
+                0 => Ok(0),
+                _ => bail!(self.original_position() - 1, "zero byte expected"),
+            }
+        }
+    }
 }
+
+// See documentation on `BinaryReader::features` for more on what's going on
+// here.
+macro_rules! define_feature_accessor {
+    ($feature:ident = $default:expr) => {
+        impl BinaryReader<'_> {
+            #[inline]
+            #[allow(dead_code)]
+            pub(crate) fn $feature(&self) -> bool {
+                #[cfg(feature = "features")]
+                {
+                    self.features.$feature()
+                }
+                #[cfg(not(feature = "features"))]
+                {
+                    true
+                }
+            }
+        }
+    };
+}
+
+super::features::foreach_wasm_feature!(define_feature_accessor);
 
 impl<'a> BrTable<'a> {
     /// Returns the number of `br_table` entries, not including the default
@@ -1562,10 +2001,12 @@ impl<'a> BrTable<'a> {
     /// # Examples
     ///
     /// ```rust
+    /// use wasmparser::{BinaryReader, Operator};
+    ///
     /// let buf = [0x0e, 0x02, 0x01, 0x02, 0x00];
-    /// let mut reader = wasmparser::BinaryReader::new(&buf);
+    /// let mut reader = BinaryReader::new(&buf, 0);
     /// let op = reader.read_operator().unwrap();
-    /// if let wasmparser::Operator::BrTable { targets } = op {
+    /// if let Operator::BrTable { targets } = op {
     ///     let targets = targets.targets().collect::<Result<Vec<_>, _>>().unwrap();
     ///     assert_eq!(targets, [1, 2]);
     /// }
@@ -1647,7 +2088,7 @@ impl<'a> OperatorFactory<'a> {
 }
 
 macro_rules! define_visit_operator {
-    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $($(,$arg: $argty)*)?) -> Operator<'a> {
                 Operator::$op $({ $($arg),* })?
@@ -1665,7 +2106,7 @@ impl<'a> VisitOperator<'a> for OperatorFactory<'a> {
 /// Iterator returned from [`BinaryReader::read_iter`].
 pub struct BinaryReaderIter<'a, 'me, T: FromReader<'a>> {
     remaining: usize,
-    reader: &'me mut BinaryReader<'a>,
+    pub(crate) reader: &'me mut BinaryReader<'a>,
     _marker: marker::PhantomData<T>,
 }
 

@@ -33,6 +33,31 @@ cfg_io_std! {
     ///     Ok(())
     /// }
     /// ```
+    ///
+    /// The following is an example of using `stdio` with loop.
+    ///
+    /// ```
+    /// use tokio::io::{self, AsyncWriteExt};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let messages = vec!["hello", " world\n"];
+    ///
+    ///     // When you use `stdio` in a loop, it is recommended to create
+    ///     // a single `stdio` instance outside the loop and call a write
+    ///     // operation against that instance on each loop.
+    ///     //
+    ///     // Repeatedly creating `stdout` instances inside the loop and
+    ///     // writing to that handle could result in mangled output since
+    ///     // each write operation is handled by a different blocking thread.
+    ///     let mut stdout = io::stdout();
+    ///
+    ///     for message in &messages {
+    ///         stdout.write_all(message.as_bytes()).await.unwrap();
+    ///         stdout.flush().await.unwrap();
+    ///     }
+    /// }
+    /// ```
     #[derive(Debug)]
     pub struct Stdout {
         std: SplitByUtf8BoundaryIfWindows<Blocking<std::io::Stdout>>,
@@ -64,6 +89,31 @@ cfg_io_std! {
     ///     Ok(())
     /// }
     /// ```
+    ///
+    /// The following is an example of using `stdio` with loop.
+    ///
+    /// ```
+    /// use tokio::io::{self, AsyncWriteExt};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let messages = vec!["hello", " world\n"];
+    ///
+    ///     // When you use `stdio` in a loop, it is recommended to create
+    ///     // a single `stdio` instance outside the loop and call a write
+    ///     // operation against that instance on each loop.
+    ///     //
+    ///     // Repeatedly creating `stdout` instances inside the loop and
+    ///     // writing to that handle could result in mangled output since
+    ///     // each write operation is handled by a different blocking thread.
+    ///     let mut stdout = io::stdout();
+    ///
+    ///     for message in &messages {
+    ///         stdout.write_all(message.as_bytes()).await.unwrap();
+    ///         stdout.flush().await.unwrap();
+    ///     }
+    /// }
+    /// ```
     pub fn stdout() -> Stdout {
         let std = io::stdout();
         Stdout {
@@ -73,16 +123,37 @@ cfg_io_std! {
 }
 
 #[cfg(unix)]
-impl std::os::unix::io::AsRawFd for Stdout {
-    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
-        std::io::stdout().as_raw_fd()
+mod sys {
+    use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
+
+    use super::Stdout;
+
+    impl AsRawFd for Stdout {
+        fn as_raw_fd(&self) -> RawFd {
+            std::io::stdout().as_raw_fd()
+        }
+    }
+
+    impl AsFd for Stdout {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
+        }
     }
 }
 
-#[cfg(windows)]
-impl std::os::windows::io::AsRawHandle for Stdout {
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
-        std::io::stdout().as_raw_handle()
+cfg_windows! {
+    use crate::os::windows::io::{AsHandle, BorrowedHandle, AsRawHandle, RawHandle};
+
+    impl AsRawHandle for Stdout {
+        fn as_raw_handle(&self) -> RawHandle {
+            std::io::stdout().as_raw_handle()
+        }
+    }
+
+    impl AsHandle for Stdout {
+        fn as_handle(&self) -> BorrowedHandle<'_> {
+            unsafe { BorrowedHandle::borrow_raw(self.as_raw_handle()) }
+        }
     }
 }
 

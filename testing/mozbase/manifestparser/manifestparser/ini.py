@@ -29,6 +29,8 @@ def read_ini(
     separators=None,
     strict=True,
     handle_defaults=True,
+    document=False,
+    add_line_no=False,
 ):
     """
     read an .ini file and return a list of [(section, values)]
@@ -39,6 +41,7 @@ def read_ini(
     - separators : strings that denote key, value separation in order
     - strict : whether to be strict about parsing
     - handle_defaults : whether to incorporate defaults into each section
+    - add_line_no: whether to include the line number that points to the test in the generated ini file.
     """
 
     # variables
@@ -57,8 +60,7 @@ def read_ini(
     current_section = {}
     current_section_name = ""
     key_indent = 0
-    for (linenum, line) in enumerate(fp.read().splitlines(), start=1):
-
+    for linenum, line in enumerate(fp.read().splitlines(), start=1):
         stripped = line.strip()
 
         # ignore blank lines
@@ -178,7 +180,7 @@ def read_ini(
     if handle_defaults:
         # merge combined defaults into each section
         sections = [(i, combine_fields(defaults, j)) for i, j in sections]
-    return sections, defaults
+    return sections, defaults, None
 
 
 def combine_fields(global_vars, local_vars):
@@ -193,8 +195,9 @@ def combine_fields(global_vars, local_vars):
     field_patterns = {
         "args": "%s %s",
         "prefs": "%s %s",
-        "skip-if": "%s\n%s",
+        "skip-if": "%s\n%s",  # consider implicit logical OR: "%s ||\n%s"
         "support-files": "%s %s",
+        "tags": "%s %s",
     }
     final_mapping = global_vars.copy()
     for field_name, value in local_vars.items():

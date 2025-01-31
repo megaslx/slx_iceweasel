@@ -100,6 +100,7 @@ Run ``mach bootstrap`` to get an updated clang-cl in your
    export LDFLAGS="clang_rt.asan_dynamic-x86_64.lib clang_rt.asan_dynamic_runtime_thunk-x86_64.lib"
    CLANG_LIB_DIR="$(cd ~/.mozbuild/clang/lib/clang/*/lib/windows && pwd)"
    export MOZ_CLANG_RT_ASAN_LIB_PATH="${CLANG_LIB_DIR}/clang_rt.asan_dynamic-x86_64.dll"
+   export PATH=$CLANG_LIB_DIR:$PATH
 
 If you launch an ASan build under WinDbg, you may see spurious
 first-chance Access Violation exceptions. These come from ASan creating
@@ -152,18 +153,14 @@ content in your mozilla-central directory:
    ac_add_options --disable-elf-hack
 
    # Keep symbols to symbolize ASan traces later
-   export MOZ_DEBUG_SYMBOLS=1
-   ac_add_options --enable-debug-symbols
    ac_add_options --disable-install-strip
 
    # Settings for an opt build (preferred)
    # The -gline-tables-only ensures that all the necessary debug information for ASan
    # is present, but the rest is stripped so the resulting binaries are smaller.
-   ac_add_options --enable-optimize="-O2 -gline-tables-only"
-   ac_add_options --disable-debug
+   ac_add_options --enable-debug-symbols=-gline-tables-only
 
    # Settings for a debug+opt build
-   #ac_add_options --enable-optimize
    #ac_add_options --enable-debug
 
    # MacOSX only: Uncomment and adjust this path to match your SDK

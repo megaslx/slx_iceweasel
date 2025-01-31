@@ -10,6 +10,7 @@
 #include "base/task.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/APZEventState.h"
@@ -49,6 +50,14 @@ ChromeProcessController::ChromeProcessController(
 ChromeProcessController::~ChromeProcessController() = default;
 
 void ChromeProcessController::InitializeRoot() {
+  nsIFrame* widgetFrame = GetWidgetFrame();
+  if (widgetFrame && widgetFrame->IsMenuPopupFrame()) {
+    // For popup window, the menu frame should be the root and have
+    // the display port.
+    APZCCallbackHelper::InitializeRootDisplayport(widgetFrame);
+    return;
+  }
+
   APZCCallbackHelper::InitializeRootDisplayport(GetPresShell());
 }
 
@@ -94,6 +103,9 @@ void ChromeProcessController::Destroy() {
 
   MOZ_ASSERT(mUIThread->IsOnCurrentThread());
   mWidget = nullptr;
+  if (mAPZEventState) {
+    mAPZEventState->Destroy();
+  }
   mAPZEventState = nullptr;
 }
 
@@ -130,7 +142,9 @@ dom::Document* ChromeProcessController::GetRootContentDocument(
 
 void ChromeProcessController::HandleDoubleTap(
     const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
-    const ScrollableLayerGuid& aGuid) {
+    const ScrollableLayerGuid& aGuid,
+    const DoubleTapToZoomMetrics& aDoubleTapToZoomMetrics) {
+  MOZ_LOG(sApzChromeLog, LogLevel::Debug, ("HandleDoubleTap\n"));
   MOZ_ASSERT(mUIThread->IsOnCurrentThread());
 
   RefPtr<dom::Document> document = GetRootContentDocument(aGuid.mScrollId);
@@ -138,32 +152,29 @@ void ChromeProcessController::HandleDoubleTap(
     return;
   }
 
-  ZoomTarget zoomTarget = CalculateRectToZoomTo(document, aPoint);
+  ZoomTarget zoomTarget =
+      CalculateRectToZoomTo(document, aPoint, aDoubleTapToZoomMetrics);
 
-  uint32_t presShellId;
-  ScrollableLayerGuid::ViewID viewId;
-  if (APZCCallbackHelper::GetOrCreateScrollIdentifiers(
-          document->GetDocumentElement(), &presShellId, &viewId)) {
-    mAPZCTreeManager->ZoomToRect(
-        ScrollableLayerGuid(aGuid.mLayersId, presShellId, viewId), zoomTarget,
-        ZoomToRectBehavior::DEFAULT_BEHAVIOR);
-  }
+  mAPZCTreeManager->ZoomToRect(aGuid, zoomTarget,
+                               ZoomToRectBehavior::DEFAULT_BEHAVIOR);
 }
 
 void ChromeProcessController::HandleTap(
     TapType aType, const mozilla::LayoutDevicePoint& aPoint,
     Modifiers aModifiers, const ScrollableLayerGuid& aGuid,
-    uint64_t aInputBlockId) {
+    uint64_t aInputBlockId,
+    const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics) {
   MOZ_LOG(sApzChromeLog, LogLevel::Debug,
           ("HandleTap called with %d\n", (int)aType));
   if (!mUIThread->IsOnCurrentThread()) {
     MOZ_LOG(sApzChromeLog, LogLevel::Debug, ("HandleTap redispatching\n"));
     mUIThread->Dispatch(
         NewRunnableMethod<TapType, mozilla::LayoutDevicePoint, Modifiers,
-                          ScrollableLayerGuid, uint64_t>(
+                          ScrollableLayerGuid, uint64_t,
+                          Maybe<DoubleTapToZoomMetrics>>(
             "layers::ChromeProcessController::HandleTap", this,
             &ChromeProcessController::HandleTap, aType, aPoint, aModifiers,
-            aGuid, aInputBlockId));
+            aGuid, aInputBlockId, aDoubleTapToZoomMetrics));
     return;
   }
 
@@ -190,17 +201,20 @@ void ChromeProcessController::HandleTap(
   InputAPZContext context(aGuid, aInputBlockId, nsEventStatus_eSentinel);
 
   switch (aType) {
-    case TapType::eSingleTap:
-      mAPZEventState->ProcessSingleTap(point, scale, aModifiers, 1,
-                                       aInputBlockId);
+    case TapType::eSingleTap: {
+      RefPtr<APZEventState> eventState(mAPZEventState);
+      eventState->ProcessSingleTap(point, scale, aModifiers, 1, aInputBlockId);
       break;
+    }
     case TapType::eDoubleTap:
-      HandleDoubleTap(point, aModifiers, aGuid);
+      MOZ_ASSERT(aDoubleTapToZoomMetrics);
+      HandleDoubleTap(point, aModifiers, aGuid, *aDoubleTapToZoomMetrics);
       break;
-    case TapType::eSecondTap:
-      mAPZEventState->ProcessSingleTap(point, scale, aModifiers, 2,
-                                       aInputBlockId);
+    case TapType::eSecondTap: {
+      RefPtr<APZEventState> eventState(mAPZEventState);
+      eventState->ProcessSingleTap(point, scale, aModifiers, 2, aInputBlockId);
       break;
+    }
     case TapType::eLongTap: {
       RefPtr<APZEventState> eventState(mAPZEventState);
       eventState->ProcessLongTap(presShell, point, scale, aModifiers,
@@ -353,4 +367,17 @@ void ChromeProcessController::NotifyScaleGestureComplete(
         "layers::ChromeProcessController::NotifyScaleGestureComplete",
         &APZCCallbackHelper::NotifyScaleGestureComplete, mWidget, aScale));
   }
+}
+
+nsIFrame* ChromeProcessController::GetWidgetFrame() const {
+  if (!mWidget) {
+    return nullptr;
+  }
+
+  nsView* view = nsView::GetViewFor(mWidget);
+  if (!view) {
+    return nullptr;
+  }
+
+  return view->GetFrame();
 }

@@ -16,6 +16,7 @@
 
 #include "jsapi.h"
 #include "js/CallAndConstruct.h"  // JS::Call, JS::Construct, JS::IsCallable
+#include "js/ColumnNumber.h"      // JS::ColumnNumberOneOrigin
 #include "js/experimental/TypedData.h"  // JS_GetTypedArrayLength
 #include "js/friend/WindowProxy.h"      // js::IsWindowProxy
 #include "js/friend/XrayJitInfo.h"      // JS::XrayJitInfo
@@ -23,6 +24,7 @@
 #include "js/PropertyAndElement.h"  // JS_AlreadyHasOwnPropertyById, JS_DefineProperty, JS_DefinePropertyById, JS_DeleteProperty, JS_DeletePropertyById, JS_HasProperty, JS_HasPropertyById
 #include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnPropertyDescriptorById, JS_GetPropertyDescriptorById
 #include "js/PropertySpec.h"
+#include "nsGlobalWindowInner.h"
 #include "nsJSUtils.h"
 #include "nsPrintfCString.h"
 
@@ -46,14 +48,22 @@ namespace xpc {
 
 #define Between(x, a, b) (a <= x && x <= b)
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+static_assert(JSProto_URIError - JSProto_Error == 9,
+              "New prototype added in error object range");
+#else
 static_assert(JSProto_URIError - JSProto_Error == 8,
               "New prototype added in error object range");
+#endif
 #define AssertErrorObjectKeyInBounds(key)                      \
   static_assert(Between(key, JSProto_Error, JSProto_URIError), \
                 "We depend on js/ProtoKey.h ordering here");
 MOZ_FOR_EACH(AssertErrorObjectKeyInBounds, (),
              (JSProto_Error, JSProto_InternalError, JSProto_AggregateError,
               JSProto_EvalError, JSProto_RangeError, JSProto_ReferenceError,
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+              JSProto_SuppressedError,
+#endif
               JSProto_SyntaxError, JSProto_TypeError, JSProto_URIError));
 
 static_assert(JSProto_Uint8ClampedArray - JSProto_Int8Array == 8,
@@ -102,6 +112,11 @@ static bool IsJSXraySupported(JSProtoKey key) {
     case JSProto_Set:
     case JSProto_WeakMap:
     case JSProto_WeakSet:
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    case JSProto_SuppressedError:
+    case JSProto_DisposableStack:
+    case JSProto_AsyncDisposableStack:
+#endif
       return true;
     default:
       return false;
@@ -216,14 +231,15 @@ bool ReportWrapperDenial(JSContext* cx, HandleId id, WrapperDenialType type,
     return false;
   }
   AutoFilename filename;
-  unsigned line = 0, column = 0;
-  DescribeScriptedCaller(cx, &filename, &line, &column);
+  uint32_t line = 0;
+  JS::ColumnNumberOneOrigin column;
+  DescribeScriptedCaller(&filename, cx, &line, &column);
 
   // Warn to the terminal for the logs.
   NS_WARNING(
       nsPrintfCString("Silently denied access to property %s: %s (@%s:%u:%u)",
                       NS_LossyConvertUTF16toASCII(propertyName).get(), reason,
-                      filename.get(), line, column)
+                      filename.get(), line, column.oneOriginValue())
           .get());
 
   // If this isn't the first warning on this topic for this global, we've
@@ -267,10 +283,11 @@ bool ReportWrapperDenial(JSContext* cx, HandleId id, WrapperDenialType type,
         "access from a given global object will be reported.",
         NS_LossyConvertUTF16toASCII(propertyName).get());
   }
-  nsString filenameStr(NS_ConvertASCIItoUTF16(filename.get()));
   nsresult rv = errorObject->InitWithWindowID(
-      NS_ConvertASCIItoUTF16(errorMessage.ref()), filenameStr, u""_ns, line,
-      column, nsIScriptError::warningFlag, "XPConnect", windowId);
+      NS_ConvertASCIItoUTF16(errorMessage.ref()),
+      nsDependentCString(filename.get() ? filename.get() : ""), line,
+      column.oneOriginValue(), nsIScriptError::warningFlag, "XPConnect",
+      windowId);
   NS_ENSURE_SUCCESS(rv, true);
   rv = consoleService->LogMessage(errorObject);
   NS_ENSURE_SUCCESS(rv, true);
@@ -576,7 +593,11 @@ bool JSXrayTraits::resolveOwnProperty(
         return true;
       }
       if (id == GetJSIDByIndex(cx, XPCJSContext::IDX_NAME)) {
-        RootedString fname(cx, JS_GetFunctionId(JS_GetObjectFunction(target)));
+        JS::Rooted<JSFunction*> fun(cx, JS_GetObjectFunction(target));
+        JS::Rooted<JSString*> fname(cx);
+        if (!JS_GetFunctionId(cx, fun, &fname)) {
+          return false;
+        }
         if (fname) {
           JS_MarkCrossZoneIdValue(cx, StringValue(fname));
         }
@@ -663,6 +684,20 @@ bool JSXrayTraits::resolveOwnProperty(
       // The optional .cause property can have any value.
       if (id == GetJSIDByIndex(cx, XPCJSContext::IDX_CAUSE)) {
         return getOwnPropertyFromWrapperIfSafe(cx, wrapper, id, desc);
+      }
+#endif
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+      if (key == JSProto_SuppressedError) {
+        // The .suppressed property of SuppressedErrors can have any value.
+        if (id == GetJSIDByIndex(cx, XPCJSContext::IDX_SUPPRESSED)) {
+          return getOwnPropertyFromWrapperIfSafe(cx, wrapper, id, desc);
+        }
+
+        // The .error property of SuppressedErrors can have any value.
+        if (id == GetJSIDByIndex(cx, XPCJSContext::IDX_ERROR)) {
+          return getOwnPropertyFromWrapperIfSafe(cx, wrapper, id, desc);
+        }
       }
 #endif
 
@@ -1201,7 +1236,7 @@ static nsIPrincipal* GetExpandoObjectPrincipal(JSObject* expandoObject) {
   return static_cast<nsIPrincipal*>(v.toPrivate());
 }
 
-static void ExpandoObjectFinalize(JS::GCContext* gcx, JSObject* obj) {
+void ExpandoObjectFinalize(JS::GCContext* gcx, JSObject* obj) {
   // Release the principal.
   nsIPrincipal* principal = GetExpandoObjectPrincipal(obj);
   NS_RELEASE(principal);
@@ -1497,26 +1532,6 @@ bool XrayTraits::cloneExpandoChain(JSContext* cx, HandleObject dst,
   return true;
 }
 
-void ClearXrayExpandoSlots(JSObject* target, size_t slotIndex) {
-  if (!NS_IsMainThread()) {
-    // No Xrays
-    return;
-  }
-
-  MOZ_ASSERT(slotIndex != JSSLOT_EXPANDO_NEXT);
-  MOZ_ASSERT(slotIndex != JSSLOT_EXPANDO_EXCLUSIVE_WRAPPER_HOLDER);
-  MOZ_ASSERT(GetXrayTraits(target) == &DOMXrayTraits::singleton);
-  RootingContext* rootingCx = RootingCx();
-  RootedObject rootedTarget(rootingCx, target);
-  RootedObject head(rootingCx,
-                    DOMXrayTraits::singleton.getExpandoChain(rootedTarget));
-  while (head) {
-    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(JS::GetClass(head)) > slotIndex);
-    JS::SetReservedSlot(head, slotIndex, UndefinedValue());
-    head = JS::GetReservedSlot(head, JSSLOT_EXPANDO_NEXT).toObjectOrNull();
-  }
-}
-
 JSObject* EnsureXrayExpandoObject(JSContext* cx, JS::HandleObject wrapper) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(GetXrayTraits(wrapper) == &DOMXrayTraits::singleton);
@@ -1784,17 +1799,30 @@ bool DOMXrayTraits::call(JSContext* cx, HandleObject wrapper,
                          const JS::CallArgs& args,
                          const js::Wrapper& baseInstance) {
   RootedObject obj(cx, getTargetObject(wrapper));
-  const JSClass* clasp = JS::GetClass(obj);
   // What we have is either a WebIDL interface object, a WebIDL prototype
-  // object, or a WebIDL instance object.  WebIDL prototype objects never have
-  // a clasp->call.  WebIDL interface objects we want to invoke on the xray
-  // compartment.  WebIDL instance objects either don't have a clasp->call or
-  // are using "legacycaller".  At this time for all the legacycaller users it
-  // makes more sense to invoke on the xray compartment, so we just go ahead
-  // and do that for everything.
-  if (JSNative call = clasp->getCall()) {
-    // call it on the Xray compartment
-    return call(cx, args.length(), args.base());
+  // object, or a WebIDL instance object. WebIDL interface objects we want to
+  // invoke on the xray compartment. WebIDL prototype objects never have a
+  // clasp->call. WebIDL instance objects either don't have a clasp->call or are
+  // using "legacycaller". At this time for all the legacycaller users it makes
+  // more sense to invoke on the xray compartment, so we just go ahead and do
+  // that for everything.
+  if (IsDOMConstructor(obj)) {
+    const JSNativeHolder* holder = NativeHolderFromObject(obj);
+    return holder->mNative(cx, args.length(), args.base());
+  }
+
+  if (js::IsProxy(obj)) {
+    if (JS::IsCallable(obj)) {
+      // Passing obj here, but it doesn't really matter because legacycaller
+      // uses args.callee() anyway.
+      return GetProxyHandler(obj)->call(cx, obj, args);
+    }
+  } else {
+    const JSClass* clasp = JS::GetClass(obj);
+    if (JSNative call = clasp->getCall()) {
+      // call it on the Xray compartment
+      return call(cx, args.length(), args.base());
+    }
   }
 
   RootedValue v(cx, ObjectValue(*wrapper));
@@ -1806,20 +1834,21 @@ bool DOMXrayTraits::construct(JSContext* cx, HandleObject wrapper,
                               const JS::CallArgs& args,
                               const js::Wrapper& baseInstance) {
   RootedObject obj(cx, getTargetObject(wrapper));
-  MOZ_ASSERT(mozilla::dom::HasConstructor(obj));
-  const JSClass* clasp = JS::GetClass(obj);
   // See comments in DOMXrayTraits::call() explaining what's going on here.
-  if (clasp->flags & JSCLASS_IS_DOMIFACEANDPROTOJSCLASS) {
-    if (JSNative construct = clasp->getConstruct()) {
-      if (!construct(cx, args.length(), args.base())) {
-        return false;
-      }
-    } else {
+  if (IsDOMConstructor(obj)) {
+    const JSNativeHolder* holder = NativeHolderFromObject(obj);
+    if (!holder->mNative(cx, args.length(), args.base())) {
+      return false;
+    }
+  } else {
+    const JSClass* clasp = JS::GetClass(obj);
+    if (clasp->flags & JSCLASS_IS_DOMIFACEANDPROTOJSCLASS) {
+      MOZ_ASSERT(!clasp->getConstruct());
+
       RootedValue v(cx, ObjectValue(*wrapper));
       js::ReportIsNotFunction(cx, v);
       return false;
     }
-  } else {
     if (!baseInstance.construct(cx, wrapper, args)) {
       return false;
     }
@@ -2311,8 +2340,8 @@ bool XrayWrapper<Base, Traits>::getPropertyKeys(
  */
 
 template <typename Base, typename Traits>
-const xpc::XrayWrapper<Base, Traits> xpc::XrayWrapper<Base, Traits>::singleton(
-    0);
+MOZ_GLOBINIT const xpc::XrayWrapper<Base, Traits>
+    xpc::XrayWrapper<Base, Traits>::singleton(0);
 
 template class PermissiveXrayDOM;
 template class PermissiveXrayJS;

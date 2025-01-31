@@ -210,7 +210,13 @@ void SVGImageElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
                                    bool aNotify) {
   if (aName == nsGkAtoms::href && (aNamespaceID == kNameSpaceID_None ||
                                    aNamespaceID == kNameSpaceID_XLink)) {
-    if (aValue) {
+    if (aNamespaceID == kNameSpaceID_XLink &&
+        mStringAttributes[HREF].IsExplicitlySet()) {
+      // href overrides xlink:href
+      return;
+    }
+    if (aValue || (aNamespaceID == kNameSpaceID_None &&
+                   mStringAttributes[XLINK_HREF].IsExplicitlySet())) {
       if (ShouldLoadImage()) {
         LoadSVGImage(true, aNotify);
       }
@@ -260,14 +266,9 @@ nsresult SVGImageElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return rv;
 }
 
-void SVGImageElement::UnbindFromTree(bool aNullParent) {
-  nsImageLoadingContent::UnbindFromTree(aNullParent);
-  SVGImageElementBase::UnbindFromTree(aNullParent);
-}
-
-ElementState SVGImageElement::IntrinsicState() const {
-  return SVGImageElementBase::IntrinsicState() |
-         nsImageLoadingContent::ImageState();
+void SVGImageElement::UnbindFromTree(UnbindContext& aContext) {
+  nsImageLoadingContent::UnbindFromTree();
+  SVGImageElementBase::UnbindFromTree(aContext);
 }
 
 void SVGImageElement::DestroyContent() {
@@ -302,7 +303,7 @@ bool SVGImageElement::HasValidDimensions() const {
 
 SVGElement::LengthAttributesInfo SVGImageElement::GetLengthInfo() {
   return LengthAttributesInfo(mLengthAttributes, sLengthInfo,
-                              ArrayLength(sLengthInfo));
+                              std::size(sLengthInfo));
 }
 
 SVGAnimatedPreserveAspectRatio*
@@ -312,7 +313,24 @@ SVGImageElement::GetAnimatedPreserveAspectRatio() {
 
 SVGElement::StringAttributesInfo SVGImageElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
+}
+
+void SVGImageElement::DidAnimateAttribute(int32_t aNameSpaceID,
+                                          nsAtom* aAttribute) {
+  if ((aNameSpaceID == kNameSpaceID_None ||
+       aNameSpaceID == kNameSpaceID_XLink) &&
+      aAttribute == nsGkAtoms::href) {
+    bool hrefIsSet =
+        mStringAttributes[SVGImageElement::HREF].IsExplicitlySet() ||
+        mStringAttributes[SVGImageElement::XLINK_HREF].IsExplicitlySet();
+    if (hrefIsSet) {
+      LoadSVGImage(true, true);
+    } else {
+      CancelImageRequests(true);
+    }
+  }
+  SVGImageElementBase::DidAnimateAttribute(aNameSpaceID, aAttribute);
 }
 
 }  // namespace mozilla::dom

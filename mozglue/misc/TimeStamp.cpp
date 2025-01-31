@@ -38,12 +38,12 @@ struct TimeStampInitialization {
     // On Windows < 10, initializing the uptime requires `mFirstTimeStamp` to be
     // valid.
     mozilla::InitializeUptime();
-  };
+  }
 
-  ~TimeStampInitialization() { TimeStamp::Shutdown(); };
+  ~TimeStampInitialization() { TimeStamp::Shutdown(); }
 };
 
-static TimeStampInitialization sInitOnce;
+MOZ_RUNINIT static TimeStampInitialization sInitOnce;
 
 MFBT_API TimeStamp TimeStamp::ProcessCreation() {
   if (sInitOnce.mProcessCreation.IsNull()) {

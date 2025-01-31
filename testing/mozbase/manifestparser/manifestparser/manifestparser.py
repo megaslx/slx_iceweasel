@@ -15,6 +15,7 @@ from io import StringIO
 from .filters import DEFAULT_FILTERS, enabled, filterlist
 from .filters import exists as _exists
 from .ini import read_ini
+from .logger import Logger
 from .toml import read_toml
 
 __all__ = ["ManifestParser", "TestManifest", "convert"]
@@ -53,7 +54,9 @@ class ManifestParser(object):
         rootdir=None,
         finder=None,
         handle_defaults=True,
-        use_toml=False,
+        use_toml=True,
+        document=False,
+        add_line_no=False,
     ):
         """Creates a ManifestParser from the given manifest files.
 
@@ -79,23 +82,23 @@ class ManifestParser(object):
                                 defaults themselves via the manifest_defaults member
                                 variable in this case.
         :param use_toml: If True *.toml configration files will be used iff present in the same location as *.ini files (applies to included files as well). If False only *.ini files will be considered. (defaults to True)
+        :param document: If True *.toml configration will preserve the parsed document from `tomlkit` in self.source_documents[filename] (defaults to False)
+        :param add_line_no: If True, the *.toml configuration will add the line number where the test name appears in the file to the parsed document. Also, the document should be set to True. (defaults to False)
         """
         self._defaults = defaults or {}
         self.tests = []
         self.manifest_defaults = {}
         self.source_files = set()
+        self.source_documents = {}  # source document for each filename (optional)
         self.strict = strict
         self.rootdir = rootdir
         self._root = None
         self.finder = finder
         self._handle_defaults = handle_defaults
         self.use_toml = use_toml
-        component = "manifestparser"
-        import mozlog
-
-        self.logger = mozlog.get_default_logger(component)
-        if self.logger is None:
-            self.logger = mozlog.unstructured.getLogger(component)
+        self.document = document
+        self.add_line_no = add_line_no
+        self.logger = Logger()
         if manifests:
             self.read(*manifests)
 
@@ -177,7 +180,7 @@ class ManifestParser(object):
                     if self.use_toml:
                         include_file = toml_name
                     else:
-                        self.logger.debug(
+                        self.logger.debug_ci(
                             f"NOTE TOML include file present, but not used: {toml_name}"
                         )
             elif file_ext != ".toml":
@@ -196,6 +199,7 @@ class ManifestParser(object):
         # assume we are reading an INI file
         read_fn = read_ini
         fp, filename = self._get_fp_filename(filename)
+        manifest_defaults_filename = filename  # does not change if TOML is present
         if filename is None:
             filename_rel = None
             here = root
@@ -211,28 +215,27 @@ class ManifestParser(object):
                     if self.use_toml:
                         fp, filename = self._get_fp_filename(toml_name)
                         read_fn = read_toml
-                        self.logger.debug(f"Reading TOML: {filename}")
                     else:
-                        self.logger.debug(
+                        self.logger.debug_ci(
                             f"NOTE TOML present, but not used: {toml_name}"
                         )
-                        self.logger.debug(f"Reading INI: {filename}")
-                else:
-                    self.logger.debug(f"Reading INI: {filename}")
             elif file_ext == ".toml":
                 read_fn = read_toml
-                self.logger.debug(f"Reading TOML: {filename}")
             else:
                 raise IOError(f"manfestparser file extension not supported: {filename}")
         defaults["here"] = here
 
         # read the configuration
-        sections, defaults = read_fn(
+        sections, defaults, document = read_fn(
             fp=fp,
             defaults=defaults,
             strict=self.strict,
             handle_defaults=self._handle_defaults,
+            document=self.document,
+            add_line_no=self.add_line_no,
         )
+        if filename is not None:
+            self.source_documents[filename] = document
         if parentmanifest and filename:
             # A manifest can be read multiple times, via "include:", optionally
             # with section-specific variables. These variables only apply to
@@ -244,9 +247,19 @@ class ManifestParser(object):
             #   is True.
             # - Any variables from the "[include:...]" section.
             # - The defaults of the included manifest.
-            self.manifest_defaults[(parentmanifest, filename)] = defaults
+            #
+            # parentmanifest is whatever the value of ancestor_manifest will be,
+            # i.e. a relative path with platform-native separators.
+            # filename is an absolute path with platform-native separators.
+            self.manifest_defaults[(parentmanifest, manifest_defaults_filename)] = (
+                defaults
+            )
+            if manifest_defaults_filename != filename:
+                self.manifest_defaults[(parentmanifest, filename)] = defaults
         else:
-            self.manifest_defaults[filename] = defaults
+            self.manifest_defaults[manifest_defaults_filename] = defaults
+            if manifest_defaults_filename != filename:
+                self.manifest_defaults[filename] = defaults
 
         # get the tests
         for section, data in sections:
@@ -254,7 +267,6 @@ class ManifestParser(object):
             # TODO: keep track of included file structure:
             # self.manifests = {'manifest.ini': 'relative/path.ini'}
             if section.startswith("include:"):
-                self.logger.debug(f"ManifestParser, INCLUDE: {section}")
                 include_file = read_file("include:")
                 if include_file:
                     include_defaults = data.copy()
@@ -832,7 +844,6 @@ class ManifestParser(object):
 
         # walk the directories, generating manifests
         def callback(directory, dirpath, dirnames, filenames):
-
             # absolute paths
             filenames = [os.path.join(dirpath, filename) for filename in filenames]
             # ensure new manifest isn't added
@@ -881,7 +892,13 @@ class TestManifest(ManifestParser):
         self.last_used_filters = []
 
     def active_tests(
-        self, exists=True, disabled=True, filters=None, noDefaultFilters=False, **values
+        self,
+        exists=True,
+        disabled=True,
+        filters=None,
+        noDefaultFilters=False,
+        strictExpressions=False,
+        **values,
     ):
         """
         Run all applied filters on the set of tests.
@@ -918,7 +935,7 @@ class TestManifest(ManifestParser):
 
         self.last_used_filters = fltrs[:]
         for fn in fltrs:
-            tests = fn(tests, values)
+            tests = fn(tests, values, strict=strictExpressions)
         return list(tests)
 
     def test_paths(self):

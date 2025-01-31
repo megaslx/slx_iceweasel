@@ -1,8 +1,4 @@
 //! libc - Raw FFI bindings to platforms' system libraries
-//!
-//! [Documentation for other platforms][pd].
-//!
-//! [pd]: https://rust-lang.github.io/libc/#platform-specific-documentation
 #![crate_name = "libc"]
 #![crate_type = "rlib"]
 #![allow(
@@ -16,6 +12,10 @@
     redundant_semicolons,
     unused_macros,
     unused_macro_rules,
+    // FIXME: temporarily allow dead_code to fix CI:
+    // - https://github.com/rust-lang/libc/issues/3740
+    // - https://github.com/rust-lang/rust/pull/126456
+    dead_code,
 )]
 #![cfg_attr(libc_deny_warnings, deny(warnings))]
 // Attributes needed when building as part of the standard library
@@ -139,6 +139,12 @@ cfg_if! {
 
         mod hermit;
         pub use hermit::*;
+    } else if #[cfg(target_os = "teeos")] {
+        mod fixed_width_ints;
+        pub use fixed_width_ints::*;
+
+        mod teeos;
+        pub use teeos::*;
     } else if #[cfg(all(target_env = "sgx", target_vendor = "fortanix"))] {
         mod fixed_width_ints;
         pub use fixed_width_ints::*;
@@ -151,6 +157,12 @@ cfg_if! {
 
         mod wasi;
         pub use wasi::*;
+    } else if #[cfg(target_os = "xous")] {
+        mod fixed_width_ints;
+        pub use fixed_width_ints::*;
+
+        mod xous;
+        pub use xous::*;
     } else {
         // non-supported targets: empty...
     }

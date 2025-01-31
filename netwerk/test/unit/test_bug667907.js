@@ -9,11 +9,11 @@ var simplePath = "/simple";
 var normalPath = "/normal";
 var httpbody = "<html></html>";
 
-XPCOMUtils.defineLazyGetter(this, "uri1", function () {
+ChromeUtils.defineLazyGetter(this, "uri1", function () {
   return "http://localhost:" + httpserver.identity.primaryPort + simplePath;
 });
 
-XPCOMUtils.defineLazyGetter(this, "uri2", function () {
+ChromeUtils.defineLazyGetter(this, "uri2", function () {
   return "http://localhost:" + httpserver.identity.primaryPort + normalPath;
 });
 
@@ -35,7 +35,7 @@ var listener_proto = {
     request.cancel(Cr.NS_BINDING_ABORTED);
   },
 
-  onDataAvailable(request, stream, offset, count) {
+  onDataAvailable() {
     do_throw("Unexpected onDataAvailable");
   },
 

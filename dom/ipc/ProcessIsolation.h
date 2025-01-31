@@ -12,6 +12,7 @@
 #include "mozilla/Logging.h"
 #include "mozilla/dom/RemoteType.h"
 #include "mozilla/dom/SessionHistoryEntry.h"
+#include "mozilla/dom/WorkerPrivate.h"
 #include "nsString.h"
 #include "nsIPrincipal.h"
 #include "nsIURI.h"
@@ -35,6 +36,7 @@ struct NavigationIsolationOptions {
   nsCString mRemoteType;
   bool mReplaceBrowsingContext = false;
   uint64_t mSpecificGroupId = 0;
+  bool mShouldCrossOriginIsolate = false;
   bool mTryUseBFCache = false;
   RefPtr<SessionHistoryEntry> mActiveSessionHistoryEntry;
 };
@@ -58,6 +60,22 @@ Result<NavigationIsolationOptions, nsresult> IsolationOptionsForNavigation(
     bool aForNewTab, uint32_t aLoadStateLoadType,
     const Maybe<uint64_t>& aChannelId,
     const Maybe<nsCString>& aRemoteTypeOverride);
+
+// WorkerIsolationOptions is passed back to the RemoteWorkerManager to store the
+// destination process information for remote worker loads.
+struct WorkerIsolationOptions {
+  nsCString mRemoteType;
+};
+
+/**
+ * Given a specific worker principal and kind, determines which process the
+ * remote worker load should complete in.
+ *
+ * This method is only intended for use with remote workers.
+ */
+Result<WorkerIsolationOptions, nsresult> IsolationOptionsForWorker(
+    nsIPrincipal* aPrincipal, WorkerKind aWorkerKind,
+    const nsACString& aCurrentRemoteType, bool aUseRemoteSubframes);
 
 /**
  * Adds a `highValue` permission to the permissions database, and make loads of

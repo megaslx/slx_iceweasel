@@ -19,7 +19,7 @@ SVGViewBoxSMILType SVGViewBoxSMILType::sSingleton;
 void SVGViewBoxSMILType::Init(SMILValue& aValue) const {
   MOZ_ASSERT(aValue.IsNull(), "Unexpected value type");
 
-  aValue.mU.mPtr = new SVGViewBox();
+  aValue.mU.mPtr = new SVGViewBox(0.0f, 0.0f, 0.0f, 0.0f);
   aValue.mType = this;
 }
 
@@ -56,11 +56,19 @@ nsresult SVGViewBoxSMILType::Add(SMILValue& aDest, const SMILValue& aValueToAdd,
   MOZ_ASSERT(aValueToAdd.mType == aDest.mType, "Trying to add invalid types");
   MOZ_ASSERT(aValueToAdd.mType == this, "Unexpected source type");
 
-  // See https://bugzilla.mozilla.org/show_bug.cgi?id=541884#c3 and the two
-  // comments that follow that one for arguments for and against allowing
-  // viewBox to be additive.
+  auto* dest = static_cast<SVGViewBox*>(aDest.mU.mPtr);
+  const auto* valueToAdd = static_cast<const SVGViewBox*>(aValueToAdd.mU.mPtr);
 
-  return NS_ERROR_FAILURE;
+  if (dest->none || valueToAdd->none) {
+    return NS_ERROR_FAILURE;
+  }
+
+  dest->x += valueToAdd->x * aCount;
+  dest->y += valueToAdd->y * aCount;
+  dest->width += valueToAdd->width * aCount;
+  dest->height += valueToAdd->height * aCount;
+
+  return NS_OK;
 }
 
 nsresult SVGViewBoxSMILType::ComputeDistance(const SMILValue& aFrom,
@@ -82,10 +90,10 @@ nsresult SVGViewBoxSMILType::ComputeDistance(const SMILValue& aFrom,
   // given change in the left side as it is for an equal change in the opposite
   // side. See https://bugzilla.mozilla.org/show_bug.cgi?id=541884#c12
 
-  float dLeft = to->x - from->x;
-  float dTop = to->y - from->y;
-  float dRight = (to->x + to->width) - (from->x + from->width);
-  float dBottom = (to->y + to->height) - (from->y + from->height);
+  double dLeft = to->x - from->x;
+  double dTop = to->y - from->y;
+  double dRight = (to->x + to->width) - (from->x + from->width);
+  double dBottom = (to->y + to->height) - (from->y + from->height);
 
   aDistance = std::sqrt(dLeft * dLeft + dTop * dTop + dRight * dRight +
                         dBottom * dBottom);

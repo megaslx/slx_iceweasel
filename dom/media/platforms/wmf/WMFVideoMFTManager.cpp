@@ -6,8 +6,8 @@
 
 #include "WMFVideoMFTManager.h"
 
+#include <cguid.h>
 #include <psapi.h>
-#include <winsdkver.h>
 #include <algorithm>
 #include "DXVA2Manager.h"
 #include "GMPUtils.h"  // For SplitAt. TODO: Move SplitAt to a central place.
@@ -36,50 +36,13 @@
 #include "nsWindowsHelpers.h"
 
 #define LOG(...) MOZ_LOG(sPDMLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#define LOGV(...) MOZ_LOG(sPDMLog, mozilla::LogLevel::Verbose, (__VA_ARGS__))
 
 using mozilla::layers::Image;
 using mozilla::layers::IMFYCbCrImage;
 using mozilla::layers::LayerManager;
 using mozilla::layers::LayersBackend;
 using mozilla::media::TimeUnit;
-
-#if WINVER_MAXVER < 0x0A00
-// Windows 10+ SDK has VP80 and VP90 defines
-const GUID MFVideoFormat_VP80 = {
-    0x30385056,
-    0x0000,
-    0x0010,
-    {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-
-const GUID MFVideoFormat_VP90 = {
-    0x30395056,
-    0x0000,
-    0x0010,
-    {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-#endif
-
-#if !defined(__MINGW32__) && _WIN32_WINNT < _WIN32_WINNT_WIN8
-const GUID MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT = {
-    0x851745d5,
-    0xc3d6,
-    0x476d,
-    {0x95, 0x27, 0x49, 0x8e, 0xf2, 0xd1, 0xd, 0x18}};
-const GUID MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT_PROGRESSIVE = {
-    0xf5523a5,
-    0x1cb2,
-    0x47c5,
-    {0xa5, 0x50, 0x2e, 0xeb, 0x84, 0xb4, 0xd1, 0x4a}};
-const GUID MF_SA_D3D11_BINDFLAGS = {
-    0xeacf97ad,
-    0x065c,
-    0x4408,
-    {0xbe, 0xe3, 0xfd, 0xcb, 0xfd, 0x12, 0x8b, 0xe2}};
-const GUID MF_SA_D3D11_SHARED_WITHOUT_MUTEX = {
-    0x39dbd44d,
-    0x2e44,
-    0x4931,
-    {0xa4, 0xc8, 0x35, 0x2d, 0x3d, 0xc4, 0x21, 0x15}};
-#endif
 
 namespace mozilla {
 
@@ -104,6 +67,7 @@ WMFVideoMFTManager::WMFVideoMFTManager(
       mVideoStride(0),
       mColorSpace(aConfig.mColorSpace),
       mColorRange(aConfig.mColorRange),
+      mColorDepth(aConfig.mColorDepth),
       mImageContainer(aImageContainer),
       mKnowsCompositor(aKnowsCompositor),
       mDXVAEnabled(aDXVAEnabled &&
@@ -112,6 +76,8 @@ WMFVideoMFTManager::WMFVideoMFTManager(
       mZeroCopyNV12Texture(false),
       mFramerate(aFramerate),
       mLowLatency(aOptions.contains(CreateDecoderParams::Option::LowLatency)),
+      mKeepOriginalPts(
+          aOptions.contains(CreateDecoderParams::Option::KeepOriginalPts)),
       mTrackingId(std::move(aTrackingId))
 // mVideoStride, mVideoWidth, mVideoHeight, mUseHwAccel are initialized in
 // Init().
@@ -142,6 +108,8 @@ const GUID& WMFVideoMFTManager::GetMediaSubtypeGUID() {
       return MFVideoFormat_VP90;
     case WMFStreamType::AV1:
       return MFVideoFormat_AV1;
+    case WMFStreamType::HEVC:
+      return MFVideoFormat_HEVC;
     default:
       return GUID_NULL;
   };
@@ -183,17 +151,6 @@ bool WMFVideoMFTManager::InitializeDXVA() {
     if (mDXVA2Manager) {
       return true;
     }
-  }
-
-  // Try again with d3d9, but record the failure reason
-  // into a new var to avoid overwriting the d3d11 failure.
-  nsAutoCString d3d9Failure;
-  mDXVA2Manager.reset(
-      DXVA2Manager::CreateD3D9DXVA(mKnowsCompositor, d3d9Failure));
-  // Make sure we include the messages from both attempts (if applicable).
-  if (!d3d9Failure.IsEmpty()) {
-    mDXVAFailureReason.AppendLiteral("; D3D9: ");
-    mDXVAFailureReason.Append(d3d9Failure);
   }
 
   return mDXVA2Manager != nullptr;
@@ -243,11 +200,7 @@ MediaResult WMFVideoMFTManager::Init() {
   if (NS_SUCCEEDED(result) && mDXVA2Manager) {
     // If we had some failures but eventually made it work,
     // make sure we preserve the messages.
-    if (mDXVA2Manager->IsD3D11()) {
-      mDXVAFailureReason.AppendLiteral("Using D3D11 API");
-    } else {
-      mDXVAFailureReason.AppendLiteral("Using D3D9 API");
-    }
+    mDXVAFailureReason.AppendLiteral("Using D3D11 API");
   }
 
   return result;
@@ -263,8 +216,8 @@ MediaResult WMFVideoMFTManager::InitInternal() {
   bool useDxva = true;
 
   if (mStreamType == WMFStreamType::H264 &&
-      (mVideoInfo.ImageRect().width <= MIN_H264_HW_WIDTH ||
-       mVideoInfo.ImageRect().height <= MIN_H264_HW_HEIGHT)) {
+      (mVideoInfo.ImageRect().width < MIN_H264_HW_WIDTH ||
+       mVideoInfo.ImageRect().height < MIN_H264_HW_HEIGHT)) {
     useDxva = false;
     mDXVAFailureReason = nsPrintfCString(
         "H264 video resolution too low: %" PRIu32 "x%" PRIu32,
@@ -276,10 +229,10 @@ MediaResult WMFVideoMFTManager::InitInternal() {
   }
 
   RefPtr<MFTDecoder> decoder = new MFTDecoder();
-  HRESULT hr = WMFDecoderModule::CreateMFTDecoder(mStreamType, decoder);
-  NS_ENSURE_TRUE(SUCCEEDED(hr),
-                 MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                             RESULT_DETAIL("Can't create the MFT decoder.")));
+  RETURN_PARAM_IF_FAILED(
+      WMFDecoderModule::CreateMFTDecoder(mStreamType, decoder),
+      MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
+                  RESULT_DETAIL("Can't create the MFT decoder.")));
 
   RefPtr<IMFAttributes> attr(decoder->GetAttributes());
   UINT32 aware = 0;
@@ -289,7 +242,7 @@ MediaResult WMFVideoMFTManager::InitInternal() {
                     WMFDecoderModule::GetNumDecoderThreads());
     bool lowLatency = StaticPrefs::media_wmf_low_latency_enabled();
     if (mLowLatency || lowLatency) {
-      hr = attr->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE);
+      HRESULT hr = attr->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE);
       if (SUCCEEDED(hr)) {
         LOG("Enabling Low Latency Mode");
       } else {
@@ -321,7 +274,8 @@ MediaResult WMFVideoMFTManager::InitInternal() {
       // NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
       MOZ_ASSERT(mDXVA2Manager);
       ULONG_PTR manager = ULONG_PTR(mDXVA2Manager->GetDXVADeviceManager());
-      hr = decoder->SendMFTMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager);
+      HRESULT hr =
+          decoder->SendMFTMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager);
       if (SUCCEEDED(hr)) {
         mUseHwAccel = true;
       } else {
@@ -349,7 +303,8 @@ MediaResult WMFVideoMFTManager::InitInternal() {
     }
     if (mStreamType == WMFStreamType::VP9 ||
         mStreamType == WMFStreamType::VP8 ||
-        mStreamType == WMFStreamType::AV1) {
+        mStreamType == WMFStreamType::AV1 ||
+        mStreamType == WMFStreamType::HEVC) {
       return MediaResult(
           NS_ERROR_DOM_MEDIA_FATAL_ERR,
           RESULT_DETAIL("Use VP8/VP9/AV1 MFT only if HW acceleration "
@@ -359,26 +314,27 @@ MediaResult WMFVideoMFTManager::InitInternal() {
                           uint32_t(media::MediaDecoderBackend::WMFSoftware));
   }
 
+  LOG("Created a video decoder, useDxva=%s, streamType=%s, outputSubType=%s",
+      mUseHwAccel ? "Yes" : "No", EnumValueToString(mStreamType),
+      GetSubTypeStr(GetOutputSubtype()).get());
+
   mDecoder = decoder;
-  hr = SetDecoderMediaTypes();
-  NS_ENSURE_TRUE(
-      SUCCEEDED(hr),
+  RETURN_PARAM_IF_FAILED(
+      SetDecoderMediaTypes(),
       MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                  RESULT_DETAIL("Fail to set the decoder media types.")));
+                  RESULT_DETAIL("Fail to set the decoder media types")));
 
   RefPtr<IMFMediaType> inputType;
-  hr = mDecoder->GetInputMediaType(inputType);
-  NS_ENSURE_TRUE(
-      SUCCEEDED(hr),
+  RETURN_PARAM_IF_FAILED(
+      mDecoder->GetInputMediaType(inputType),
       MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                  RESULT_DETAIL("Fail to get the input media type.")));
+                  RESULT_DETAIL("Fail to get the input media type")));
 
   RefPtr<IMFMediaType> outputType;
-  hr = mDecoder->GetOutputMediaType(outputType);
-  NS_ENSURE_TRUE(
-      SUCCEEDED(hr),
+  RETURN_PARAM_IF_FAILED(
+      mDecoder->GetOutputMediaType(outputType),
       MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                  RESULT_DETAIL("Fail to get the output media type.")));
+                  RESULT_DETAIL("Fail to get the output media type")));
 
   if (mUseHwAccel && !CanUseDXVA(inputType, outputType)) {
     LOG("DXVA manager determined that the input type was unsupported in "
@@ -393,16 +349,16 @@ MediaResult WMFVideoMFTManager::InitInternal() {
       (mUseHwAccel ? "Yes" : "No"));
 
   if (mUseHwAccel) {
-    hr = mDXVA2Manager->ConfigureForSize(
-        outputType,
-        mColorSpace.refOr(
-            DefaultColorSpace({mImageSize.width, mImageSize.height})),
-        mColorRange, mVideoInfo.ImageRect().width,
-        mVideoInfo.ImageRect().height);
-    NS_ENSURE_TRUE(SUCCEEDED(hr),
-                   MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                               RESULT_DETAIL("Fail to configure image size for "
-                                             "DXVA2Manager.")));
+    RETURN_PARAM_IF_FAILED(
+        mDXVA2Manager->ConfigureForSize(
+            outputType,
+            mColorSpace.refOr(
+                DefaultColorSpace({mImageSize.width, mImageSize.height})),
+            mColorRange, mColorDepth, mVideoInfo.ImageRect().width,
+            mVideoInfo.ImageRect().height),
+        MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
+                    RESULT_DETAIL("Fail to configure image size for "
+                                  "DXVA2Manager.")));
   } else {
     GetDefaultStride(outputType, mVideoInfo.ImageRect().width, &mVideoStride);
   }
@@ -425,77 +381,45 @@ HRESULT
 WMFVideoMFTManager::SetDecoderMediaTypes() {
   // Setup the input/output media types.
   RefPtr<IMFMediaType> inputType;
-  HRESULT hr = wmf::MFCreateMediaType(getter_AddRefs(inputType));
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = inputType->SetGUID(MF_MT_SUBTYPE, GetMediaSubtypeGUID());
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = inputType->SetUINT32(MF_MT_INTERLACE_MODE,
-                            MFVideoInterlace_MixedInterlaceOrProgressive);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = inputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = MFSetAttributeSize(inputType, MF_MT_FRAME_SIZE,
-                          mVideoInfo.ImageRect().width,
-                          mVideoInfo.ImageRect().height);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
+  RETURN_IF_FAILED(wmf::MFCreateMediaType(getter_AddRefs(inputType)));
+  RETURN_IF_FAILED(inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+  RETURN_IF_FAILED(inputType->SetGUID(MF_MT_SUBTYPE, GetMediaSubtypeGUID()));
+  RETURN_IF_FAILED(inputType->SetUINT32(
+      MF_MT_INTERLACE_MODE, MFVideoInterlace_MixedInterlaceOrProgressive));
+  RETURN_IF_FAILED(
+      inputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
+  RETURN_IF_FAILED(MFSetAttributeSize(inputType, MF_MT_FRAME_SIZE,
+                                      mVideoInfo.ImageRect().width,
+                                      mVideoInfo.ImageRect().height));
   UINT32 fpsDenominator = 1000;
   UINT32 fpsNumerator = static_cast<uint32_t>(mFramerate * fpsDenominator);
-  hr = MFSetAttributeRatio(inputType, MF_MT_FRAME_RATE, fpsNumerator,
-                           fpsDenominator);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
+  if (fpsNumerator > 0) {
+    RETURN_IF_FAILED(MFSetAttributeRatio(inputType, MF_MT_FRAME_RATE,
+                                         fpsNumerator, fpsDenominator));
+  }
 
   RefPtr<IMFMediaType> outputType;
-  hr = wmf::MFCreateMediaType(getter_AddRefs(outputType));
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
+  RETURN_IF_FAILED(wmf::MFCreateMediaType(getter_AddRefs(outputType)));
+  RETURN_IF_FAILED(outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+  RETURN_IF_FAILED(MFSetAttributeSize(outputType, MF_MT_FRAME_SIZE,
+                                      mVideoInfo.ImageRect().width,
+                                      mVideoInfo.ImageRect().height));
+  if (fpsNumerator > 0) {
+    RETURN_IF_FAILED(MFSetAttributeRatio(outputType, MF_MT_FRAME_RATE,
+                                         fpsNumerator, fpsDenominator));
+  }
 
-  hr = outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = MFSetAttributeSize(outputType, MF_MT_FRAME_SIZE,
-                          mVideoInfo.ImageRect().width,
-                          mVideoInfo.ImageRect().height);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  hr = MFSetAttributeRatio(outputType, MF_MT_FRAME_RATE, fpsNumerator,
-                           fpsDenominator);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-  GUID outputSubType = [&]() {
-    switch (mVideoInfo.mColorDepth) {
-      case gfx::ColorDepth::COLOR_8:
-        return mUseHwAccel ? MFVideoFormat_NV12 : MFVideoFormat_YV12;
-      case gfx::ColorDepth::COLOR_10:
-        return MFVideoFormat_P010;
-      case gfx::ColorDepth::COLOR_12:
-      case gfx::ColorDepth::COLOR_16:
-        return MFVideoFormat_P016;
-      default:
-        MOZ_ASSERT_UNREACHABLE("Unexpected color depth");
-    }
-  }();
-  hr = outputType->SetGUID(MF_MT_SUBTYPE, outputSubType);
-  NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
+  RETURN_IF_FAILED(outputType->SetGUID(MF_MT_SUBTYPE, GetOutputSubtype()));
 
   if (mZeroCopyNV12Texture) {
     RefPtr<IMFAttributes> attr(mDecoder->GetOutputStreamAttributes());
     if (attr) {
-      hr = attr->SetUINT32(MF_SA_D3D11_SHARED_WITHOUT_MUTEX, TRUE);
-      NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
-
-      hr = attr->SetUINT32(MF_SA_D3D11_BINDFLAGS,
-                           D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER);
-      NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
+      RETURN_IF_FAILED(attr->SetUINT32(MF_SA_D3D11_SHARED_WITHOUT_MUTEX, TRUE));
+      RETURN_IF_FAILED(
+          attr->SetUINT32(MF_SA_D3D11_BINDFLAGS,
+                          D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER));
     }
   }
-
   return mDecoder->SetMediaTypes(inputType, outputType);
 }
 
@@ -529,6 +453,9 @@ WMFVideoMFTManager::Input(MediaRawData* aSample) {
       case WMFStreamType::AV1:
         flag |= MediaInfoFlag::VIDEO_AV1;
         break;
+      case WMFStreamType::HEVC:
+        flag |= MediaInfoFlag::VIDEO_HEVC;
+        break;
       default:
         break;
     };
@@ -542,6 +469,8 @@ WMFVideoMFTManager::Input(MediaRawData* aSample) {
       aSample->mTime.ToMicroseconds(), aSample->mDuration.ToMicroseconds(),
       &inputSample);
   NS_ENSURE_TRUE(SUCCEEDED(hr) && inputSample != nullptr, hr);
+  LOGV("WMFVIdeoMFTManager(%p)::Input: %s", this,
+       aSample->mDuration.ToString().get());
 
   if (!mColorSpace && aSample->mTrackInfo) {
     // The colorspace definition is found in the H264 SPS NAL, available out of
@@ -551,6 +480,10 @@ WMFVideoMFTManager::Input(MediaRawData* aSample) {
     mColorRange = aSample->mTrackInfo->GetAsVideoInfo()->mColorRange;
   }
   mLastDuration = aSample->mDuration;
+
+  if (mKeepOriginalPts) {
+    mPTSQueue.InsertElementSorted(aSample->mTime.ToMicroseconds());
+  }
 
   // Forward sample data to the decoder.
   return mDecoder->Input(inputSample);
@@ -710,7 +643,10 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
   b.mColorRange = mColorRange;
 
   TimeUnit pts = GetSampleTime(aSample);
-  NS_ENSURE_TRUE(pts.IsValid(), E_FAIL);
+  if (!pts.IsValid() && mKeepOriginalPts) {
+    LOG("Couldn't get pts from IMFSample, falling back on container pts");
+    pts = TimeUnit::Zero();
+  }
   TimeUnit duration = GetSampleDurationOrLastKnownDuration(aSample);
   NS_ENSURE_TRUE(duration.IsValid(), E_FAIL);
   gfx::IntRect pictureRegion = mVideoInfo.ScaledImageRect(
@@ -718,9 +654,11 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
 
   if (colorDepth != gfx::ColorDepth::COLOR_8 || !mKnowsCompositor ||
       !mKnowsCompositor->SupportsD3D11() || !mIMFUsable) {
-    RefPtr<VideoData> v = VideoData::CreateAndCopyData(
-        mVideoInfo, mImageContainer, aStreamOffset, pts, duration, b, false,
-        TimeUnit::FromMicroseconds(-1), pictureRegion, mKnowsCompositor);
+    Result<already_AddRefed<VideoData>, MediaResult> r =
+        VideoData::CreateAndCopyData(
+            mVideoInfo, mImageContainer, aStreamOffset, pts, duration, b, false,
+            TimeUnit::FromMicroseconds(-1), pictureRegion, mKnowsCompositor);
+    RefPtr<VideoData> v = r.unwrapOr(nullptr);
     if (twoDBuffer) {
       twoDBuffer->Unlock2D();
     } else {
@@ -753,6 +691,8 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
       aStage.SetImageFormat(DecodeStage::P016);
     }
     aStage.SetResolution(videoWidth, videoHeight);
+    aStage.SetStartTimeAndEndTime(v->mTime.ToMicroseconds(),
+                                  v->GetEndTime().ToMicroseconds());
   });
 
   v.forget(aOutVideoData);
@@ -787,6 +727,10 @@ WMFVideoMFTManager::CreateD3DVideoFrame(IMFSample* aSample,
   gfx::IntSize size = image->GetSize();
 
   TimeUnit pts = GetSampleTime(aSample);
+  if (!pts.IsValid() && mKeepOriginalPts) {
+    LOG("Couldn't get pts from IMFSample, falling back on container pts");
+    pts = TimeUnit::Zero();
+  }
   NS_ENSURE_TRUE(pts.IsValid(), E_FAIL);
   TimeUnit duration = GetSampleDurationOrLastKnownDuration(aSample);
   NS_ENSURE_TRUE(duration.IsValid(), E_FAIL);
@@ -795,7 +739,6 @@ WMFVideoMFTManager::CreateD3DVideoFrame(IMFSample* aSample,
       TimeUnit::FromMicroseconds(-1));
 
   NS_ENSURE_TRUE(v, E_FAIL);
-  v.forget(aOutVideoData);
 
   mPerformanceRecorder.Record(pts.ToMicroseconds(), [&](DecodeStage& aStage) {
     aStage.SetColorDepth(mVideoInfo.mColorDepth);
@@ -813,8 +756,11 @@ WMFVideoMFTManager::CreateD3DVideoFrame(IMFSample* aSample,
       aStage.SetImageFormat(DecodeStage::P016);
     }
     aStage.SetResolution(size.width, size.height);
+    aStage.SetStartTimeAndEndTime(v->mTime.ToMicroseconds(),
+                                  v->GetEndTime().ToMicroseconds());
   });
 
+  v.forget(aOutVideoData);
   return S_OK;
 }
 
@@ -831,10 +777,12 @@ WMFVideoMFTManager::Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutData) {
   while (true) {
     hr = mDecoder->Output(&sample);
     if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+      LOGV("WMFVideoMFTManager(%p)::Output: need more input", this);
       return MF_E_TRANSFORM_NEED_MORE_INPUT;
     }
 
     if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+      LOGV("WMFVideoMFTManager(%p)::Output: transform stream change", this);
       MOZ_ASSERT(!sample);
       // Video stream output type change, probably geometric aperture change or
       // pixel type.
@@ -863,7 +811,7 @@ WMFVideoMFTManager::Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutData) {
             outputType,
             mColorSpace.refOr(
                 DefaultColorSpace({mImageSize.width, mImageSize.height})),
-            mColorRange, mVideoInfo.ImageRect().width,
+            mColorRange, mColorDepth, mVideoInfo.ImageRect().width,
             mVideoInfo.ImageRect().height);
         NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
       } else {
@@ -917,6 +865,11 @@ WMFVideoMFTManager::Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutData) {
         continue;
       }
       TimeUnit pts = GetSampleTime(sample);
+      if (!pts.IsValid() && mKeepOriginalPts) {
+        LOG("Couldn't get pts from IMFSample, falling back on container pts");
+        pts = TimeUnit::Zero();
+      }
+      LOG("WMFVIdeoMFTManager(%p)::Output: %s", this, pts.ToString().get());
       TimeUnit duration = GetSampleDurationOrLastKnownDuration(sample);
 
       // AV1 MFT fix: Sample duration after seeking is always equal to the
@@ -963,6 +916,15 @@ WMFVideoMFTManager::Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutData) {
   MOZ_ASSERT((frame != nullptr) == SUCCEEDED(hr));
   NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
   NS_ENSURE_TRUE(frame, E_FAIL);
+
+  if (mKeepOriginalPts) {
+    MOZ_ASSERT(!mPTSQueue.IsEmpty());
+    int64_t originalPts = mPTSQueue[0];
+    mPTSQueue.RemoveElementAt(0);
+    LOG("Overriding decoded pts of %s with original pts of %" PRId64,
+        frame->mTime.ToString().get(), originalPts);
+    frame->mTime = TimeUnit::FromMicroseconds(originalPts);
+  }
 
   aOutData = frame;
 
@@ -1029,14 +991,11 @@ nsCString WMFVideoMFTManager::GetDescriptionName() const {
     if (!mDXVA2Manager) {
       return "no DXVA";
     }
-    if (mDXVA2Manager->IsD3D11()) {
-      return "D3D11";
-    }
-    return "D3D9";
+    return "D3D11";
   }();
 
   return nsPrintfCString("wmf %s codec %s video decoder - %s, %s",
-                         StreamTypeToString(mStreamType),
+                         EnumValueToString(mStreamType),
                          hw ? "hardware" : "software", dxvaName, formatName);
 }
 nsCString WMFVideoMFTManager::GetCodecName() const {
@@ -1049,9 +1008,34 @@ nsCString WMFVideoMFTManager::GetCodecName() const {
       return "vp9"_ns;
     case WMFStreamType::AV1:
       return "av1"_ns;
+    case WMFStreamType::HEVC:
+      return "hevc"_ns;
     default:
       return "unknown"_ns;
   };
+}
+
+bool WMFVideoMFTManager::UseZeroCopyVideoFrame() const {
+  if (mZeroCopyNV12Texture && mDXVA2Manager &&
+      mDXVA2Manager->SupportsZeroCopyNV12Texture()) {
+    return true;
+  }
+  return false;
+}
+
+GUID WMFVideoMFTManager::GetOutputSubtype() const {
+  switch (mVideoInfo.mColorDepth) {
+    case gfx::ColorDepth::COLOR_8:
+      return mUseHwAccel ? MFVideoFormat_NV12 : MFVideoFormat_YV12;
+    case gfx::ColorDepth::COLOR_10:
+      return MFVideoFormat_P010;
+    case gfx::ColorDepth::COLOR_12:
+    case gfx::ColorDepth::COLOR_16:
+      return MFVideoFormat_P016;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Unexpected color depth");
+      return GUID_NULL;
+  }
 }
 
 }  // namespace mozilla

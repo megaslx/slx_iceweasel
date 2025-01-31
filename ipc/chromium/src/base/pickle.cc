@@ -96,6 +96,7 @@ void PickleIterator::CopyInto(T* dest) {
          (MOZ_ALIGNOF(T) <=
           sizeof(Pickle::memberAlignmentType))>::Copy(dest, iter_.Data());
 }
+template void PickleIterator::CopyInto<char>(char*);
 
 bool Pickle::IteratorHasRoomFor(const PickleIterator& iter,
                                 uint32_t len) const {
@@ -455,8 +456,10 @@ bool Pickle::WriteBytesZeroCopy(void* data, uint32_t data_len,
     data = realloc(data, new_capacity);
   }
 #endif
-  buffers_.WriteBytesZeroCopy(reinterpret_cast<char*>(data), data_len,
-                              new_capacity);
+
+  // Shouldn't fail, because we're using InfallibleAllocPolicy.
+  MOZ_ALWAYS_TRUE(buffers_.WriteBytesZeroCopy(reinterpret_cast<char*>(data),
+                                              data_len, new_capacity));
 
   EndWrite(data_len);
   return true;

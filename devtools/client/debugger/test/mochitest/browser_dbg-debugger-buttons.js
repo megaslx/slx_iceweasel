@@ -16,9 +16,9 @@
 add_task(async function () {
   const dbg = await initDebugger("doc-debugger-statements.html");
 
-  const onReloaded = reload(dbg, "doc-debugger-statements.html");
+  let onReloaded = reload(dbg, "doc-debugger-statements.html");
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     11
@@ -27,7 +27,7 @@ add_task(async function () {
   info("resume");
   await clickResume(dbg);
   await waitForPaused(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     16
@@ -35,7 +35,7 @@ add_task(async function () {
 
   info("step over");
   await clickStepOver(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     17
@@ -43,7 +43,7 @@ add_task(async function () {
 
   info("step into");
   await clickStepIn(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     22
@@ -51,7 +51,7 @@ add_task(async function () {
 
   info("step over");
   await clickStepOver(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     24
@@ -59,7 +59,7 @@ add_task(async function () {
 
   info("step out");
   await clickStepOut(dbg);
-  assertPausedAtSourceAndLine(
+  await assertPausedAtSourceAndLine(
     dbg,
     findSource(dbg, "doc-debugger-statements.html").id,
     18
@@ -68,6 +68,33 @@ add_task(async function () {
   await resume(dbg);
 
   info("Wait for reload to complete after resume");
+  await onReloaded;
+
+  info("Toggle debugger statement off");
+  const toggleCheckbox = findElementWithSelector(
+    dbg,
+    ".breakpoints-debugger-statement input"
+  );
+  toggleCheckbox.click();
+  await waitFor(() => !toggleCheckbox.checked);
+
+  await reload(dbg, "doc-debugger-statements.html");
+  assertNotPaused(dbg);
+
+  info("Re-enable debugger statement");
+  toggleCheckbox.click();
+  await waitFor(() => toggleCheckbox.checked);
+
+  onReloaded = reload(dbg, "doc-debugger-statements.html");
+  await waitForPaused(dbg);
+  await assertPausedAtSourceAndLine(
+    dbg,
+    findSource(dbg, "doc-debugger-statements.html").id,
+    11
+  );
+  await resume(dbg);
+  await waitForPaused(dbg);
+  await resume(dbg);
   await onReloaded;
 });
 

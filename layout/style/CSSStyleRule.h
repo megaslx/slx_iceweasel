@@ -9,8 +9,6 @@
 
 #include "mozilla/css/GroupRule.h"
 #include "mozilla/ServoBindingTypes.h"
-#include "mozilla/NotNull.h"
-#include "mozilla/WeakPtr.h"
 
 #include "nsDOMCSSDeclaration.h"
 
@@ -21,6 +19,7 @@ class DeclarationBlock;
 namespace dom {
 class DocGroup;
 class CSSStyleRule;
+struct SelectorWarning;
 
 class CSSStyleRuleDeclaration final : public nsDOMCSSDeclaration {
  public:
@@ -31,11 +30,10 @@ class CSSStyleRuleDeclaration final : public nsDOMCSSDeclaration {
   nsISupports* GetParentObject() const final;
 
  protected:
-  mozilla::DeclarationBlock* GetOrCreateCSSDeclaration(
-      Operation aOperation, mozilla::DeclarationBlock** aCreated) final;
+  DeclarationBlock* GetOrCreateCSSDeclaration(
+      Operation aOperation, DeclarationBlock** aCreated) final;
   nsresult SetCSSDeclaration(DeclarationBlock* aDecl,
                              MutationClosureData* aClosureData) final;
-  Document* DocToUpdate() final;
   ParsingEnvironment GetParsingEnvironment(
       nsIPrincipal* aSubjectPrincipal) const final;
 
@@ -55,7 +53,7 @@ class CSSStyleRuleDeclaration final : public nsDOMCSSDeclaration {
   RefPtr<DeclarationBlock> mDecls;
 };
 
-class CSSStyleRule final : public css::GroupRule, public SupportsWeakPtr {
+class CSSStyleRule final : public css::GroupRule {
  public:
   CSSStyleRule(already_AddRefed<StyleLockedStyleRule> aRawRule,
                StyleSheet* aSheet, css::Rule* aParentRule, uint32_t aLine,
@@ -74,15 +72,18 @@ class CSSStyleRule final : public css::GroupRule, public SupportsWeakPtr {
                               const nsAString& aPseudo,
                               bool aRelevantLinkVisited);
   NotNull<DeclarationBlock*> GetDeclarationBlock() const;
+  void GetSelectorWarnings(nsTArray<SelectorWarning>& aResult) const;
+  already_AddRefed<nsINodeList> QuerySelectorAll(nsINode& aRoot);
 
   // WebIDL interface
   StyleCssRuleType Type() const final;
   void GetCssText(nsACString& aCssText) const final;
   void GetSelectorText(nsACString& aSelectorText);
   void SetSelectorText(const nsACString& aSelectorText);
-  nsICSSDeclaration* Style();
+  nsICSSDeclaration* Style() { return &mDecls; }
 
   StyleLockedStyleRule* Raw() const { return mRawRule; }
+  StyleLockedDeclarationBlock* RawStyle() const;
   void SetRawAfterClone(RefPtr<StyleLockedStyleRule>);
   already_AddRefed<StyleLockedCssRules> GetOrCreateRawRules() final;
 

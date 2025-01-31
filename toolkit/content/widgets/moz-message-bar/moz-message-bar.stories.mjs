@@ -1,7 +1,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-/* eslint-disable import/no-unassigned-import */
 
 import { html, ifDefined } from "../vendor/lit.all.mjs";
 import "./moz-message-bar.mjs";
@@ -9,11 +8,12 @@ import "../moz-support-link/moz-support-link.mjs";
 
 const fluentStrings = [
   "moz-message-bar-message",
-  "moz-message-bar-message-header",
+  "moz-message-bar-message-heading",
+  "moz-message-bar-message-heading-long",
 ];
 
 export default {
-  title: "UI Widgets/Moz Message Bar",
+  title: "UI Widgets/Message Bar",
   component: "moz-message-bar",
   argTypes: {
     type: {
@@ -21,10 +21,10 @@ export default {
       control: { type: "select" },
     },
     l10nId: {
-      options: [fluentStrings[0], fluentStrings[1]],
+      options: fluentStrings,
       control: { type: "select" },
     },
-    header: {
+    heading: {
       table: {
         disable: true,
       },
@@ -36,13 +36,16 @@ export default {
     },
   },
   parameters: {
-    status: "unstable",
+    status: "stable",
     fluent: `
 moz-message-bar-message =
   .message = For your information message
-moz-message-bar-message-header =
-  .header = Header
+moz-message-bar-message-heading =
+  .heading = Heading
   .message = For your information message
+moz-message-bar-message-heading-long =
+  .heading = A longer heading to check text wrapping in the message bar
+  .message = Some message that we use to check text wrapping. Some message that we use to check text wrapping.
 moz-message-bar-button = Click me!
     `,
   },
@@ -50,7 +53,7 @@ moz-message-bar-button = Click me!
 
 const Template = ({
   type,
-  header,
+  heading,
   message,
   l10nId,
   dismissable,
@@ -59,10 +62,9 @@ const Template = ({
 }) => html`
   <moz-message-bar
     type=${type}
-    header=${ifDefined(header)}
+    heading=${ifDefined(heading)}
     message=${ifDefined(message)}
     data-l10n-id=${ifDefined(l10nId)}
-    data-l10n-attrs="header, message"
     ?dismissable=${dismissable}
   >
     ${hasSupportLink
@@ -116,4 +118,10 @@ WithSupportLink.args = {
   dismissable: false,
   hasSupportLink: true,
   hasActionButton: false,
+};
+
+export const WithHeading = Template.bind({});
+WithHeading.args = {
+  ...Default.args,
+  l10nId: "moz-message-bar-message-heading",
 };

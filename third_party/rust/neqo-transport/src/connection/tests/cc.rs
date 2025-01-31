@@ -4,23 +4,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use super::super::Output;
-use super::{
-    ack_bytes, assert_full_cwnd, connect_rtt_idle, cwnd, cwnd_avail, cwnd_packets, default_client,
-    default_server, fill_cwnd, induce_persistent_congestion, send_something, DEFAULT_RTT,
-    FORCE_IDLE_CLIENT_1RTT_PACKETS, POST_HANDSHAKE_CWND,
-};
-use crate::cc::MAX_DATAGRAM_SIZE;
-use crate::packet::PacketNumber;
-use crate::recovery::{ACK_ONLY_SIZE_LIMIT, PACKET_THRESHOLD};
-use crate::sender::PACING_BURST_SIZE;
-use crate::stream_id::StreamType;
-use crate::tracking::DEFAULT_ACK_PACKET_TOLERANCE;
+use std::{mem, time::Duration};
 
-use neqo_common::{qdebug, qinfo, Datagram};
-use std::convert::TryFrom;
-use std::mem;
-use std::time::Duration;
+use neqo_common::{qdebug, qinfo, Datagram, IpTosEcn};
+
+use super::{
+    super::Output, ack_bytes, assert_full_cwnd, connect_rtt_idle, cwnd, cwnd_avail, cwnd_packets,
+    default_client, default_server, fill_cwnd, induce_persistent_congestion, send_something,
+    CLIENT_HANDSHAKE_1RTT_PACKETS, DEFAULT_RTT, POST_HANDSHAKE_CWND,
+};
+use crate::{
+    connection::tests::{connect_with_rtt, new_client, new_server, now},
+    packet::PacketNumber,
+    recovery::{ACK_ONLY_SIZE_LIMIT, PACKET_THRESHOLD},
+    sender::PACING_BURST_SIZE,
+    stream_id::StreamType,
+    tracking::DEFAULT_ACK_PACKET_TOLERANCE,
+    ConnectionParameters,
+};
 
 #[test]
 /// Verify initial CWND is honored.
@@ -32,13 +33,32 @@ fn cc_slow_start() {
     // Try to send a lot of data
     let stream_id = client.stream_create(StreamType::UniDi).unwrap();
     let (c_tx_dgrams, _) = fill_cwnd(&mut client, stream_id, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
     assert!(cwnd_avail(&client) < ACK_ONLY_SIZE_LIMIT);
 }
 
 #[test]
-/// Verify that CC moves to cong avoidance when a packet is marked lost.
-fn cc_slow_start_to_cong_avoidance_recovery_period() {
+fn cc_slow_start_pmtud() {
+    let mut client = new_client(ConnectionParameters::default().pmtud(true));
+    let mut server = new_server(ConnectionParameters::default().pmtud(true));
+    let now = connect_with_rtt(&mut client, &mut server, now(), DEFAULT_RTT);
+
+    // Try to send a lot of data
+    let stream_id = client.stream_create(StreamType::UniDi).unwrap();
+    let cwnd = cwnd_avail(&client);
+    let (dgrams, _) = fill_cwnd(&mut client, stream_id, now);
+    let dgrams_len = dgrams.iter().map(Datagram::len).sum::<usize>();
+    assert_eq!(dgrams_len, cwnd);
+    assert!(cwnd_avail(&client) < ACK_ONLY_SIZE_LIMIT);
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum CongestionSignal {
+    PacketLoss,
+    EcnCe,
+}
+
+fn cc_slow_start_to_cong_avoidance_recovery_period(congestion_signal: CongestionSignal) {
     let mut client = default_client();
     let mut server = default_server();
     let now = connect_rtt_idle(&mut client, &mut server, DEFAULT_RTT);
@@ -49,12 +69,12 @@ fn cc_slow_start_to_cong_avoidance_recovery_period() {
 
     // Buffer up lot of data and generate packets
     let (c_tx_dgrams, mut now) = fill_cwnd(&mut client, stream_id, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
     // Predict the packet number of the last packet sent.
     // We have already sent packets in `connect_rtt_idle`,
     // so include a fudge factor.
     let flight1_largest =
-        PacketNumber::try_from(c_tx_dgrams.len() + FORCE_IDLE_CLIENT_1RTT_PACKETS).unwrap();
+        PacketNumber::try_from(c_tx_dgrams.len() + CLIENT_HANDSHAKE_1RTT_PACKETS).unwrap();
 
     // Server: Receive and generate ack
     now += DEFAULT_RTT / 2;
@@ -71,15 +91,24 @@ fn cc_slow_start_to_cong_avoidance_recovery_period() {
         client.stats().frame_rx.largest_acknowledged,
         flight1_largest
     );
+    let cwnd_before_cong = cwnd(&client);
 
     // Client: send more
     let (mut c_tx_dgrams, mut now) = fill_cwnd(&mut client, stream_id, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND * 2);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND * 2, client.plpmtu());
     let flight2_largest = flight1_largest + u64::try_from(c_tx_dgrams.len()).unwrap();
 
-    // Server: Receive and generate ack again, but drop first packet
+    // Server: Receive and generate ack again, but this time add congestion
+    // signal first.
     now += DEFAULT_RTT / 2;
-    c_tx_dgrams.remove(0);
+    match congestion_signal {
+        CongestionSignal::PacketLoss => {
+            c_tx_dgrams.remove(0);
+        }
+        CongestionSignal::EcnCe => {
+            c_tx_dgrams.last_mut().unwrap().set_tos(IpTosEcn::Ce.into());
+        }
+    }
     let s_ack = ack_bytes(&mut server, stream_id, c_tx_dgrams, now);
     assert_eq!(
         server.stats().frame_tx.largest_acknowledged,
@@ -93,6 +122,19 @@ fn cc_slow_start_to_cong_avoidance_recovery_period() {
         client.stats().frame_rx.largest_acknowledged,
         flight2_largest
     );
+    assert!(cwnd(&client) < cwnd_before_cong);
+}
+
+#[test]
+/// Verify that CC moves to cong avoidance when a packet is marked lost.
+fn cc_slow_start_to_cong_avoidance_recovery_period_due_to_packet_loss() {
+    cc_slow_start_to_cong_avoidance_recovery_period(CongestionSignal::PacketLoss);
+}
+
+/// Verify that CC moves to cong avoidance when ACK is marked with ECN CE.
+#[test]
+fn cc_slow_start_to_cong_avoidance_recovery_period_due_to_ecn_ce() {
+    cc_slow_start_to_cong_avoidance_recovery_period(CongestionSignal::EcnCe);
 }
 
 #[test]
@@ -109,7 +151,7 @@ fn cc_cong_avoidance_recovery_period_unchanged() {
 
     // Buffer up lot of data and generate packets
     let (mut c_tx_dgrams, now) = fill_cwnd(&mut client, stream_id, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
 
     // Drop 0th packet. When acked, this should put client into CARP.
     c_tx_dgrams.remove(0);
@@ -209,7 +251,7 @@ fn cc_cong_avoidance_recovery_period_to_cong_avoidance() {
     for i in 0..5 {
         qinfo!("iteration {}", i);
 
-        let c_tx_size: usize = c_tx_dgrams.iter().map(|d| d.len()).sum();
+        let c_tx_size: usize = c_tx_dgrams.iter().map(Datagram::len).sum();
         qinfo!(
             "client sending {} bytes into cwnd of {}",
             c_tx_size,
@@ -241,7 +283,7 @@ fn cc_cong_avoidance_recovery_period_to_cong_avoidance() {
         now = next_now;
         next_c_tx_dgrams.append(&mut new_pkts);
 
-        expected_cwnd += MAX_DATAGRAM_SIZE;
+        expected_cwnd += client.plpmtu();
         assert_eq!(cwnd(&client), expected_cwnd);
         c_tx_dgrams = next_c_tx_dgrams;
     }
@@ -258,7 +300,7 @@ fn cc_slow_start_to_persistent_congestion_no_acks() {
 
     // Buffer up lot of data and generate packets
     let (c_tx_dgrams, mut now) = fill_cwnd(&mut client, stream, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
 
     // Server: Receive and generate ack
     now += DEFAULT_RTT / 2;
@@ -280,7 +322,7 @@ fn cc_slow_start_to_persistent_congestion_some_acks() {
 
     // Buffer up lot of data and generate packets
     let (c_tx_dgrams, mut now) = fill_cwnd(&mut client, stream, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
 
     // Server: Receive and generate ack
     now += Duration::from_millis(100);
@@ -309,7 +351,7 @@ fn cc_persistent_congestion_to_slow_start() {
 
     // Buffer up lot of data and generate packets
     let (c_tx_dgrams, mut now) = fill_cwnd(&mut client, stream, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
 
     // Server: Receive and generate ack
     now += Duration::from_millis(10);
@@ -352,7 +394,7 @@ fn ack_are_not_cc() {
 
     // Buffer up lot of data and generate packets, so that cc window is filled.
     let (c_tx_dgrams, now) = fill_cwnd(&mut client, stream, now);
-    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND);
+    assert_full_cwnd(&c_tx_dgrams, POST_HANDSHAKE_CWND, client.plpmtu());
 
     // The server hasn't received any of these packets yet, the server
     // won't ACK, but if it sends an ack-eliciting packet instead.
@@ -360,13 +402,13 @@ fn ack_are_not_cc() {
     let other_stream = server.stream_create(StreamType::BiDi).unwrap();
     assert_eq!(other_stream, 1);
     server.stream_send(other_stream, b"dropped").unwrap();
-    let dropped_packet = server.process(None, now).dgram();
+    let dropped_packet = server.process_output(now).dgram();
     assert!(dropped_packet.is_some()); // Now drop this one.
 
     // Now the server sends a packet that will force an ACK,
     // because the client will detect a gap.
     server.stream_send(other_stream, b"sent").unwrap();
-    let ack_eliciting_packet = server.process(None, now).dgram();
+    let ack_eliciting_packet = server.process_output(now).dgram();
     assert!(ack_eliciting_packet.is_some());
 
     // The client can ack the server packet even if cc windows is full.
@@ -405,7 +447,7 @@ fn pace() {
     }
     let gap = client.process_output(now).callback();
     assert_ne!(gap, Duration::new(0, 0));
-    for _ in (1 + PACING_BURST_SIZE)..cwnd_packets(POST_HANDSHAKE_CWND) {
+    for _ in (1 + PACING_BURST_SIZE)..cwnd_packets(POST_HANDSHAKE_CWND, client.plpmtu()) {
         match client.process_output(now) {
             Output::Callback(t) => assert_eq!(t, gap),
             Output::Datagram(_) => {
@@ -422,7 +464,7 @@ fn pace() {
     }
     let dgram = client.process_output(now).dgram();
     assert!(dgram.is_none());
-    assert_eq!(count, cwnd_packets(POST_HANDSHAKE_CWND));
+    assert_eq!(count, cwnd_packets(POST_HANDSHAKE_CWND, client.plpmtu()));
     let fin = client.process_output(now).callback();
     assert_ne!(fin, Duration::new(0, 0));
     assert_ne!(fin, gap);

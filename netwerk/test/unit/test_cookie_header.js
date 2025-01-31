@@ -6,7 +6,7 @@ const { HttpServer } = ChromeUtils.importESModule(
   "resource://testing-common/httpd.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function () {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserv.identity.primaryPort + "/";
 });
 
@@ -48,7 +48,7 @@ var listener = {
     throw Components.Exception("", Cr.NS_ERROR_UNEXPECTED);
   },
 
-  onStopRequest: async function test_onStopR(request, status) {
+  onStopRequest: async function test_onStopR() {
     if (this._iteration == 1) {
       await run_test_continued();
     } else {

@@ -47,7 +47,7 @@ add_task(async function () {
   const [oi1, oi2, oi3] = objectInspectors;
 
   info("Expanding the first object inspector");
-  await expandObjectInspector(oi1);
+  await expandObjectInspectorNode(oi1.querySelector(".tree-node"));
 
   // The first object inspector now looks like:
   // ▼ {…}
@@ -61,7 +61,7 @@ add_task(async function () {
   ok(oi1.textContent.includes('hello: "world!"'), "Expected content");
 
   info("Expanding the second object inspector");
-  await expandObjectInspector(oi2);
+  await expandObjectInspectorNode(oi2.querySelector(".tree-node"));
 
   // The second object inspector now looks like:
   // ▼ func()
@@ -93,7 +93,7 @@ add_task(async function () {
   const highlighter = toolbox.getHighlighter();
 
   const elementNode = oi3.querySelector(".objectBox-node");
-  ok(elementNode !== null, "Node was logged as expected");
+  Assert.notStrictEqual(elementNode, null, "Node was logged as expected");
   const view = node.ownerDocument.defaultView;
 
   info("Highlight the node by moving the cursor on it");
@@ -107,7 +107,11 @@ add_task(async function () {
   EventUtils.synthesizeMouseAtCenter(oi1, { type: "mousemove" }, view);
 
   const openInInspectorIcon = elementNode.querySelector(".open-inspector");
-  ok(openInInspectorIcon !== null, "There is an open in inspector icon");
+  Assert.notStrictEqual(
+    openInInspectorIcon,
+    null,
+    "There is an open in inspector icon"
+  );
 
   info(
     "Clicking on the inspector icon and waiting for the inspector to be selected"
@@ -119,12 +123,3 @@ add_task(async function () {
   ok(true, "Inspector selected and new node got selected");
   is(inspectorSelectedNodeFront.id, "testEl", "The expected node was selected");
 });
-
-function expandObjectInspector(oi) {
-  const onMutation = waitForNodeMutation(oi, {
-    childList: true,
-  });
-
-  oi.querySelector(".arrow").click();
-  return onMutation;
-}

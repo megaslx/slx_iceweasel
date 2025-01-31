@@ -4,6 +4,7 @@
 
 import abc
 import re
+import sys
 from pathlib import Path
 from threading import Thread
 
@@ -14,7 +15,6 @@ from mozversioncontrol import (
     MissingVCSTool,
     get_repository_object,
 )
-from six import string_types
 
 from mach.telemetry import is_telemetry_enabled
 from mach.util import get_state_dir
@@ -25,7 +25,7 @@ _SENTRY_DSN = (
 )
 
 
-class ErrorReporter(object):
+class ErrorReporter:
     @abc.abstractmethod
     def report_exception(self, exception):
         """Report the exception to remote error-tracking software."""
@@ -132,12 +132,12 @@ def _patch_absolute_paths(sentry_event, topsrcdir: Path):
                 key = needle.sub(replacement, key)
                 value[key] = recursive_patch(next_value, needle, replacement)
             return value
-        elif isinstance(value, string_types):
+        elif isinstance(value, str):
             return needle.sub(replacement, value)
         else:
             return value
 
-    for (target_path, replacement) in (
+    for target_path, replacement in (
         (get_state_dir(), "<statedir>"),
         (str(topsrcdir), "<topsrcdir>"),
         (str(Path.home()), "~"),
@@ -187,7 +187,8 @@ def _delete_server_name(sentry_event, _):
 def _get_repository_object(topsrcdir: Path):
     try:
         return get_repository_object(str(topsrcdir))
-    except (InvalidRepoPath, MissingVCSTool):
+    except (InvalidRepoPath, MissingVCSTool) as e:
+        print(f"Warning: {e}", file=sys.stderr)
         return None
 
 

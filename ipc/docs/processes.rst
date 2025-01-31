@@ -136,7 +136,7 @@ strive for simplicity.
 
 In the spirit of creating a *responsible* process, the sample will connect
 several components that any deployed Gecko process is likely to need.  These
-include configuring a sandbox, `registration with the CrashReporter service`_
+include configuring a sandbox, :ref:`registration with the CrashReporter service <Crash Reporter>`
 and ("minimal") XPCOM initialization.  Consult documentation for these
 components for more information on their integration.
 
@@ -150,8 +150,6 @@ Once that is done, the new process will be cleanly destroyed.
 
 Code for the complete demo can be found `here
 <https://phabricator.services.mozilla.com/D119038>`_.
-
-.. _registration with the CrashReporter service: `Crash Reporter`_
 
 Common Architecture
 ~~~~~~~~~~~~~~~~~~~
@@ -320,11 +318,12 @@ process there.
   <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/toolkit/locales/en-US/toolkit/global/processTypes.ftl#39-57>`_
   for your process, if needed
 - Hashmap from process type to user-facing string above in `const ProcessType
-  <https://searchfox.org/mozilla-central/rev/c5c002f81f08a73e04868e0c2bf0eb113f200b03/toolkit/modules/ProcessType.sys.mjs#10-16`_
+  <https://searchfox.org/mozilla-central/rev/c5c002f81f08a73e04868e0c2bf0eb113f200b03/toolkit/modules/ProcessType.sys.mjs#10-16>`_
 - For `about:processes` you will probably want to follow the following steps:
 
   + Add handling for your new process type producing a unique `fluentName <https://searchfox.org/mozilla-central/rev/be4604e4be8c71b3c1dbff2398a5b05f15411673/toolkit/components/aboutprocesses/content/aboutProcesses.js#472-539>`_, i.e., constructing a dynamic name is highly discouraged
-  + Add matching localization strings within `fluent localization file <https://searchfox.org/mozilla-central/rev/be4604e4be8c71b3c1dbff2398a5b05f15411673/toolkit/locales/en-US/toolkit/about/aboutProcesses.ftl#35-55>`_
+  + Add matching localization strings within `about:processes localization file <https://searchfox.org/mozilla-central/rev/be4604e4be8c71b3c1dbff2398a5b05f15411673/toolkit/locales/en-US/toolkit/about/aboutProcesses.ftl#35-55>`_
+  + Add matching localization strings within `about:support localization file <https://searchfox.org/mozilla-central/source/toolkit/locales/en-US/toolkit/global/processTypes.ftl#54-60>`_
 
 Profiler
 ########
@@ -502,7 +501,7 @@ _____________
 
    + ``MacSandboxInfo::AppendAsParams()`` in the `switch statement
      <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/security/sandbox/mac/Sandbox.mm#164-188>`_
-   + ``StartMacSandbox()`` in the `serie of if/else statements
+   + ``StartMacSandbox()`` in the `series of if/else statements
      <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/security/sandbox/mac/Sandbox.mm#286-436>`_.
      This code sets template values for the sandbox string rendering, and is
      running on the side of the main process.
@@ -524,12 +523,8 @@ Windows Sandbox
 _______________
 
 - Introduce a new ``SandboxBroker::SetSecurityLevelForXXXProcess()`` that
-  defines the new sandbox in both
-
-  + the sandbox broker basing yourself on that `example
-    <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/security/sandbox/win/src/sandboxbroker/sandboxBroker.cpp#1241-1344>`_
-  + the remote sandbox broker getting `inspired by
-    <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/security/sandbox/win/src/remotesandboxbroker/remoteSandboxBroker.cpp#161-165>`_
+  defines the new sandbox in the sandbox broker basing yourself on this
+  `example <https://searchfox.org/mozilla-central/rev/d4b9c457db637fde655592d9e2048939b7ab2854/security/sandbox/win/src/sandboxbroker/sandboxBroker.cpp#1241-1344>`_
 
 - Add new case handling in ``WindowsProcessLauncher::DoSetup()`` calling
   ``SandboxBroker::SetSecurityLevelForXXXProcess()`` in `GeckoChildProcessHost
@@ -561,7 +556,7 @@ Creating the New Process
 The sample does this in ``DemoParent::LaunchDemoProcess``.  The core
 behavior is fairly clear:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /* static */
     bool DemoParent::LaunchDemoProcess(
@@ -612,7 +607,7 @@ by IPDL, which is why it doesn't get assigned to anything.  This simplifies the
 design dramatically.  IPDL takes ownership when the actor calls ``Bind`` from
 the ``Init`` method:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     DemoParent::DemoParent(UniqueHost&& aHost)
         : mHost(std::move(aHost)) {}
@@ -648,7 +643,7 @@ main thread will run (this is discussed later) and we need to create our
 ``ProcessChild`` subclass.  This is not an insignificant choice so pay close
 attention to the `MessageLoop` options:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     MessageLoop::Type uiLoopType;
     switch (XRE_GetProcessType()) {
@@ -679,7 +674,7 @@ to be overridden to parse them.  It does this, binds our actor by
 calling ``Bind`` as was done with the parent, then initializes a bunch of
 components that the process expects to use:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     bool DemoChild::Init(int aArgc, char* aArgv[]) {
     #if defined(MOZ_SANDBOX) && defined(XP_WIN)
@@ -759,7 +754,7 @@ normal top-level actor (or any managed actor after calling
 when some (as yet unwritten) **Demo** process code calls
 ``DemoChild::Shutdown``.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /* static */
     void DemoChild::Shutdown() {
@@ -803,7 +798,7 @@ The comment in the code makes two important points:
 We can also see that, once the ``EmptyMessageQueue`` response is run, we are
 releasing ``gDemoChild``, which will result in the termination of the process.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     DemoChild::~DemoChild() {
       // ...
@@ -814,7 +809,7 @@ At this point, the ``DemoParent`` in the main process is alerted to the
 channel closure because IPDL will call its :ref:`ActorDestroy <Actor Lifetimes
 in C++>` method.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     void DemoParent::ActorDestroy(ActorDestroyReason aWhy) {
       if (aWhy == AbnormalShutdown) {
@@ -841,7 +836,7 @@ responsible for our intended behavior, not just bootstrapping the new process.
 Above, we saw that this is started by ``Host::MakeBridgeAndResolve`` after the
 ``DemoParent`` connection is established.
 
-.. code-block:: c++
+.. code-block:: cpp
 
     bool DemoParent::Host::MakeBridgeAndResolve() {
       ipc::Endpoint<PDemoHelplineParent> parent;
@@ -849,9 +844,8 @@ Above, we saw that this is started by ``Host::MakeBridgeAndResolve`` after the
 
       auto resolveFail = MakeScopeExit([&] { mResolver(Nothing()); });
 
-      // Parent side is first PID (main/content), child is second (demo).
-      nsresult rv = PDempHelpline::CreateEndpoints(
-          mParentPid, base::GetProcId(GetChildProcessHandle()), &parent, &child);
+      // Parent side is first argument (main/content), child is second (demo).
+      nsresult rv = PDempHelpline::CreateEndpoints(&parent, &child);
 
       // ...
 
@@ -871,7 +865,7 @@ actors, then we send the child one to the new process and resolve a promise
 with the other.  The **Demo** process creates its ``PDemoHelplineChild``
 easily:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     mozilla::ipc::IPCResult DemoChild::RecvCreateDemoHelplineChild(
         Endpoint<PDemoHelplineChild>&& aEndpoint) {
@@ -884,7 +878,7 @@ easily:
 
 ``MakeProcessAndGetAssistance`` binds the same way:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     RefPtr<DemoHelplineParent> demoHelplineParent = new DemoHelplineParent();
     if (!endpoint.Bind(demoHelplineParent)) {
@@ -914,7 +908,7 @@ process, we simply write an async ``PContent`` message that calls
 ``DemoParent::LaunchDemoProcess`` and use the message handler's promise as
 our promise:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     /* static */
     bool DemoHelplineParent::MakeProcessAndGetAssistance(
@@ -990,7 +984,7 @@ We have covered the main parts needed for the sample.  Now we just need to wire
 it all up.  First, we add the new JS command to ``Navigator.webidl`` and
 ``Navigator.h``/``Navigator.cpp``:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     partial interface Navigator {
       [Throws]
@@ -1020,7 +1014,7 @@ Then, we need to add the part that gets the string we use to resolve the
 promise in ``MakeProcessAndGetAssistance`` (or reject it if it hasn't been
 resolved by the time ``ActorDestroy`` is called):
 
-.. code-block:: c++
+.. code-block:: cpp
 
     using DemoPromise = MozPromise<nsString, nsresult, true>;
 
@@ -1064,7 +1058,7 @@ that the string was received.  During closing, the actor's ``ActorDestroy``
 method then calls the ``DemoChild::Shutdown`` method we defined in `Destroying
 the New Process`_:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     mozilla::ipc::IPCResult DemoHelplineChild::RecvRequestAssistance() {
       RefPtr<DemoHelplineChild> me = this;
@@ -1124,7 +1118,7 @@ because it is likely to be intermittent and may manifest more easily on some
 platforms/architectures than others.  To create this bug, replace the
 ``SendEmptyMessageQueue`` call in ``DemoChild::Shutdown``:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     auto dc = gDemoChild;
     RefPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
@@ -1138,7 +1132,7 @@ platforms/architectures than others.  To create this bug, replace the
 
 with just an (asynchronous) call to ``Close``:
 
-.. code-block:: c++
+.. code-block:: cpp
 
     NS_DispatchToMainThread(NS_NewRunnableFunction(
         "DemoChild::FinishShutdown",
@@ -1160,7 +1154,7 @@ section on :ref:`Message Logging`.  We just need to set an environment variable
 before starting the browser.  Let's turn it on for all ``PDemo`` and
 ``PDemoHelpline`` actors: ::
 
-    MOZ_IPC_MESSAGE_LOG="PDemoParent,PDemoChild,PDemoHelplineParent,PDemoHelplineChild"
+    MOZ_IPC_MESSAGE_LOG="PDemo,PDemoHelpline"
 
 To underscore what we said above, when logging is active, the change in timing
 makes the error message go away and everything closes properly on a tested
@@ -1224,8 +1218,8 @@ current debug session.  The command can be added to ``.gdbinit`` for ease.  At
 the time of this writing, lldb does not support automatically connecting to
 newly spawned processes.
 
-Finally, Linux users can use ``rr`` for time-travel debugging.  See `Debugging
-Firefox with rr`_ for details.
+Finally, Linux users can use ``rr`` for time-travel debugging.  See :ref:`Debugging
+Firefox with rr <Debugging Firefox with rr>` for details.
 
 These solutions are not always desirable.  For example, the fact that they hook
 *all* spawned processes can mean that targeting breakpoints to one process

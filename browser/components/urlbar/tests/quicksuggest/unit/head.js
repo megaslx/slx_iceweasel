@@ -2,15 +2,16 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /* import-globals-from ../../unit/head.js */
+/* eslint-disable jsdoc/require-param */
 
 ChromeUtils.defineESModuleGetters(this, {
   QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
-  QuickSuggestRemoteSettings:
-    "resource:///modules/urlbar/private/QuickSuggestRemoteSettings.sys.mjs",
+  SearchUtils: "resource://gre/modules/SearchUtils.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   UrlbarProviderAutofill: "resource:///modules/UrlbarProviderAutofill.sys.mjs",
   UrlbarProviderQuickSuggest:
     "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
 });
 
 add_setup(async function setUpQuickSuggestXpcshellTest() {
@@ -248,8 +249,13 @@ async function doMigrateTest({
  *   The name of the Nimbus variable that stores the "show less frequently" cap
  *   being tested.
  * @param {object} options.keyword
- *   The primary keyword to use during the test. It must contain more than one
- *   word, and it must have at least two chars after the first space.
+ *   The primary keyword to use during the test.
+ * @param {number} options.keywordBaseIndex
+ *   The index in `keyword` to base substring checks around. This function will
+ *   test substrings starting at the beginning of keyword and ending at the
+ *   following indexes: one index before `keywordBaseIndex`,
+ *   `keywordBaseIndex`, `keywordBaseIndex` + 1, `keywordBaseIndex` + 2, and
+ *   `keywordBaseIndex` + 3.
  */
 async function doShowLessFrequentlyTests({
   feature,
@@ -257,18 +263,19 @@ async function doShowLessFrequentlyTests({
   showLessFrequentlyCountPref,
   nimbusCapVariable,
   keyword,
+  keywordBaseIndex = keyword.indexOf(" "),
 }) {
   // Do some sanity checks on the keyword. Any checks that fail are errors in
-  // the test. This function assumes
-  let spaceIndex = keyword.indexOf(" ");
-  if (spaceIndex < 0) {
-    throw new Error("keyword must contain a space");
+  // the test.
+  if (keywordBaseIndex <= 0) {
+    throw new Error(
+      "keywordBaseIndex must be > 0, but it's " + keywordBaseIndex
+    );
   }
-  if (spaceIndex == 0) {
-    throw new Error("keyword must not start with a space");
-  }
-  if (keyword.length < spaceIndex + 3) {
-    throw new Error("keyword must have at least two chars after the space");
+  if (keyword.length < keywordBaseIndex + 3) {
+    throw new Error(
+      "keyword must have at least two chars after keywordBaseIndex"
+    );
   }
 
   let tests = [
@@ -276,32 +283,32 @@ async function doShowLessFrequentlyTests({
       showLessFrequentlyCount: 0,
       canShowLessFrequently: true,
       newSearches: {
-        [keyword.substring(0, spaceIndex - 1)]: false,
-        [keyword.substring(0, spaceIndex)]: true,
-        [keyword.substring(0, spaceIndex + 1)]: true,
-        [keyword.substring(0, spaceIndex + 2)]: true,
-        [keyword.substring(0, spaceIndex + 3)]: true,
+        [keyword.substring(0, keywordBaseIndex - 1)]: false,
+        [keyword.substring(0, keywordBaseIndex)]: true,
+        [keyword.substring(0, keywordBaseIndex + 1)]: true,
+        [keyword.substring(0, keywordBaseIndex + 2)]: true,
+        [keyword.substring(0, keywordBaseIndex + 3)]: true,
       },
     },
     {
       showLessFrequentlyCount: 1,
       canShowLessFrequently: true,
       newSearches: {
-        [keyword.substring(0, spaceIndex)]: false,
+        [keyword.substring(0, keywordBaseIndex)]: false,
       },
     },
     {
       showLessFrequentlyCount: 2,
       canShowLessFrequently: true,
       newSearches: {
-        [keyword.substring(0, spaceIndex + 1)]: false,
+        [keyword.substring(0, keywordBaseIndex + 1)]: false,
       },
     },
     {
       showLessFrequentlyCount: 3,
       canShowLessFrequently: false,
       newSearches: {
-        [keyword.substring(0, spaceIndex + 2)]: false,
+        [keyword.substring(0, keywordBaseIndex + 2)]: false,
       },
     },
     {
@@ -466,4 +473,60 @@ async function doOneShowLessFrequentlyTest({
   await cleanUpNimbus();
   UrlbarPrefs.clear(showLessFrequentlyCountPref);
   UrlbarPrefs.set("quicksuggest.dataCollection.enabled", true);
+}
+
+/**
+ * Queries the Rust component directly and checks the returned suggestions. The
+ * point is to make sure the Rust backend passes the correct providers to the
+ * Rust component depending on the types of enabled suggestions. Assuming the
+ * Rust component isn't buggy, it should return suggestions only for the
+ * passed-in providers.
+ *
+ * @param {object} options
+ *   Options object
+ * @param {string} options.searchString
+ *   The search string.
+ * @param {Array} options.tests
+ *   Array of test objects: `{ prefs, expectedUrls }`
+ *
+ *   For each object, the given prefs are set, the Rust component is queried
+ *   using the given search string, and the URLs of the returned suggestions are
+ *   compared to the given expected URLs (order doesn't matter).
+ *
+ *   {object} prefs
+ *     An object mapping pref names (relative to `browser.urlbar`) to values.
+ *     These prefs will be set before querying and should be used to enable or
+ *     disable particular types of suggestions.
+ *   {Array} expectedUrls
+ *     An array of the URLs of the suggestions that are expected to be returned.
+ *     The order doesn't matter.
+ */
+async function doRustProvidersTests({ searchString, tests }) {
+  for (let { prefs, expectedUrls } of tests) {
+    info(
+      "Starting Rust providers test: " + JSON.stringify({ prefs, expectedUrls })
+    );
+
+    info("Setting prefs and forcing sync");
+    for (let [name, value] of Object.entries(prefs)) {
+      UrlbarPrefs.set(name, value);
+    }
+    await QuickSuggestTestUtils.forceSync();
+
+    info("Querying with search string: " + JSON.stringify(searchString));
+    let suggestions = await QuickSuggest.rustBackend.query(searchString);
+    info("Got suggestions: " + JSON.stringify(suggestions));
+
+    Assert.deepEqual(
+      suggestions.map(s => s.url).sort(),
+      expectedUrls.sort(),
+      "query() should return the expected suggestions (by URL)"
+    );
+
+    info("Clearing prefs and forcing sync");
+    for (let name of Object.keys(prefs)) {
+      UrlbarPrefs.clear(name);
+    }
+    await QuickSuggestTestUtils.forceSync();
+  }
 }

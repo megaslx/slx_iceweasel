@@ -142,7 +142,8 @@ impl LocalExternalImageHandler {
             ExternalImageData {
                 id: image_id,
                 channel_index: channel_idx,
-                image_type: ExternalImageType::TextureHandle(target)
+                image_type: ExternalImageType::TextureHandle(target),
+                normalized_uvs: false,
             }
         )
     }
@@ -311,6 +312,11 @@ fn is_image_opaque(format: ImageFormat, bytes: &[u8]) -> bool {
 
 struct IsRoot(bool);
 
+pub struct Snapshot {
+    key: SnapshotImageKey,
+    size: LayoutSize,
+}
+
 pub struct YamlFrameReader {
     yaml_path: PathBuf,
     aux_dir: PathBuf,
@@ -329,8 +335,9 @@ pub struct YamlFrameReader {
     image_map: HashMap<(PathBuf, Option<i64>), (ImageKey, LayoutSize)>,
 
     fonts: HashMap<FontDescriptor, FontKey>,
-    font_instances: HashMap<(FontKey, FontSize, FontInstanceFlags, Option<ColorU>, SyntheticItalics), FontInstanceKey>,
+    font_instances: HashMap<(FontKey, FontSize, FontInstanceFlags, SyntheticItalics), FontInstanceKey>,
     font_render_mode: Option<FontRenderMode>,
+    snapshots: HashMap<String, Snapshot>,
     allow_mipmaps: bool,
 
     /// A HashMap that allows specifying a numeric id for clip and clip chains in YAML
@@ -365,6 +372,7 @@ impl YamlFrameReader {
             fonts: HashMap::new(),
             font_instances: HashMap::new(),
             font_render_mode: None,
+            snapshots: HashMap::new(),
             allow_mipmaps: false,
             image_map: HashMap::new(),
             user_clip_id_map: HashMap::new(),
@@ -665,6 +673,15 @@ impl YamlFrameReader {
                             kind,
                         )
                     }
+                    ("snapshot", args, _) => {
+                        let snapshot = self.snapshots
+                            .get(args[0])
+                            .expect("Missing snapshot");
+                        return (
+                            snapshot.key.as_image(),
+                            snapshot.size,
+                        );
+                    }
                     _ => {
                         panic!("Failed to load image {:?}", file.to_str());
                     }
@@ -745,7 +762,6 @@ impl YamlFrameReader {
         &mut self,
         font_key: FontKey,
         size: f32,
-        bg_color: Option<ColorU>,
         flags: FontInstanceFlags,
         synthetic_italics: SyntheticItalics,
         wrench: &mut Wrench,
@@ -753,14 +769,13 @@ impl YamlFrameReader {
         let font_render_mode = self.font_render_mode;
 
         *self.font_instances
-            .entry((font_key, size.into(), flags, bg_color, synthetic_italics))
+            .entry((font_key, size.into(), flags, synthetic_italics))
             .or_insert_with(|| {
                 wrench.add_font_instance(
                     font_key,
                     size,
                     flags,
                     font_render_mode,
-                    bg_color,
                     synthetic_italics,
                 )
             })
@@ -1237,6 +1252,15 @@ impl YamlFrameReader {
 
                 YuvData::P010(y_key, uv_key)
             }
+            "nv16" => {
+                let y_path = rsrc_path(&item["src-y"], &self.aux_dir);
+                let (y_key, _) = self.add_or_get_image(&y_path, None, item, wrench);
+
+                let uv_path = rsrc_path(&item["src-uv"], &self.aux_dir);
+                let (uv_key, _) = self.add_or_get_image(&uv_path, None, item, wrench);
+
+                YuvData::NV16(y_key, uv_key)
+            }
             "interleaved" => {
                 let yuv_path = rsrc_path(&item["src"], &self.aux_dir);
                 let (yuv_key, _) = self.add_or_get_image(&yuv_path, None, item, wrench);
@@ -1278,6 +1302,7 @@ impl YamlFrameReader {
                                  "src"
                              }];
         let tiling = item["tile-size"].as_i64();
+
         let file = rsrc_path(filename, &self.aux_dir);
         let (image_key, image_dims) =
             self.add_or_get_image(&file, tiling, item, wrench);
@@ -1350,7 +1375,6 @@ impl YamlFrameReader {
     ) {
         let size = item["size"].as_pt_to_f32().unwrap_or(16.0);
         let color = item["color"].as_colorf().unwrap_or(ColorF::BLACK);
-        let bg_color = item["bg-color"].as_colorf().map(|c| c.into());
         let synthetic_italics = if let Some(angle) = item["synthetic-italics"].as_f32() {
             SyntheticItalics::from_degrees(angle)
         } else if item["synthetic-italics"].as_bool().unwrap_or(false) {
@@ -1385,7 +1409,6 @@ impl YamlFrameReader {
         let font_key = self.get_or_create_font(desc, wrench);
         let font_instance_key = self.get_or_create_font_instance(font_key,
                                                                  size,
-                                                                 bg_color,
                                                                  flags,
                                                                  synthetic_italics,
                                                                  wrench);
@@ -1689,6 +1712,7 @@ impl YamlFrameReader {
             yaml["horizontal-offset-bounds"].as_sticky_offset_bounds(),
             yaml["previously-applied-offset"].as_vector().unwrap_or_else(LayoutVector2D::zero),
             self.next_spatial_key(),
+            None,
         );
 
         if let Some(numeric_id) = numeric_id {
@@ -2013,6 +2037,27 @@ impl YamlFrameReader {
         let filter_datas = yaml["filter-datas"].as_vec_filter_data().unwrap_or_default();
         let filter_primitives = yaml["filter-primitives"].as_vec_filter_primitive().unwrap_or_default();
 
+        let snapshot = if !yaml["snapshot"].is_badvalue() {
+            let yaml = &yaml["snapshot"];
+            let name = yaml["name"].as_str().unwrap_or("snapshot");
+            let area = yaml["area"].as_rect().unwrap_or(bounds);
+            let detached = yaml["detached"].as_bool().unwrap_or(false);
+
+            let key = SnapshotImageKey(wrench.api.generate_image_key());
+            self.snapshots.insert(name.to_string(), Snapshot {
+                key,
+                size: bounds.size(),
+            });
+
+            let mut txn = Transaction::new();
+            txn.add_snapshot_image(key);
+            wrench.api.send_transaction(wrench.document_id, txn);
+
+            Some(SnapshotInfo { key, area, detached })
+        } else {
+            None
+        };
+
         let mut flags = StackingContextFlags::empty();
         flags.set(StackingContextFlags::IS_BLEND_CONTAINER, is_blend_container);
         flags.set(StackingContextFlags::WRAPS_BACKDROP_FILTER, wraps_backdrop_filter);
@@ -2029,6 +2074,7 @@ impl YamlFrameReader {
             &filter_primitives,
             raster_space,
             flags,
+            snapshot,
         );
 
         if let Some(yaml_items) = yaml["items"].as_vec() {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -48,18 +48,18 @@ extern "C" {
 #define BR_CDF_SIZE (4)
 #define COEFF_BASE_RANGE (4 * (BR_CDF_SIZE - 1))
 
-#define COEFF_CONTEXT_BITS 6
+#define COEFF_CONTEXT_BITS 3
 #define COEFF_CONTEXT_MASK ((1 << COEFF_CONTEXT_BITS) - 1)
 #define MAX_BASE_BR_RANGE (COEFF_BASE_RANGE + NUM_BASE_LEVELS + 1)
 
 #define BASE_CONTEXT_POSITION_NUM 12
 
-typedef enum TX_CLASS {
+enum {
   TX_CLASS_2D = 0,
   TX_CLASS_HORIZ = 1,
   TX_CLASS_VERT = 2,
   TX_CLASSES = 3,
-} TX_CLASS;
+} UENUM1BYTE(TX_CLASS);
 
 #define DCT_MAX_VALUE 16384
 #define DCT_MAX_VALUE_HIGH10 65536
@@ -73,17 +73,18 @@ struct AV1Common;
 struct frame_contexts;
 void av1_reset_cdf_symbol_counters(struct frame_contexts *fc);
 void av1_default_coef_probs(struct AV1Common *cm);
+void av1_init_mode_probs(struct frame_contexts *fc);
 
 struct frame_contexts;
 
 typedef char ENTROPY_CONTEXT;
 
-static INLINE int combine_entropy_contexts(ENTROPY_CONTEXT a,
+static inline int combine_entropy_contexts(ENTROPY_CONTEXT a,
                                            ENTROPY_CONTEXT b) {
   return (a != 0) + (b != 0);
 }
 
-static INLINE int get_entropy_context(TX_SIZE tx_size, const ENTROPY_CONTEXT *a,
+static inline int get_entropy_context(TX_SIZE tx_size, const ENTROPY_CONTEXT *a,
                                       const ENTROPY_CONTEXT *l) {
   ENTROPY_CONTEXT above_ec = 0, left_ec = 0;
 
@@ -169,7 +170,7 @@ static INLINE int get_entropy_context(TX_SIZE tx_size, const ENTROPY_CONTEXT *a,
   return combine_entropy_contexts(above_ec, left_ec);
 }
 
-static INLINE TX_SIZE get_txsize_entropy_ctx(TX_SIZE txsize) {
+static inline TX_SIZE get_txsize_entropy_ctx(TX_SIZE txsize) {
   return (TX_SIZE)((txsize_sqr_map[txsize] + txsize_sqr_up_map[txsize] + 1) >>
                    1);
 }

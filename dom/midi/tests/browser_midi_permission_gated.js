@@ -71,6 +71,7 @@ add_task(async function testRequestMIDIAccess() {
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, EXAMPLE_COM_URL);
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
   const testPageHost = gBrowser.selectedTab.linkedBrowser.documentURI.host;
+  Services.fog.testResetFOG();
 
   info("Check that midi-sysex isn't set");
   ok(
@@ -410,29 +411,21 @@ add_task(async function testRequestMIDIAccess() {
     "requestMIDIAccess was rejected without user prompt"
   );
   let denyIntervalElapsed = performance.now() - denyIntervalStart;
-  ok(
-    denyIntervalElapsed >= 3000,
+  Assert.greaterOrEqual(
+    denyIntervalElapsed,
+    3000,
     `Rejection should be delayed by a randomized interval no less than 3 seconds (got ${
       denyIntervalElapsed / 1000
     } seconds)`
   );
 
-  // Invoking getAMTelemetryEvents resets the mocked event array, and we want
-  // to test two different things here, so we cache it.
-  let events = AddonTestUtils.getAMTelemetryEvents();
   Assert.deepEqual(
-    events.filter(evt => evt.method == "reportSuspiciousSite")[0],
-    {
-      method: "reportSuspiciousSite",
-      object: "suspiciousSite",
-      value: "example.com",
-      extra: undefined,
-    }
+    [{ suspicious_site: "example.com" }],
+    AddonTestUtils.getAMGleanEvents("reportSuspiciousSite"),
+    "Expected Glean event recorded."
   );
-  assertSitePermissionInstallTelemetryEvents(
-    ["site_warning", "cancelled"],
-    events
-  );
+
+  assertSitePermissionInstallTelemetryEvents(["site_warning", "cancelled"]);
 });
 
 add_task(async function testIframeRequestMIDIAccess() {
@@ -635,7 +628,7 @@ add_task(async function testRequestMIDIAccessLocalhost() {
     .click();
 
   info("Wait for the midi-sysex access request promise to resolve");
-  const accessGranted = await SpecialPowers.spawn(
+  let accessGranted = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
     async () => {
@@ -650,20 +643,29 @@ add_task(async function testRequestMIDIAccessLocalhost() {
   );
   ok(accessGranted, "requestMIDIAccess resolved");
 
-  info("Check that we prompt user again even if they accepted before");
-  popupShown = BrowserTestUtils.waitForEvent(
-    PopupNotifications.panel,
-    "popupshown"
+  // We're remembering permission grants temporarily on the tab since Bug 1754005.
+  info(
+    "Check that a new request is automatically granted because we granted before in the same tab."
   );
+
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async () => {
     content.navigator.requestMIDIAccess({ sysex: true });
   });
-  await popupShown;
-  is(
-    PopupNotifications.panel.querySelector("popupnotification").id,
-    "midi-notification",
-    "midi notification was displayed again"
+
+  accessGranted = await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [],
+    async () => {
+      try {
+        await content.midiAccessRequestPromise;
+        return true;
+      } catch (e) {}
+
+      delete content.midiAccessRequestPromise;
+      return false;
+    }
   );
+  ok(accessGranted, "requestMIDIAccess resolved");
 
   assertSitePermissionInstallTelemetryEvents([]);
 });
@@ -703,11 +705,8 @@ add_task(function teardown_telemetry_events() {
  *
  * @param {Array<String>} expectedSteps: An array of the expected extra.step values recorded.
  */
-function assertSitePermissionInstallTelemetryEvents(
-  expectedSteps,
-  events = null
-) {
-  let amInstallEvents = (events ?? AddonTestUtils.getAMTelemetryEvents())
+function assertSitePermissionInstallTelemetryEvents(expectedSteps) {
+  let amInstallEvents = AddonTestUtils.getAMTelemetryEvents()
     .filter(evt => evt.method === "install" && evt.object === "sitepermission")
     .map(evt => evt.extra.step);
 
@@ -771,7 +770,7 @@ async function waitForNotification(notificationId) {
   let observerPromise;
   if (notificationId !== "addon-webext-permissions") {
     observerPromise = new Promise(resolve => {
-      Services.obs.addObserver(function observer(aSubject, aTopic, aData) {
+      Services.obs.addObserver(function observer(aSubject, aTopic) {
         // Ignore the progress notification unless that is the notification we want
         if (
           notificationId != PROGRESS_NOTIFICATION &&

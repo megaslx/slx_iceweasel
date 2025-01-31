@@ -70,8 +70,8 @@ struct nsFlowAreaRect {
 /**
  * nsFloatManager is responsible for implementing CSS's rules for
  * positioning floats. An nsFloatManager object is created during reflow for
- * any block with NS_BLOCK_FLOAT_MGR. During reflow, the float manager for
- * the nearest such ancestor block is found in ReflowInput::mFloatManager.
+ * any block with NS_BLOCK_BFC. During reflow, the float manager for the nearest
+ * such ancestor block is found in ReflowInput::mFloatManager.
  *
  * According to the line-relative mappings in CSS Writing Modes spec [1],
  * line-right and line-left are calculated with respect to the writing mode
@@ -218,7 +218,8 @@ class nsFloatManager {
    */
   enum class BandInfoType { BandFromPoint, WidthWithinHeight };
   enum class ShapeType { Margin, ShapeOutside };
-  nsFlowAreaRect GetFlowArea(mozilla::WritingMode aWM, nscoord aBCoord,
+  nsFlowAreaRect GetFlowArea(mozilla::WritingMode aCBWM,
+                             mozilla::WritingMode aWM, nscoord aBCoord,
                              nscoord aBSize, BandInfoType aBandInfoType,
                              ShapeType aShapeType,
                              mozilla::LogicalRect aContentArea,
@@ -315,13 +316,13 @@ class nsFloatManager {
    *
    * Both aBCoord and the result are relative to the current translation.
    */
-  nscoord ClearFloats(nscoord aBCoord, mozilla::StyleClear aClearType) const;
+  nscoord ClearFloats(nscoord aBCoord, mozilla::UsedClear aClearType) const;
 
   /**
    * Checks if clear would pass into the floats' BFC's next-in-flow,
    * i.e. whether floats affecting this clear have continuations.
    */
-  bool ClearContinues(mozilla::StyleClear aClearType) const;
+  bool ClearContinues(mozilla::UsedClear aClearType) const;
 
   void AssertStateMatches(SavedState* aState) const {
     NS_ASSERTION(

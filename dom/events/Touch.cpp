@@ -8,7 +8,6 @@
 
 #include "mozilla/dom/EventTarget.h"
 #include "mozilla/dom/TouchEvent.h"
-#include "nsGlobalWindow.h"
 #include "nsContentUtils.h"
 #include "nsIContent.h"
 
@@ -188,12 +187,12 @@ void Touch::InitializePoints(nsPresContext* aPresContext, WidgetEvent* aEvent) {
   if (mPointsInitialized) {
     return;
   }
-  mClientPoint =
-      Event::GetClientCoords(aPresContext, aEvent, mRefPoint, mClientPoint);
-  mPagePoint =
-      Event::GetPageCoords(aPresContext, aEvent, mRefPoint, mClientPoint);
-  mScreenPoint =
-      Event::GetScreenCoords(aPresContext, aEvent, mRefPoint).extract();
+  mClientPoint = RoundedToInt(
+      Event::GetClientCoords(aPresContext, aEvent, mRefPoint, mClientPoint));
+  mPagePoint = RoundedToInt(
+      Event::GetPageCoords(aPresContext, aEvent, mRefPoint, mClientPoint));
+  mScreenPoint = RoundedToInt(
+      Event::GetScreenCoords(aPresContext, aEvent, mRefPoint).extract());
   mPointsInitialized = true;
 }
 

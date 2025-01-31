@@ -10,27 +10,18 @@
  * below the global usage.
  */
 
+const { TestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TestUtils.sys.mjs"
+);
+
 loadScript("dom/quota/test/common/file.js");
 
-function awaitStoragePressure() {
-  let promise_resolve;
-
-  let promise = new Promise(function (resolve) {
-    promise_resolve = resolve;
-  });
-
-  function observer(subject, topic) {
-    ok(true, "Got the storage pressure event");
-
-    Services.obs.removeObserver(observer, topic);
-
-    let usage = subject.QueryInterface(Ci.nsISupportsPRUint64).data;
-    promise_resolve(usage);
-  }
-
-  Services.obs.addObserver(observer, "QuotaManager::StoragePressure");
-
-  return promise;
+async function awaitStoragePressure() {
+  const [subject] = await TestUtils.topicObserved(
+    "QuotaManager::StoragePressure"
+  );
+  const usage = subject.QueryInterface(Ci.nsISupportsPRUint64).data;
+  return usage;
 }
 
 async function testSteps() {
@@ -86,8 +77,9 @@ async function testSteps() {
     ok(false, "Should have thrown");
   } catch (e) {
     ok(true, "Should have thrown");
-    ok(
-      e.resultCode === NS_ERROR_FILE_NO_DEVICE_SPACE,
+    Assert.strictEqual(
+      e.resultCode,
+      NS_ERROR_FILE_NO_DEVICE_SPACE,
       "Threw right result code"
     );
   }
@@ -95,7 +87,7 @@ async function testSteps() {
   info("Checking the storage pressure event");
 
   let usage = await promiseStoragePressure;
-  ok(usage == globalLimitKB * 1024, "Got correct usage");
+  Assert.equal(usage, globalLimitKB * 1024, "Got correct usage");
 
   info("Testing storage pressure by reducing the global limit");
 
@@ -124,7 +116,7 @@ async function testSteps() {
   info("Checking the storage pressure event");
 
   usage = await promiseStoragePressure;
-  ok(usage == globalLimitKB * 1024, "Got correct usage");
+  Assert.equal(usage, globalLimitKB * 1024, "Got correct usage");
 
   info("Resetting limits");
 

@@ -4,9 +4,6 @@
 
 "use strict";
 
-// The ext-* files are imported into the same scopes.
-/* import-globals-from ext-toolkit.js */
-
 // Manages an alarm created by the extension (alarms API).
 class Alarm {
   constructor(api, name, alarmInfo) {
@@ -43,7 +40,7 @@ class Alarm {
     this.canceled = true;
   }
 
-  observe(subject, topic, data) {
+  observe() {
     if (this.canceled) {
       return;
     }
@@ -97,7 +94,7 @@ this.alarms = class extends ExtensionAPIPersistent {
         unregister: () => {
           this.callbacks.delete(callback);
         },
-        convert(_fire, context) {
+        convert(_fire) {
           fire = _fire;
         },
       };

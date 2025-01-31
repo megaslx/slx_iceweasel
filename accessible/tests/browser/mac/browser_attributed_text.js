@@ -115,30 +115,104 @@ addAccessibleTask(
 );
 
 // Test getting a span of attributed text that includes an empty input element.
-addAccessibleTask(`hello <input id="input"> world`, async (browser, accDoc) => {
-  let macDoc = accDoc.nativeInterface.QueryInterface(
-    Ci.nsIAccessibleMacInterface
-  );
+addAccessibleTask(
+  `hello <input id="input"> world<button></button>`,
+  async (browser, accDoc) => {
+    let macDoc = accDoc.nativeInterface.QueryInterface(
+      Ci.nsIAccessibleMacInterface
+    );
 
-  let range = macDoc.getParameterizedAttributeValue(
-    "AXTextMarkerRangeForUnorderedTextMarkers",
-    [
-      macDoc.getAttributeValue("AXStartTextMarker"),
-      macDoc.getAttributeValue("AXEndTextMarker"),
-    ]
-  );
+    let range = macDoc.getParameterizedAttributeValue(
+      "AXTextMarkerRangeForUnorderedTextMarkers",
+      [
+        macDoc.getAttributeValue("AXStartTextMarker"),
+        macDoc.getAttributeValue("AXEndTextMarker"),
+      ]
+    );
 
-  let attributedText = macDoc.getParameterizedAttributeValue(
-    "AXAttributedStringForTextMarkerRange",
-    range
-  );
+    let attributedText = macDoc.getParameterizedAttributeValue(
+      "AXAttributedStringForTextMarkerRange",
+      range
+    );
 
-  let text = macDoc.getParameterizedAttributeValue(
-    "AXStringForTextMarkerRange",
-    range
-  );
+    let text = macDoc.getParameterizedAttributeValue(
+      "AXStringForTextMarkerRange",
+      range
+    );
 
-  is(attributedText.length, 1, "Empty input does not break up attribute run.");
-  is(attributedText[0].string, `hello  world `, "Attributed string is correct");
-  is(text, `hello  world `, "Unattributed string is correct");
-});
+    is(
+      attributedText.length,
+      4,
+      "Should be 4 attribute runs for 2 texts, input and button"
+    );
+    is(attributedText[0].string, `hello `, "Attributed string is correct");
+    ok(
+      !attributedText[0].AXAttachment,
+      "Regular string attributes run doesn't have attachment"
+    );
+    is(
+      attributedText[1].AXAttachment.getAttributeValue("AXRole"),
+      "AXTextField",
+      "Entry text attribute run has correct attachment"
+    );
+    is(
+      attributedText[3].AXAttachment.getAttributeValue("AXRole"),
+      "AXButton",
+      "Button text attribute run has correct attachment"
+    );
+    is(text, `hello  world${kEmbedChar}`, "Unattributed string is correct");
+  }
+);
+
+// Test text fragment.
+addAccessibleTask(
+  `This is a test.`,
+  async (browser, accDoc) => {
+    const macDoc = accDoc.nativeInterface.QueryInterface(
+      Ci.nsIAccessibleMacInterface
+    );
+    const range = macDoc.getParameterizedAttributeValue(
+      "AXTextMarkerRangeForUnorderedTextMarkers",
+      [
+        macDoc.getAttributeValue("AXStartTextMarker"),
+        macDoc.getAttributeValue("AXEndTextMarker"),
+      ]
+    );
+    const attributedText = macDoc.getParameterizedAttributeValue(
+      "AXAttributedStringForTextMarkerRange",
+      range
+    );
+    is(attributedText.length, 3);
+    ok(!attributedText[0].AXHighlight);
+    ok(attributedText[1].AXHighlight);
+    is(attributedText[1].string, "test");
+    ok(!attributedText[2].AXHighlight);
+  },
+  { urlSuffix: "#:~:text=test" }
+);
+
+// Test the <mark> element.
+addAccessibleTask(
+  `This is a <mark>test</mark>.`,
+  async function testMark(browser, accDoc) {
+    const macDoc = accDoc.nativeInterface.QueryInterface(
+      Ci.nsIAccessibleMacInterface
+    );
+    const range = macDoc.getParameterizedAttributeValue(
+      "AXTextMarkerRangeForUnorderedTextMarkers",
+      [
+        macDoc.getAttributeValue("AXStartTextMarker"),
+        macDoc.getAttributeValue("AXEndTextMarker"),
+      ]
+    );
+    const attributedText = macDoc.getParameterizedAttributeValue(
+      "AXAttributedStringForTextMarkerRange",
+      range
+    );
+    is(attributedText.length, 3);
+    ok(!attributedText[0].AXHighlight);
+    ok(attributedText[1].AXHighlight);
+    is(attributedText[1].string, "test");
+    ok(!attributedText[2].AXHighlight);
+  }
+);

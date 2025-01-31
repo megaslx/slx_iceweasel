@@ -77,9 +77,8 @@ class Theme : protected nsNativeTheme, public nsITheme {
   LayoutDeviceIntSize GetMinimumWidgetSize(nsPresContext*, nsIFrame*,
                                            StyleAppearance) override;
   Transparency GetWidgetTransparency(nsIFrame*, StyleAppearance) override;
-  NS_IMETHOD WidgetStateChanged(nsIFrame*, StyleAppearance, nsAtom* aAttribute,
-                                bool* aShouldRepaint,
-                                const nsAttrValue* aOldValue) override;
+  bool WidgetAttributeChangeRequiresRepaint(StyleAppearance,
+                                            nsAtom* aAttribute) override;
   NS_IMETHOD ThemeChanged() override;
   bool WidgetAppearanceDependsOnWindowFocus(StyleAppearance) override;
   /*bool NeedToClearBackgroundBehindWidget(
@@ -94,14 +93,13 @@ class Theme : protected nsNativeTheme, public nsITheme {
   LayoutDeviceIntCoord GetScrollbarSize(const nsPresContext*,
                                         StyleScrollbarWidth, Overlay) final;
 
-  nscoord GetCheckboxRadioPrefSize() override;
+  CSSCoord GetCheckboxRadioPrefSize() override;
 
   static UniquePtr<ScrollbarDrawing> ScrollbarStyle();
 
  protected:
   virtual ~Theme() = default;
 
-  DPIRatio GetDPIRatio(nsPresContext*, StyleAppearance);
   DPIRatio GetDPIRatio(nsIFrame*, StyleAppearance);
 
   std::tuple<sRGBColor, sRGBColor, sRGBColor> ComputeCheckboxColors(
@@ -171,8 +169,7 @@ class Theme : protected nsNativeTheme, public nsITheme {
   template <typename PaintBackendData>
   void PaintMenulist(PaintBackendData&, const LayoutDeviceRect&,
                      const ElementState&, const Colors&, DPIRatio);
-  void PaintMenulistArrowButton(nsIFrame*, DrawTarget&, const LayoutDeviceRect&,
-                                const ElementState&);
+  void PaintMenulistArrow(nsIFrame*, DrawTarget&, const LayoutDeviceRect&);
   void PaintSpinnerButton(nsIFrame*, DrawTarget&, const LayoutDeviceRect&,
                           const ElementState&, StyleAppearance, const Colors&,
                           DPIRatio);
@@ -186,7 +183,8 @@ class Theme : protected nsNativeTheme, public nsITheme {
                      bool aIsMeter);
   template <typename PaintBackendData>
   void PaintButton(nsIFrame*, PaintBackendData&, const LayoutDeviceRect&,
-                   const ElementState&, const Colors&, DPIRatio);
+                   StyleAppearance, const ElementState&, const Colors&,
+                   DPIRatio);
 
   static void PrefChangedCallback(const char*, void*) {
     LookAndFeel::NotifyChangedAllWindows(ThemeChangeKind::Layout);

@@ -14,7 +14,6 @@
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/Unused.h"
 #include "nsContentUtils.h"
 #include "nsISupportsImpl.h"  // for MOZ_COUNT_CTOR, MOZ_COUNT_DTOR
 #include "MIDILog.h"
@@ -24,7 +23,8 @@ using namespace mozilla::ipc;
 namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(MIDIPort, DOMEventTargetHelper,
-                                   mOpeningPromise, mClosingPromise)
+                                   mMIDIAccessParent, mOpeningPromise,
+                                   mClosingPromise)
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(MIDIPort, DOMEventTargetHelper)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
@@ -36,24 +36,16 @@ NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 NS_IMPL_ADDREF_INHERITED(MIDIPort, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(MIDIPort, DOMEventTargetHelper)
 
-MIDIPort::MIDIPort(nsPIDOMWindowInner* aWindow, MIDIAccess* aMIDIAccessParent)
-    : DOMEventTargetHelper(aWindow),
-      mMIDIAccessParent(aMIDIAccessParent),
-      mKeepAlive(false) {
+MIDIPort::MIDIPort(nsPIDOMWindowInner* aWindow)
+    : DOMEventTargetHelper(aWindow), mKeepAlive(false) {
   MOZ_ASSERT(aWindow);
-  MOZ_ASSERT(aMIDIAccessParent);
 
-  Document* aDoc = GetOwner()->GetExtantDoc();
-  if (aDoc) {
+  if (Document* aDoc = aWindow->GetExtantDoc()) {
     aDoc->DisallowBFCaching();
   }
 }
 
 MIDIPort::~MIDIPort() {
-  if (mMIDIAccessParent) {
-    mMIDIAccessParent->RemovePortListener(this);
-    mMIDIAccessParent = nullptr;
-  }
   if (Port()) {
     // If the IPC port channel is still alive at this point, it means we're
     // probably CC'ing this port object. Send the shutdown message to also clean
@@ -62,8 +54,19 @@ MIDIPort::~MIDIPort() {
   }
 }
 
-bool MIDIPort::Initialize(const MIDIPortInfo& aPortInfo, bool aSysexEnabled) {
-  nsIURI* uri = GetDocumentIfCurrent()->GetDocumentURI();
+bool MIDIPort::Initialize(const MIDIPortInfo& aPortInfo, bool aSysexEnabled,
+                          MIDIAccess* aMIDIAccessParent) {
+  MOZ_ASSERT(aMIDIAccessParent);
+  nsCOMPtr<Document> document = GetDocumentIfCurrent();
+  if (!document) {
+    return false;
+  }
+
+  nsCOMPtr<nsIURI> uri = document->GetDocumentURI();
+  if (!uri) {
+    return false;
+  }
+
   nsAutoCString origin;
   nsresult rv = nsContentUtils::GetWebExposedOriginSerialization(uri, origin);
   if (NS_FAILED(rv)) {
@@ -90,17 +93,19 @@ bool MIDIPort::Initialize(const MIDIPortInfo& aPortInfo, bool aSysexEnabled) {
                              aSysexEnabled)) {
     return false;
   }
+
+  mMIDIAccessParent = aMIDIAccessParent;
   mPortHolder.Init(port.forget());
   LOG("MIDIPort::Initialize (%s, %s)",
       NS_ConvertUTF16toUTF8(Port()->Name()).get(),
-      MIDIPortTypeValues::strings[uint32_t(Port()->Type())].value);
+      GetEnumString(Port()->Type()).get());
   return true;
 }
 
 void MIDIPort::UnsetIPCPort() {
   LOG("MIDIPort::UnsetIPCPort (%s, %s)",
       NS_ConvertUTF16toUTF8(Port()->Name()).get(),
-      MIDIPortTypeValues::strings[uint32_t(Port()->Type())].value);
+      GetEnumString(Port()->Type()).get());
   mPortHolder.Clear();
 }
 
@@ -147,13 +152,10 @@ bool MIDIPort::SysexEnabled() const {
 already_AddRefed<Promise> MIDIPort::Open(ErrorResult& aError) {
   LOG("MIDIPort::Open");
   MOZ_ASSERT(Port());
-  RefPtr<Promise> p;
   if (mOpeningPromise) {
-    p = mOpeningPromise;
-    return p.forget();
+    return do_AddRef(mOpeningPromise);
   }
-  nsCOMPtr<nsIGlobalObject> go = do_QueryInterface(GetOwner());
-  p = Promise::Create(go, aError);
+  RefPtr<Promise> p = Promise::Create(GetOwnerGlobal(), aError);
   if (aError.Failed()) {
     return nullptr;
   }
@@ -165,13 +167,10 @@ already_AddRefed<Promise> MIDIPort::Open(ErrorResult& aError) {
 already_AddRefed<Promise> MIDIPort::Close(ErrorResult& aError) {
   LOG("MIDIPort::Close");
   MOZ_ASSERT(Port());
-  RefPtr<Promise> p;
   if (mClosingPromise) {
-    p = mClosingPromise;
-    return p.forget();
+    return do_AddRef(mClosingPromise);
   }
-  nsCOMPtr<nsIGlobalObject> go = do_QueryInterface(GetOwner());
-  p = Promise::Create(go, aError);
+  RefPtr<Promise> p = Promise::Create(GetOwnerGlobal(), aError);
   if (aError.Failed()) {
     return nullptr;
   }
@@ -180,15 +179,8 @@ already_AddRefed<Promise> MIDIPort::Close(ErrorResult& aError) {
   return p.forget();
 }
 
-void MIDIPort::Notify(const void_t& aVoid) {
-  LOG("MIDIPort::notify MIDIAccess shutting down, dropping reference.");
-  // If we're getting notified, it means the MIDIAccess parent object is dead.
-  // Nullify our copy.
-  mMIDIAccessParent = nullptr;
-}
-
 void MIDIPort::FireStateChangeEvent() {
-  if (!GetOwner()) {
+  if (!GetOwnerWindow()) {
     return;  // Ignore changes once we've been disconnected from the owner
   }
 
@@ -245,8 +237,10 @@ void MIDIPort::Receive(const nsTArray<MIDIMessage>& aMsg) {
 }
 
 void MIDIPort::DisconnectFromOwner() {
+  if (Port()) {
+    Port()->SendClose();
+  }
   DontKeepAliveOnStatechange();
-  Port()->SendClose();
 
   DOMEventTargetHelper::DisconnectFromOwner();
 }

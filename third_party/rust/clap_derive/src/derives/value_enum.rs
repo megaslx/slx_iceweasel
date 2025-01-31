@@ -15,7 +15,7 @@ use syn::{spanned::Spanned, Data, DeriveInput, Fields, Ident, Variant};
 
 use crate::item::{Item, Kind, Name};
 
-pub fn derive_value_enum(input: &DeriveInput) -> Result<TokenStream, syn::Error> {
+pub(crate) fn derive_value_enum(input: &DeriveInput) -> Result<TokenStream, syn::Error> {
     let ident = &input.ident;
 
     match input.data {
@@ -34,7 +34,7 @@ pub fn derive_value_enum(input: &DeriveInput) -> Result<TokenStream, syn::Error>
     }
 }
 
-pub fn gen_for_enum(
+pub(crate) fn gen_for_enum(
     item: &Item,
     item_name: &Ident,
     variants: &[(&Variant, Item)],
@@ -51,7 +51,13 @@ pub fn gen_for_enum(
     let to_possible_value = gen_to_possible_value(item, &lits);
 
     Ok(quote! {
-        #[allow(dead_code, unreachable_code, unused_variables, unused_braces)]
+        #[allow(
+            dead_code,
+            unreachable_code,
+            unused_variables,
+            unused_braces,
+            unused_qualifications,
+        )]
         #[allow(
             clippy::style,
             clippy::complexity,
@@ -63,7 +69,9 @@ pub fn gen_for_enum(
             clippy::cargo,
             clippy::suspicious_else_formatting,
             clippy::almost_swapped,
+            clippy::redundant_locals,
         )]
+        #[automatically_derived]
         impl clap::ValueEnum for #item_name {
             #value_variants
             #to_possible_value

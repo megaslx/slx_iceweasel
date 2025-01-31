@@ -65,7 +65,7 @@ nsresult WebVTTListener::LoadResource() {
   if (IsCanceled()) {
     return NS_OK;
   }
-  // Exit if we failed to create the WebVTTParserWrapper (vtt.jsm)
+  // Exit if we failed to create the WebVTTParserWrapper (vtt.sys.mjs)
   NS_ENSURE_SUCCESS(mParserWrapperError, mParserWrapperError);
 
   mElement->SetReadyState(TextTrackReadyState::Loading);
@@ -114,7 +114,8 @@ WebVTTListener::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     mElement->SetReadyState(TextTrackReadyState::Loaded);
   }
 
-  mElement->CancelChannelAndListener();
+  // Prevent canceling the channel and listener if RFP is enabled.
+  mElement->CancelChannelAndListener(true);
 
   return aStatus;
 }

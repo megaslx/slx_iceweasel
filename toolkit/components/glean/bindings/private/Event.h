@@ -7,13 +7,34 @@
 #ifndef mozilla_glean_GleanEvent_h
 #define mozilla_glean_GleanEvent_h
 
-#include "nsIGleanMetrics.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Nullable.h"
+#include "mozilla/dom/Record.h"
 #include "mozilla/glean/bindings/EventGIFFTMap.h"
+#include "mozilla/glean/bindings/GleanMetric.h"
 #include "mozilla/glean/fog_ffi_generated.h"
 #include "mozilla/ResultVariant.h"
 
 #include "nsString.h"
 #include "nsTArray.h"
+
+namespace mozilla::dom {
+// forward declaration
+struct GleanEventRecord;
+}  // namespace mozilla::dom
+
+namespace mozilla::Telemetry {
+// forward declaration
+struct EventExtraEntry;
+}  // namespace mozilla::Telemetry
+using mozilla::Telemetry::EventExtraEntry;
+
+namespace TelemetryEvent {
+// forward declaration
+void RecordEventNative(
+    mozilla::Telemetry::EventID aId, const mozilla::Maybe<nsCString>& aValue,
+    const mozilla::Maybe<CopyableTArray<EventExtraEntry>>& aExtra);
+}  // namespace TelemetryEvent
 
 namespace mozilla::glean {
 
@@ -55,18 +76,23 @@ class EventMetric {
       // NB. In case `aExtras` is filled we call `ToFfiExtra`, causing
       // twice the required allocation. We could be smarter and reuse the data.
       // But this is GIFFT-only allocation, so wait to be told it's a problem.
-      Maybe<CopyableTArray<Telemetry::EventExtraEntry>> telExtras;
+      Maybe<CopyableTArray<EventExtraEntry>> telExtras;
+      Maybe<nsCString> telValue;
       if (aExtras) {
-        CopyableTArray<Telemetry::EventExtraEntry> extras;
+        CopyableTArray<EventExtraEntry> extras;
         auto serializedExtras = aExtras->ToFfiExtra();
         auto keys = std::move(std::get<0>(serializedExtras));
         auto values = std::move(std::get<1>(serializedExtras));
         for (size_t i = 0; i < keys.Length(); i++) {
-          extras.EmplaceBack(Telemetry::EventExtraEntry{keys[i], values[i]});
+          if (keys[i].EqualsLiteral("value")) {
+            telValue = Some(values[i]);
+            continue;
+          }
+          extras.EmplaceBack(EventExtraEntry{keys[i], values[i]});
         }
         telExtras = Some(extras);
       }
-      Telemetry::RecordEvent(id.extract(), Nothing(), telExtras);
+      TelemetryEvent::RecordEventNative(id.extract(), telValue, telExtras);
     }
     if (aExtras) {
       auto extra = aExtras->ToFfiExtra();
@@ -145,12 +171,21 @@ struct NoExtraKeys {
   }
 };
 
-class GleanEvent final : public nsIGleanEvent {
+class GleanEvent final : public GleanMetric {
  public:
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSIGLEANEVENT
+  explicit GleanEvent(uint32_t id, nsISupports* aParent)
+      : GleanMetric(aParent), mEvent(id) {}
 
-  explicit GleanEvent(uint32_t id) : mEvent(id){};
+  virtual JSObject* WrapObject(
+      JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override final;
+
+  void Record(
+      const dom::Optional<dom::Nullable<dom::Record<nsCString, nsCString>>>&
+          aExtra);
+
+  void TestGetValue(const nsACString& aPingName,
+                    dom::Nullable<nsTArray<dom::GleanEventRecord>>& aResult,
+                    ErrorResult& aRv);
 
  private:
   virtual ~GleanEvent() = default;

@@ -67,9 +67,9 @@ already_AddRefed<TextureHost> CreateTextureHostOGL(
       java::GeckoSurfaceTexture::LocalRef surfaceTexture =
           java::GeckoSurfaceTexture::Lookup(desc.handle());
 
-      result = new SurfaceTextureHost(aFlags, surfaceTexture, desc.size(),
-                                      desc.format(), desc.continuous(),
-                                      desc.transformOverride());
+      result = new SurfaceTextureHost(
+          aFlags, surfaceTexture, desc.size(), desc.format(), desc.continuous(),
+          desc.forceBT709ColorSpace(), desc.transformOverride());
       break;
     }
     case SurfaceDescriptor::TSurfaceDescriptorAndroidHardwareBuffer: {
@@ -91,6 +91,10 @@ already_AddRefed<TextureHost> CreateTextureHostOGL(
 #ifdef MOZ_WIDGET_GTK
     case SurfaceDescriptor::TSurfaceDescriptorDMABuf: {
       result = new DMABUFTextureHostOGL(aFlags, aDesc);
+      if (!result->IsValid()) {
+        gfxCriticalError() << "DMABuf surface import failed!";
+        result = nullptr;
+      }
       break;
     }
 #endif
@@ -491,12 +495,13 @@ void SurfaceTextureSource::DeallocateDeviceData() { mSurfTex = nullptr; }
 SurfaceTextureHost::SurfaceTextureHost(
     TextureFlags aFlags, mozilla::java::GeckoSurfaceTexture::Ref& aSurfTex,
     gfx::IntSize aSize, gfx::SurfaceFormat aFormat, bool aContinuousUpdate,
-    Maybe<Matrix4x4> aTransformOverride)
+    bool aForceBT709ColorSpace, Maybe<Matrix4x4> aTransformOverride)
     : TextureHost(TextureHostType::AndroidSurfaceTexture, aFlags),
       mSurfTex(aSurfTex),
       mSize(aSize),
       mFormat(aFormat),
       mContinuousUpdate(aContinuousUpdate),
+      mForceBT709ColorSpace(aForceBT709ColorSpace),
       mTransformOverride(aTransformOverride) {
   if (!mSurfTex) {
     return;
@@ -532,6 +537,8 @@ void SurfaceTextureHost::DeallocateDeviceData() {
 
 void SurfaceTextureHost::CreateRenderTexture(
     const wr::ExternalImageId& aExternalImageId) {
+  MOZ_ASSERT(mExternalImageId.isSome());
+
   bool isRemoteTexture = !!(mFlags & TextureFlags::REMOTE_TEXTURE);
   RefPtr<wr::RenderTextureHost> texture =
       new wr::RenderAndroidSurfaceTextureHost(
@@ -554,11 +561,24 @@ void SurfaceTextureHost::PushResourceUpdates(
   TextureHost::NativeTexturePolicy policy =
       TextureHost::BackendNativeTexturePolicy(aResources.GetBackendType(),
                                               GetSize());
-  auto imageType = policy == TextureHost::NativeTexturePolicy::REQUIRE
-                       ? wr::ExternalImageType::TextureHandle(
-                             wr::ImageBufferKind::TextureRect)
-                       : wr::ExternalImageType::TextureHandle(
-                             wr::ImageBufferKind::TextureExternal);
+  auto imageType = wr::ExternalImageType::TextureHandle(
+      wr::ImageBufferKind::TextureExternal);
+  if (policy == TextureHost::NativeTexturePolicy::REQUIRE) {
+    imageType =
+        wr::ExternalImageType::TextureHandle(wr::ImageBufferKind::TextureRect);
+  } else if (mForceBT709ColorSpace) {
+    imageType = wr::ExternalImageType::TextureHandle(
+        wr::ImageBufferKind::TextureExternalBT709);
+  }
+
+  // Hardware webrender directly renders from the SurfaceTexture therefore we
+  // must provide it the (transformed) normalized UVs. For software webrender we
+  // first read from the SurfaceTexture in to a CPU buffer, which we sample from
+  // using unnormalized UVs. The readback code handles the texture transform.
+  // See RenderAndroidSurfaceTextureHost::Lock() and
+  // RenderAndroidSurfaceTextureHost::ReadTexImage(), respectively.
+  const bool normalizedUvs =
+      aResources.GetBackendType() == WebRenderBackend::HARDWARE;
 
   switch (GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:
@@ -571,7 +591,8 @@ void SurfaceTextureHost::PushResourceUpdates(
                         ? gfx::SurfaceFormat::B8G8R8A8
                         : gfx::SurfaceFormat::B8G8R8X8;
       wr::ImageDescriptor descriptor(GetSize(), format);
-      (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0);
+      (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
+                           normalizedUvs);
       break;
     }
     default: {
@@ -824,6 +845,8 @@ AndroidHardwareBufferTextureHost::GetAndResetReleaseFence() {
 
 void AndroidHardwareBufferTextureHost::CreateRenderTexture(
     const wr::ExternalImageId& aExternalImageId) {
+  MOZ_ASSERT(mExternalImageId.isSome());
+
   RefPtr<wr::RenderTextureHost> texture =
       new wr::RenderAndroidHardwareBufferTextureHost(mAndroidHardwareBuffer);
   wr::RenderThread::Get()->RegisterExternalImage(aExternalImageId,
@@ -862,7 +885,8 @@ void AndroidHardwareBufferTextureHost::PushResourceUpdates(
                         ? gfx::SurfaceFormat::B8G8R8A8
                         : gfx::SurfaceFormat::B8G8R8X8;
       wr::ImageDescriptor descriptor(GetSize(), format);
-      (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0);
+      (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
+                           /* aNormalizedUvs */ false);
       break;
     }
     default: {
@@ -914,7 +938,9 @@ EGLImageTextureSource::EGLImageTextureSource(TextureSourceProvider* aProvider,
                                              gfx::SurfaceFormat aFormat,
                                              GLenum aTarget, GLenum aWrapMode,
                                              gfx::IntSize aSize)
-    : mImage(aImage),
+    : mGL(aProvider->GetGLContext()),
+      mCompositor(aProvider->AsCompositorOGL()),
+      mImage(aImage),
       mFormat(aFormat),
       mTextureTarget(aTarget),
       mWrapMode(aWrapMode),
@@ -976,15 +1002,16 @@ EGLImageTextureHost::~EGLImageTextureHost() = default;
 gl::GLContext* EGLImageTextureHost::gl() const { return nullptr; }
 
 gfx::SurfaceFormat EGLImageTextureHost::GetFormat() const {
-  MOZ_ASSERT(mTextureSource);
-  return mTextureSource ? mTextureSource->GetFormat()
-                        : gfx::SurfaceFormat::UNKNOWN;
+  return mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8
+                   : gfx::SurfaceFormat::R8G8B8X8;
 }
 
 void EGLImageTextureHost::CreateRenderTexture(
     const wr::ExternalImageId& aExternalImageId) {
+  MOZ_ASSERT(mExternalImageId.isSome());
+
   RefPtr<wr::RenderTextureHost> texture =
-      new wr::RenderEGLImageTextureHost(mImage, mSync, mSize);
+      new wr::RenderEGLImageTextureHost(mImage, mSync, mSize, GetFormat());
   wr::RenderThread::Get()->RegisterExternalImage(aExternalImageId,
                                                  texture.forget());
 }
@@ -995,11 +1022,18 @@ void EGLImageTextureHost::PushResourceUpdates(
   auto method = aOp == TextureHost::ADD_IMAGE
                     ? &wr::TransactionBuilder::AddExternalImage
                     : &wr::TransactionBuilder::UpdateExternalImage;
-  auto imageType = wr::ExternalImageType::TextureHandle(
-      wr::ImageBufferKind::TextureExternal);
 
-  gfx::SurfaceFormat format =
-      mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8 : gfx::SurfaceFormat::R8G8B8X8;
+  // Prefer TextureExternal unless the backend requires TextureRect.
+  TextureHost::NativeTexturePolicy policy =
+      TextureHost::BackendNativeTexturePolicy(aResources.GetBackendType(),
+                                              GetSize());
+  auto imageType = policy == TextureHost::NativeTexturePolicy::REQUIRE
+                       ? wr::ExternalImageType::TextureHandle(
+                             wr::ImageBufferKind::TextureRect)
+                       : wr::ExternalImageType::TextureHandle(
+                             wr::ImageBufferKind::TextureExternal);
+
+  gfx::SurfaceFormat format = GetFormat();
 
   MOZ_ASSERT(aImageKeys.length() == 1);
   // XXX Add RGBA handling. Temporary hack to avoid crash
@@ -1008,19 +1042,29 @@ void EGLImageTextureHost::PushResourceUpdates(
                        ? gfx::SurfaceFormat::B8G8R8A8
                        : gfx::SurfaceFormat::B8G8R8X8;
   wr::ImageDescriptor descriptor(GetSize(), formatTmp);
-  (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0);
+  (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
+                       /* aNormalizedUvs */ false);
 }
 
 void EGLImageTextureHost::PushDisplayItems(
     wr::DisplayListBuilder& aBuilder, const wr::LayoutRect& aBounds,
     const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
     const Range<wr::ImageKey>& aImageKeys, PushDisplayItemFlagSet aFlags) {
+  bool preferCompositorSurface =
+      aFlags.contains(PushDisplayItemFlag::PREFER_COMPOSITOR_SURFACE);
+  bool supportsExternalCompositing =
+      SupportsExternalCompositing(aBuilder.GetBackendType());
+
   MOZ_ASSERT(aImageKeys.length() == 1);
-  aBuilder.PushImage(
-      aBounds, aClip, true, false, aFilter, aImageKeys[0],
-      !(mFlags & TextureFlags::NON_PREMULTIPLIED),
-      wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
-      aFlags.contains(PushDisplayItemFlag::PREFER_COMPOSITOR_SURFACE));
+  aBuilder.PushImage(aBounds, aClip, true, false, aFilter, aImageKeys[0],
+                     !(mFlags & TextureFlags::NON_PREMULTIPLIED),
+                     wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
+                     preferCompositorSurface, supportsExternalCompositing);
+}
+
+bool EGLImageTextureHost::SupportsExternalCompositing(
+    WebRenderBackend aBackend) {
+  return aBackend == WebRenderBackend::SOFTWARE;
 }
 
 //

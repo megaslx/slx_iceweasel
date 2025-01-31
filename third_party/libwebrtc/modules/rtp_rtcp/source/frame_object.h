@@ -11,10 +11,13 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_FRAME_OBJECT_H_
 #define MODULES_RTP_RTCP_SOURCE_FRAME_OBJECT_H_
 
+#include <optional>
 #include <vector>
 
-#include "absl/types/optional.h"
+#include "absl/types/variant.h"
 #include "api/video/encoded_frame.h"
+#include "api/video/video_frame_metadata.h"
+#include "common_video/frame_instrumentation_data.h"
 
 namespace webrtc {
 
@@ -34,7 +37,10 @@ class RtpFrameObject : public EncodedFrame {
                  VideoRotation rotation,
                  VideoContentType content_type,
                  const RTPVideoHeader& video_header,
-                 const absl::optional<webrtc::ColorSpace>& color_space,
+                 const std::optional<webrtc::ColorSpace>& color_space,
+                 const std::optional<absl::variant<FrameInstrumentationSyncData,
+                                                   FrameInstrumentationData>>&
+                     frame_instrumentation_data,
                  RtpPacketInfos packet_infos,
                  rtc::scoped_refptr<EncodedImageBuffer> image_buffer);
 
@@ -52,6 +58,12 @@ class RtpFrameObject : public EncodedFrame {
   uint8_t* mutable_data() { return image_buffer_->data(); }
 
   const std::vector<uint32_t>& Csrcs() const { return csrcs_; }
+
+  void SetFirstSeqNum(uint16_t first_seq_num) {
+    first_seq_num_ = first_seq_num;
+  }
+  void SetLastSeqNum(uint16_t last_seq_num) { last_seq_num_ = last_seq_num; }
+  void SetHeaderFromMetadata(const VideoFrameMetadata& metadata);
 
  private:
   // Reference for mutable access.

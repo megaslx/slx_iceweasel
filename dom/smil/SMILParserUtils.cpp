@@ -9,7 +9,6 @@
 #include "mozilla/SMILAttr.h"
 #include "mozilla/SMILKeySpline.h"
 #include "mozilla/SMILRepeatCount.h"
-#include "mozilla/SMILTimeValue.h"
 #include "mozilla/SMILTimeValueSpecParams.h"
 #include "mozilla/SMILTypes.h"
 #include "mozilla/SMILValue.h"
@@ -35,8 +34,8 @@ const uint32_t MSEC_PER_HOUR = 1000 * 60 * 60;
 #define REPEAT_PREFIX u"repeat("_ns
 #define WALLCLOCK_PREFIX u"wallclock("_ns
 
-inline bool SkipWhitespace(RangedPtr<const char16_t>& aIter,
-                           const RangedPtr<const char16_t>& aEnd) {
+inline bool SkipWhitespace(nsAString::const_iterator& aIter,
+                           const nsAString::const_iterator& aEnd) {
   while (aIter != aEnd) {
     if (!nsContentUtils::IsHTMLWhitespace(*aIter)) {
       return true;
@@ -46,8 +45,8 @@ inline bool SkipWhitespace(RangedPtr<const char16_t>& aIter,
   return false;
 }
 
-inline bool ParseColon(RangedPtr<const char16_t>& aIter,
-                       const RangedPtr<const char16_t>& aEnd) {
+inline bool ParseColon(nsAString::const_iterator& aIter,
+                       const nsAString::const_iterator& aEnd) {
   if (aIter == aEnd || *aIter != ':') {
     return false;
   }
@@ -58,14 +57,14 @@ inline bool ParseColon(RangedPtr<const char16_t>& aIter,
 /*
  * Exactly two digits in the range 00 - 59 are expected.
  */
-bool ParseSecondsOrMinutes(RangedPtr<const char16_t>& aIter,
-                           const RangedPtr<const char16_t>& aEnd,
+bool ParseSecondsOrMinutes(nsAString::const_iterator& aIter,
+                           const nsAString::const_iterator& aEnd,
                            uint32_t& aValue) {
   if (aIter == aEnd || !mozilla::IsAsciiDigit(*aIter)) {
     return false;
   }
 
-  RangedPtr<const char16_t> iter(aIter);
+  nsAString::const_iterator iter(aIter);
 
   if (++iter == aEnd || !mozilla::IsAsciiDigit(*iter)) {
     return false;
@@ -85,8 +84,8 @@ bool ParseSecondsOrMinutes(RangedPtr<const char16_t>& aIter,
   return true;
 }
 
-inline bool ParseClockMetric(RangedPtr<const char16_t>& aIter,
-                             const RangedPtr<const char16_t>& aEnd,
+inline bool ParseClockMetric(nsAString::const_iterator& aIter,
+                             const nsAString::const_iterator& aEnd,
                              uint32_t& aMultiplier) {
   if (aIter == aEnd) {
     aMultiplier = MSEC_PER_SEC;
@@ -101,7 +100,7 @@ inline bool ParseClockMetric(RangedPtr<const char16_t>& aIter,
       }
       return false;
     case 'm': {
-      const nsAString& metric = Substring(aIter.get(), aEnd.get());
+      const nsAString& metric = Substring(aIter, aEnd);
       if (metric.EqualsLiteral("min")) {
         aMultiplier = MSEC_PER_MIN;
         aIter = aEnd;
@@ -126,8 +125,9 @@ inline bool ParseClockMetric(RangedPtr<const char16_t>& aIter,
 /**
  * See http://www.w3.org/TR/SVG/animate.html#ClockValueSyntax
  */
-bool ParseClockValue(RangedPtr<const char16_t>& aIter,
-                     const RangedPtr<const char16_t>& aEnd,
+bool ParseClockValue(nsAString::const_iterator& aIter,
+                     const nsAString::const_iterator& aEnd,
+                     SMILTimeValue::Rounding aRounding,
                      SMILTimeValue* aResult) {
   if (aIter == aEnd) {
     return false;
@@ -140,7 +140,7 @@ bool ParseClockValue(RangedPtr<const char16_t>& aIter,
 
   int32_t clockType = TIMECOUNT_VALUE;
 
-  RangedPtr<const char16_t> iter(aIter);
+  nsAString::const_iterator iter(aIter);
 
   // Determine which type of clock value we have by counting the number
   // of colons in the string.
@@ -187,8 +187,9 @@ bool ParseClockValue(RangedPtr<const char16_t>& aIter,
         return false;
       }
       aResult->SetMillis(SMILTime(hours) * MSEC_PER_HOUR +
-                         minutes * MSEC_PER_MIN + seconds * MSEC_PER_SEC +
-                         NS_round(fraction * MSEC_PER_SEC));
+                             minutes * MSEC_PER_MIN +
+                             (seconds + fraction) * MSEC_PER_SEC,
+                         aRounding);
       aIter = iter;
       return true;
     case TIMECOUNT_VALUE:
@@ -203,8 +204,7 @@ bool ParseClockValue(RangedPtr<const char16_t>& aIter,
       if (!ParseClockMetric(iter, aEnd, multiplier)) {
         return false;
       }
-      aResult->SetMillis(SMILTime(timecount) * multiplier +
-                         NS_round(fraction * multiplier));
+      aResult->SetMillis((timecount + fraction) * multiplier, aRounding);
       aIter = iter;
       return true;
   }
@@ -212,14 +212,15 @@ bool ParseClockValue(RangedPtr<const char16_t>& aIter,
   return false;
 }
 
-bool ParseOffsetValue(RangedPtr<const char16_t>& aIter,
-                      const RangedPtr<const char16_t>& aEnd,
+bool ParseOffsetValue(nsAString::const_iterator& aIter,
+                      const nsAString::const_iterator& aEnd,
                       SMILTimeValue* aResult) {
-  RangedPtr<const char16_t> iter(aIter);
+  nsAString::const_iterator iter(aIter);
 
   int32_t sign;
   if (!SVGContentUtils::ParseOptionalSign(iter, aEnd, sign) ||
-      !SkipWhitespace(iter, aEnd) || !ParseClockValue(iter, aEnd, aResult)) {
+      !SkipWhitespace(iter, aEnd) ||
+      !ParseClockValue(iter, aEnd, SMILTimeValue::Rounding::Nearest, aResult)) {
     return false;
   }
   if (sign == -1) {
@@ -230,25 +231,26 @@ bool ParseOffsetValue(RangedPtr<const char16_t>& aIter,
 }
 
 bool ParseOffsetValue(const nsAString& aSpec, SMILTimeValue* aResult) {
-  RangedPtr<const char16_t> iter(SVGContentUtils::GetStartRangedPtr(aSpec));
-  const RangedPtr<const char16_t> end(SVGContentUtils::GetEndRangedPtr(aSpec));
+  nsAString::const_iterator iter, end;
+  aSpec.BeginReading(iter);
+  aSpec.EndReading(end);
 
   return ParseOffsetValue(iter, end, aResult) && iter == end;
 }
 
-bool ParseOptionalOffset(RangedPtr<const char16_t>& aIter,
-                         const RangedPtr<const char16_t>& aEnd,
+bool ParseOptionalOffset(nsAString::const_iterator& aIter,
+                         const nsAString::const_iterator& aEnd,
                          SMILTimeValue* aResult) {
   if (aIter == aEnd) {
-    aResult->SetMillis(0L);
+    *aResult = SMILTimeValue::Zero();
     return true;
   }
 
   return SkipWhitespace(aIter, aEnd) && ParseOffsetValue(aIter, aEnd, aResult);
 }
 
-void MoveToNextToken(RangedPtr<const char16_t>& aIter,
-                     const RangedPtr<const char16_t>& aEnd, bool aBreakOnDot,
+void MoveToNextToken(nsAString::const_iterator& aIter,
+                     const nsAString::const_iterator& aEnd, bool aBreakOnDot,
                      bool& aIsAnyCharEscaped) {
   aIsAnyCharEscaped = false;
 
@@ -324,20 +326,21 @@ bool ParseElementBaseTimeValueSpec(const nsAString& aSpec,
   // defined (for SMIL Animation) so we don't support it here.
   //
 
-  RangedPtr<const char16_t> start(SVGContentUtils::GetStartRangedPtr(aSpec));
-  RangedPtr<const char16_t> end(SVGContentUtils::GetEndRangedPtr(aSpec));
+  nsAString::const_iterator start, end;
+  aSpec.BeginReading(start);
+  aSpec.EndReading(end);
 
   if (start == end) {
     return false;
   }
 
-  RangedPtr<const char16_t> tokenEnd(start);
+  nsAString::const_iterator tokenEnd(start);
 
   bool requiresUnescaping;
   MoveToNextToken(tokenEnd, end, true, requiresUnescaping);
 
-  RefPtr<nsAtom> atom = ConvertTokenToAtom(
-      Substring(start.get(), tokenEnd.get()), requiresUnescaping);
+  RefPtr<nsAtom> atom =
+      ConvertTokenToAtom(Substring(start, tokenEnd), requiresUnescaping);
   if (atom == nullptr) {
     return false;
   }
@@ -350,7 +353,7 @@ bool ParseElementBaseTimeValueSpec(const nsAString& aSpec,
     start = tokenEnd;
     MoveToNextToken(tokenEnd, end, false, requiresUnescaping);
 
-    const nsAString& token2 = Substring(start.get(), tokenEnd.get());
+    const nsAString& token2 = Substring(start, tokenEnd);
 
     // element-name.begin
     if (token2.EqualsLiteral("begin")) {
@@ -362,7 +365,7 @@ bool ParseElementBaseTimeValueSpec(const nsAString& aSpec,
       result.mSyncBegin = false;
       // element-name.repeat(digit+)
     } else if (StringBeginsWith(token2, REPEAT_PREFIX)) {
-      start += REPEAT_PREFIX.Length();
+      start.advance(REPEAT_PREFIX.Length());
       int32_t repeatValue;
       if (start == tokenEnd || *start == '+' || *start == '-' ||
           !SVGContentUtils::ParseInteger(start, tokenEnd, repeatValue)) {
@@ -597,19 +600,22 @@ bool SMILParserUtils::ParseTimeValueSpecParams(
 }
 
 bool SMILParserUtils::ParseClockValue(const nsAString& aSpec,
+                                      SMILTimeValue::Rounding aRounding,
                                       SMILTimeValue* aResult) {
-  RangedPtr<const char16_t> iter(SVGContentUtils::GetStartRangedPtr(aSpec));
-  RangedPtr<const char16_t> end(SVGContentUtils::GetEndRangedPtr(aSpec));
+  nsAString::const_iterator iter, end;
+  aSpec.BeginReading(iter);
+  aSpec.EndReading(end);
 
-  return ::ParseClockValue(iter, end, aResult) && iter == end;
+  return ::ParseClockValue(iter, end, aRounding, aResult) && iter == end;
 }
 
 int32_t SMILParserUtils::CheckForNegativeNumber(const nsAString& aStr) {
   int32_t absValLocation = -1;
 
-  RangedPtr<const char16_t> start(SVGContentUtils::GetStartRangedPtr(aStr));
-  RangedPtr<const char16_t> iter = start;
-  RangedPtr<const char16_t> end(SVGContentUtils::GetEndRangedPtr(aStr));
+  nsAString::const_iterator start, iter, end;
+  aStr.BeginReading(start);
+  aStr.EndReading(end);
+  iter = start;
 
   // Skip initial whitespace
   while (iter != end && nsContentUtils::IsHTMLWhitespace(*iter)) {

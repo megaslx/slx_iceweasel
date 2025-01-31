@@ -11,8 +11,17 @@
 const TEST_URL = `${TEST_BASE_URL}dummy_page.html`;
 
 add_task(async function test_with_oneoff_button() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
   info("Loading test page into first tab");
-  await BrowserTestUtils.loadURIString(gBrowser, TEST_URL);
+  let promiseLoad = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    false,
+    TEST_URL
+  );
+  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, TEST_URL);
+  await promiseLoad;
 
   info("Opening a new tab");
   const tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
@@ -50,12 +59,12 @@ add_task(async function test_with_oneoff_button() {
   const switchTabLabel = document.getElementById("urlbar-label-switchtab");
   await BrowserTestUtils.waitForCondition(
     () =>
-      BrowserTestUtils.is_visible(searchModeTitle) &&
+      BrowserTestUtils.isVisible(searchModeTitle) &&
       searchModeTitle.textContent === "Tabs",
     "Waiting until the search mode title will be visible"
   );
   await BrowserTestUtils.waitForCondition(
-    () => BrowserTestUtils.is_hidden(switchTabLabel),
+    () => BrowserTestUtils.isHidden(switchTabLabel),
     "Waiting until the switch tab label will be hidden"
   );
 
@@ -65,7 +74,13 @@ add_task(async function test_with_oneoff_button() {
 
 add_task(async function test_with_keytype() {
   info("Loading test page into first tab");
-  await BrowserTestUtils.loadURIString(gBrowser, TEST_URL);
+  let promiseLoad = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    false,
+    TEST_URL
+  );
+  BrowserTestUtils.startLoadingURIString(gBrowser, TEST_URL);
+  await promiseLoad;
 
   info("Opening a new tab");
   const tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
@@ -97,11 +112,11 @@ add_task(async function test_with_keytype() {
   );
   const switchTabLabel = document.getElementById("urlbar-label-switchtab");
   await BrowserTestUtils.waitForCondition(
-    () => BrowserTestUtils.is_hidden(searchModeTitle),
+    () => BrowserTestUtils.isHidden(searchModeTitle),
     "Waiting until the search mode title will be hidden"
   );
   await BrowserTestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(switchTabLabel),
+    () => BrowserTestUtils.isVisible(switchTabLabel),
     "Waiting until the switch tab label will be visible"
   );
 

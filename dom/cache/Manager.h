@@ -11,6 +11,7 @@
 #include "mozilla/dom/SafeRefPtr.h"
 #include "mozilla/dom/cache/Types.h"
 #include "mozilla/dom/quota/Client.h"
+#include "mozilla/dom/quota/StringifyUtils.h"
 #include "CacheCommon.h"
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
@@ -28,7 +29,7 @@ namespace dom {
 
 namespace quota {
 
-class DirectoryLock;
+class ClientDirectoryLock;
 
 }  // namespace quota
 
@@ -72,9 +73,9 @@ class StreamList;
 // As an invariant, all Manager objects must cease all IO before shutdown.  This
 // is enforced by the Manager::Factory.  If content still holds references to
 // Cache DOM objects during shutdown, then all operations will begin rejecting.
-class Manager final : public SafeRefCounted<Manager> {
+class Manager final : public SafeRefCounted<Manager>, public Stringifyable {
   using Client = quota::Client;
-  using DirectoryLock = quota::DirectoryLock;
+  using ClientDirectoryLock = quota::ClientDirectoryLock;
 
  public:
   // Callback interface implemented by clients of Manager, such as CacheParent
@@ -173,7 +174,7 @@ class Manager final : public SafeRefCounted<Manager> {
 
   const ManagerId& GetManagerId() const;
 
-  Maybe<DirectoryLock&> MaybeDirectoryLockRef() const;
+  Maybe<ClientDirectoryLock&> MaybeDirectoryLockRef() const;
 
   // Methods to allow a StreamList to register themselves with the Manager.
   // StreamList objects must call RemoveStreamList() before they are destroyed.
@@ -293,6 +294,8 @@ class Manager final : public SafeRefCounted<Manager> {
   nsTArray<BodyIdRefCounter> mBodyIdRefs;
 
   struct ConstructorGuard {};
+
+  void DoStringify(nsACString& aData) override;
 
  public:
   Manager(SafeRefPtr<ManagerId> aManagerId, nsIThread* aIOThread,

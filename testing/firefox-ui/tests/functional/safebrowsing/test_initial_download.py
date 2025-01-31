@@ -10,7 +10,6 @@ from marionette_harness import MarionetteTestCase
 
 
 class TestSafeBrowsingInitialDownload(MarionetteTestCase):
-
     v2_file_extensions = [
         "vlpset",
         "sbstore",
@@ -37,6 +36,7 @@ class TestSafeBrowsingInitialDownload(MarionetteTestCase):
     }
 
     prefs_safebrowsing = {
+        "services.settings.server": "https://firefox.settings.services.mozilla.com/v1",
         "browser.safebrowsing.debug": True,
         "browser.safebrowsing.update.enabled": True,
     }

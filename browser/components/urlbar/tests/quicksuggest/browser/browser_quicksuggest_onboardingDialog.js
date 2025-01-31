@@ -35,6 +35,11 @@ if (AppConstants.platform === "macosx") {
 let gCanTabMoveFocus;
 add_setup(async function () {
   gCanTabMoveFocus = await canTabMoveFocus();
+
+  // Ensure the test remote settings server is set up. This test doesn't trigger
+  // any suggestions but it enables Suggest, which will attempt to sync from
+  // remote settings.
+  await QuickSuggestTestUtils.ensureQuickSuggestInit();
 });
 
 // When the user has already enabled the data-collection pref, the dialog should
@@ -92,18 +97,6 @@ add_task(async function escKey_focusInsideDialog() {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_2",
-      },
-    ],
   });
 });
 
@@ -132,18 +125,6 @@ add_task(async function escKey_focusOutsideDialog() {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_2",
-      },
-    ],
   });
 });
 
@@ -200,18 +181,6 @@ async function doQueuedEscKeyTest(otherDialogKey) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_1",
-      },
-    ],
   });
 }
 
@@ -228,18 +197,6 @@ add_task(async function dismissed_other_on_introduction() {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_1",
-      },
-    ],
   });
 });
 
@@ -316,47 +273,6 @@ add_task(async function nimbus_skip_onboarding_dialog() {
   });
 });
 
-add_task(async function nimbus_exposure_event() {
-  const testData = [
-    {
-      experimentType: "modal",
-      expectedRecorded: true,
-    },
-    {
-      experimentType: "best-match",
-      expectedRecorded: false,
-    },
-    {
-      expectedRecorded: false,
-    },
-  ];
-
-  for (const { experimentType, expectedRecorded } of testData) {
-    info(`Nimbus exposure event test for type:[${experimentType}]`);
-    UrlbarPrefs.clear("quicksuggest.shouldShowOnboardingDialog");
-    UrlbarPrefs.clear("quicksuggest.showedOnboardingDialog");
-    UrlbarPrefs.clear("quicksuggest.seenRestarts", 0);
-
-    await QuickSuggestTestUtils.clearExposureEvent();
-
-    await QuickSuggestTestUtils.withExperiment({
-      valueOverrides: {
-        quickSuggestScenario: "online",
-        experimentType,
-      },
-      callback: async () => {
-        info("Calling showOnboardingDialog");
-        const { maybeShowPromise } = await showOnboardingDialog();
-        EventUtils.synthesizeKey("KEY_Escape");
-        await maybeShowPromise;
-
-        info("Check the event");
-        await QuickSuggestTestUtils.assertExposureEvent(expectedRecorded);
-      },
-    });
-  }
-});
-
 const LOGO_TYPE = {
   FIREFOX: 1,
   MAGGLASS: 2,
@@ -380,6 +296,7 @@ const VARIATION_TEST_DATA = [
       defaultFocusOrder: [
         "onboardingNext",
         "onboardingClose",
+        "onboardingDialog",
         "onboardingNext",
       ],
       actions: ["onboardingClose", "onboardingNext"],
@@ -405,11 +322,11 @@ const VARIATION_TEST_DATA = [
         ".pager": true,
       },
       defaultFocusOrder: [
-        "onboardingNext",
+        "onboardingDialog",
         "onboardingAccept",
         "onboardingLearnMore",
-        "onboardingReject",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingAccept",
       ],
       acceptFocusOrder: [
@@ -417,12 +334,14 @@ const VARIATION_TEST_DATA = [
         "onboardingLearnMore",
         "onboardingSubmit",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingAccept",
       ],
       rejectFocusOrder: [
         "onboardingReject",
         "onboardingSubmit",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingLearnMore",
         "onboardingReject",
       ],
@@ -705,6 +624,7 @@ const VARIATION_TEST_DATA = [
         "onboardingNext",
         "onboardingLearnMoreOnIntroduction",
         "onboardingClose",
+        "onboardingDialog",
         "onboardingNext",
       ],
       actions: [
@@ -734,17 +654,18 @@ const VARIATION_TEST_DATA = [
         ".pager": false,
       },
       defaultFocusOrder: [
-        "onboardingNext",
+        "onboardingDialog",
         "onboardingLearnMore",
         "onboardingAccept",
-        "onboardingReject",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingLearnMore",
       ],
       acceptFocusOrder: [
         "onboardingAccept",
         "onboardingSubmit",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingLearnMore",
         "onboardingAccept",
       ],
@@ -752,6 +673,7 @@ const VARIATION_TEST_DATA = [
         "onboardingReject",
         "onboardingSubmit",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingLearnMore",
         "onboardingReject",
       ],
@@ -790,8 +712,8 @@ const VARIATION_TEST_DATA = [
       defaultFocusOrder: [
         "onboardingLearnMore",
         "onboardingAccept",
-        "onboardingReject",
         "onboardingSkipLink",
+        "onboardingDialog",
         "onboardingLearnMore",
       ],
     },
@@ -894,8 +816,8 @@ async function doLayoutTest(variation) {
 
       if (variation.introductionSection) {
         info("Check the section visibility");
-        Assert.ok(BrowserTestUtils.is_visible(introductionSection));
-        Assert.ok(BrowserTestUtils.is_hidden(mainSection));
+        Assert.ok(BrowserTestUtils.isVisible(introductionSection));
+        Assert.ok(BrowserTestUtils.isHidden(mainSection));
 
         info("Check the introduction section");
         await assertSection(introductionSection, variation.introductionSection);
@@ -904,13 +826,13 @@ async function doLayoutTest(variation) {
         win.document.getElementById("onboardingNext").click();
         await BrowserTestUtils.waitForCondition(
           () =>
-            BrowserTestUtils.is_hidden(introductionSection) &&
-            BrowserTestUtils.is_visible(mainSection)
+            BrowserTestUtils.isHidden(introductionSection) &&
+            BrowserTestUtils.isVisible(mainSection)
         );
       } else {
         info("Check the section visibility");
-        Assert.ok(BrowserTestUtils.is_hidden(introductionSection));
-        Assert.ok(BrowserTestUtils.is_visible(mainSection));
+        Assert.ok(BrowserTestUtils.isHidden(introductionSection));
+        Assert.ok(BrowserTestUtils.isVisible(mainSection));
       }
 
       info("Check the main section");
@@ -986,7 +908,7 @@ function assertLogo(sectionElement, expectedLogoType) {
   }
 
   const logo = sectionElement.querySelector(".logo");
-  Assert.ok(BrowserTestUtils.is_visible(logo));
+  Assert.ok(BrowserTestUtils.isVisible(logo));
   const logoImage =
     sectionElement.ownerGlobal.getComputedStyle(logo).backgroundImage;
   Assert.equal(logoImage, expectedLogoImage);
@@ -1003,13 +925,13 @@ function assertVisibility(sectionElement, expectedVisibility) {
   for (const [selector, visibility] of Object.entries(expectedVisibility)) {
     const element = sectionElement.querySelector(selector);
     if (visibility) {
-      Assert.ok(BrowserTestUtils.is_visible(element));
+      Assert.ok(BrowserTestUtils.isVisible(element));
     } else {
       if (!element) {
         Assert.ok(true);
         return;
       }
-      Assert.ok(BrowserTestUtils.is_hidden(element));
+      Assert.ok(BrowserTestUtils.isHidden(element));
     }
   }
 }
@@ -1031,7 +953,7 @@ async function onboardingClose(variation) {
     callback: async (win, userAction, maybeShowPromise) => {
       info("Check the status of the close button");
       const closeButton = win.document.getElementById("onboardingClose");
-      Assert.ok(BrowserTestUtils.is_visible(closeButton));
+      Assert.ok(BrowserTestUtils.isVisible(closeButton));
       Assert.equal(closeButton.getAttribute("title"), "Close");
 
       info("Commit the close button");
@@ -1049,18 +971,6 @@ async function onboardingClose(variation) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "close_1",
-      },
-    ],
   });
 }
 
@@ -1069,7 +979,7 @@ async function onboardingNext(variation) {
     callback: async (win, userAction, maybeShowPromise) => {
       info("Check the status of the next button");
       const nextButton = win.document.getElementById("onboardingNext");
-      Assert.ok(BrowserTestUtils.is_visible(nextButton));
+      Assert.ok(BrowserTestUtils.isVisible(nextButton));
 
       info("Commit the next button");
       userAction(nextButton);
@@ -1080,8 +990,8 @@ async function onboardingNext(variation) {
       const mainSection = win.document.getElementById("main-section");
       await BrowserTestUtils.waitForCondition(
         () =>
-          BrowserTestUtils.is_hidden(introductionSection) &&
-          BrowserTestUtils.is_visible(mainSection),
+          BrowserTestUtils.isHidden(introductionSection) &&
+          BrowserTestUtils.isVisible(mainSection),
         "Wait for the transition"
       );
 
@@ -1100,18 +1010,6 @@ async function onboardingNext(variation) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_2",
-      },
-    ],
   });
 }
 
@@ -1145,18 +1043,6 @@ async function onboardingAccept(variation, skipIntroduction) {
       "quicksuggest.onboardingDialogVersion": JSON.stringify({ version: 1 }),
       "quicksuggest.dataCollection.enabled": true,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "enabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "accept_2",
-      },
-    ],
   });
 }
 
@@ -1189,18 +1075,6 @@ async function onboardingReject(variation, skipIntroduction) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "reject_2",
-      },
-    ],
   });
 }
 
@@ -1209,7 +1083,7 @@ async function onboardingSkipLink(variation, skipIntroduction) {
     callback: async (win, userAction, maybeShowPromise) => {
       info("Check the status of the skip link");
       const skipLink = win.document.getElementById("onboardingSkipLink");
-      Assert.ok(BrowserTestUtils.is_visible(skipLink));
+      Assert.ok(BrowserTestUtils.isVisible(skipLink));
 
       info("Commit the skip link");
       const tabCount = gBrowser.tabs.length;
@@ -1236,18 +1110,6 @@ async function onboardingSkipLink(variation, skipIntroduction) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "not_now_2",
-      },
-    ],
   });
 }
 
@@ -1274,7 +1136,7 @@ async function doLearnMoreTest(variation, skipIntroduction, target, telemetry) {
     callback: async (win, userAction, maybeShowPromise) => {
       info("Check the status of the learn more link");
       const learnMoreLink = win.document.getElementById(target);
-      Assert.ok(BrowserTestUtils.is_visible(learnMoreLink));
+      Assert.ok(BrowserTestUtils.isVisible(learnMoreLink));
 
       info("Commit the learn more link");
       const loadPromise = BrowserTestUtils.waitForNewTab(
@@ -1311,18 +1173,6 @@ async function doLearnMoreTest(variation, skipIntroduction, target, telemetry) {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: telemetry,
-      },
-    ],
   });
 }
 
@@ -1333,7 +1183,6 @@ async function doActionTest({
   onboardingDialogVersion,
   onboardingDialogChoice,
   expectedUserBranchPrefs,
-  telemetryEvents,
 }) {
   const userClick = target => {
     info("Click on the target");
@@ -1373,7 +1222,6 @@ async function doActionTest({
           onboardingDialogVersion,
           onboardingDialogChoice,
           expectedUserBranchPrefs,
-          telemetryEvents,
         });
       },
     });
@@ -1384,7 +1232,6 @@ async function doDialogTest({
   callback,
   onboardingDialogVersion,
   onboardingDialogChoice,
-  telemetryEvents,
   expectedUserBranchPrefs,
 }) {
   setDialogPrereqPrefs();
@@ -1397,10 +1244,6 @@ async function doDialogTest({
     gDefaultBranch.setBoolPref(name, value);
     gUserBranch.clearUserPref(name);
   }
-
-  // Setting the prefs just now triggered telemetry events, so clear them
-  // before calling the callback.
-  Services.telemetry.clearEvents();
 
   // Call the callback, which should trigger the dialog and interact with it.
   await BrowserTestUtils.withNewTab("about:blank", async () => {
@@ -1456,8 +1299,6 @@ async function doDialogTest({
     onboardingDialogChoice,
     "onboardingDialogChoice is correct in TelemetryEnvironment"
   );
-
-  QuickSuggestTestUtils.assertEvents(telemetryEvents);
 
   Assert.ok(
     UrlbarPrefs.get("quicksuggest.showedOnboardingDialog"),
@@ -1515,8 +1356,8 @@ async function showOnboardingDialog({ skipIntroduction } = {}) {
 
   await BrowserTestUtils.waitForCondition(
     () =>
-      BrowserTestUtils.is_hidden(introductionSection) &&
-      BrowserTestUtils.is_visible(mainSection)
+      BrowserTestUtils.isHidden(introductionSection) &&
+      BrowserTestUtils.isVisible(mainSection)
   );
 
   return { win, maybeShowPromise };
@@ -1578,18 +1419,6 @@ async function canTabMoveFocus() {
     expectedUserBranchPrefs: {
       "quicksuggest.dataCollection.enabled": false,
     },
-    telemetryEvents: [
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "data_collect_toggled",
-        object: "disabled",
-      },
-      {
-        category: QuickSuggest.TELEMETRY_EVENT_CATEGORY,
-        method: "opt_in_dialog",
-        object: "dismiss_2",
-      },
-    ],
   });
 
   return canMove;

@@ -144,9 +144,8 @@ long BuildRegGuidPath(REFGUID aGuid, const GuidType aGuidType, wchar_t* aBuf,
   // We exclude null terminators in these length calculations because we include
   // the stringified GUID's null terminator at the end. Since kClsid and kAppid
   // have identical lengths, we just choose one to compute this length.
-  constexpr size_t kSubkeyBaseLen = mozilla::ArrayLength(kSubkeyBase) - 1;
-  constexpr size_t kSubkeyLen =
-      kSubkeyBaseLen + mozilla::ArrayLength(kClsid) - 1;
+  constexpr size_t kSubkeyBaseLen = std::size(kSubkeyBase) - 1;
+  constexpr size_t kSubkeyLen = kSubkeyBaseLen + std::size(kClsid) - 1;
   // Guid length as formatted for the registry (including curlies and dashes),
   // but excluding null terminator.
   constexpr size_t kGuidLen = kGuidRegFormatCharLenInclNul - 1;
@@ -313,49 +312,10 @@ void DiagnosticNameForIID(REFIID aIid, nsACString& aOutString) {
 
 void GUIDToString(REFGUID aGuid,
                   wchar_t (&aOutBuf)[kGuidRegFormatCharLenInclNul]) {
-  DebugOnly<int> result =
-      ::StringFromGUID2(aGuid, aOutBuf, ArrayLength(aOutBuf));
+  DebugOnly<int> result = ::StringFromGUID2(aGuid, aOutBuf, std::size(aOutBuf));
   MOZ_ASSERT(result);
 }
 
-#endif  // defined(MOZILLA_INTERNAL_API)
-
-#if defined(MOZILLA_INTERNAL_API)
-bool IsClassThreadAwareInprocServer(REFCLSID aClsid) {
-  nsAutoString strClsid;
-  GUIDToString(aClsid, strClsid);
-
-  nsAutoString inprocServerSubkey(u"CLSID\\"_ns);
-  inprocServerSubkey.Append(strClsid);
-  inprocServerSubkey.Append(u"\\InprocServer32"_ns);
-
-  // Of the possible values, "Apartment" is the longest, so we'll make this
-  // buffer large enough to hold that one.
-  wchar_t threadingModelBuf[ArrayLength(L"Apartment")] = {};
-
-  DWORD numBytes = sizeof(threadingModelBuf);
-  LONG result = ::RegGetValueW(HKEY_CLASSES_ROOT, inprocServerSubkey.get(),
-                               L"ThreadingModel", RRF_RT_REG_SZ, nullptr,
-                               threadingModelBuf, &numBytes);
-  if (result != ERROR_SUCCESS) {
-    // This will also handle the case where the CLSID is not an inproc server.
-    return false;
-  }
-
-  DWORD numChars = numBytes / sizeof(wchar_t);
-  // numChars includes the null terminator
-  if (numChars <= 1) {
-    return false;
-  }
-
-  nsDependentString threadingModel(threadingModelBuf, numChars - 1);
-
-  // Ensure that the threading model is one of the known values that indicates
-  // that the class can operate natively (ie, no proxying) inside a MTA.
-  return threadingModel.LowerCaseEqualsLiteral("both") ||
-         threadingModel.LowerCaseEqualsLiteral("free") ||
-         threadingModel.LowerCaseEqualsLiteral("neutral");
-}
 #endif  // defined(MOZILLA_INTERNAL_API)
 
 }  // namespace mscom

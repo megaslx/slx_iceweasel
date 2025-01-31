@@ -15,6 +15,7 @@
 #include "nsPrintfCString.h"
 #include "WebGLBuffer.h"
 #include "WebGLContextUtils.h"
+#include "WebGLFormats.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLProgram.h"
 #include "WebGLRenderbuffer.h"
@@ -238,7 +239,7 @@ bool WebGLContext::ValidateStencilParamsForDrawCall() const {
 
   const auto fnMask = [&](const uint32_t x) { return x & stencilMax; };
   const auto fnClamp = [&](const int32_t x) {
-    return std::max(0, std::min(x, (int32_t)stencilMax));
+    return std::clamp(x, 0, (int32_t)stencilMax);
   };
 
   bool ok = true;
@@ -674,7 +675,7 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
 ////////////////////////////////////////
 
 void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
-                                       const GLsizei vertCount,
+                                       const GLsizei iVertCount,
                                        const GLsizei instanceCount) {
   const FuncScope funcScope(*this, "drawArraysInstanced");
   // AUTO_PROFILER_LABEL("WebGLContext::DrawArraysInstanced", GRAPHICS);
@@ -684,10 +685,11 @@ void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
   // -
 
   if (!ValidateNonNegative("first", first) ||
-      !ValidateNonNegative("vertCount", vertCount) ||
+      !ValidateNonNegative("vertCount", iVertCount) ||
       !ValidateNonNegative("instanceCount", instanceCount)) {
     return;
   }
+  const auto vertCount = AssertedCast<uint32_t>(iVertCount);
 
   if (IsWebGL2() && !gl->IsSupported(gl::GLFeature::prim_restart_fixed)) {
     MOZ_ASSERT(gl->IsSupported(gl::GLFeature::prim_restart));
@@ -717,6 +719,14 @@ void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
     ErrorInvalidOperation(
         "Vertex fetch requires %u, but attribs only supply %u.", totalVertCount,
         uint32_t(fetchLimits->maxVerts));
+    return;
+  }
+
+  if (vertCount > mMaxVertIdsPerDraw) {
+    ErrorOutOfMemory(
+        "Context's max vertCount is %u, but %u requested. "
+        "[webgl.max-vert-ids-per-draw]",
+        mMaxVertIdsPerDraw, vertCount);
     return;
   }
 
@@ -936,9 +946,11 @@ static void HandleDrawElementsErrors(
   }
 }
 
-void WebGLContext::DrawElementsInstanced(GLenum mode, GLsizei indexCount,
-                                         GLenum type, WebGLintptr byteOffset,
-                                         GLsizei instanceCount) {
+void WebGLContext::DrawElementsInstanced(const GLenum mode,
+                                         const GLsizei iIndexCount,
+                                         const GLenum type,
+                                         const WebGLintptr byteOffset,
+                                         const GLsizei instanceCount) {
   const FuncScope funcScope(*this, "drawElementsInstanced");
   // AUTO_PROFILER_LABEL("WebGLContext::DrawElementsInstanced", GRAPHICS);
   if (IsContextLost()) return;
@@ -946,8 +958,9 @@ void WebGLContext::DrawElementsInstanced(GLenum mode, GLsizei indexCount,
   const gl::GLContext::TlsScope inTls(gl);
 
   const auto indexBuffer =
-      DrawElements_check(indexCount, type, byteOffset, instanceCount);
+      DrawElements_check(iIndexCount, type, byteOffset, instanceCount);
   if (!indexBuffer) return;
+  const auto indexCount = AssertedCast<uint32_t>(iIndexCount);
 
   // -
 
@@ -1007,6 +1020,14 @@ void WebGLContext::DrawElementsInstanced(GLenum mode, GLsizei indexCount,
           maxVertId + 1, uint32_t(fetchLimits->maxVerts));
       return;
     }
+  }
+
+  if (indexCount > mMaxVertIdsPerDraw) {
+    ErrorOutOfMemory(
+        "Context's max indexCount is %u, but %u requested. "
+        "[webgl.max-vert-ids-per-draw]",
+        mMaxVertIdsPerDraw, indexCount);
+    return;
   }
 
   // -
@@ -1170,6 +1191,12 @@ bool WebGLContext::DoFakeVertexAttrib0(
   }
 
   gl->fEnableVertexAttribArray(0);
+  {
+    const auto& attrib0 = mBoundVertexArray->AttribBinding(0);
+    if (attrib0.layout.divisor) {
+      gl->fVertexAttribDivisor(0, 0);
+    }
+  }
 
   if (!mFakeVertexAttrib0BufferObject) {
     gl->fGenBuffers(1, &mFakeVertexAttrib0BufferObject);

@@ -6,7 +6,7 @@ const kButtonId = "test-tabbar-size-with-large-buttons";
 
 function test() {
   registerCleanupFunction(cleanup);
-  let titlebar = document.getElementById("titlebar");
+  let titlebar = document.getElementById("TabsToolbar");
   let originalHeight = titlebar.getBoundingClientRect().height;
   let button = document.createXULElement("toolbarbutton");
   button.id = kButtonId;
@@ -14,7 +14,7 @@ function test() {
   gNavToolbox.palette.appendChild(button);
   CustomizableUI.addWidgetToArea(kButtonId, CustomizableUI.AREA_TABSTRIP);
   let currentHeight = titlebar.getBoundingClientRect().height;
-  ok(currentHeight > originalHeight, "Titlebar should have grown");
+  Assert.greater(currentHeight, originalHeight, "Titlebar should have grown");
   CustomizableUI.removeWidgetFromArea(kButtonId);
   currentHeight = titlebar.getBoundingClientRect().height;
   is(

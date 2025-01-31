@@ -3,9 +3,7 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import { isConsole } from "../utils/preview";
-import { findBestMatchExpression } from "../utils/ast";
 import { getGrip, getFront } from "../utils/evaluation-result";
-import { getExpressionFromCoords } from "../utils/editor/get-expression";
 
 import {
   isLineInScope,
@@ -13,33 +11,137 @@ import {
   getSelectedSource,
   getSelectedLocation,
   getSelectedFrame,
-  getSymbols,
   getCurrentThread,
   getSelectedException,
-} from "../selectors";
+  getSelectedTraceIndex,
+  getAllTraces,
+} from "../selectors/index";
+import { features } from "../utils/prefs";
 
 import { getMappedExpression } from "./expressions";
+const {
+  TRACER_FIELDS_INDEXES,
+} = require("resource://devtools/server/actors/tracer.js");
 
-function findExpressionMatch(state, codeMirror, tokenPos) {
+async function findExpressionMatches(state, parserWorker, editor, tokenPos) {
   const location = getSelectedLocation(state);
   if (!location) {
-    return null;
+    return [];
+  }
+  if (features.codemirrorNext) {
+    return editor.findBestMatchExpressions(tokenPos);
   }
 
-  const symbols = getSymbols(state, location);
-
-  let match;
-  if (!symbols) {
-    match = getExpressionFromCoords(codeMirror, tokenPos);
-  } else {
-    match = findBestMatchExpression(symbols, tokenPos);
+  let match = await parserWorker.findBestMatchExpression(
+    location.source.id,
+    tokenPos
+  );
+  if (!match) {
+    // Fallback on expression from codemirror cursor,
+    // if parser worker misses symbols or is unable to find a match.
+    match = editor.getExpressionFromCoords(tokenPos);
+    return match ? [match] : [];
   }
-  return match;
+  return [match];
 }
 
-export function getPreview(target, tokenPos, codeMirror) {
+/**
+ * Get a preview object for the currently selected frame in the JS Tracer.
+ *
+ * @param {Object} target
+ *        The hovered DOM Element within CodeMirror rendering.
+ * @param {Object} tokenPos
+ *        The CodeMirror position object for the hovered token.
+ * @param {Object} editor
+ *        The CodeMirror editor object.
+ */
+export function getTracerPreview(target, tokenPos, editor) {
   return async thunkArgs => {
-    const { getState, client } = thunkArgs;
+    const { getState, parserWorker } = thunkArgs;
+    const selectedTraceIndex = getSelectedTraceIndex(getState());
+    if (selectedTraceIndex == null) {
+      return null;
+    }
+
+    const trace = getAllTraces(getState())[selectedTraceIndex];
+
+    // We may be selecting a mutation trace, which doesn't expose any value,
+    // so only consider method calls.
+    if (trace[TRACER_FIELDS_INDEXES.TYPE] != "enter") {
+      return null;
+    }
+
+    const matches = await findExpressionMatches(
+      getState(),
+      parserWorker,
+      editor,
+      tokenPos
+    );
+    if (!matches.length) {
+      return null;
+    }
+
+    let { expression, location } = matches[0];
+    const source = getSelectedSource(getState());
+    if (location && source.isOriginal) {
+      const thread = getCurrentThread(getState());
+      const mapResult = await getMappedExpression(
+        expression,
+        thread,
+        thunkArgs
+      );
+      if (mapResult) {
+        expression = mapResult.expression;
+      }
+    }
+
+    const argumentValues = trace[TRACER_FIELDS_INDEXES.ENTER_ARGS];
+    const argumentNames = trace[TRACER_FIELDS_INDEXES.ENTER_ARG_NAMES];
+    if (!argumentNames || !argumentValues) {
+      return null;
+    }
+
+    const argumentIndex = argumentNames.indexOf(expression);
+    if (argumentIndex == -1) {
+      return null;
+    }
+
+    const result = argumentValues[argumentIndex];
+    // Values are either primitives, or an Object Front
+    const resultGrip = result?.getGrip ? result?.getGrip() : result;
+
+    const root = {
+      path: expression,
+      contents: {
+        value: resultGrip,
+        front: getFront(result),
+      },
+    };
+    return {
+      previewType: "tracer",
+      target,
+      tokenPos,
+      cursorPos: target.getBoundingClientRect(),
+      expression,
+      root,
+      resultGrip,
+    };
+  };
+}
+
+/**
+ * Get a preview object for the currently paused frame, if paused.
+ *
+ * @param {Object} target
+ *        The hovered DOM Element within CodeMirror rendering.
+ * @param {Object} tokenPos
+ *        The CodeMirror position object for the hovered token.
+ * @param {Object} editor
+ *        The CodeMirror editor object.
+ */
+export function getPausedPreview(target, tokenPos, editor) {
+  return async thunkArgs => {
+    const { getState, client, parserWorker } = thunkArgs;
     if (
       !isSelectedFrameVisible(getState()) ||
       !isLineInScope(getState(), tokenPos.line)
@@ -52,17 +154,21 @@ export function getPreview(target, tokenPos, codeMirror) {
       return null;
     }
     const thread = getCurrentThread(getState());
-    const selectedFrame = getSelectedFrame(getState(), thread);
+    const selectedFrame = getSelectedFrame(getState());
     if (!selectedFrame) {
       return null;
     }
-
-    const match = findExpressionMatch(getState(), codeMirror, tokenPos);
-    if (!match) {
+    const matches = await findExpressionMatches(
+      getState(),
+      parserWorker,
+      editor,
+      tokenPos
+    );
+    if (!matches.length) {
       return null;
     }
 
-    let { expression, location } = match;
+    let { expression, location } = matches[0];
 
     if (isConsole(expression)) {
       return null;
@@ -79,9 +185,20 @@ export function getPreview(target, tokenPos, codeMirror) {
       }
     }
 
-    const { result } = await client.evaluate(expression, {
-      frameId: selectedFrame.id,
-    });
+    const { result, hasException, exception } = await client.evaluate(
+      expression,
+      {
+        frameId: selectedFrame.id,
+      }
+    );
+
+    // The evaluation shouldn't return an exception.
+    if (hasException) {
+      const errorClass = exception?.getGrip()?.class || "Error";
+      throw new Error(
+        `Debugger internal exception: Preview for <${expression}> threw a ${errorClass}`
+      );
+    }
 
     const resultGrip = getGrip(result);
 
@@ -111,33 +228,49 @@ export function getPreview(target, tokenPos, codeMirror) {
         front: getFront(result),
       },
     };
-    const properties = await client.loadObjectProperties(root, thread);
 
     return {
+      previewType: "pause",
       target,
       tokenPos,
       cursorPos: target.getBoundingClientRect(),
       expression,
       root,
       resultGrip,
-      properties,
     };
   };
 }
 
-export function getExceptionPreview(target, tokenPos, codeMirror) {
-  return async ({ dispatch, getState }) => {
-    const match = findExpressionMatch(getState(), codeMirror, tokenPos);
-    if (!match) {
+export function getExceptionPreview(target, tokenPos, editor) {
+  return async ({ getState, parserWorker }) => {
+    const matches = await findExpressionMatches(
+      getState(),
+      parserWorker,
+      editor,
+      tokenPos
+    );
+    if (!matches.length) {
       return null;
     }
+    let exception;
+    // Lezer might return multiple matches in certain scenarios.
+    // Example: For this expression `[].inlineException()` is likely to throw an exception,
+    // but if the user hovers over `inlineException` lezer finds 2 matches :
+    // 1) `inlineException` for `PropertyName`,
+    // 2) `[].inlineException()` for `MemberExpression`
+    // Babel seems to only include the `inlineException`.
+    for (const match of matches) {
+      const tokenColumnStart = match.location.start.column + 1;
+      exception = getSelectedException(
+        getState(),
+        tokenPos.line,
+        tokenColumnStart
+      );
+      if (exception) {
+        break;
+      }
+    }
 
-    const tokenColumnStart = match.location.start.column + 1;
-    const exception = getSelectedException(
-      getState(),
-      tokenPos.line,
-      tokenColumnStart
-    );
     if (!exception) {
       return null;
     }

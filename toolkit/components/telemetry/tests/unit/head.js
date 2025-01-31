@@ -14,7 +14,6 @@ ChromeUtils.defineESModuleGetters(this, {
   HttpServer: "resource://testing-common/httpd.sys.mjs",
   Log: "resource://gre/modules/Log.sys.mjs",
   NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
   TelemetryController: "resource://gre/modules/TelemetryController.sys.mjs",
   TelemetryScheduler: "resource://gre/modules/TelemetryScheduler.sys.mjs",
   TelemetrySend: "resource://gre/modules/TelemetrySend.sys.mjs",
@@ -44,7 +43,7 @@ var gGlobalScope = this;
 const PingServer = {
   _httpServer: null,
   _started: false,
-  _defers: [PromiseUtils.defer()],
+  _defers: [Promise.withResolvers()],
   _currentDeferred: 0,
   _logger: null,
 
@@ -77,13 +76,13 @@ const PingServer = {
   },
 
   resetPingHandler() {
-    this.registerPingHandler((request, response) => {
+    this.registerPingHandler(request => {
       let r = request;
       this._log.trace(
         `defaultPingHandler() - ${r.method} ${r.scheme}://${r.host}:${r.port}${r.path}`
       );
       let deferred = this._defers[this._defers.length - 1];
-      this._defers.push(PromiseUtils.defer());
+      this._defers.push(Promise.withResolvers());
       deferred.resolve(request);
     });
   },
@@ -104,7 +103,7 @@ const PingServer = {
   },
 
   clearRequests() {
-    this._defers = [PromiseUtils.defer()];
+    this._defers = [Promise.withResolvers()];
     this._currentDeferred = 0;
   },
 
@@ -201,6 +200,11 @@ function decodeRequestPayload(request) {
       TelemetryUtils.knownClientID,
       payload.clientId,
       `Known clientId shouldn't appear in a "${payload.type}" ping on the server.`
+    );
+
+    Assert.ok(
+      "profileGroupId" in payload,
+      "Pings with a clientId must also contain a profileGroupId"
     );
   }
 
@@ -411,7 +415,7 @@ function fakeGzipCompressStringForNextPing(length) {
     "resource://gre/modules/TelemetrySend.sys.mjs"
   );
   let largePayload = generateString(length);
-  Policy.gzipCompressString = data => {
+  Policy.gzipCompressString = () => {
     Policy.gzipCompressString = gzipCompressString;
     return largePayload;
   };
@@ -544,7 +548,7 @@ if (runningInParent) {
   }
 
   fakePingSendTimer(
-    (callback, timeout) => {
+    callback => {
       Services.tm.dispatchToMainThread(() => callback());
     },
     () => {}

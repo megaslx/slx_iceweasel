@@ -75,9 +75,10 @@ void MediaController::GetMetadata(MediaMetadataInit& aMetadata,
 }
 
 static const MediaControlKey sDefaultSupportedKeys[] = {
-    MediaControlKey::Focus,     MediaControlKey::Play, MediaControlKey::Pause,
-    MediaControlKey::Playpause, MediaControlKey::Stop,
-};
+    MediaControlKey::Focus,       MediaControlKey::Play,
+    MediaControlKey::Pause,       MediaControlKey::Playpause,
+    MediaControlKey::Stop,        MediaControlKey::Seekto,
+    MediaControlKey::Seekforward, MediaControlKey::Seekbackward};
 
 static void GetDefaultSupportedKeys(nsTArray<MediaControlKey>& aKeys) {
   for (const auto& key : sDefaultSupportedKeys) {
@@ -142,16 +143,16 @@ void MediaController::NextTrack() {
       MediaControlAction(MediaControlKey::Nexttrack));
 }
 
-void MediaController::SeekBackward() {
+void MediaController::SeekBackward(double aSeekOffset) {
   LOG("Seek Backward");
-  UpdateMediaControlActionToContentMediaIfNeeded(
-      MediaControlAction(MediaControlKey::Seekbackward));
+  UpdateMediaControlActionToContentMediaIfNeeded(MediaControlAction(
+      MediaControlKey::Seekbackward, SeekDetails(aSeekOffset)));
 }
 
-void MediaController::SeekForward() {
+void MediaController::SeekForward(double aSeekOffset) {
   LOG("Seek Forward");
-  UpdateMediaControlActionToContentMediaIfNeeded(
-      MediaControlAction(MediaControlKey::Seekforward));
+  UpdateMediaControlActionToContentMediaIfNeeded(MediaControlAction(
+      MediaControlKey::Seekforward, SeekDetails(aSeekOffset)));
 }
 
 void MediaController::SkipAd() {
@@ -183,12 +184,23 @@ bool MediaController::IsActive() const { return mIsActive; };
 
 bool MediaController::ShouldPropagateActionToAllContexts(
     const MediaControlAction& aAction) const {
-  // These three actions have default action handler for each frame, so we
+  // These actions have default action handler for each frame, so we
   // need to propagate to all contexts. We would handle default handlers in
   // `ContentMediaController::HandleMediaKey`.
-  return aAction.mKey == MediaControlKey::Play ||
-         aAction.mKey == MediaControlKey::Pause ||
-         aAction.mKey == MediaControlKey::Stop;
+  if (aAction.mKey.isSome()) {
+    switch (aAction.mKey.value()) {
+      case MediaControlKey::Play:
+      case MediaControlKey::Pause:
+      case MediaControlKey::Stop:
+      case MediaControlKey::Seekto:
+      case MediaControlKey::Seekforward:
+      case MediaControlKey::Seekbackward:
+        return true;
+      default:
+        return false;
+    }
+  }
+  return false;
 }
 
 void MediaController::UpdateMediaControlActionToContentMediaIfNeeded(
@@ -219,9 +231,6 @@ void MediaController::UpdateMediaControlActionToContentMediaIfNeeded(
   } else {
     context->Canonical()->UpdateMediaControlAction(aAction);
   }
-  RefPtr<MediaControlService> service = MediaControlService::GetService();
-  MOZ_ASSERT(service);
-  service->NotifyMediaControlHasEverBeenUsed();
 }
 
 void MediaController::Shutdown() {
@@ -493,14 +502,19 @@ void MediaController::HandleSupportedMediaSessionActionsChanged(
   MediaController_Binding::ClearCachedSupportedKeysValue(this);
 }
 
-void MediaController::HandlePositionStateChanged(const PositionState& aState) {
+void MediaController::HandlePositionStateChanged(
+    const Maybe<PositionState>& aState) {
+  if (!aState) {
+    return;
+  }
+
   PositionStateEventInit init;
-  init.mDuration = aState.mDuration;
-  init.mPlaybackRate = aState.mPlaybackRate;
-  init.mPosition = aState.mLastReportedPlaybackPosition;
+  init.mDuration = aState->mDuration;
+  init.mPlaybackRate = aState->mPlaybackRate;
+  init.mPosition = aState->mLastReportedPlaybackPosition;
   RefPtr<PositionStateEvent> event =
       PositionStateEvent::Constructor(this, u"positionstatechange"_ns, init);
-  DispatchAsyncEvent(event);
+  DispatchAsyncEvent(event.forget());
 }
 
 void MediaController::HandleMetadataChanged(
@@ -522,13 +536,14 @@ void MediaController::DispatchAsyncEvent(const nsAString& aName) {
   RefPtr<Event> event = NS_NewDOMEvent(this, nullptr, nullptr);
   event->InitEvent(aName, false, false);
   event->SetTrusted(true);
-  DispatchAsyncEvent(event);
+  DispatchAsyncEvent(event.forget());
 }
 
-void MediaController::DispatchAsyncEvent(Event* aEvent) {
-  MOZ_ASSERT(aEvent);
+void MediaController::DispatchAsyncEvent(already_AddRefed<Event> aEvent) {
+  RefPtr<Event> event = aEvent;
+  MOZ_ASSERT(event);
   nsAutoString eventType;
-  aEvent->GetType(eventType);
+  event->GetType(eventType);
   if (!mIsActive && !eventType.EqualsLiteral("deactivated")) {
     LOG("Only 'deactivated' can be dispatched on a deactivated controller, not "
         "'%s'",
@@ -537,7 +552,7 @@ void MediaController::DispatchAsyncEvent(Event* aEvent) {
   }
   LOG("Dispatch event %s", NS_ConvertUTF16toUTF8(eventType).get());
   RefPtr<AsyncEventDispatcher> asyncDispatcher =
-      new AsyncEventDispatcher(this, aEvent);
+      new AsyncEventDispatcher(this, event.forget());
   asyncDispatcher->PostDOMEvent();
 }
 

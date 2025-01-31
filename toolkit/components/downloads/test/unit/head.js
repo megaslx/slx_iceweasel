@@ -29,7 +29,6 @@ ChromeUtils.defineESModuleGetters(this, {
   MockRegistrar: "resource://testing-common/MockRegistrar.sys.mjs",
   NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   TestUtils: "resource://testing-common/TestUtils.sys.mjs",
 });
@@ -274,6 +273,16 @@ function promiseStartLegacyDownload(aSourceUrl, aOptions) {
     localHandlerApp.executable = new FileUtils.File(aOptions.launcherPath);
 
     mimeInfo.preferredApplicationHandler = localHandlerApp;
+    mimeInfo.preferredAction = Ci.nsIMIMEInfo.useHelperApp;
+  }
+  if (aOptions && aOptions.launcherId) {
+    Assert.ok(mimeInfo != null);
+
+    let gioHandlerApp = Cc["@mozilla.org/gio-service;1"]
+      .getService(Ci.nsIGIOService)
+      .createHandlerAppFromAppId(aOptions.launcherId);
+
+    mimeInfo.preferredApplicationHandler = gioHandlerApp;
     mimeInfo.preferredAction = Ci.nsIMIMEInfo.useHelperApp;
   }
 
@@ -688,12 +697,12 @@ async function promisePartFileReady(aDownload) {
       await promiseTimeout(50);
     } while (!(await IOUtils.exists(aDownload.target.partFilePath)));
   } catch (ex) {
-    if (!(ex instanceof IOUtils.Error)) {
+    if (!DOMException.isInstance(ex)) {
       throw ex;
     }
     // This indicates that the file has been created and cannot be accessed.
     // The specific error might vary with the platform.
-    info("Expected exception while checking existence: " + ex.toString());
+    info("IOUtils exception while checking existence: " + ex.name);
     // Wait some more time to allow the write to complete.
     await promiseTimeout(100);
   }
@@ -719,7 +728,7 @@ async function promiseBlockedDownload({
   useLegacySaver,
   verdict = Downloads.Error.BLOCK_VERDICT_UNCOMMON,
 } = {}) {
-  let blockFn = base => ({
+  let blockFn = () => ({
     shouldBlockForReputationCheck: () =>
       Promise.resolve({
         shouldBlock: true,
@@ -789,7 +798,7 @@ function startFakeServer() {
 /**
  * This is an internal reference that should not be used directly by tests.
  */
-var _gDeferResponses = PromiseUtils.defer();
+var _gDeferResponses = Promise.withResolvers();
 
 /**
  * Ensures that all the interruptible requests started after this function is
@@ -817,7 +826,7 @@ function mustInterruptResponses() {
   _gDeferResponses.resolve();
 
   info("Interruptible responses will be blocked midway.");
-  _gDeferResponses = PromiseUtils.defer();
+  _gDeferResponses = Promise.withResolvers();
 }
 
 /**
@@ -1160,13 +1169,7 @@ add_setup(function test_common_initialize() {
   // saved to disk without asking for a destination interactively.
   let mock = {
     QueryInterface: ChromeUtils.generateQI(["nsIHelperAppLauncherDialog"]),
-    promptForSaveToFileAsync(
-      aLauncher,
-      aWindowContext,
-      aDefaultFileName,
-      aSuggestedFileExtension,
-      aForcePrompt
-    ) {
+    promptForSaveToFileAsync(aLauncher) {
       // The dialog should create the empty placeholder file.
       let file = getTempFile(TEST_TARGET_FILE_NAME);
       file.create(Ci.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);

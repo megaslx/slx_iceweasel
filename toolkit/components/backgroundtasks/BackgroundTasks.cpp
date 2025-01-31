@@ -234,13 +234,15 @@ bool BackgroundTasks::IsUpdatingTaskName(const nsCString& aName) {
 
 bool BackgroundTasks::IsEphemeralProfileTaskName(const nsCString& aName) {
   return !(aName.EqualsLiteral("backgroundupdate") ||
+           aName.EqualsLiteral("defaultagent") ||
            aName.EqualsLiteral("message") ||  // Just for development.
-           aName.EqualsLiteral("not_ephemeral_profile"));
+           aName.EqualsLiteral("not_ephemeral_profile"));  // Just for testing.
 }
 
 bool BackgroundTasks::IsNoOutputTaskName(const nsCString& aName) {
   return aName.EqualsLiteral("pingsender") ||
          aName.EqualsLiteral("removeDirectory") ||
+         aName.EqualsLiteral("removeProfileFiles") ||
          aName.EqualsLiteral("no_output");  // Just for testing.
 }
 

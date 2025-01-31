@@ -22,6 +22,9 @@ with Files("nsDOM*"):
 with Files("AnimationCollection.*"):
     BUG_COMPONENT = ("Core", "CSS Transitions and Animations")
 
+with Files("AnimatedPropertyID*"):
+    BUG_COMPONENT = ("Core", "CSS Transitions and Animations")
+
 with Files("AnimationCommon.*"):
     BUG_COMPONENT = ("Core", "CSS Transitions and Animations")
 
@@ -53,6 +56,7 @@ EXPORTS += [
     "nsCSSValue.h",
     "nsDOMCSSAttrDeclaration.h",
     "nsDOMCSSDeclaration.h",
+    "nsFontFaceLoader.h",
     "nsICSSDeclaration.h",
     "nsICSSLoaderObserver.h",
     "nsStyleAutoArray.h",
@@ -67,6 +71,8 @@ EXPORTS += [
 
 EXPORTS.mozilla += [
     "!ServoCSSPropList.h",
+    "AnimatedPropertyID.h",
+    "AnimatedPropertyIDSet.h",
     "AnimationCollection.h",
     "AttributeStyles.h",
     "CachedInheritingStyles.h",
@@ -76,6 +82,7 @@ EXPORTS.mozilla += [
     "CSSPropFlags.h",
     "DeclarationBlock.h",
     "DocumentStyleRootIterator.h",
+    "FontLoaderUtils.h",
     "FontPreloader.h",
     "GeckoBindings.h",
     "GlobalStyleSheetCache.h",
@@ -131,12 +138,17 @@ EXPORTS.mozilla.dom += [
     "CSSKeyframesRule.h",
     "CSSLayerBlockRule.h",
     "CSSLayerStatementRule.h",
+    "CSSMarginRule.h",
     "CSSMediaRule.h",
     "CSSMozDocumentRule.h",
     "CSSNamespaceRule.h",
+    "CSSNestedDeclarations.h",
     "CSSPageRule.h",
+    "CSSPositionTryRule.h",
     "CSSPropertyRule.h",
     "CSSRuleList.h",
+    "CSSScopeRule.h",
+    "CSSStartingStyleRule.h",
     "CSSStyleRule.h",
     "CSSSupportsRule.h",
     "CSSValue.h",
@@ -182,12 +194,17 @@ UNIFIED_SOURCES += [
     "CSSKeyframesRule.cpp",
     "CSSLayerBlockRule.cpp",
     "CSSLayerStatementRule.cpp",
+    "CSSMarginRule.cpp",
     "CSSMediaRule.cpp",
     "CSSMozDocumentRule.cpp",
     "CSSNamespaceRule.cpp",
+    "CSSNestedDeclarations.cpp",
     "CSSPageRule.cpp",
+    "CSSPositionTryRule.cpp",
     "CSSPropertyRule.cpp",
     "CSSRuleList.cpp",
+    "CSSScopeRule.cpp",
+    "CSSStartingStyleRule.cpp",
     "CSSStyleRule.cpp",
     "CSSSupportsRule.cpp",
     "DeclarationBlock.cpp",
@@ -200,6 +217,7 @@ UNIFIED_SOURCES += [
     "FontFaceSetImpl.cpp",
     "FontFaceSetIterator.cpp",
     "FontFaceSetWorkerImpl.cpp",
+    "FontLoaderUtils.cpp",
     "FontPreloader.cpp",
     "GeckoBindings.cpp",
     "GlobalStyleSheetCache.cpp",
@@ -242,6 +260,7 @@ UNIFIED_SOURCES += [
     "ServoStyleSet.cpp",
     "ShadowParts.cpp",
     "SharedStyleSheetCache.cpp",
+    "SharedSubResourceCache.cpp",
     "StreamLoader.cpp",
     "StyleAnimationValue.cpp",
     "StyleColor.cpp",
@@ -263,6 +282,9 @@ LOCAL_INCLUDES += [
     "/dom/html",
     "/dom/xul",
     "/image",
+    # For nsHttpChannel.h
+    "/netwerk/base",
+    "/netwerk/protocol/http",
 ]
 
 JAR_MANIFESTS += ["jar.mn"]

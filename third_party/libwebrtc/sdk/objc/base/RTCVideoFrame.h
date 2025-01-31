@@ -11,7 +11,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 
-#import "RTCMacros.h"
+#import "sdk/objc/base/RTCMacros.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -45,7 +45,7 @@ RTC_OBJC_EXPORT
 @property(nonatomic, readonly) id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)> buffer;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype) new NS_UNAVAILABLE;
+- (instancetype)new NS_UNAVAILABLE;
 
 /** Initialize an RTCVideoFrame from a pixel buffer, rotation, and timestamp.
  *  Deprecated - initialize with a RTCCVPixelBuffer instead

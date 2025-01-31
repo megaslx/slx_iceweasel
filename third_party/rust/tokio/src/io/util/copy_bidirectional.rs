@@ -1,8 +1,8 @@
 use super::copy::CopyBuffer;
 
+use crate::future::poll_fn;
 use crate::io::{AsyncRead, AsyncWrite};
 
-use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -11,13 +11,6 @@ enum TransferState {
     Running(CopyBuffer),
     ShuttingDown(u64),
     Done(u64),
-}
-
-struct CopyBidirectional<'a, A: ?Sized, B: ?Sized> {
-    a: &'a mut A,
-    b: &'a mut B,
-    a_to_b: TransferState,
-    b_to_a: TransferState,
 }
 
 fn transfer_one_direction<A, B>(
@@ -48,35 +41,6 @@ where
         }
     }
 }
-
-impl<'a, A, B> Future for CopyBidirectional<'a, A, B>
-where
-    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
-    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
-{
-    type Output = io::Result<(u64, u64)>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Unpack self into mut refs to each field to avoid borrow check issues.
-        let CopyBidirectional {
-            a,
-            b,
-            a_to_b,
-            b_to_a,
-        } = &mut *self;
-
-        let a_to_b = transfer_one_direction(cx, a_to_b, &mut *a, &mut *b)?;
-        let b_to_a = transfer_one_direction(cx, b_to_a, &mut *b, &mut *a)?;
-
-        // It is not a problem if ready! returns early because transfer_one_direction for the
-        // other direction will keep returning TransferState::Done(count) in future calls to poll
-        let a_to_b = ready!(a_to_b);
-        let b_to_a = ready!(b_to_a);
-
-        Poll::Ready(Ok((a_to_b, b_to_a)))
-    }
-}
-
 /// Copies data in both directions between `a` and `b`.
 ///
 /// This function returns a future that will read from both streams,
@@ -93,6 +57,9 @@ where
 /// it will return a tuple of the number of bytes copied from a to b
 /// and the number of bytes copied from b to a, in that order.
 ///
+/// It uses two 8 KB buffers for transferring bytes between `a` and `b` by default.
+/// To set your own buffers sizes use [`copy_bidirectional_with_sizes()`].
+///
 /// [`shutdown()`]: crate::io::AsyncWriteExt::shutdown
 ///
 /// # Errors
@@ -105,16 +72,66 @@ where
 ///
 /// Returns a tuple of bytes copied `a` to `b` and bytes copied `b` to `a`.
 #[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
-pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> Result<(u64, u64), std::io::Error>
+pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     B: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
-    CopyBidirectional {
+    copy_bidirectional_impl(
         a,
         b,
-        a_to_b: TransferState::Running(CopyBuffer::new()),
-        b_to_a: TransferState::Running(CopyBuffer::new()),
-    }
+        CopyBuffer::new(super::DEFAULT_BUF_SIZE),
+        CopyBuffer::new(super::DEFAULT_BUF_SIZE),
+    )
+    .await
+}
+
+/// Copies data in both directions between `a` and `b` using buffers of the specified size.
+///
+/// This method is the same as the [`copy_bidirectional()`], except that it allows you to set the
+/// size of the internal buffers used when copying data.
+#[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
+pub async fn copy_bidirectional_with_sizes<A, B>(
+    a: &mut A,
+    b: &mut B,
+    a_to_b_buf_size: usize,
+    b_to_a_buf_size: usize,
+) -> io::Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    copy_bidirectional_impl(
+        a,
+        b,
+        CopyBuffer::new(a_to_b_buf_size),
+        CopyBuffer::new(b_to_a_buf_size),
+    )
+    .await
+}
+
+async fn copy_bidirectional_impl<A, B>(
+    a: &mut A,
+    b: &mut B,
+    a_to_b_buffer: CopyBuffer,
+    b_to_a_buffer: CopyBuffer,
+) -> io::Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    let mut a_to_b = TransferState::Running(a_to_b_buffer);
+    let mut b_to_a = TransferState::Running(b_to_a_buffer);
+    poll_fn(|cx| {
+        let a_to_b = transfer_one_direction(cx, &mut a_to_b, a, b)?;
+        let b_to_a = transfer_one_direction(cx, &mut b_to_a, b, a)?;
+
+        // It is not a problem if ready! returns early because transfer_one_direction for the
+        // other direction will keep returning TransferState::Done(count) in future calls to poll
+        let a_to_b = ready!(a_to_b);
+        let b_to_a = ready!(b_to_a);
+
+        Poll::Ready(Ok((a_to_b, b_to_a)))
+    })
     .await
 }

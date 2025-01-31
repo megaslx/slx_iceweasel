@@ -1,3 +1,5 @@
+/* eslint-disable mozilla/no-comparison-or-assignment-inside-ok */
+
 // This is a list of all interfaces that are exposed to workers.
 // Please only add things to this list with great care and proper review
 // from the associated module peers.
@@ -38,6 +40,7 @@ let wasmGlobalInterfaces = [
   { name: "Function", insecureContext: true, nightly: true },
   { name: "Exception", insecureContext: true },
   { name: "Tag", insecureContext: true },
+  { name: "JSTag", insecureContext: true },
   { name: "compile", insecureContext: true },
   { name: "compileStreaming", insecureContext: true },
   { name: "instantiate", insecureContext: true },
@@ -60,6 +63,7 @@ let ecmaGlobals = [
   "Error",
   "EvalError",
   "FinalizationRegistry",
+  "Float16Array",
   "Float32Array",
   "Float64Array",
   "Function",
@@ -69,6 +73,7 @@ let ecmaGlobals = [
   "Int8Array",
   "InternalError",
   "Intl",
+  "Iterator",
   "JSON",
   "Map",
   "Math",
@@ -147,6 +152,10 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "CountQueuingStrategy",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CookieChangeEvent", nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CookieStore", nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "Crypto",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "CryptoKey",
@@ -173,13 +182,13 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "DOMRectReadOnly",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  "DOMRequest",
-  // IMPORTANT: Do not change this list without review from a DOM peer!
   "DOMStringList",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ErrorEvent",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Event",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  "EventSource",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "EventTarget",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -247,8 +256,6 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "MediaCapabilities",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  "MediaCapabilitiesInfo",
-  // IMPORTANT: Do not change this list without review from a DOM peer!
   "MessageChannel",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "MessageEvent",
@@ -285,6 +292,10 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "PerformanceServerTiming",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  "Permissions",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  "PermissionStatus",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "ProgressEvent",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "PromiseRejectionEvent",
@@ -315,9 +326,11 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Response",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "Scheduler", nightly: true },
+  { name: "Scheduler", disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ServiceWorker",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  "ServiceWorkerContainer",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ServiceWorkerGlobalScope",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -327,11 +340,11 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "SubtleCrypto",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "TaskController", nightly: true },
+  { name: "TaskController", disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "TaskPriorityChangeEvent", nightly: true },
+  { name: "TaskPriorityChangeEvent", disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "TaskSignal", nightly: true },
+  { name: "TaskSignal", disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "TextDecoder",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -416,6 +429,8 @@ let interfaceNamesInGlobalScope = [
   "clients",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "console",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "cookieStore", nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "onactivate",
   // IMPORTANT: Do not change this list without review from a DOM peer!

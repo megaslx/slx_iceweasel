@@ -12,6 +12,7 @@
 #include "nsComponentManagerUtils.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/intl/Bidi.h"
+#include "nsGlobalWindowInner.h"
 
 extern mozilla::LazyLogModule gTextTrackLog;
 
@@ -58,8 +59,7 @@ TextTrackCue::TextTrackCue(nsPIDOMWindowInner* aOwnerWindow, double aStartTime,
       mLine(0.0),
       mReset(false, "TextTrackCue::mReset"),
       mHaveStartedWatcher(false),
-      mWatchManager(
-          this, GetOwnerGlobal()->AbstractMainThreadFor(TaskCategory::Other)) {
+      mWatchManager(this, AbstractThread::MainThread()) {
   LOG("create TextTrackCue");
   SetDefaultCueSettings();
   MOZ_ASSERT(aOwnerWindow);
@@ -80,8 +80,7 @@ TextTrackCue::TextTrackCue(nsPIDOMWindowInner* aOwnerWindow, double aStartTime,
       mLine(0.0),
       mReset(false, "TextTrackCue::mReset"),
       mHaveStartedWatcher(false),
-      mWatchManager(
-          this, GetOwnerGlobal()->AbstractMainThreadFor(TaskCategory::Other)) {
+      mWatchManager(this, AbstractThread::MainThread()) {
   LOG("create TextTrackCue");
   SetDefaultCueSettings();
   MOZ_ASSERT(aOwnerWindow);
@@ -96,7 +95,7 @@ TextTrackCue::~TextTrackCue() = default;
  *  keep getting it from our window.
  */
 nsresult TextTrackCue::StashDocument() {
-  nsPIDOMWindowInner* window = GetOwner();
+  nsPIDOMWindowInner* window = GetOwnerWindow();
   if (!window) {
     return NS_ERROR_NO_INTERFACE;
   }
@@ -131,7 +130,8 @@ already_AddRefed<DocumentFragment> TextTrackCue::GetCueAsHTML() {
   }
 
   RefPtr<DocumentFragment> frag;
-  sParserWrapper->ConvertCueToDOMTree(window, this, getter_AddRefs(frag));
+  sParserWrapper->ConvertCueToDOMTree(window, static_cast<EventTarget*>(this),
+                                      getter_AddRefs(frag));
   if (!frag) {
     return mDocument->CreateDocumentFragment();
   }
@@ -220,9 +220,9 @@ PositionAlignSetting TextTrackCue::ComputedPositionAlign() {
 }
 
 bool TextTrackCue::IsTextBaseDirectionLTR() const {
-  // The returned result by `ubidi_getBaseDirection` might be `neutral` if the
-  // text only contains netural charaters. In this case, we would treat its
-  // base direction as LTR.
+  // The result returned by `GetBaseDirection` might be `neutral` if the text
+  // only contains neutral charaters. In this case, we would treat its base
+  // direction as LTR.
   return intl::Bidi::GetBaseDirection(mText) != intl::Bidi::BaseDirection::RTL;
 }
 

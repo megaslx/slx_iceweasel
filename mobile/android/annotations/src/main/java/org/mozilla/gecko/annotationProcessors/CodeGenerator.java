@@ -46,7 +46,10 @@ public class CodeGenerator {
             + ">\n"
             + "{\n"
             + "public:\n"
-            + "    static const char name[];\n"
+            + "    static constexpr char name[] =\n"
+            + "            \""
+            + cls.getName().replace('.', '/')
+            + "\";\n"
             + "\n"
             + "    explicit "
             + unqualifiedName
@@ -57,12 +60,9 @@ public class CodeGenerator {
 
     cpp.append(
         Utils.getIfdefHeader(annotatedClass.ifdef)
-            + "const char "
+            + "constexpr char "
             + clsName
-            + "::name[] =\n"
-            + "        \""
-            + cls.getName().replace('.', '/')
-            + "\";\n"
+            + "::name[];\n"
             + "\n");
 
     natives.append(
@@ -629,9 +629,9 @@ public class CodeGenerator {
       }
 
       if (val != null && type.isPrimitive()) {
-        // For static final primitive fields, we can use a "static const" declaration.
+        // For static final primitive fields, we can use a "static constexpr" declaration.
         header.append(
-            "    static const "
+            "    static constexpr "
                 + Utils.getNativeReturnType(type, info)
                 + ' '
                 + info.wrapperName
@@ -826,7 +826,7 @@ public class CodeGenerator {
             + "};\n"
             + "\n"
             + "template<class Impl>\n"
-            + "const JNINativeMethod "
+            + "MOZ_GLOBINIT const JNINativeMethod "
             + clsName
             + "::Natives<Impl>::methods[] = {"
             + nativesInits

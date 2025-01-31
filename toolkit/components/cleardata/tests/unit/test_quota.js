@@ -8,7 +8,7 @@
 "use strict";
 
 // The following tests ensure we properly clear (partitioned/unpartitioned)
-// localStorage and indexedDB when using deleteDataFromBaseDomain,
+// localStorage and indexedDB when using deleteDataFromSite,
 // deleteDataFromHost and deleteDataFromPrincipal.
 
 // Skip localStorage tests when using legacy localStorage. The legacy
@@ -16,11 +16,6 @@
 // Bug 1688221, Bug 1688665.
 const skipLocalStorageTests = Services.prefs.getBoolPref(
   "dom.storage.enable_unsupported_legacy_implementation"
-);
-
-// XXX(krosylight): xpcshell does not support background tasks
-const skipCleanupAfterDeletionAtShutdownTests = Services.prefs.getBoolPref(
-  "dom.quotaManager.backgroundTask.enabled"
 );
 
 /**
@@ -142,8 +137,9 @@ async function runTestBaseDomain(storageType) {
 
   // Clear entries of example.net including partitions.
   await new Promise(aResolve => {
-    Services.clearData.deleteDataFromBaseDomain(
+    Services.clearData.deleteDataFromSite(
       "example.net",
+      {},
       false,
       Ci.nsIClearDataService.CLEAR_DOM_QUOTA,
       aResolve
@@ -538,23 +534,5 @@ add_task(async function test_deleteAllAtShutdown() {
     countSubitems(toBeRemovedDir),
     TEST_ORIGINS.length,
     `storage/to-be-removed has ${TEST_ORIGINS.length} subdirectories`
-  );
-
-  if (skipCleanupAfterDeletionAtShutdownTests) {
-    // XXX(krosylight): xpcshell does not support background tasks
-    return;
-  }
-
-  info("Verifying cleanupAfterDeletionAtShutdown");
-  await new Promise(aResolve => {
-    Services.clearData.cleanupAfterDeletionAtShutdown(
-      Ci.nsIClearDataService.CLEAR_DOM_QUOTA,
-      aResolve
-    );
-  });
-
-  Assert.ok(
-    !toBeRemovedDir.exists(),
-    "to-be-removed directory should disappear"
   );
 });

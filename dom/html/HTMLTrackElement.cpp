@@ -11,10 +11,9 @@
 #include "mozilla/LoadInfo.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/HTMLTrackElementBinding.h"
-#include "mozilla/dom/HTMLUnknownElement.h"
+#include "mozilla/dom/UnbindContext.h"
 #include "nsAttrValueInlines.h"
 #include "nsCOMPtr.h"
-#include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsGenericHTMLElement.h"
@@ -30,7 +29,6 @@
 #include "nsNetUtil.h"
 #include "nsStyleConsts.h"
 #include "nsThreadUtils.h"
-#include "nsVideoFrame.h"
 
 extern mozilla::LazyLogModule gTextTrackLog;
 #define LOG(msg, ...)                       \
@@ -95,7 +93,8 @@ class WindowDestroyObserver final : public nsIObserver {
       NS_ENSURE_SUCCESS(rv, rv);
       if (innerID == mInnerID) {
         if (mTrackElement) {
-          mTrackElement->CancelChannelAndListener();
+          // Window is being destroyed, cancel without checking for RFP.
+          mTrackElement->CancelChannelAndListener(false);
         }
         UnRegisterWindowDestroyObserver();
       }
@@ -130,7 +129,8 @@ HTMLTrackElement::~HTMLTrackElement() {
   if (mWindowDestroyObserver) {
     mWindowDestroyObserver->UnRegisterWindowDestroyObserver();
   }
-  CancelChannelAndListener();
+  // Track element is being destroyed, cancel without checking for RFP.
+  CancelChannelAndListener(false);
 }
 
 NS_IMPL_ELEMENT_CLONE(HTMLTrackElement)
@@ -252,8 +252,15 @@ void HTMLTrackElement::MaybeDispatchLoadResource() {
 
   // step2, if the text track's text track mode is not set to one of hidden or
   // showing, then return.
-  if (mTrack->Mode() == TextTrackMode::Disabled) {
+  bool resistFingerprinting = ShouldResistFingerprinting(RFPTarget::WebVTT);
+  if (mTrack->Mode() == TextTrackMode::Disabled && !resistFingerprinting) {
     LOG("Do not load resource for disable track");
+    return;
+  }
+
+  // We need to do this check in order to prevent
+  // HonorUserPreferencesForTrackSelection from loading the text track twice.
+  if (resistFingerprinting && ReadyState() == TextTrackReadyState::Loading) {
     return;
   }
 
@@ -296,7 +303,8 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
   NS_ENSURE_TRUE_VOID(NS_SUCCEEDED(rv));
   LOG("Trying to load from src=%s", NS_ConvertUTF16toUTF8(src).get());
 
-  CancelChannelAndListener();
+  // Prevent canceling the channel and listener if RFP is enabled.
+  CancelChannelAndListener(true);
 
   // According to
   // https://www.w3.org/TR/html5/embedded-content-0.html#sourcing-out-of-band-text-tracks
@@ -370,7 +378,7 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
         }
         mChannel = channel;
       });
-  doc->Dispatch(TaskCategory::Other, runnable.forget());
+  doc->Dispatch(runnable.forget());
 }
 
 nsresult HTMLTrackElement::BindToTree(BindContext& aContext, nsINode& aParent) {
@@ -408,8 +416,8 @@ nsresult HTMLTrackElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void HTMLTrackElement::UnbindFromTree(bool aNullParent) {
-  if (mMediaParent && aNullParent) {
+void HTMLTrackElement::UnbindFromTree(UnbindContext& aContext) {
+  if (mMediaParent && aContext.IsUnbindRoot(this)) {
     // mTrack can be null if HTMLTrackElement::LoadResource has never been
     // called.
     if (mTrack) {
@@ -419,7 +427,7 @@ void HTMLTrackElement::UnbindFromTree(bool aNullParent) {
     mMediaParent = nullptr;
   }
 
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 TextTrackReadyState HTMLTrackElement::ReadyState() const {
@@ -460,7 +468,7 @@ void HTMLTrackElement::DispatchTrackRunnable(const nsString& aEventName) {
   nsCOMPtr<nsIRunnable> runnable = NewRunnableMethod<const nsString>(
       "dom::HTMLTrackElement::DispatchTrustedEvent", this,
       &HTMLTrackElement::DispatchTrustedEvent, aEventName);
-  doc->Dispatch(TaskCategory::Other, runnable.forget());
+  doc->Dispatch(runnable.forget());
 }
 
 void HTMLTrackElement::DispatchTrustedEvent(const nsAString& aName) {
@@ -468,11 +476,15 @@ void HTMLTrackElement::DispatchTrustedEvent(const nsAString& aName) {
   if (!doc) {
     return;
   }
-  nsContentUtils::DispatchTrustedEvent(doc, static_cast<nsIContent*>(this),
-                                       aName, CanBubble::eNo, Cancelable::eNo);
+  nsContentUtils::DispatchTrustedEvent(doc, this, aName, CanBubble::eNo,
+                                       Cancelable::eNo);
 }
 
-void HTMLTrackElement::CancelChannelAndListener() {
+void HTMLTrackElement::CancelChannelAndListener(bool aCheckRFP) {
+  if (aCheckRFP && ShouldResistFingerprinting(RFPTarget::WebVTT)) {
+    return;
+  }
+
   if (mChannel) {
     mChannel->CancelWithReason(NS_BINDING_ABORTED,
                                "HTMLTrackElement::CancelChannelAndListener"_ns);
@@ -484,6 +496,15 @@ void HTMLTrackElement::CancelChannelAndListener() {
     mListener->Cancel();
     mListener = nullptr;
   }
+}
+
+bool HTMLTrackElement::ShouldResistFingerprinting(RFPTarget aRfpTarget) {
+  Document* doc = OwnerDoc();
+  if (!doc) {
+    return nsContentUtils::ShouldResistFingerprinting("Null document",
+                                                      aRfpTarget);
+  }
+  return doc->ShouldResistFingerprinting(aRfpTarget);
 }
 
 void HTMLTrackElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,

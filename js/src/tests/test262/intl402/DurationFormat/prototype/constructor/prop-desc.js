@@ -1,4 +1,4 @@
-// |reftest| skip -- Intl.DurationFormat is not supported
+// |reftest| skip-if(!Intl.hasOwnProperty('DurationFormat')) -- Intl.DurationFormat is not enabled unconditionally
 // Copyright 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -26,8 +26,10 @@ features: [Intl.DurationFormat]
 includes: [propertyHelper.js]
 ---*/
 
-verifyNotEnumerable(Intl.DurationFormat.prototype, "constructor");
-verifyWritable(Intl.DurationFormat.prototype, "constructor");
-verifyConfigurable(Intl.DurationFormat.prototype, "constructor");
+verifyProperty(Intl.DurationFormat.prototype, "constructor", {
+  writable: true,
+  enumerable: false,
+  configurable: true,
+});
 
 reportCompare(0, 0);

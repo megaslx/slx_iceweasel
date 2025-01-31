@@ -4,18 +4,22 @@
 
 "use strict";
 
-define(function (require, exports, module) {
-  const { Component } = require("devtools/client/shared/vendor/react");
-  const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-  const dom = require("devtools/client/shared/vendor/react-dom-factories");
+define(function (require, exports) {
+  const {
+    Component,
+  } = require("resource://devtools/client/shared/vendor/react.js");
+  const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+  const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
-  const { createFactories } = require("devtools/client/shared/react-utils");
+  const {
+    createFactories,
+  } = require("resource://devtools/client/shared/react-utils.js");
 
   const { Headers } = createFactories(
-    require("devtools/client/jsonview/components/Headers")
+    require("resource://devtools/client/jsonview/components/Headers.js")
   );
   const { HeadersToolbar } = createFactories(
-    require("devtools/client/jsonview/components/HeadersToolbar")
+    require("resource://devtools/client/jsonview/components/HeadersToolbar.js")
   );
 
   const { div } = dom;

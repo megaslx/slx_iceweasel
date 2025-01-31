@@ -1,6 +1,6 @@
 use super::operators::{Frame, OperatorValidator, OperatorValidatorAllocations};
 use crate::{BinaryReader, Result, ValType, VisitOperator};
-use crate::{FunctionBody, Operator, WasmFeatures, WasmModuleResources};
+use crate::{FunctionBody, ModuleArity, Operator, WasmFeatures, WasmModuleResources};
 
 /// Resources necessary to perform validation of a function.
 ///
@@ -9,32 +9,20 @@ use crate::{FunctionBody, Operator, WasmFeatures, WasmModuleResources};
 /// is created per-function in a WebAssembly module. This structure is suitable
 /// for sending to other threads while the original
 /// [`Validator`](crate::Validator) continues processing other functions.
+#[derive(Debug)]
 pub struct FuncToValidate<T> {
-    resources: T,
-    index: u32,
-    ty: u32,
-    features: WasmFeatures,
+    /// Reusable, heap allocated resources to drive the Wasm validation.
+    pub resources: T,
+    /// The core Wasm function index being validated.
+    pub index: u32,
+    /// The core Wasm type index of the function being validated,
+    /// defining the results and parameters to the function.
+    pub ty: u32,
+    /// The Wasm features enabled to validate the function.
+    pub features: WasmFeatures,
 }
 
 impl<T: WasmModuleResources> FuncToValidate<T> {
-    /// Creates a new function to validate which will have the specified
-    /// configuration parameters:
-    ///
-    /// * `index` - the core wasm function index being validated
-    /// * `ty` - the core wasm type index of the function being validated,
-    ///   defining the results and parameters to the function.
-    /// * `resources` - metadata and type information about the module that
-    ///   this function is validated within.
-    /// * `features` - enabled WebAssembly features.
-    pub fn new(index: u32, ty: u32, resources: T, features: &WasmFeatures) -> FuncToValidate<T> {
-        FuncToValidate {
-            resources,
-            index,
-            ty,
-            features: *features,
-        }
-    }
-
     /// Converts this [`FuncToValidate`] into a [`FuncValidator`] using the
     /// `allocs` provided.
     ///
@@ -92,9 +80,39 @@ impl<T: WasmModuleResources> FuncValidator<T> {
     pub fn validate(&mut self, body: &FunctionBody<'_>) -> Result<()> {
         let mut reader = body.get_binary_reader();
         self.read_locals(&mut reader)?;
-        reader.allow_memarg64(self.validator.features.memory64);
+        #[cfg(feature = "features")]
+        {
+            reader.set_features(self.validator.features);
+        }
         while !reader.eof() {
+            // In a debug build, verify that the validator's pops and pushes to and from
+            // the operand stack match the operator's arity.
+            #[cfg(debug_assertions)]
+            let (pop_push_snapshot, arity) = (
+                self.validator.pop_push_count,
+                reader
+                    .clone()
+                    .read_operator()?
+                    .operator_arity(&self.visitor(reader.original_position())),
+            );
+
             reader.visit_operator(&mut self.visitor(reader.original_position()))??;
+
+            #[cfg(debug_assertions)]
+            {
+                let (params, results) = arity.ok_or(format_err!(
+                    reader.original_position(),
+                    "could not calculate operator arity"
+                ))?;
+
+                let pop_count = self.validator.pop_push_count.0 - pop_push_snapshot.0;
+                let push_count = self.validator.pop_push_count.1 - pop_push_snapshot.1;
+
+                if pop_count != params || push_count != results {
+                    panic!("arity mismatch in validation. Expecting {} operands popped, {} pushed, but got {} popped, {} pushed.",
+                           params, results, pop_count, push_count);
+                }
+            }
         }
         self.finish(reader.original_position())
     }
@@ -155,7 +173,7 @@ impl<T: WasmModuleResources> FuncValidator<T> {
     pub fn visitor<'this, 'a: 'this>(
         &'this mut self,
         offset: usize,
-    ) -> impl VisitOperator<'a, Output = Result<()>> + 'this {
+    ) -> impl VisitOperator<'a, Output = Result<()>> + ModuleArity + 'this {
         self.validator.with_resources(&self.resources, offset)
     }
 
@@ -169,6 +187,11 @@ impl<T: WasmModuleResources> FuncValidator<T> {
     /// error if validation fails.
     pub fn finish(&mut self, offset: usize) -> Result<()> {
         self.validator.finish(offset)
+    }
+
+    /// Returns the Wasm features enabled for this validator.
+    pub fn features(&self) -> &WasmFeatures {
+        &self.validator.features
     }
 
     /// Returns the underlying module resources that this validator is using.
@@ -248,46 +271,62 @@ impl<T: WasmModuleResources> FuncValidator<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WasmFuncType;
+    use crate::types::CoreTypeId;
+    use crate::{HeapType, RefType};
 
-    struct EmptyResources;
+    struct EmptyResources(crate::SubType);
+
+    impl Default for EmptyResources {
+        fn default() -> Self {
+            EmptyResources(crate::SubType {
+                supertype_idx: None,
+                is_final: true,
+                composite_type: crate::CompositeType {
+                    inner: crate::CompositeInnerType::Func(crate::FuncType::new([], [])),
+                    shared: false,
+                },
+            })
+        }
+    }
 
     impl WasmModuleResources for EmptyResources {
-        type FuncType = EmptyFuncType;
-
         fn table_at(&self, _at: u32) -> Option<crate::TableType> {
             todo!()
         }
         fn memory_at(&self, _at: u32) -> Option<crate::MemoryType> {
             todo!()
         }
-        fn tag_at(&self, _at: u32) -> Option<&Self::FuncType> {
+        fn tag_at(&self, _at: u32) -> Option<&crate::FuncType> {
             todo!()
         }
         fn global_at(&self, _at: u32) -> Option<crate::GlobalType> {
             todo!()
         }
-        fn func_type_at(&self, _type_idx: u32) -> Option<&Self::FuncType> {
-            Some(&EmptyFuncType)
+        fn sub_type_at(&self, _type_idx: u32) -> Option<&crate::SubType> {
+            Some(&self.0)
+        }
+        fn sub_type_at_id(&self, _id: CoreTypeId) -> &crate::SubType {
+            todo!()
+        }
+        fn type_id_of_function(&self, _at: u32) -> Option<CoreTypeId> {
+            todo!()
         }
         fn type_index_of_function(&self, _at: u32) -> Option<u32> {
             todo!()
         }
-        fn type_of_function(&self, _func_idx: u32) -> Option<&Self::FuncType> {
-            todo!()
-        }
-        fn check_value_type(
-            &self,
-            _t: ValType,
-            _features: &WasmFeatures,
-            _offset: usize,
-        ) -> Result<()> {
+        fn check_heap_type(&self, _t: &mut HeapType, _offset: usize) -> Result<()> {
             Ok(())
+        }
+        fn top_type(&self, _heap_type: &HeapType) -> HeapType {
+            todo!()
         }
         fn element_type_at(&self, _at: u32) -> Option<crate::RefType> {
             todo!()
         }
-        fn matches(&self, _t1: ValType, _t2: ValType) -> bool {
+        fn is_subtype(&self, _t1: ValType, _t2: ValType) -> bool {
+            todo!()
+        }
+        fn is_shared(&self, _ty: RefType) -> bool {
             todo!()
         }
         fn element_count(&self) -> u32 {
@@ -301,27 +340,15 @@ mod tests {
         }
     }
 
-    struct EmptyFuncType;
-
-    impl WasmFuncType for EmptyFuncType {
-        fn len_inputs(&self) -> usize {
-            0
-        }
-        fn len_outputs(&self) -> usize {
-            0
-        }
-        fn input_at(&self, _at: u32) -> Option<ValType> {
-            todo!()
-        }
-        fn output_at(&self, _at: u32) -> Option<ValType> {
-            todo!()
-        }
-    }
-
     #[test]
     fn operand_stack_height() {
-        let mut v = FuncToValidate::new(0, 0, EmptyResources, &Default::default())
-            .into_validator(Default::default());
+        let mut v = FuncToValidate {
+            index: 0,
+            ty: 0,
+            resources: EmptyResources::default(),
+            features: Default::default(),
+        }
+        .into_validator(Default::default());
 
         // Initially zero values on the stack.
         assert_eq!(v.operand_stack_height(), 0);

@@ -21,6 +21,7 @@
 #include "mozilla/StorageAccess.h"
 #include "nsIGlobalObject.h"
 #include "nsString.h"
+#include "nsReadableUtils.h"
 
 namespace mozilla::dom {
 
@@ -73,9 +74,7 @@ already_AddRefed<Promise> Clients::Get(const nsAString& aClientID,
   }
 
   const PrincipalInfo& principalInfo = workerPrivate->GetPrincipalInfo();
-  nsCOMPtr<nsISerialEventTarget> target =
-      mGlobal->EventTargetFor(TaskCategory::Other);
-
+  nsCOMPtr<nsISerialEventTarget> target = mGlobal->SerialEventTarget();
   RefPtr<ClientOpPromise> innerPromise = ClientManager::GetInfoAndState(
       ClientGetInfoAndStateArgs(id, principalInfo), target);
 
@@ -103,7 +102,7 @@ already_AddRefed<Promise> Clients::Get(const nsAString& aClientID,
                       scope, "ServiceWorkerGetClientStorageError",
                       nsTArray<nsString>());
                 });
-            SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+            SchedulerGroup::Dispatch(r.forget());
             outerPromise->MaybeResolveWithUndefined();
           },
           [outerPromise, holder](const CopyableErrorResult& aResult) {
@@ -188,7 +187,7 @@ already_AddRefed<Promise> Clients::MatchAll(const ClientQueryOptions& aOptions,
                     scope, "ServiceWorkerGetClientStorageError",
                     nsTArray<nsString>());
               });
-          SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+          SchedulerGroup::Dispatch(r.forget());
         }
         clientList.Sort(MatchAllComparator());
         outerPromise->MaybeResolve(clientList);
@@ -214,7 +213,9 @@ already_AddRefed<Promise> Clients::OpenWindow(const nsAString& aURL,
     return outerPromise.forget();
   }
 
-  if (aURL.EqualsLiteral("about:blank")) {
+  if (aURL.EqualsLiteral(u"about:blank") ||
+      StringBeginsWith(aURL, u"about:blank?"_ns) ||
+      StringBeginsWith(aURL, u"about:blank#"_ns)) {
     CopyableErrorResult rv;
     rv.ThrowTypeError(
         "Passing \"about:blank\" to Clients.openWindow is not allowed");

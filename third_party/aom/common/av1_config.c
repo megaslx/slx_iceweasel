@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -14,7 +14,6 @@
 #include "aom/aom_image.h"
 #include "aom/aom_integer.h"
 #include "aom_dsp/bitreader_buffer.h"
-#include "aom_dsp/bitwriter_buffer.h"
 #include "av1/common/obu_util.h"
 #include "common/av1_config.h"
 #include "config/aom_config.h"
@@ -237,9 +236,9 @@ static int parse_sequence_header(const uint8_t *const buffer, size_t length,
   // The reader instance is local to this function, but a pointer to the
   // reader instance is used within this function and throughout this file to
   // allow use of the helper macros that reduce parse error checking verbosity.
-  struct aom_read_bit_buffer reader_instance = {
-    buffer, buffer + length, 0, &result, bitreader_error_handler
-  };
+  struct aom_read_bit_buffer reader_instance = { buffer, buffer + length, 0,
+                                                 &result,
+                                                 bitreader_error_handler };
   struct aom_read_bit_buffer *reader = &reader_instance;
 
   AV1C_READ_BITS_OR_RETURN_ERROR(seq_profile, 3);
@@ -322,7 +321,7 @@ static int parse_sequence_header(const uint8_t *const buffer, size_t length,
   AV1C_READ_BITS_OR_RETURN_ERROR(max_frame_height_minus_1,
                                  frame_height_bits_minus_1 + 1);
 
-  int frame_id_numbers_present = 0;
+  uint8_t frame_id_numbers_present = 0;
   if (!reduced_still_picture_header) {
     AV1C_READ_BIT_OR_RETURN_ERROR(frame_id_numbers_present_flag);
     frame_id_numbers_present = frame_id_numbers_present_flag;
@@ -345,7 +344,7 @@ static int parse_sequence_header(const uint8_t *const buffer, size_t length,
 
     AV1C_READ_BIT_OR_RETURN_ERROR(enable_order_hint);
     if (enable_order_hint) {
-      AV1C_READ_BIT_OR_RETURN_ERROR(enable_jnt_comp);
+      AV1C_READ_BIT_OR_RETURN_ERROR(enable_dist_wtd_comp);
       AV1C_READ_BIT_OR_RETURN_ERROR(enable_ref_frame_mvs);
     }
 
@@ -416,9 +415,9 @@ int read_av1config(const uint8_t *buffer, size_t buffer_length,
   *bytes_read = 0;
 
   int result = 0;
-  struct aom_read_bit_buffer reader_instance = {
-    buffer, buffer + buffer_length, 0, &result, bitreader_error_handler
-  };
+  struct aom_read_bit_buffer reader_instance = { buffer, buffer + buffer_length,
+                                                 0, &result,
+                                                 bitreader_error_handler };
   struct aom_read_bit_buffer *reader = &reader_instance;
 
   memset(config, 0, sizeof(*config));
@@ -475,33 +474,19 @@ int write_av1config(const Av1Config *config, size_t capacity,
                     size_t *bytes_written, uint8_t *buffer) {
   if (!config || !buffer || capacity < kAv1cSize || !bytes_written) return -1;
 
-  *bytes_written = 0;
-  memset(buffer, 0, kAv1cSize);
-
-  struct aom_write_bit_buffer writer = { buffer, 0 };
-
-  aom_wb_write_bit(&writer, config->marker);
-  aom_wb_write_literal(&writer, config->version, 7);
-  aom_wb_write_literal(&writer, config->seq_profile, 3);
-  aom_wb_write_literal(&writer, config->seq_level_idx_0, 5);
-  aom_wb_write_bit(&writer, config->seq_tier_0);
-  aom_wb_write_bit(&writer, config->high_bitdepth);
-  aom_wb_write_bit(&writer, config->twelve_bit);
-  aom_wb_write_bit(&writer, config->monochrome);
-  aom_wb_write_bit(&writer, config->chroma_subsampling_x);
-  aom_wb_write_bit(&writer, config->chroma_subsampling_y);
-  aom_wb_write_literal(&writer, config->chroma_sample_position, 2);
-  aom_wb_write_literal(&writer, 0, 3);  // reserved
-  aom_wb_write_bit(&writer, config->initial_presentation_delay_present);
-
+  buffer[0] = (config->marker << 7) | config->version;
+  buffer[1] = (config->seq_profile << 5) | config->seq_level_idx_0;
+  buffer[2] = (config->seq_tier_0 << 7) | (config->high_bitdepth << 6) |
+              (config->twelve_bit << 5) | (config->monochrome << 4) |
+              (config->chroma_subsampling_x << 3) |
+              (config->chroma_subsampling_y << 2) |
+              config->chroma_sample_position;
+  buffer[3] = config->initial_presentation_delay_present << 4;
   if (config->initial_presentation_delay_present) {
-    aom_wb_write_literal(&writer, config->initial_presentation_delay_minus_one,
-                         4);
-  } else {
-    aom_wb_write_literal(&writer, 0, 4);  // reserved
+    buffer[3] |= config->initial_presentation_delay_minus_one;
   }
 
-  *bytes_written = aom_wb_bytes_written(&writer);
+  *bytes_written = kAv1cSize;
   return 0;
 }
 

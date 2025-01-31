@@ -5,6 +5,7 @@
 #define _KEYTHI_H_ 1
 
 #include "eccutil.h"
+#include "kyber.h"
 #include "plarena.h"
 #include "pkcs11t.h"
 #include "secmodt.h"
@@ -33,7 +34,10 @@ typedef enum {
     keaKey = 5, /* deprecated */
     ecKey = 6,
     rsaPssKey = 7,
-    rsaOaepKey = 8
+    rsaOaepKey = 8,
+    kyberKey = 9,
+    edKey = 10,
+    ecMontKey = 11,
 } KeyType;
 
 /*
@@ -175,6 +179,16 @@ struct SECKEYKEAPublicKeyStr {
 typedef struct SECKEYKEAPublicKeyStr SECKEYKEAPublicKey;
 
 /*
+** Kyber Public Key structure
+*/
+
+struct SECKEYKyberPublicKeyStr {
+    KyberParams params;
+    SECItem publicValue;
+};
+typedef struct SECKEYKyberPublicKeyStr SECKEYKyberPublicKey;
+
+/*
 ** A Generic  public key object.
 */
 struct SECKEYPublicKeyStr {
@@ -189,6 +203,7 @@ struct SECKEYPublicKeyStr {
         SECKEYKEAPublicKey kea;
         SECKEYFortezzaPublicKey fortezza;
         SECKEYECPublicKey ec;
+        SECKEYKyberPublicKey kyber;
     } u;
 };
 typedef struct SECKEYPublicKeyStr SECKEYPublicKey;

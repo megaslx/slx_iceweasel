@@ -5,9 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-// This file is loaded into the same context as subprocess_worker_unix.js
-// and subprocess_worker_win.js
-/* import-globals-from subprocess_worker_unix.js */
+// This file is loaded into the same context as subprocess_unix.worker.js
+// and subprocess_win.worker.js
+/* import-globals-from subprocess_unix.worker.js */
 
 /* exported BasePipe, BaseProcess, debug */
 
@@ -106,6 +106,15 @@ let requests = {
     return { data: { processId, fds, pid: process.pid } };
   },
 
+  connectRunning(options) {
+    let process = new ManagedProcess(options);
+    let processId = process.id;
+
+    io.addProcess(process);
+
+    return { data: { processId, fds: process.pipes.map(pipe => pipe.id) } };
+  },
+
   kill(processId, force = false) {
     let process = io.getProcess(processId);
 
@@ -161,6 +170,18 @@ let requests = {
     return Promise.all(
       Array.from(io.processes.values(), proc => proc.awaitFinished())
     );
+  },
+
+  // It is the caller's responsability to make sure dup() is called on the FDs
+  // returned here.
+  getFds(processId) {
+    // fd is a unix.Fd aka CDataFinalizer that wraps the actual integer. We can
+    // retrieve its value via .toString(), if it has not been closed yet.
+    let process = io.getProcess(processId);
+    let pipes = process.pipes.map(p => parseInt(p.fd.toString(), 10));
+    return {
+      data: [pipes[0], pipes[1], pipes[2]],
+    };
   },
 };
 

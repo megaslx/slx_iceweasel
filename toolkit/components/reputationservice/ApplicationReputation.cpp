@@ -60,7 +60,6 @@
 
 #include "ApplicationReputationTelemetryUtils.h"
 
-using mozilla::ArrayLength;
 using mozilla::BasePrincipal;
 using mozilla::OriginAttributes;
 using mozilla::Preferences;
@@ -181,6 +180,8 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".applescript",
     //".application", exec // MS ClickOnce
     //".appref-ms", exec // MS ClickOnce
+    //".appx", exec
+    //".appxbundle", exec
     //".arc",
     //".arj",
     ".as",  // Mac archive
@@ -289,6 +290,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     //".jse", exec // JScript
     ".ksh",  // Linux shell
     //".lha",
+    //".library-ms", exec // Windows
     //".lnk", exec // Windows
     ".local",  // Windows
     //".lpaq1",
@@ -334,6 +336,8 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     //".msh2xml", exec // Windows shell
     //".mshxml", exec // Windows
     //".msi", exec  // Windows installer
+    //".msix", exec // Windows installer
+    //".msixbundle", exec // Windows installer
     //".msp", exec  // Windows installer
     //".mst", exec  // Windows installer
     ".ndif",            // Mac disk image
@@ -515,20 +519,20 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".xlam",  // MS Excel
     ".xldm",  // MS Excel
     //".xll", exec  // MS Excel
-    ".xlm",     // MS Excel
-    ".xls",     // MS Excel
-    ".xlsb",    // MS Excel
-    ".xlsm",    // MS Excel
-    ".xlsx",    // MS Excel
-    ".xlt",     // MS Excel
-    ".xltm",    // MS Excel
-    ".xltx",    // MS Excel
-    ".xlw",     // MS Excel
-    ".xml",     // MS Excel
-    ".xnk",     // MS Exchange
-    ".xrm-ms",  // Windows
-    ".xsd",     // XML schema definition
-    ".xsl",     // XML Stylesheet
+    ".xlm",   // MS Excel
+    ".xls",   // MS Excel
+    ".xlsb",  // MS Excel
+    ".xlsm",  // MS Excel
+    ".xlsx",  // MS Excel
+    ".xlt",   // MS Excel
+    ".xltm",  // MS Excel
+    ".xltx",  // MS Excel
+    ".xlw",   // MS Excel
+    ".xml",   // MS Excel
+    ".xnk",   // MS Exchange
+    //".xrm-ms", exec // Windows
+    ".xsd",  // XML schema definition
+    ".xsl",  // XML Stylesheet
     //".xxe",
     ".xz",     // Linux archive (xz)
     ".z",      // InstallShield
@@ -934,7 +938,7 @@ static const char* GetFileExt(const nsACString& aFilename,
 }
 
 static const char* GetFileExt(const nsACString& aFilename) {
-#define _GetFileExt(_f, _l) GetFileExt(_f, _l, ArrayLength(_l))
+#define _GetFileExt(_f, _l) GetFileExt(_f, _l, std::size(_l))
   const char* ext = _GetFileExt(
       aFilename, ApplicationReputationService::kBinaryFileExtensions);
   if (ext == nullptr &&
@@ -953,15 +957,13 @@ static bool IsFileType(const nsACString& aFilename,
 }
 
 static bool IsBinary(const nsACString& aFilename) {
-  return IsFileType(aFilename,
-                    ApplicationReputationService::kBinaryFileExtensions,
-                    ArrayLength(
-                        ApplicationReputationService::kBinaryFileExtensions)) ||
+  return IsFileType(
+             aFilename, ApplicationReputationService::kBinaryFileExtensions,
+             std::size(ApplicationReputationService::kBinaryFileExtensions)) ||
          (!IsFileType(
               aFilename, ApplicationReputationService::kNonBinaryExecutables,
-              ArrayLength(
-                  ApplicationReputationService::kNonBinaryExecutables)) &&
-          IsFileType(aFilename, sExecutableExts, ArrayLength(sExecutableExts)));
+              std::size(ApplicationReputationService::kNonBinaryExecutables)) &&
+          IsFileType(aFilename, sExecutableExts, std::size(sExecutableExts)));
 }
 
 ClientDownloadRequest::DownloadType PendingLookup::GetDownloadType(
@@ -1056,12 +1058,12 @@ nsresult PendingLookup::LookupNext() {
           mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_TYPE::
               BinaryFile);
     } else if (IsFileType(mFileName, kSafeFileExtensions,
-                          ArrayLength(kSafeFileExtensions))) {
+                          std::size(kSafeFileExtensions))) {
       AccumulateCategorical(
           mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_TYPE::
               NonBinaryFile);
     } else if (IsFileType(mFileName, kMozNonBinaryExecutables,
-                          ArrayLength(kMozNonBinaryExecutables))) {
+                          std::size(kMozNonBinaryExecutables))) {
       AccumulateCategorical(
           mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_TYPE::
               MozNonBinaryFile);
@@ -1077,17 +1079,17 @@ nsresult PendingLookup::LookupNext() {
   }
 
   if (IsFileType(mFileName, kDmgFileExtensions,
-                 ArrayLength(kDmgFileExtensions))) {
+                 std::size(kDmgFileExtensions))) {
     AccumulateCategorical(
         mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_ARCHIVE::
             DmgFile);
   } else if (IsFileType(mFileName, kRarFileExtensions,
-                        ArrayLength(kRarFileExtensions))) {
+                        std::size(kRarFileExtensions))) {
     AccumulateCategorical(
         mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_ARCHIVE::
             RarFile);
   } else if (IsFileType(mFileName, kZipFileExtensions,
-                        ArrayLength(kZipFileExtensions))) {
+                        std::size(kZipFileExtensions))) {
     AccumulateCategorical(
         mozilla::Telemetry::LABELS_APPLICATION_REPUTATION_BINARY_ARCHIVE::
             ZipFile);
@@ -1557,7 +1559,7 @@ nsresult PendingLookup::ParseCertificates(
 nsresult PendingLookup::SendRemoteQuery() {
   MOZ_ASSERT(!IsFileType(
       mFileName, ApplicationReputationService::kNonBinaryExecutables,
-      ArrayLength(ApplicationReputationService::kNonBinaryExecutables)));
+      std::size(ApplicationReputationService::kNonBinaryExecutables)));
   Reason reason = Reason::NotSet;
   nsresult rv = SendRemoteQueryInternal(reason);
   if (NS_FAILED(rv)) {
@@ -1660,7 +1662,7 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
       do_CreateInstance("@mozilla.org/io/string-input-stream;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = sstream->SetData(serialized.c_str(), serialized.length());
+  rv = sstream->CopyData(serialized.c_str(), serialized.length());
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Set up the channel to transmit the request to the service.
@@ -1978,6 +1980,6 @@ nsresult ApplicationReputationService::IsBinary(const nsACString& aFileName,
 nsresult ApplicationReputationService::IsExecutable(const nsACString& aFileName,
                                                     bool* aExecutable) {
   *aExecutable =
-      ::IsFileType(aFileName, sExecutableExts, ArrayLength(sExecutableExts));
+      ::IsFileType(aFileName, sExecutableExts, std::size(sExecutableExts));
   return NS_OK;
 }

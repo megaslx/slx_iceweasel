@@ -1,6 +1,6 @@
 #![cfg(feature = "sync")]
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
 use std::sync::Arc;
@@ -63,9 +63,60 @@ fn forget() {
     assert!(sem.try_acquire().is_err());
 }
 
+#[test]
+fn merge() {
+    let sem = Arc::new(Semaphore::new(3));
+    {
+        let mut p1 = sem.try_acquire().unwrap();
+        assert_eq!(sem.available_permits(), 2);
+        let p2 = sem.try_acquire_many(2).unwrap();
+        assert_eq!(sem.available_permits(), 0);
+        p1.merge(p2);
+        assert_eq!(sem.available_permits(), 0);
+    }
+    assert_eq!(sem.available_permits(), 3);
+}
+
+#[test]
+#[cfg(not(target_family = "wasm"))] // No stack unwinding on wasm targets
+#[should_panic]
+fn merge_unrelated_permits() {
+    let sem1 = Arc::new(Semaphore::new(3));
+    let sem2 = Arc::new(Semaphore::new(3));
+    let mut p1 = sem1.try_acquire().unwrap();
+    let p2 = sem2.try_acquire().unwrap();
+    p1.merge(p2);
+}
+
+#[test]
+fn split() {
+    let sem = Semaphore::new(5);
+    let mut p1 = sem.try_acquire_many(3).unwrap();
+    assert_eq!(sem.available_permits(), 2);
+    assert_eq!(p1.num_permits(), 3);
+    let mut p2 = p1.split(1).unwrap();
+    assert_eq!(sem.available_permits(), 2);
+    assert_eq!(p1.num_permits(), 2);
+    assert_eq!(p2.num_permits(), 1);
+    let p3 = p1.split(0).unwrap();
+    assert_eq!(p3.num_permits(), 0);
+    drop(p1);
+    assert_eq!(sem.available_permits(), 4);
+    let p4 = p2.split(1).unwrap();
+    assert_eq!(p2.num_permits(), 0);
+    assert_eq!(p4.num_permits(), 1);
+    assert!(p2.split(1).is_none());
+    drop(p2);
+    assert_eq!(sem.available_permits(), 4);
+    drop(p3);
+    assert_eq!(sem.available_permits(), 4);
+    drop(p4);
+    assert_eq!(sem.available_permits(), 5);
+}
+
 #[tokio::test]
 #[cfg(feature = "full")]
-async fn stresstest() {
+async fn stress_test() {
     let sem = Arc::new(Semaphore::new(5));
     let mut join_handles = Vec::new();
     for _ in 0..1000 {
@@ -89,14 +140,37 @@ async fn stresstest() {
 #[test]
 fn add_max_amount_permits() {
     let s = tokio::sync::Semaphore::new(0);
-    s.add_permits(usize::MAX >> 3);
-    assert_eq!(s.available_permits(), usize::MAX >> 3);
+    s.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    assert_eq!(s.available_permits(), tokio::sync::Semaphore::MAX_PERMITS);
 }
 
-#[cfg(not(target_arch = "wasm32"))] // wasm currently doesn't support unwinding
+#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
 #[test]
 #[should_panic]
-fn add_more_than_max_amount_permits() {
+fn add_more_than_max_amount_permits1() {
     let s = tokio::sync::Semaphore::new(1);
-    s.add_permits(usize::MAX >> 3);
+    s.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+}
+
+#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
+#[test]
+#[should_panic]
+fn add_more_than_max_amount_permits2() {
+    let s = Semaphore::new(Semaphore::MAX_PERMITS - 1);
+    s.add_permits(1);
+    s.add_permits(1);
+}
+
+#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
+#[test]
+#[should_panic]
+fn panic_when_exceeds_maxpermits() {
+    let _ = Semaphore::new(Semaphore::MAX_PERMITS + 1);
+}
+
+#[test]
+fn no_panic_at_maxpermits() {
+    let _ = Semaphore::new(Semaphore::MAX_PERMITS);
+    let s = Semaphore::new(Semaphore::MAX_PERMITS - 1);
+    s.add_permits(1);
 }

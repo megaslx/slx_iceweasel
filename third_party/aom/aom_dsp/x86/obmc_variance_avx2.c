@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -13,6 +13,7 @@
 #include <immintrin.h>
 
 #include "config/aom_config.h"
+#include "config/aom_dsp_rtcd.h"
 
 #include "aom_ports/mem.h"
 #include "aom/aom_integer.h"
@@ -25,7 +26,7 @@
 // 8 bit
 ////////////////////////////////////////////////////////////////////////////////
 
-static INLINE void obmc_variance_w8n(const uint8_t *pre, const int pre_stride,
+static inline void obmc_variance_w8n(const uint8_t *pre, const int pre_stride,
                                      const int32_t *wsrc, const int32_t *mask,
                                      unsigned int *const sse, int *const sum,
                                      const int w, const int h) {
@@ -77,10 +78,10 @@ static INLINE void obmc_variance_w8n(const uint8_t *pre, const int pre_stride,
   v_d = _mm_hadd_epi32(v_sum_d, v_sse_d);
   v_d = _mm_hadd_epi32(v_d, v_d);
   *sum = _mm_cvtsi128_si32(v_d);
-  *sse = _mm_cvtsi128_si32(_mm_srli_si128(v_d, 4));
+  *sse = (unsigned int)_mm_cvtsi128_si32(_mm_srli_si128(v_d, 4));
 }
 
-static INLINE void obmc_variance_w16n(const uint8_t *pre, const int pre_stride,
+static inline void obmc_variance_w16n(const uint8_t *pre, const int pre_stride,
                                       const int32_t *wsrc, const int32_t *mask,
                                       unsigned int *const sse, int *const sum,
                                       const int w, const int h) {
@@ -147,7 +148,7 @@ static INLINE void obmc_variance_w16n(const uint8_t *pre, const int pre_stride,
   res0 = _mm256_castsi256_si128(v_d);
   res0 = _mm_add_epi32(res0, _mm256_extractf128_si256(v_d, 1));
   *sum = _mm_cvtsi128_si32(res0);
-  *sse = _mm_cvtsi128_si32(_mm_srli_si128(res0, 4));
+  *sse = (unsigned int)_mm_cvtsi128_si32(_mm_srli_si128(res0, 4));
 }
 
 #define OBMCVARWXH(W, H)                                                \

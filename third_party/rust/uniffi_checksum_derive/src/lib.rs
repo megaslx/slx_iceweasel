@@ -81,9 +81,12 @@ pub fn checksum_derive(input: TokenStream) -> TokenStream {
                             .named
                             .iter()
                             .map(|field| field.ident.as_ref().unwrap());
-                        let field_stmts = field_idents
-                            .clone()
-                            .map(|ident| quote! { Checksum::checksum(#ident, state); });
+                        let field_stmts = fields.named.iter()
+                            .filter(|field| !has_ignore_attribute(&field.attrs))
+                            .map(|field| {
+                                    let ident = field.ident.as_ref().unwrap();
+                                    quote! { Checksum::checksum(#ident, state); }
+                            });
                         quote! {
                             Self::#ident { #(#field_idents,)* } => {
                                 #discriminant;
@@ -105,14 +108,13 @@ pub fn checksum_derive(input: TokenStream) -> TokenStream {
                 .fields
                 .iter()
                 .enumerate()
-                .filter_map(|(num, field)| {
-                    (!has_ignore_attribute(&field.attrs)).then(|| match field.ident.as_ref() {
-                        Some(ident) => quote! { Checksum::checksum(&self.#ident, state); },
-                        None => {
-                            let i = Index::from(num);
-                            quote! { Checksum::checksum(&self.#i, state); }
-                        }
-                    })
+                .filter(|&(_num, field)| (!has_ignore_attribute(&field.attrs)))
+                .map(|(num, field)| match field.ident.as_ref() {
+                    Some(ident) => quote! { Checksum::checksum(&self.#ident, state); },
+                    None => {
+                        let i = Index::from(num);
+                        quote! { Checksum::checksum(&self.#i, state); }
+                    }
                 });
             quote! {
                 #(#stmts)*

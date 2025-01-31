@@ -38,7 +38,7 @@ Http3Listener.prototype = {
     this.onProgressNotificationCount += 1;
   },
 
-  onStatus(request, status, statusArg) {},
+  onStatus() {},
 
   onStartRequest: function testOnStartRequest(request) {
     Assert.equal(request.status, this.expectedStatus);
@@ -55,7 +55,7 @@ Http3Listener.prototype = {
     read_stream(stream, cnt);
   },
 
-  onStopRequest: function testOnStopRequest(request, status) {
+  onStopRequest: function testOnStopRequest(request) {
     let httpVersion = "";
     try {
       httpVersion = request.protocolVersion;
@@ -92,7 +92,7 @@ function makeChan(uri, amount) {
   let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  stream.data = generateContent(amount);
+  stream.setByteStringData(generateContent(amount));
   let uchan = chan.QueryInterface(Ci.nsIUploadChannel);
   uchan.setUploadStream(stream, "text/plain", stream.available());
   chan.requestMethod = "POST";
@@ -149,7 +149,7 @@ add_task(async function test_bug1749957_bug1750056() {
     let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
       Ci.nsIStringInputStream
     );
-    stream.data = generateContent(amount);
+    stream.setByteStringData(generateContent(amount));
     let uchan = chan.QueryInterface(Ci.nsIUploadChannel2);
     uchan.explicitSetUploadStream(
       stream,

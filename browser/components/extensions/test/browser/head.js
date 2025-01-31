@@ -20,7 +20,7 @@
  *          openToolsMenu closeToolsMenu
  *          imageBuffer imageBufferFromDataURI
  *          getInlineOptionsBrowser
- *          getListStyleImage getPanelForNode
+ *          getListStyleImage getRawListStyleImage getPanelForNode
  *          awaitExtensionPanel awaitPopupResize
  *          promiseContentDimensions alterContent
  *          promisePrefChangeObserved openContextMenuInFrame
@@ -28,8 +28,10 @@
  *          awaitEvent BrowserWindowIterator
  *          navigateTab historyPushState promiseWindowRestored
  *          getIncognitoWindow startIncognitoMonitorExtension
- *          loadTestSubscript awaitBrowserLoaded backgroundColorSetOnRoot
+ *          loadTestSubscript awaitBrowserLoaded
  *          getScreenAt roundCssPixcel getCssAvailRect isRectContained
+ *          getToolboxBackgroundColor
+ *          promiseBrowserContentUnloaded
  */
 
 // There are shutdown issues for which multiple rejections are left uncaught.
@@ -56,9 +58,6 @@ const { AppUiTestDelegate, AppUiTestInternals } = ChromeUtils.importESModule(
 
 const { Preferences } = ChromeUtils.importESModule(
   "resource://gre/modules/Preferences.sys.mjs"
-);
-const { ClientEnvironmentBase } = ChromeUtils.importESModule(
-  "resource://gre/modules/components-utils/ClientEnvironment.sys.mjs"
 );
 
 ChromeUtils.defineESModuleGetters(this, {
@@ -146,7 +145,7 @@ function getInlineOptionsBrowser(aboutAddonsBrowser) {
   return contentDocument.getElementById("addon-inline-options");
 }
 
-function getListStyleImage(button) {
+function getRawListStyleImage(button) {
   // Ensure popups are initialized so that the elements are rendered and
   // getComputedStyle works.
   for (
@@ -157,10 +156,11 @@ function getListStyleImage(button) {
     popup.ensureInitialized();
   }
 
-  let style = button.ownerGlobal.getComputedStyle(button);
+  return button.ownerGlobal.getComputedStyle(button).listStyleImage;
+}
 
-  let match = /^url\("(.*)"\)$/.exec(style.listStyleImage);
-
+function getListStyleImage(button) {
+  let match = /url\("([^"]*)"\)/.exec(getRawListStyleImage(button));
   return match && match[1];
 }
 
@@ -168,9 +168,47 @@ function promiseAnimationFrame(win = window) {
   return AppUiTestInternals.promiseAnimationFrame(win);
 }
 
+async function promiseBrowserContentUnloaded(browser) {
+  // Wait until the content has unloaded before resuming the test, to avoid
+  // calling extension.getViews too early (and having intermittent failures).
+  const MSG_WINDOW_DESTROYED = "Test:BrowserContentDestroyed";
+  let unloadPromise = new Promise(resolve => {
+    Services.ppmm.addMessageListener(MSG_WINDOW_DESTROYED, function listener() {
+      Services.ppmm.removeMessageListener(MSG_WINDOW_DESTROYED, listener);
+      resolve();
+    });
+  });
+
+  await ContentTask.spawn(
+    browser,
+    MSG_WINDOW_DESTROYED,
+    MSG_WINDOW_DESTROYED => {
+      let innerWindowId = this.content.windowGlobalChild.innerWindowId;
+      let observer = subject => {
+        if (
+          innerWindowId === subject.QueryInterface(Ci.nsISupportsPRUint64).data
+        ) {
+          Services.obs.removeObserver(observer, "inner-window-destroyed");
+
+          // Use process message manager to ensure that the message is delivered
+          // even after the <browser>'s message manager is disconnected.
+          Services.cpmm.sendAsyncMessage(MSG_WINDOW_DESTROYED);
+        }
+      };
+      // Observe inner-window-destroyed, like ExtensionPageChild, to ensure that
+      // the ExtensionPageContextChild instance has been unloaded when we resolve
+      // the unloadPromise.
+      Services.obs.addObserver(observer, "inner-window-destroyed");
+    }
+  );
+
+  // Return an object so that callers can use "await".
+  return { unloadPromise };
+}
+
 function promisePopupHidden(popup) {
   return new Promise(resolve => {
-    let onPopupHidden = event => {
+    let onPopupHidden = () => {
       popup.removeEventListener("popuphidden", onPopupHidden);
       resolve();
     };
@@ -244,6 +282,11 @@ function promisePossiblyInaccurateContentDimensions(browser) {
         "scrollWidth",
         "scrollHeight",
       ]),
+      visualViewport: copyProps(content.visualViewport, [
+        "width",
+        "height",
+        "scale",
+      ]),
       isStandards: content.document.compatMode !== "BackCompat",
     };
   });
@@ -272,23 +315,46 @@ async function promiseContentDimensions(browser, tolleratedWidthSizeDiff = 1) {
   // unpredictability in the timing, mainly due to the unpredictability of
   // reflows, we need to wait until the content window dimensions match the
   // <browser> dimensions before returning data.
-
-  let dims = await promisePossiblyInaccurateContentDimensions(browser);
-  while (
-    Math.abs(browser.clientWidth - dims.window.innerWidth) >
-      tolleratedWidthSizeDiff ||
-    browser.clientHeight !== Math.round(dims.window.innerHeight)
-  ) {
+  for (;;) {
+    let dims = await promisePossiblyInaccurateContentDimensions(browser);
+    info(`Got dimensions: ${JSON.stringify(dims)}`);
+    if (
+      Math.abs(browser.clientWidth - dims.window.innerWidth) <=
+        tolleratedWidthSizeDiff &&
+      browser.clientHeight === Math.round(dims.window.innerHeight)
+    ) {
+      // We don't expect zoom or so on these documents, so these should stay
+      // consistent, assuming there are no scrollbars.
+      // If you want to test extension popup pinch zooming you probably need to
+      // remove this assert.
+      is(
+        dims.visualViewport.scale,
+        1,
+        "We expect no pinch zoom on these tests"
+      );
+      if (!dims.window.scrollMaxY && !dims.window.scrollMaxX) {
+        isfuzzy(
+          dims.window.innerHeight,
+          dims.visualViewport.height,
+          1,
+          "VisualViewport and window height are consistent"
+        );
+        isfuzzy(
+          dims.window.innerWidth,
+          dims.visualViewport.width,
+          1,
+          "VisualViewport and window width are consistent"
+        );
+      }
+      return dims;
+    }
     const diffWidth = Math.abs(browser.clientWidth - dims.window.innerWidth);
     const diffHeight = Math.abs(browser.clientHeight - dims.window.innerHeight);
     info(
       `Content dimension did not reached the expected size yet (diff: ${diffWidth}x${diffHeight}). Wait further.`
     );
     await delay(50);
-    dims = await promisePossiblyInaccurateContentDimensions(browser);
   }
-
-  return dims;
 }
 
 async function awaitPopupResize(browser) {
@@ -309,12 +375,9 @@ function alterContent(browser, task, arg = null) {
 }
 
 async function focusButtonAndPressKey(key, elem, modifiers) {
-  let focused = BrowserTestUtils.waitForEvent(elem, "focus", true);
-
   elem.setAttribute("tabindex", "-1");
   elem.focus();
   elem.removeAttribute("tabindex");
-  await focused;
 
   EventUtils.synthesizeKey(key, modifiers);
   elem.blur();
@@ -324,7 +387,7 @@ var awaitExtensionPanel = function (extension, win = window, awaitLoad = true) {
   return AppUiTestDelegate.awaitExtensionPanel(win, extension.id, awaitLoad);
 };
 
-function getCustomizableUIPanelID(win = window) {
+function getCustomizableUIPanelID() {
   return CustomizableUI.AREA_ADDONS;
 }
 
@@ -360,7 +423,9 @@ async function triggerBrowserActionWithKeyboard(
   await showBrowserAction(extension, win);
 
   let group = getBrowserActionWidget(extension);
-  let node = group.forWindow(win).node.firstElementChild;
+  let node = group
+    .forWindow(win)
+    .node.querySelector(".unified-extensions-item-action-button");
 
   if (group.areaType == CustomizableUI.TYPE_TOOLBAR) {
     await focusButtonAndPressKey(key, node, modifiers);
@@ -438,10 +503,11 @@ async function openContextMenuInPopup(
 }
 
 async function openContextMenuInSidebar(selector = "body") {
-  let contentAreaContextMenu = SidebarUI.browser.contentDocument.getElementById(
-    "contentAreaContextMenu"
-  );
-  let browser = SidebarUI.browser.contentDocument.getElementById(
+  let contentAreaContextMenu =
+    SidebarController.browser.contentDocument.getElementById(
+      "contentAreaContextMenu"
+    );
+  let browser = SidebarController.browser.contentDocument.getElementById(
     "webext-panels-browser"
   );
   let popupShownPromise = BrowserTestUtils.waitForEvent(
@@ -453,7 +519,9 @@ async function openContextMenuInSidebar(selector = "body") {
   // fail intermittently if synthesizeMouseAtCenter is being called
   // while the sidebar is still opening and the browser window layout
   // being recomputed.
-  await SidebarUI.browser.contentWindow.promiseDocumentFlushed(() => {});
+  await SidebarController.browser.contentWindow.promiseDocumentFlushed(
+    () => {}
+  );
 
   info("Opening context menu in sidebarAction panel");
   await BrowserTestUtils.synthesizeMouseAtCenter(
@@ -606,7 +674,7 @@ async function openChromeContextMenu(menuId, target, win = window) {
   return menu;
 }
 
-async function openSubmenu(submenuItem, win = window) {
+async function openSubmenu(submenuItem) {
   const submenu = submenuItem.menupopup;
   const shown = BrowserTestUtils.waitForEvent(submenu, "popupshown");
   submenuItem.openMenu(true);
@@ -764,7 +832,7 @@ function closePageAction(extension, win = window) {
 }
 
 function promisePrefChangeObserved(pref) {
-  return new Promise((resolve, reject) =>
+  return new Promise(resolve =>
     Preferences.observe(pref, function prefObserver() {
       Preferences.ignore(pref, prefObserver);
       resolve();
@@ -978,27 +1046,11 @@ async function getIncognitoWindow(url = "about:privatebrowsing") {
   let data = windowWatcher.awaitMessage("data");
 
   let win = await BrowserTestUtils.openNewBrowserWindow({ private: true });
-  BrowserTestUtils.loadURIString(win.gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(win.gBrowser.selectedBrowser, url);
 
   let details = await data;
   await windowWatcher.unload();
   return { win, details };
-}
-
-/**
- * Windows 7 and 8 set the window's background-color on :root instead of
- * #navigator-toolbox to avoid bug 1695280. When that bug is fixed, this
- * function and the assertions it gates can be removed.
- *
- * @returns {boolean} True if the window's background-color is set on :root
- *   rather than #navigator-toolbox.
- */
-function backgroundColorSetOnRoot() {
-  const os = ClientEnvironmentBase.os;
-  if (!os.isWindows) {
-    return false;
-  }
-  return os.windowsVersion < 10;
 }
 
 function getScreenAt(left, top, width, height) {
@@ -1051,4 +1103,13 @@ function isRectContained(actualRect, maxRect) {
     "top=true,bottom=true,left=true,right=true",
     `Dimension must be inside, top:${actualRect.top}>=${maxRect.top}, bottom:${actualRect.bottom}<=${maxRect.bottom}, left:${actualRect.left}>=${maxRect.left}, right:${actualRect.right}<=${maxRect.right}`
   );
+}
+
+function getToolboxBackgroundColor() {
+  let toolbox = document.getElementById("navigator-toolbox");
+  // Ignore any potentially ongoing transition.
+  toolbox.style.transitionProperty = "none";
+  let color = window.getComputedStyle(toolbox).backgroundColor;
+  toolbox.style.transitionProperty = "";
+  return color;
 }

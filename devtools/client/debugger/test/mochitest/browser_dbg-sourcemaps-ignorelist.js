@@ -29,18 +29,18 @@ add_task(async function () {
     "Reload to hit breakpoints in the original-2.js and original-3.js files"
   );
   const onReloaded = reload(dbg, ...sources);
-  await waitForPaused(dbg);
+  await waitForPaused(dbg, null, { shouldWaitForLoadedScopes: false });
 
   info("Assert paused in original-2.js as original-1.js is ignored");
   const original2Source = findSource(dbg, "original-2.js");
-  assertPausedAtSourceAndLine(dbg, original2Source.id, 2);
+  await assertPausedAtSourceAndLine(dbg, original2Source.id, 2);
 
   await resume(dbg);
-  await waitForPaused(dbg);
+  await waitForPaused(dbg, null, { shouldWaitForLoadedScopes: false });
 
   info("Assert paused in original-4.js as original-3.js is ignored");
   const original4Source = findSource(dbg, "original-4.js");
-  assertPausedAtSourceAndLine(dbg, original4Source.id, 2);
+  await assertPausedAtSourceAndLine(dbg, original4Source.id, 2);
 
   await resume(dbg);
   await onReloaded;
@@ -54,19 +54,19 @@ add_task(async function () {
 
   info("Reload to hit breakpoints in all the original-[x].js files");
   const onReloaded2 = reload(dbg, "original-1.js");
-  await waitForPaused(dbg);
+  await waitForPaused(dbg, null, { shouldWaitForLoadedScopes: false });
 
   info("Assert paused in original-1.js as it is no longer ignored");
   const original1Source = findSource(dbg, "original-1.js");
-  assertPausedAtSourceAndLine(dbg, original1Source.id, 2);
+  await assertPausedAtSourceAndLine(dbg, original1Source.id, 2);
 
   const originalSources = ["original-2.js", "original-3.js", "original-4.js"];
   for (const fileName of originalSources) {
     await resume(dbg);
-    await waitForPaused(dbg);
+    await waitForPaused(dbg, null, { shouldWaitForLoadedScopes: false });
 
     const originalSource = findSource(dbg, fileName);
-    assertPausedAtSourceAndLine(dbg, originalSource.id, 2);
+    await assertPausedAtSourceAndLine(dbg, originalSource.id, 2);
   }
   await resume(dbg);
 

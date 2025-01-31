@@ -180,6 +180,11 @@ interface nsIBits : nsISupports
    *        following a transient error, producing instead a permanent error.
    * @param monitorIntervalMs
    *        The number of milliseconds between download status notifications.
+   * @param customHeaders
+   *        Custom headers to append to the HTTP request. Each header must be
+   *        terminated by a carriage return and line feed (CR/LF) character. The
+   *        string is limited to 16,384 characters, including any null
+   *        terminator.
    * @param observer
    *        An observer to be notified of various events. OnStartRequest is
    *        called once the BITS job has been created. OnStopRequest is called
@@ -202,6 +207,7 @@ interface nsIBits : nsISupports
                      in nsProxyUsage proxy,
                      in unsigned long noProgressTimeoutSecs,
                      in unsigned long monitorIntervalMs,
+                     in AUTF8String customHeaders,
                      in nsIRequestObserver observer,
                      in nsISupports context,
                      in nsIBitsNewRequestCallback callback);
@@ -418,10 +424,3 @@ interface nsIBitsCallback : nsISupports
                      in nsBitsErrorStage errorStage,
                      in AUTF8String errorMessage);
 };
-
-%{C++
-#define NS_BITS_CID \
-  { 0xa334de05, 0xb9de, 0x46a1, \
-    { 0x98, 0xa9, 0x3f, 0x5c, 0xed, 0x82, 0x1e, 0x68 } }
-#define NS_BITS_CONTRACTID "@mozilla.org/bits;1"
-%}

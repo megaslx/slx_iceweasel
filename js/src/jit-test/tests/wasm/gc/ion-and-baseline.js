@@ -1,5 +1,3 @@
-// |jit-test| skip-if: !wasmGcEnabled()
-
 // Attempt to test intercalls from ion to baseline and back.
 //
 // We get into this situation when the modules are compiled with different
@@ -10,7 +8,7 @@
 // actually testing something here.
 //
 // Some logging with printf confirms that refmod is baseline-compiled and
-// nonrefmod is ion-compiled at present, with --wasm-gc enabled.
+// nonrefmod is ion-compiled at present, with --setpref=wasm_gc=true enabled.
 
 var refmod = new WebAssembly.Module(wasmTextToBinary(
     `(module

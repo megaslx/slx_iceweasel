@@ -18,7 +18,7 @@
 #include "nsAtom.h"
 #include "nsReadableUtils.h"
 #include "nsUnicharUtils.h"
-#include "mozilla/LookAndFeel.h"
+#include "mozilla/StaticPrefs_ui.h"
 
 // Interfaces needed to be included
 #include "nsPresContext.h"
@@ -39,7 +39,6 @@
 #include "nsIRemoteTab.h"
 #include "nsIBrowserChild.h"
 #include "nsRect.h"
-#include "nsIWebBrowserChromeFocus.h"
 #include "nsIContent.h"
 #include "nsServiceManagerUtils.h"
 #include "nsViewManager.h"
@@ -48,6 +47,7 @@
 #include "nsIConstraintValidation.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventListenerManager.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/DragEvent.h"
 #include "mozilla/dom/Event.h"     // for Event
 #include "mozilla/dom/File.h"      // for input type=file
@@ -193,13 +193,6 @@ nsDocShellTreeOwner::GetInterface(const nsIID& aIID, void** aSink) {
 
   if (NS_SUCCEEDED(QueryInterface(aIID, aSink))) {
     return NS_OK;
-  }
-
-  if (aIID.Equals(NS_GET_IID(nsIWebBrowserChromeFocus))) {
-    if (mWebBrowserChromeWeak != nullptr) {
-      return mWebBrowserChromeWeak->QueryReferent(aIID, aSink);
-    }
-    return mOwnerWin->QueryInterface(aIID, aSink);
   }
 
   if (aIID.Equals(NS_GET_IID(nsIPrompt))) {
@@ -512,8 +505,7 @@ nsDocShellTreeOwner::GetHasPrimaryContent(bool* aResult) {
 //*****************************************************************************
 
 NS_IMETHODIMP
-nsDocShellTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
-                                nsIWidget* aParentWidget, int32_t aX,
+nsDocShellTreeOwner::InitWindow(nsIWidget* aParentWidget, int32_t aX,
                                 int32_t aY, int32_t aCX, int32_t aCY) {
   return NS_ERROR_NULL_POINTER;
 }
@@ -627,20 +619,6 @@ nsDocShellTreeOwner::GetParentWidget(nsIWidget** aParentWidget) {
 
 NS_IMETHODIMP
 nsDocShellTreeOwner::SetParentWidget(nsIWidget* aParentWidget) {
-  return NS_ERROR_NULL_POINTER;
-}
-
-NS_IMETHODIMP
-nsDocShellTreeOwner::GetParentNativeWindow(nativeWindow* aParentNativeWindow) {
-  nsCOMPtr<nsIBaseWindow> ownerWin = GetOwnerWin();
-  if (ownerWin) {
-    return ownerWin->GetParentNativeWindow(aParentNativeWindow);
-  }
-  return NS_ERROR_NULL_POINTER;
-}
-
-NS_IMETHODIMP
-nsDocShellTreeOwner::SetParentNativeWindow(nativeWindow aParentNativeWindow) {
   return NS_ERROR_NULL_POINTER;
 }
 
@@ -924,10 +902,6 @@ nsDocShellTreeOwner::HandleEvent(Event* aEvent) {
     handler->CanDropLink(dragEvent, false, &canDropLink);
     if (canDropLink) {
       aEvent->PreventDefault();
-      WidgetDragEvent* asWidgetDropEvent =
-          dragEvent->WidgetEventPtr()->AsDragEvent();
-      asWidgetDropEvent->UpdateDefaultPreventedOnContent(
-          asWidgetDropEvent->mCurrentTarget);
     }
   } else if (eventType.EqualsLiteral("drop")) {
     nsCOMPtr<nsIWebNavigation> webnav =
@@ -979,10 +953,6 @@ nsDocShellTreeOwner::HandleEvent(Event* aEvent) {
     } else {
       aEvent->StopPropagation();
       aEvent->PreventDefault();
-      WidgetDragEvent* asWidgetDropEvent =
-          dragEvent->WidgetEventPtr()->AsDragEvent();
-      asWidgetDropEvent->UpdateDefaultPreventedOnContent(
-          asWidgetDropEvent->mCurrentTarget);
     }
   }
 
@@ -1161,7 +1131,8 @@ nsresult ChromeTooltipListener::MouseMove(Event* aMouseEvent) {
   // within the timer callback. On win32, we'll get a MouseMove event even when
   // a popup goes away -- even when the mouse doesn't change position! To get
   // around this, we make sure the mouse has really moved before proceeding.
-  CSSIntPoint newMouseClientPoint = mouseEvent->ClientPoint();
+  const CSSIntPoint newMouseClientPoint =
+      RoundedToInt(mouseEvent->ClientPoint());
   if (mMouseClientPoint == newMouseClientPoint) {
     return NS_OK;
   }
@@ -1184,20 +1155,15 @@ nsresult ChromeTooltipListener::MouseMove(Event* aMouseEvent) {
   }
 
   if (!mShowingTooltip) {
-    nsIEventTarget* target = nullptr;
-    if (nsCOMPtr<EventTarget> eventTarget = aMouseEvent->GetComposedTarget()) {
+    if (nsCOMPtr<EventTarget> eventTarget = aMouseEvent->GetOriginalTarget()) {
       mPossibleTooltipNode = nsINode::FromEventTarget(eventTarget);
-      nsCOMPtr<nsIGlobalObject> global(eventTarget->GetOwnerGlobal());
-      if (global) {
-        target = global->EventTargetFor(TaskCategory::UI);
-      }
     }
 
     if (mPossibleTooltipNode) {
       nsresult rv = NS_NewTimerWithFuncCallback(
           getter_AddRefs(mTooltipTimer), sTooltipCallback, this,
-          LookAndFeel::GetInt(LookAndFeel::IntID::TooltipDelay, 500),
-          nsITimer::TYPE_ONE_SHOT, "ChromeTooltipListener::MouseMove", target);
+          StaticPrefs::ui_tooltip_delay_ms(), nsITimer::TYPE_ONE_SHOT,
+          "ChromeTooltipListener::MouseMove", GetMainThreadSerialEventTarget());
       if (NS_FAILED(rv)) {
         mPossibleTooltipNode = nullptr;
         NS_WARNING("Could not create a timer for tooltip tracking");

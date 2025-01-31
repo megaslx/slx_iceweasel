@@ -6,8 +6,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::ops::{Index, Range, RangeFrom, RangeFull, RangeTo};
-use Url;
+use core::ops::{Index, Range, RangeFrom, RangeFull, RangeTo};
+
+use crate::Url;
 
 impl Index<RangeFull> for Url {
     type Output = str;
@@ -35,6 +36,29 @@ impl Index<Range<Position>> for Url {
     fn index(&self, range: Range<Position>) -> &str {
         &self.serialization[self.index(range.start)..self.index(range.end)]
     }
+}
+
+// Counts how many base-10 digits are required to represent n in the given base
+fn count_digits(n: u16) -> usize {
+    match n {
+        0..=9 => 1,
+        10..=99 => 2,
+        100..=999 => 3,
+        1000..=9999 => 4,
+        10000..=65535 => 5,
+    }
+}
+
+#[test]
+fn test_count_digits() {
+    assert_eq!(count_digits(0), 1);
+    assert_eq!(count_digits(1), 1);
+    assert_eq!(count_digits(9), 1);
+    assert_eq!(count_digits(10), 2);
+    assert_eq!(count_digits(99), 2);
+    assert_eq!(count_digits(100), 3);
+    assert_eq!(count_digits(9999), 4);
+    assert_eq!(count_digits(65535), 5);
 }
 
 /// Indicates a position within a URL based on its components.
@@ -70,7 +94,7 @@ impl Index<Range<Position>> for Url {
 ///
 /// The end of a component and the start of the next are either the same or separate
 /// by a delimiter.
-/// (Not that the initial `/` of a path is considered part of the path here, not a delimiter.)
+/// (Note that the initial `/` of a path is considered part of the path here, not a delimiter.)
 /// For example, `&url[..BeforeFragment]` would include a `#` delimiter (if present in `url`),
 /// so `&url[..AfterQuery]` might be desired instead.
 ///
@@ -149,7 +173,14 @@ impl Url {
                 }
             }
 
-            Position::AfterPort => self.path_start as usize,
+            Position::AfterPort => {
+                if let Some(port) = self.port {
+                    debug_assert!(self.byte_at(self.host_end) == b':');
+                    self.host_end as usize + ":".len() + count_digits(port)
+                } else {
+                    self.host_end as usize
+                }
+            }
 
             Position::BeforePath => self.path_start as usize,
 

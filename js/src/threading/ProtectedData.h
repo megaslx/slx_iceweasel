@@ -75,7 +75,7 @@ class MOZ_RAII AutoNoteSingleThreadedRegion {
 // occur when the data is both read from and written to.
 template <typename Check, typename T>
 class ProtectedData {
-  typedef ProtectedData<Check, T> ThisType;
+  using ThisType = ProtectedData<Check, T>;
 
  public:
   template <typename... Args>
@@ -268,6 +268,9 @@ template <typename T>
 using MainThreadOrIonCompileData =
     ProtectedDataNoCheckArgs<CheckMainThread<AllowedHelperThread::IonCompile>,
                              T>;
+template <typename T>
+using MainThreadOrGCTaskOrIonCompileData = ProtectedDataNoCheckArgs<
+    CheckMainThread<AllowedHelperThread::GCTaskOrIonCompile>, T>;
 
 // Runtime wide locks which might protect some data.
 enum class GlobalLock { GCLock, HelperThreadLock };
@@ -299,7 +302,7 @@ using HelperThreadLockData = ProtectedDataNoCheckArgs<
 // initialized, as such guarantees are not provided by this class.
 template <typename Check, typename T>
 class ProtectedDataWriteOnce {
-  typedef ProtectedDataWriteOnce<Check, T> ThisType;
+  using ThisType = ProtectedDataWriteOnce<Check, T>;
 
  public:
   template <typename... Args>

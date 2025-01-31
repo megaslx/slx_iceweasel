@@ -35,6 +35,10 @@ TryEmitter::TryEmitter(BytecodeEmitter* bce, Kind kind, ControlKind controlKind)
   }
 }
 
+#ifdef DEBUG
+bool TryEmitter::hasControlInfo() { return controlInfo_.isSome(); }
+#endif
+
 bool TryEmitter::emitTry() {
   MOZ_ASSERT(state_ == State::Start);
 
@@ -94,7 +98,7 @@ bool TryEmitter::emitTryEnd() {
   return true;
 }
 
-bool TryEmitter::emitCatch() {
+bool TryEmitter::emitCatch(ExceptionStack stack) {
   MOZ_ASSERT(state_ == State::Try);
   if (!emitTryEnd()) {
     return false;
@@ -115,8 +119,14 @@ bool TryEmitter::emitCatch() {
     }
   }
 
-  if (!bce_->emit1(JSOp::Exception)) {
-    return false;
+  if (stack == ExceptionStack::No) {
+    if (!bce_->emit1(JSOp::Exception)) {
+      return false;
+    }
+  } else {
+    if (!bce_->emit1(JSOp::ExceptionAndStack)) {
+      return false;
+    }
   }
 
 #ifdef DEBUG
@@ -149,7 +159,7 @@ bool TryEmitter::emitFinally(
   // close. For internal non-syntactic try blocks, like those emitted for
   // yield* and IteratorClose inside for-of loops, we can emitFinally even
   // without specifying up front, since the internal non-syntactic try
-  // blocks emit no GOSUBs.
+  // blocks emit no JSOp::Goto.
   if (!controlInfo_) {
     if (kind_ == Kind::TryCatch) {
       kind_ = Kind::TryCatchFinally;
@@ -172,11 +182,12 @@ bool TryEmitter::emitFinally(
 
   MOZ_ASSERT(bce_->bytecodeSection().stackDepth() == depth_);
 
-  // Upon entry to the finally, there are two additional values on the stack:
-  // a boolean value to indicate whether we're throwing an exception, and
-  // either that exception (if we're throwing) or a resume index to which we
-  // will return (if we're not throwing).
-  bce_->bytecodeSection().setStackDepth(depth_ + 2);
+  // Upon entry to the finally, there are three additional values on the stack:
+  // a boolean value to indicate whether we're throwing an exception, the
+  // exception stack (if we're throwing) or null, and either that exception (if
+  // we're throwing) or a resume index to which we will return (if we're not
+  // throwing).
+  bce_->bytecodeSection().setStackDepth(depth_ + 3);
 
   if (!bce_->emitJumpTarget(&finallyStart_)) {
     return false;
@@ -230,21 +241,32 @@ bool TryEmitter::emitFinallyEnd() {
     }
   }
 
+  //                [stack] RESUME_INDEX_OR_EXCEPTION, EXCEPTION_STACK, THROWING
+
   InternalIfEmitter ifThrowing(bce_);
   if (!ifThrowing.emitThenElse()) {
+    //              [stack] RESUME_INDEX_OR_EXCEPTION, EXCEPTION_STACK
     return false;
   }
 
-  if (!bce_->emit1(JSOp::Throw)) {
+  if (!bce_->emit1(JSOp::ThrowWithStack)) {
+    //              [stack]
     return false;
   }
 
   if (!ifThrowing.emitElse()) {
+    //              [stack] RESUME_INDEX_OR_EXCEPTION, EXCEPTION_STACK
+    return false;
+  }
+
+  if (!bce_->emit1(JSOp::Pop)) {
+    //              [stack] RESUME_INDEX_OR_EXCEPTION
     return false;
   }
 
   if (controlInfo_ && !controlInfo_->continuations_.empty()) {
     if (!controlInfo_->emitContinuations(bce_)) {
+      //              [stack]
       return false;
     }
   } else {
@@ -253,6 +275,7 @@ bool TryEmitter::emitFinallyEnd() {
     // emitting a tableswitch, we can simply pop the continuation index
     // and fall through.
     if (!bce_->emit1(JSOp::Pop)) {
+      //              [stack]
       return false;
     }
   }

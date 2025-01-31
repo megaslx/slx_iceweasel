@@ -2,26 +2,40 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{ColorF, YuvRangedColorSpace, YuvFormat, ImageRendering, ExternalImageId, ImageBufferKind};
+use api::{ColorF, ExternalImageId, ImageBufferKind, ImageKey, ImageRendering, YuvFormat, YuvRangedColorSpace};
 use api::units::*;
 use api::ColorDepth;
 use crate::image_source::resolve_image;
 use euclid::Box2D;
 use crate::gpu_cache::GpuCache;
 use crate::gpu_types::{ZBufferId, ZBufferIdGenerator};
-use crate::internal_types::TextureSource;
+use crate::internal_types::{FrameAllocator, FrameMemory, FrameVec, TextureSource};
 use crate::picture::{ImageDependency, ResolvedSurfaceTexture, TileCacheInstance, TileId, TileSurface};
 use crate::prim_store::DeferredResolve;
 use crate::resource_cache::{ImageRequest, ResourceCache};
 use crate::util::{Preallocator, ScaleOffset};
 use crate::tile_cache::PictureCacheDebugInfo;
 use crate::device::Device;
+use crate::space::SpaceMapper;
 use std::{ops, u64, os::raw::c_void};
 
 /*
  Types and definitions related to compositing picture cache tiles
  and/or OS compositor integration.
  */
+
+/// Which method is being used to draw a requested compositor surface
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+#[derive(Debug, Copy, Clone, MallocSizeOf, PartialEq)]
+pub enum CompositorSurfaceKind {
+    /// Don't create a native compositor surface, blit it as a regular primitive
+    Blit,
+    /// Create a native surface, draw it under content (must be opaque)
+    Underlay,
+    /// Create a native surface, draw it between sub-slices (supports transparent)
+    Overlay,
+}
 
 /// Describes details of an operation to apply to a native surface
 #[derive(Debug, Clone)]
@@ -94,6 +108,7 @@ pub enum CompositeSurfaceFormat {
 bitflags! {
     /// Optional features that can be opted-out of when compositing,
     /// possibly allowing a fast path to be selected.
+    #[derive(Debug, Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
     pub struct CompositeFeatures: u8 {
         // UV coordinates do not require clamping, for example because the
         // entire texture is being composited.
@@ -189,6 +204,30 @@ pub struct ExternalSurfaceDescriptor {
     /// If the native surface needs to be updated, this will contain the size
     /// of the native surface as Some(size). If not dirty, this is None.
     pub update_params: Option<DeviceIntSize>,
+    /// If using external compositing, a user key for the client
+    pub external_image_id: Option<ExternalImageId>,
+}
+
+impl ExternalSurfaceDescriptor {
+    /// Calculate an optional occlusion rect for a given compositor surface
+    pub fn get_occluder_rect(
+        &self,
+        local_clip_rect: &PictureRect,
+        map_pic_to_world: &SpaceMapper<PicturePixel, WorldPixel>,
+    ) -> Option<WorldRect> {
+        let local_surface_rect = self
+            .local_rect
+            .intersection(&self.local_clip_rect)
+            .and_then(|r| {
+                r.intersection(local_clip_rect)
+            });
+
+        local_surface_rect.map(|local_surface_rect| {
+            map_pic_to_world
+                .map(&local_surface_rect)
+                .expect("bug: unable to map external surface to world space")
+        })
+    }
 }
 
 /// Information about a plane in a YUV or RGB surface.
@@ -246,6 +285,8 @@ pub struct ResolvedExternalSurface {
     pub image_buffer_kind: ImageBufferKind,
     // Update information for a native surface if it's dirty
     pub update_params: Option<(NativeSurfaceId, DeviceIntSize)>,
+    /// If using external compositing, a user key for the client
+    pub external_image_id: Option<ExternalImageId>,
 }
 
 /// Public interface specified in `WebRenderOptions` that configures
@@ -266,6 +307,12 @@ pub enum CompositorConfig {
         /// Required if webrender must query the backbuffer's age.
         partial_present: Option<Box<dyn PartialPresentCompositor>>,
     },
+    Layer {
+        /// If supplied, composite the frame using the new experimental compositing
+        /// interface. If this is set, it overrides `compositor_config`. These will
+        /// be unified as the interface stabilises.
+        compositor: Box<dyn LayerCompositor>,
+    },
     /// Use a native OS compositor to draw tiles. This requires clients to implement
     /// the Compositor trait, but can be significantly more power efficient on operating
     /// systems that support it.
@@ -281,7 +328,7 @@ impl CompositorConfig {
             CompositorConfig::Native { ref mut compositor, .. } => {
                 Some(compositor)
             }
-            CompositorConfig::Draw { .. } => {
+            CompositorConfig::Draw { .. } | CompositorConfig::Layer { .. } => {
                 None
             }
         }
@@ -295,9 +342,25 @@ impl CompositorConfig {
             CompositorConfig::Draw { ref mut partial_present, .. } => {
                 partial_present.as_mut()
             }
+            CompositorConfig::Layer { .. } => {
+                None
+            }
         }
     }
 
+    pub fn layer_compositor(&mut self) -> Option<&mut Box<dyn LayerCompositor>> {
+        match self {
+            CompositorConfig::Native { .. } => {
+                None
+            }
+            CompositorConfig::Draw { .. } => {
+                None
+            }
+            CompositorConfig::Layer { ref mut compositor } => {
+                Some(compositor)
+            }
+        }
+    }
 }
 
 impl Default for CompositorConfig {
@@ -325,6 +388,9 @@ pub enum CompositorKind {
         /// Draw previous regions when doing partial present.
         draw_previous_partial_present_regions: bool,
     },
+    Layer {
+
+    },
     /// Native OS compositor.
     Native {
         /// The capabilities of the underlying platform.
@@ -345,7 +411,7 @@ impl Default for CompositorKind {
 impl CompositorKind {
     pub fn get_virtual_surface_size(&self) -> i32 {
         match self {
-            CompositorKind::Draw { .. } => 0,
+            CompositorKind::Draw { .. } | CompositorKind::Layer {  .. }=> 0,
             CompositorKind::Native { capabilities, .. } => capabilities.virtual_surface_size,
         }
     }
@@ -356,6 +422,7 @@ impl CompositorKind {
                 // When partial present is enabled, we need to force redraw.
                 *max_partial_present_rects > 0
             }
+            CompositorKind::Layer {  } => false,    // TODO(gwc): Is this correct?
             CompositorKind::Native { capabilities, .. } => capabilities.redraw_on_invalidation,
         }
     }
@@ -392,6 +459,38 @@ impl From<&TileSurface> for TileSurfaceKind {
 pub struct CompositeTileDescriptor {
     pub tile_id: TileId,
     pub surface_kind: TileSurfaceKind,
+}
+
+// Whether a compositor surface / swapchain is being used
+// by WR to render content, or is an external swapchain for video
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+#[derive(Debug, Copy, Clone)]
+pub enum CompositorSurfaceUsage {
+    Content,
+    External {
+        image_key: ImageKey,
+        external_image_id: ExternalImageId,
+        transform_index: CompositorTransformIndex,
+    },
+}
+
+impl CompositorSurfaceUsage {
+    // Returns true if usage is compatible
+    pub fn matches(&self, other: &CompositorSurfaceUsage) -> bool {
+        match (self, other) {
+            // Surfaces used for content are always compatible
+            (CompositorSurfaceUsage::Content, CompositorSurfaceUsage::Content) => true,
+
+            (CompositorSurfaceUsage::Content, CompositorSurfaceUsage::External { .. }) |
+            (CompositorSurfaceUsage::External { .. }, CompositorSurfaceUsage::Content) => false,
+
+            // External surfaces are matched by image-key (which doesn't change per-frame)
+            (CompositorSurfaceUsage::External { image_key: key1, .. }, CompositorSurfaceUsage::External { image_key: key2, .. }) => {
+                key1 == key2
+            }
+        }
+    }
 }
 
 /// Describes the properties that identify a surface composition uniquely.
@@ -446,17 +545,17 @@ impl CompositeStatePreallocator {
         self.tiles.record_vec(&state.tiles);
         self.external_surfaces.record_vec(&state.external_surfaces);
         self.occluders.record_vec(&state.occluders.occluders);
-        self.occluders_events.record_vec(&state.occluders.events);
-        self.occluders_active.record_vec(&state.occluders.active);
+        self.occluders_events.record_vec(&state.occluders.scratch.events);
+        self.occluders_active.record_vec(&state.occluders.scratch.active);
         self.descriptor_surfaces.record_vec(&state.descriptor.surfaces);
     }
 
     pub fn preallocate(&self, state: &mut CompositeState) {
-        self.tiles.preallocate_vec(&mut state.tiles);
-        self.external_surfaces.preallocate_vec(&mut state.external_surfaces);
-        self.occluders.preallocate_vec(&mut state.occluders.occluders);
-        self.occluders_events.preallocate_vec(&mut state.occluders.events);
-        self.occluders_active.preallocate_vec(&mut state.occluders.active);
+        self.tiles.preallocate_framevec(&mut state.tiles);
+        self.external_surfaces.preallocate_framevec(&mut state.external_surfaces);
+        self.occluders.preallocate_framevec(&mut state.occluders.occluders);
+        self.occluders_events.preallocate_framevec(&mut state.occluders.scratch.events);
+        self.occluders_active.preallocate_framevec(&mut state.occluders.scratch.active);
         self.descriptor_surfaces.preallocate_vec(&mut state.descriptor.surfaces);
     }
 }
@@ -484,9 +583,9 @@ impl Default for CompositeStatePreallocator {
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct CompositorTransform {
     // Map from local rect of a composite tile to the real backing surface coords
-    local_to_surface: ScaleOffset,
+    local_to_raster: ScaleOffset,
     // Map from surface coords to the final device space position
-    surface_to_device: ScaleOffset,
+    raster_to_device: ScaleOffset,
     // Combined local -> surface -> device transform
     local_to_device: ScaleOffset,
 }
@@ -501,9 +600,9 @@ pub struct CompositeState {
     /// List of tiles to be drawn by the Draw compositor.
     /// Tiles are accumulated in this vector and sorted from front to back at the end of the
     /// frame.
-    pub tiles: Vec<CompositeTile>,
+    pub tiles: FrameVec<CompositeTile>,
     /// List of primitives that were promoted to be compositor surfaces.
-    pub external_surfaces: Vec<ResolvedExternalSurface>,
+    pub external_surfaces: FrameVec<ResolvedExternalSurface>,
     /// Used to generate z-id values for tiles in the Draw compositor mode.
     pub z_generator: ZBufferIdGenerator,
     // If false, we can't rely on the dirty rects in the CompositeTile
@@ -522,7 +621,7 @@ pub struct CompositeState {
     /// Debugging information about the state of the pictures cached for regression testing.
     pub picture_cache_debug: PictureCacheDebugInfo,
     /// List of registered transforms used by picture cache or external surfaces
-    pub transforms: Vec<CompositorTransform>,
+    pub transforms: FrameVec<CompositorTransform>,
     /// Whether we have low quality pinch zoom enabled
     low_quality_pinch_zoom: bool,
 }
@@ -535,17 +634,18 @@ impl CompositeState {
         max_depth_ids: i32,
         dirty_rects_are_valid: bool,
         low_quality_pinch_zoom: bool,
+        memory: &FrameMemory,
     ) -> Self {
         CompositeState {
-            tiles: Vec::new(),
+            tiles: memory.new_vec(),
             z_generator: ZBufferIdGenerator::new(max_depth_ids),
             dirty_rects_are_valid,
             compositor_kind,
-            occluders: Occluders::new(),
+            occluders: Occluders::new(memory),
             descriptor: CompositeDescriptor::empty(),
-            external_surfaces: Vec::new(),
+            external_surfaces: memory.new_vec(),
             picture_cache_debug: PictureCacheDebugInfo::new(),
-            transforms: Vec::new(),
+            transforms: memory.new_vec(),
             low_quality_pinch_zoom,
         }
     }
@@ -553,16 +653,16 @@ impl CompositeState {
     /// Register use of a transform for a picture cache tile or external surface
     pub fn register_transform(
         &mut self,
-        local_to_surface: ScaleOffset,
-        surface_to_device: ScaleOffset,
+        local_to_raster: ScaleOffset,
+        raster_to_device: ScaleOffset,
     ) -> CompositorTransformIndex {
         let index = CompositorTransformIndex(self.transforms.len());
 
-        let local_to_device = local_to_surface.accumulate(&surface_to_device);
+        let local_to_device = local_to_raster.then(&raster_to_device);
 
         self.transforms.push(CompositorTransform {
-            local_to_surface,
-            surface_to_device,
+            local_to_raster,
+            raster_to_device,
             local_to_device,
         });
 
@@ -589,8 +689,8 @@ impl CompositeState {
     ) -> DeviceRect {
         let transform = &self.transforms[transform_index.0];
 
-        let surface_bounds = transform.local_to_surface.map_rect(&local_bounds);
-        let surface_rect = transform.local_to_surface.map_rect(&local_sub_rect);
+        let surface_bounds = transform.local_to_raster.map_rect(&local_bounds);
+        let surface_rect = transform.local_to_raster.map_rect(&local_sub_rect);
 
         surface_rect
             .round_out()
@@ -615,7 +715,7 @@ impl CompositeState {
         transform_index: CompositorTransformIndex,
     ) -> ScaleOffset {
         let transform = &self.transforms[transform_index.0];
-        transform.surface_to_device
+        transform.raster_to_device
     }
 
     /// Register an occluder during picture cache updates that can be
@@ -630,6 +730,110 @@ impl CompositeState {
         self.occluders.push(world_rect, z_id);
     }
 
+    /// Push a compositor surface on to the list of tiles to be passed to the compositor
+    fn push_compositor_surface(
+        &mut self,
+        external_surface: &ExternalSurfaceDescriptor,
+        is_opaque: bool,
+        device_clip_rect: DeviceRect,
+        resource_cache: &ResourceCache,
+        gpu_cache: &mut GpuCache,
+        deferred_resolves: &mut FrameVec<DeferredResolve>,
+    ) {
+        let clip_rect = external_surface
+            .clip_rect
+            .intersection(&device_clip_rect)
+            .unwrap_or_else(DeviceRect::zero);
+
+        // Skip compositor surfaces with empty clip rects.
+        if clip_rect.is_empty() {
+            return;
+        }
+
+        let required_plane_count =
+            match external_surface.dependency {
+                ExternalSurfaceDependency::Yuv { format, .. } => {
+                    format.get_plane_num()
+                },
+                ExternalSurfaceDependency::Rgb { .. } => {
+                    1
+                }
+            };
+
+        let mut image_dependencies = [ImageDependency::INVALID; 3];
+
+        for i in 0 .. required_plane_count {
+            let dependency = match external_surface.dependency {
+                ExternalSurfaceDependency::Yuv { image_dependencies, .. } => {
+                    image_dependencies[i]
+                },
+                ExternalSurfaceDependency::Rgb { image_dependency, .. } => {
+                    image_dependency
+                }
+            };
+            image_dependencies[i] = dependency;
+        }
+
+        // Get a new z_id for each compositor surface, to ensure correct ordering
+        // when drawing with the simple (Draw) compositor, and to schedule compositing
+        // of any required updates into the surfaces.
+        let needs_external_surface_update = match self.compositor_kind {
+            CompositorKind::Draw { .. } | CompositorKind::Layer { .. } => true,
+            _ => external_surface.update_params.is_some(),
+        };
+        let external_surface_index = if needs_external_surface_update {
+            let external_surface_index = self.compute_external_surface_dependencies(
+                &external_surface,
+                &image_dependencies,
+                required_plane_count,
+                resource_cache,
+                gpu_cache,
+                deferred_resolves,
+            );
+            if external_surface_index == ResolvedExternalSurfaceIndex::INVALID {
+                return;
+            }
+            external_surface_index
+        } else {
+            ResolvedExternalSurfaceIndex::INVALID
+        };
+
+        let surface = CompositeTileSurface::ExternalSurface { external_surface_index };
+        let local_rect = external_surface.local_surface_size.cast_unit().into();
+
+        let tile = CompositeTile {
+            kind: tile_kind(&surface, is_opaque),
+            surface,
+            local_rect,
+            local_valid_rect: local_rect,
+            local_dirty_rect: local_rect,
+            device_clip_rect: clip_rect,
+            z_id: external_surface.z_id,
+            transform_index: external_surface.transform_index,
+        };
+
+        // Add a surface descriptor for each compositor surface. For the Draw
+        // compositor, this is used to avoid composites being skipped by adding
+        // a dependency on the compositor surface external image keys / generations.
+        self.descriptor.surfaces.push(
+            CompositeSurfaceDescriptor {
+                surface_id: external_surface.native_surface_id,
+                clip_rect,
+                transform: self.get_compositor_transform(external_surface.transform_index),
+                image_dependencies: image_dependencies,
+                image_rendering: external_surface.image_rendering,
+                tile_descriptors: Vec::new(),
+            }
+        );
+
+        let device_rect =
+            self.get_device_rect(&local_rect, external_surface.transform_index);
+        self.descriptor.external_surfaces_rect =
+            self.descriptor.external_surfaces_rect.union(&device_rect);
+
+        self.tiles.push(tile);
+    }
+
     /// Add a picture cache to be composited
     pub fn push_surface(
         &mut self,
@@ -637,7 +841,7 @@ impl CompositeState {
         device_clip_rect: DeviceRect,
         resource_cache: &ResourceCache,
         gpu_cache: &mut GpuCache,
-        deferred_resolves: &mut Vec<DeferredResolve>,
+        deferred_resolves: &mut FrameVec<DeferredResolve>,
     ) {
         let slice_transform = self.get_compositor_transform(tile_cache.transform_index);
 
@@ -658,6 +862,18 @@ impl CompositeState {
                     image_rendering,
                     tile_descriptors: Vec::new(),
                 }
+            );
+        }
+
+        // Add any underlay surfaces to the compositing tree
+        for underlay in &tile_cache.underlays {
+            self.push_compositor_surface(
+                underlay,
+                true,
+                device_clip_rect,
+                resource_cache,
+                gpu_cache,
+                deferred_resolves,
             );
         }
 
@@ -708,7 +924,7 @@ impl CompositeState {
                         }
                     );
                 }
-    
+
                 // Add alpha tiles after opaque surfaces
                 if !sub_slice.alpha_tile_descriptors.is_empty() {
                     self.descriptor.surfaces.push(
@@ -727,100 +943,14 @@ impl CompositeState {
             // For each compositor surface that was promoted, build the
             // information required for the compositor to draw it
             for compositor_surface in &sub_slice.compositor_surfaces {
-                let external_surface = &compositor_surface.descriptor;
-
-                let clip_rect = external_surface
-                    .clip_rect
-                    .intersection(&device_clip_rect)
-                    .unwrap_or_else(DeviceRect::zero);
-                    
-                // Skip compositor surfaces with empty clip rects.
-                if clip_rect.is_empty() {
-                    continue;
-                }
-
-                let required_plane_count =
-                    match external_surface.dependency {
-                        ExternalSurfaceDependency::Yuv { format, .. } => {
-                            format.get_plane_num()
-                        },
-                        ExternalSurfaceDependency::Rgb { .. } => {
-                            1
-                        }
-                    };
-
-                let mut image_dependencies = [ImageDependency::INVALID; 3];
-
-                for i in 0 .. required_plane_count {
-                    let dependency = match external_surface.dependency {
-                        ExternalSurfaceDependency::Yuv { image_dependencies, .. } => {
-                            image_dependencies[i]
-                        },
-                        ExternalSurfaceDependency::Rgb { image_dependency, .. } => {
-                            image_dependency
-                        }
-                    };
-                    image_dependencies[i] = dependency;
-                }
-
-                // Get a new z_id for each compositor surface, to ensure correct ordering
-                // when drawing with the simple (Draw) compositor, and to schedule compositing
-                // of any required updates into the surfaces.
-                let needs_external_surface_update = match self.compositor_kind {
-                    CompositorKind::Draw { .. } => true,
-                    _ => external_surface.update_params.is_some(),
-                };
-                let external_surface_index = if needs_external_surface_update {
-                    let external_surface_index = self.compute_external_surface_dependencies(
-                        &external_surface,
-                        &image_dependencies,
-                        required_plane_count,
-                        resource_cache,
-                        gpu_cache,
-                        deferred_resolves,
-                    );
-                    if external_surface_index == ResolvedExternalSurfaceIndex::INVALID {
-                        continue;
-                    }
-                    external_surface_index
-                } else {
-                    ResolvedExternalSurfaceIndex::INVALID
-                };
-
-                let surface = CompositeTileSurface::ExternalSurface { external_surface_index };
-                let local_rect = external_surface.local_surface_size.cast_unit().into();
-
-                let tile = CompositeTile {
-                    kind: tile_kind(&surface, compositor_surface.is_opaque),
-                    surface,
-                    local_rect,
-                    local_valid_rect: local_rect,
-                    local_dirty_rect: local_rect,
-                    device_clip_rect: clip_rect,
-                    z_id: external_surface.z_id,
-                    transform_index: external_surface.transform_index,
-                };
-
-                // Add a surface descriptor for each compositor surface. For the Draw
-                // compositor, this is used to avoid composites being skipped by adding
-                // a dependency on the compositor surface external image keys / generations.
-                self.descriptor.surfaces.push(
-                    CompositeSurfaceDescriptor {
-                        surface_id: external_surface.native_surface_id,
-                        clip_rect,
-                        transform: self.get_compositor_transform(external_surface.transform_index),
-                        image_dependencies: image_dependencies,
-                        image_rendering: external_surface.image_rendering,
-                        tile_descriptors: Vec::new(),
-                    }
+                self.push_compositor_surface(
+                    &compositor_surface.descriptor,
+                    compositor_surface.is_opaque,
+                    device_clip_rect,
+                    resource_cache,
+                    gpu_cache,
+                    deferred_resolves,
                 );
-
-                let device_rect =
-                    self.get_device_rect(&local_rect, external_surface.transform_index);
-                self.descriptor.external_surfaces_rect =
-                    self.descriptor.external_surfaces_rect.union(&device_rect);
-
-                self.tiles.push(tile);
             }
         }
     }
@@ -862,7 +992,7 @@ impl CompositeState {
         required_plane_count: usize,
         resource_cache: &ResourceCache,
         gpu_cache: &mut GpuCache,
-        deferred_resolves: &mut Vec<DeferredResolve>,
+        deferred_resolves: &mut FrameVec<DeferredResolve>,
     ) -> ResolvedExternalSurfaceIndex {
         let mut planes = [
             ExternalPlaneDescriptor::invalid(),
@@ -931,6 +1061,7 @@ impl CompositeState {
                         },
                     image_buffer_kind,
                     update_params,
+                    external_image_id: external_surface.external_image_id,
                 });
             },
             ExternalSurfaceDependency::Rgb { .. } => {
@@ -943,6 +1074,7 @@ impl CompositeState {
                     },
                     image_buffer_kind,
                     update_params,
+                    external_image_id: external_surface.external_image_id,
                 });
             },
         }
@@ -1046,25 +1178,13 @@ impl Default for CompositorCapabilities {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub enum WindowSizeMode {
-    Normal,
-    Minimized,
-    Maximized,
-    Fullscreen,
-    Invalid,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
 pub struct WindowVisibility {
-    pub size_mode: WindowSizeMode,
     pub is_fully_occluded: bool,
 }
 
 impl Default for WindowVisibility {
     fn default() -> Self {
         WindowVisibility {
-            size_mode: WindowSizeMode::Normal,
             is_fully_occluded: false,
         }
     }
@@ -1239,6 +1359,54 @@ pub trait Compositor {
     fn get_window_visibility(&self, device: &mut Device) -> WindowVisibility;
 }
 
+// Describes the configuration for an input layer that the compositor
+// implemention should prepare
+#[derive(Debug)]
+pub struct CompositorInputLayer {
+    // Device space location and size of the layer
+    pub rect: DeviceIntRect,
+    // Whether a content or external surface
+    pub usage: CompositorSurfaceUsage,
+    // If true, layer is opaque, blend can be disabled
+    pub is_opaque: bool,
+}
+
+// Provides the parameters about the frame to the compositor implementation.
+// TODO(gw): Include information about picture cache slices and external surfaces.
+#[derive(Debug)]
+pub struct CompositorInputConfig<'a> {
+    pub layers: &'a [CompositorInputLayer],
+}
+
+// Trait for implementors of swapchain based compositing.
+// TODO(gw): Extend to handle external surfaces, layers, swgl, etc.
+pub trait LayerCompositor {
+    // Prepare to composite a frame. Ensure that layers are constructed
+    // to match the input config
+    fn begin_frame(
+        &mut self,
+        input: &CompositorInputConfig,
+    );
+
+    // Bind a layer (by index in the input config) to begin rendering
+    // content to it.
+    fn bind_layer(&mut self, index: usize);
+
+    // Complete rendering of a layer and present / swap buffers
+    fn present_layer(&mut self, index: usize);
+
+    fn add_surface(
+        &mut self,
+        index: usize,
+        transform: CompositorSurfaceTransform,
+        clip_rect: DeviceIntRect,
+        image_rendering: ImageRendering,
+    );
+
+    // Finish compositing this frame - commit the visual tree to the OS
+    fn end_frame(&mut self);
+}
+
 /// Information about the underlying data buffer of a mapped tile.
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1339,29 +1507,44 @@ impl OcclusionEvent {
     }
 }
 
+/// This struct exists to provide a Default impl and allow #[serde(skip)]
+/// on the two frame vectors. Unfortunately FrameVec does not have a Default
+/// implementation (vectors only implement it with the global allocator).
+pub struct OccludersScratchBuffers {
+    events: FrameVec<OcclusionEvent>,
+    active: FrameVec<ops::Range<i32>>,
+}
+
+impl Default for OccludersScratchBuffers {
+    fn default() -> Self {
+        OccludersScratchBuffers {
+            events: FrameVec::new_in(FrameAllocator::fallback()),
+            active: FrameVec::new_in(FrameAllocator::fallback()),
+        }
+    }
+}
+
 /// List of registered occluders.
 ///
 /// Also store a couple of vectors for reuse.
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct Occluders {
-    occluders: Vec<Occluder>,
+    occluders: FrameVec<Occluder>,
 
-    // The two vectors below are kept to avoid unnecessary reallocations in area().
-
-    #[cfg_attr(feature = "serde", serde(skip))]
-    events: Vec<OcclusionEvent>,
-
-    #[cfg_attr(feature = "serde", serde(skip))]
-    active: Vec<ops::Range<i32>>,
+    // The two vectors in scratch are kept to avoid unnecessary reallocations in area().
+    #[cfg_attr(any(feature = "capture", feature = "replay"), serde(skip))]
+    scratch: OccludersScratchBuffers,
 }
 
 impl Occluders {
-    fn new() -> Self {
+    fn new(memory: &FrameMemory) -> Self {
         Occluders {
-            occluders: Vec::new(),
-            events: Vec::new(),
-            active: Vec::new(),
+            occluders: memory.new_vec(),
+            scratch: OccludersScratchBuffers {
+                events: memory.new_vec(),
+                active: memory.new_vec(),    
+            }
         }
     }
 
@@ -1411,8 +1594,8 @@ impl Occluders {
         // This is not a particularly efficient implementation (it skips building segment trees), however
         // we typically use this where the length of the rectangles array is < 10, so simplicity is more important.
 
-        self.events.clear();
-        self.active.clear();
+        self.scratch.events.clear();
+        self.scratch.active.clear();
 
         let mut area = 0;
 
@@ -1425,37 +1608,37 @@ impl Occluders {
                 if let Some(rect) = occluder.world_rect.intersection(clip_rect) {
                     let x0 = rect.min.x;
                     let x1 = x0 + rect.width();
-                    self.events.push(OcclusionEvent::new(rect.min.y, OcclusionEventKind::Begin, x0, x1));
-                    self.events.push(OcclusionEvent::new(rect.min.y + rect.height(), OcclusionEventKind::End, x0, x1));
+                    self.scratch.events.push(OcclusionEvent::new(rect.min.y, OcclusionEventKind::Begin, x0, x1));
+                    self.scratch.events.push(OcclusionEvent::new(rect.min.y + rect.height(), OcclusionEventKind::End, x0, x1));
                 }
             }
         }
 
         // If we didn't end up with any valid events, the area must be 0
-        if self.events.is_empty() {
+        if self.scratch.events.is_empty() {
             return 0;
         }
 
         // Sort the events by y-value
-        self.events.sort_by_key(|e| e.y);
-        let mut cur_y = self.events[0].y;
+        self.scratch.events.sort_by_key(|e| e.y);
+        let mut cur_y = self.scratch.events[0].y;
 
         // Step through each y interval
-        for event in &self.events {
+        for event in &self.scratch.events {
             // This is the dimension of the y-axis we are accumulating areas for
             let dy = event.y - cur_y;
 
             // If we have active events covering x-ranges in this y-interval, process them
-            if dy != 0 && !self.active.is_empty() {
+            if dy != 0 && !self.scratch.active.is_empty() {
                 assert!(dy > 0);
 
                 // Step through the x-ranges, ordered by x0 of each event
-                self.active.sort_by_key(|i| i.start);
+                self.scratch.active.sort_by_key(|i| i.start);
                 let mut query = 0;
-                let mut cur = self.active[0].start;
+                let mut cur = self.scratch.active[0].start;
 
                 // Accumulate the non-overlapping x-interval that contributes to area for this y-interval.
-                for interval in &self.active {
+                for interval in &self.scratch.active {
                     cur = interval.start.max(cur);
                     query += (interval.end - cur).max(0);
                     cur = cur.max(interval.end);
@@ -1468,11 +1651,11 @@ impl Occluders {
             // Update the active events list
             match event.kind {
                 OcclusionEventKind::Begin => {
-                    self.active.push(event.x_range.clone());
+                    self.scratch.active.push(event.x_range.clone());
                 }
                 OcclusionEventKind::End => {
-                    let index = self.active.iter().position(|i| *i == event.x_range).unwrap();
-                    self.active.remove(index);
+                    let index = self.scratch.active.iter().position(|i| *i == event.x_range).unwrap();
+                    self.scratch.active.remove(index);
                 }
             }
 

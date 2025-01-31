@@ -15,6 +15,7 @@
 #include "LoadLibraryUsageChecker.h"
 #include "FopenUsageChecker.h"
 #endif
+#include "GlobalVariableInitializationChecker.h"
 #include "JSHandleRootedTypedefChecker.h"
 #include "KungFuDeathGripChecker.h"
 #include "KnownLiveChecker.h"
@@ -38,8 +39,8 @@
 #include "ParamTraitsEnumChecker.h"
 #include "RefCountedCopyConstructorChecker.h"
 #include "RefCountedInsideLambdaChecker.h"
+#include "RefCountedThisInsideConstructorChecker.h"
 #include "ScopeChecker.h"
 #include "SprintfLiteralChecker.h"
-#include "TemporaryLifetimeBoundChecker.h"
 #include "TrivialCtorDtorChecker.h"
 #include "TrivialDtorChecker.h"

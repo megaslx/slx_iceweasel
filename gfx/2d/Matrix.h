@@ -635,6 +635,15 @@ class Matrix4x4Typed {
                                                                    4 * aIndex);
   }
 
+  // External code should avoid calling this, and instead use
+  // ViewAs() from UnitTransforms.h, which requires providing
+  // a justification.
+  template <typename NewMatrix4x4Typed>
+  [[nodiscard]] NewMatrix4x4Typed Cast() const {
+    return NewMatrix4x4Typed(_11, _12, _13, _14, _21, _22, _23, _24, _31, _32,
+                             _33, _34, _41, _42, _43, _44);
+  }
+
   /**
    * Returns true if the matrix is isomorphic to a 2D affine transformation.
    */
@@ -979,6 +988,8 @@ class Matrix4x4Typed {
   template <class F>
   GFX2D_API RectTyped<TargetUnits, F> TransformBounds(
       const RectTyped<SourceUnits, F>& aRect) const {
+    // If you change this also change Matrix4x4TypedFlagged::TransformBounds to
+    // match.
     PointTyped<TargetUnits, F> quad[4];
     F min_x, max_x;
     F min_y, max_y;
@@ -1118,6 +1129,22 @@ class Matrix4x4Typed {
     return *this;
   }
 
+  template <typename NewSourceUnits>
+  [[nodiscard]] Matrix4x4Typed<NewSourceUnits, TargetUnits> PreScale(
+      const ScaleFactor<NewSourceUnits, SourceUnits>& aScale) const {
+    auto clone = Cast<Matrix4x4Typed<NewSourceUnits, TargetUnits>>();
+    clone.PreScale(aScale.scale, aScale.scale, 1);
+    return clone;
+  }
+
+  template <typename NewSourceUnits>
+  [[nodiscard]] Matrix4x4Typed<NewSourceUnits, TargetUnits> PreScale(
+      const BaseScaleFactors2D<NewSourceUnits, SourceUnits, T>& aScale) const {
+    auto clone = Cast<Matrix4x4Typed<NewSourceUnits, TargetUnits>>();
+    clone.PreScale(aScale.xScale, aScale.yScale, 1);
+    return clone;
+  }
+
   /**
    * Similar to PostTranslate, but applies a scale instead of a translation.
    */
@@ -1136,6 +1163,22 @@ class Matrix4x4Typed {
     _43 *= aScaleZ;
 
     return *this;
+  }
+
+  template <typename NewTargetUnits>
+  [[nodiscard]] Matrix4x4Typed<SourceUnits, NewTargetUnits> PostScale(
+      const ScaleFactor<TargetUnits, NewTargetUnits>& aScale) const {
+    auto clone = Cast<Matrix4x4Typed<SourceUnits, NewTargetUnits>>();
+    clone.PostScale(aScale.scale, aScale.scale, 1);
+    return clone;
+  }
+
+  template <typename NewTargetUnits>
+  [[nodiscard]] Matrix4x4Typed<SourceUnits, NewTargetUnits> PostScale(
+      const BaseScaleFactors2D<TargetUnits, NewTargetUnits, T>& aScale) const {
+    auto clone = Cast<Matrix4x4Typed<SourceUnits, NewTargetUnits>>();
+    clone.PostScale(aScale.xScale, aScale.yScale, 1);
+    return clone;
   }
 
   void SkewXY(T aSkew) { (*this)[1] += (*this)[0] * aSkew; }
@@ -1320,7 +1363,7 @@ class Matrix4x4Typed {
 
   Matrix4x4Typed<TargetUnits, SourceUnits, T> Inverse() const {
     typedef Matrix4x4Typed<TargetUnits, SourceUnits, T> InvertedMatrix;
-    InvertedMatrix clone = InvertedMatrix::FromUnknownMatrix(ToUnknownMatrix());
+    InvertedMatrix clone = Cast<InvertedMatrix>();
     DebugOnly<bool> inverted = clone.Invert();
     MOZ_ASSERT(inverted,
                "Attempted to get the inverse of a non-invertible matrix");
@@ -1329,7 +1372,7 @@ class Matrix4x4Typed {
 
   Maybe<Matrix4x4Typed<TargetUnits, SourceUnits, T>> MaybeInverse() const {
     typedef Matrix4x4Typed<TargetUnits, SourceUnits, T> InvertedMatrix;
-    InvertedMatrix clone = InvertedMatrix::FromUnknownMatrix(ToUnknownMatrix());
+    InvertedMatrix clone = Cast<InvertedMatrix>();
     if (clone.Invert()) {
       return Some(clone);
     }
@@ -1901,6 +1944,13 @@ class Matrix5x4 {
  * This does not allow access to the parent class directly, as a caller
  * could then mutate the parent class without updating the type.
  */
+
+enum class MatrixType : uint8_t {
+  Identity,
+  Simple,  // 2x3 Matrix
+  Full     // 4x4 Matrix
+};
+
 template <typename SourceUnits, typename TargetUnits>
 class Matrix4x4TypedFlagged
     : protected Matrix4x4Typed<SourceUnits, TargetUnits> {
@@ -1939,6 +1989,37 @@ class Matrix4x4TypedFlagged
     Analyze();
   }
 
+  template <typename NewMatrix4x4TypedFlagged>
+  [[nodiscard]] NewMatrix4x4TypedFlagged Cast() const {
+    return NewMatrix4x4TypedFlagged(_11, _12, _13, _14, _21, _22, _23, _24, _31,
+                                    _32, _33, _34, _41, _42, _43, _44, mType);
+  }
+
+  static Matrix4x4TypedFlagged Translation2d(Float aX, Float aY) {
+    MatrixType matrixType = MatrixType::Simple;
+    if (aX == 0.0 && aY == 0.0) {
+      matrixType = MatrixType::Identity;
+    }
+    return Matrix4x4TypedFlagged(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                 0.0f, 0.0f, 1.0f, 0.0f, aX, aY, 0.0f, 1.0f,
+                                 matrixType);
+  }
+
+  static Matrix4x4TypedFlagged Scaling(Float aScaleX, Float aScaleY,
+                                       Float aScaleZ) {
+    MatrixType matrixType = MatrixType::Full;
+    if (aScaleZ == 1.0) {
+      if (aScaleX == 1.0 && aScaleY == 1.0) {
+        matrixType = MatrixType::Identity;
+      } else {
+        matrixType = MatrixType::Simple;
+      }
+    }
+    return Matrix4x4TypedFlagged(aScaleX, 0.0f, 0.0f, 0.0f, 0.0f, aScaleY, 0.0f,
+                                 0.0f, 0.0f, 0.0f, aScaleZ, 0.0f, 0.0f, 0.0f,
+                                 0.0f, 1.0f, matrixType);
+  }
+
   template <class F>
   PointTyped<TargetUnits, F> TransformPoint(
       const PointTyped<SourceUnits, F>& aPoint) const {
@@ -1951,6 +2032,49 @@ class Matrix4x4TypedFlagged
     }
 
     return Parent::TransformPoint(aPoint);
+  }
+
+  template <class F>
+  RectTyped<TargetUnits, F> TransformBounds(
+      const RectTyped<SourceUnits, F>& aRect) const {
+    if (mType == MatrixType::Identity) {
+      return aRect;
+    }
+
+    if (mType == MatrixType::Simple) {
+      PointTyped<TargetUnits, F> quad[4];
+      F min_x, max_x;
+      F min_y, max_y;
+
+      quad[0] = TransformPointSimple(aRect.TopLeft());
+      quad[1] = TransformPointSimple(aRect.TopRight());
+      quad[2] = TransformPointSimple(aRect.BottomLeft());
+      quad[3] = TransformPointSimple(aRect.BottomRight());
+
+      min_x = max_x = quad[0].x;
+      min_y = max_y = quad[0].y;
+
+      for (int i = 1; i < 4; i++) {
+        if (quad[i].x < min_x) {
+          min_x = quad[i].x;
+        }
+        if (quad[i].x > max_x) {
+          max_x = quad[i].x;
+        }
+
+        if (quad[i].y < min_y) {
+          min_y = quad[i].y;
+        }
+        if (quad[i].y > max_y) {
+          max_y = quad[i].y;
+        }
+      }
+
+      return RectTyped<TargetUnits, F>(min_x, min_y, max_x - min_x,
+                                       max_y - min_y);
+    }
+
+    return Parent::TransformBounds(aRect);
   }
 
   template <class F>
@@ -2090,7 +2214,7 @@ class Matrix4x4TypedFlagged
 
   Matrix4x4TypedFlagged<TargetUnits, SourceUnits> Inverse() const {
     typedef Matrix4x4TypedFlagged<TargetUnits, SourceUnits> InvertedMatrix;
-    InvertedMatrix clone = InvertedMatrix::FromUnknownMatrix(ToUnknownMatrix());
+    InvertedMatrix clone = Cast<InvertedMatrix>();
     if (mType == MatrixType::Identity) {
       return clone;
     }
@@ -2101,6 +2225,15 @@ class Matrix4x4TypedFlagged
     // Inverting a 2D Matrix should result in a 2D matrix, ergo mType doesn't
     // change.
     return clone;
+  }
+
+  Maybe<Matrix4x4TypedFlagged<TargetUnits, SourceUnits>> MaybeInverse() const {
+    typedef Matrix4x4TypedFlagged<TargetUnits, SourceUnits> InvertedMatrix;
+    InvertedMatrix clone = Cast<InvertedMatrix>();
+    if (clone.Invert()) {
+      return Some(clone);
+    }
+    return Nothing();
   }
 
   template <typename NewTargetUnits>
@@ -2165,8 +2298,7 @@ class Matrix4x4TypedFlagged
     }
 
     if (aMatrix.mType == MatrixType::Identity) {
-      return Matrix4x4TypedFlagged<SourceUnits, NewTargetUnits>::
-          FromUnknownMatrix(this->ToUnknownMatrix());
+      return Cast<Matrix4x4TypedFlagged<SourceUnits, NewTargetUnits>>();
     }
 
     if (mType == MatrixType::Simple && aMatrix.mType == MatrixType::Simple) {
@@ -2265,22 +2397,19 @@ class Matrix4x4TypedFlagged
 
   const Parent& GetMatrix() const { return *this; }
 
- private:
-  enum class MatrixType : uint8_t {
-    Identity,
-    Simple,  // 2x3 Matrix
-    Full     // 4x4 Matrix
-  };
+  Matrix4x4Flagged ToUnknownMatrix() const {
+    return Matrix4x4Flagged{_11, _12, _13, _14, _21, _22, _23, _24,  _31,
+                            _32, _33, _34, _41, _42, _43, _44, mType};
+  }
 
+ private:
   Matrix4x4TypedFlagged(Float a11, Float a12, Float a13, Float a14, Float a21,
                         Float a22, Float a23, Float a24, Float a31, Float a32,
                         Float a33, Float a34, Float a41, Float a42, Float a43,
-                        Float a44,
-                        typename Matrix4x4TypedFlagged::MatrixType aType)
+                        Float a44, const MatrixType aType)
       : Parent(a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41,
-               a42, a43, a44) {
-    mType = aType;
-  }
+               a42, a43, a44),
+        mType(aType) {}
   static Matrix4x4TypedFlagged FromUnknownMatrix(
       const Matrix4x4Flagged& aUnknown) {
     return Matrix4x4TypedFlagged{
@@ -2288,10 +2417,6 @@ class Matrix4x4TypedFlagged
         aUnknown._22, aUnknown._23,  aUnknown._24, aUnknown._31, aUnknown._32,
         aUnknown._33, aUnknown._34,  aUnknown._41, aUnknown._42, aUnknown._43,
         aUnknown._44, aUnknown.mType};
-  }
-  Matrix4x4Flagged ToUnknownMatrix() const {
-    return Matrix4x4Flagged{_11, _12, _13, _14, _21, _22, _23, _24,  _31,
-                            _32, _33, _34, _41, _42, _43, _44, mType};
   }
 
   template <class F>
@@ -2318,6 +2443,9 @@ class Matrix4x4TypedFlagged
   }
 
   MatrixType mType;
+
+  template <typename, typename>
+  friend class Matrix4x4TypedFlagged;
 };
 
 using Matrix4x4Flagged = Matrix4x4TypedFlagged<UnknownUnits, UnknownUnits>;

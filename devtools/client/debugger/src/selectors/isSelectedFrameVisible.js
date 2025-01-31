@@ -3,7 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import { originalToGeneratedId } from "devtools/client/shared/source-map-loader/index";
-import { getSelectedFrame, getSelectedLocation, getCurrentThread } from ".";
+import { getSelectedLocation } from "./sources";
+import { getSelectedFrame } from "./pause";
 
 function getGeneratedId(source) {
   if (source.isOriginal) {
@@ -18,9 +19,8 @@ function getGeneratedId(source) {
  * selected.
  */
 export function isSelectedFrameVisible(state) {
-  const thread = getCurrentThread(state);
   const selectedLocation = getSelectedLocation(state);
-  const selectedFrame = getSelectedFrame(state, thread);
+  const selectedFrame = getSelectedFrame(state);
 
   if (!selectedFrame || !selectedLocation) {
     return false;

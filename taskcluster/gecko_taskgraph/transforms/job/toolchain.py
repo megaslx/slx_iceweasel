@@ -5,7 +5,6 @@
 Support for running toolchain-building jobs via dedicated scripts
 """
 
-
 import os
 
 import taskgraph
@@ -63,6 +62,11 @@ toolchain_run_schema = Schema(
             "toolchain-env",
             description="Additional env variables to add to the worker when using this toolchain",
         ): {str: object},
+        Optional(
+            "toolchain-extract",
+            description="Whether the toolchain should be extracted after it is fetched "
+            + "(default: True)",
+        ): bool,
         # Base work directory used to set up the task.
         Optional("workdir"): str,
     }
@@ -113,7 +117,7 @@ def common_toolchain(config, job, taskdesc, is_docker):
 
     if is_docker:
         # If the task doesn't have a docker-image, set a default
-        worker.setdefault("docker-image", {"in-tree": "deb11-toolchain-build"})
+        worker.setdefault("docker-image", {"in-tree": "deb12-toolchain-build"})
 
     if job["worker"]["os"] == "windows":
         # There were no caches on generic-worker before bug 1519472, and they cause
@@ -157,6 +161,8 @@ def common_toolchain(config, job, taskdesc, is_docker):
         attributes["toolchain-alias"] = alias
     if "toolchain-env" in run:
         attributes["toolchain-env"] = run.pop("toolchain-env")
+    if "toolchain-extract" in run:
+        attributes["toolchain-extract"] = run.pop("toolchain-extract")
 
     # Allow the job to specify where artifacts come from, but add
     # public/build if it's not there already.

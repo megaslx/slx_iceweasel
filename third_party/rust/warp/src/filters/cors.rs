@@ -9,10 +9,7 @@ use std::sync::Arc;
 use headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders, HeaderMapExt,
 };
-use http::{
-    self,
-    header::{self, HeaderName, HeaderValue},
-};
+use http::header::{self, HeaderName, HeaderValue};
 
 use crate::filter::{Filter, WrapSealed};
 use crate::reject::{CombineRejection, Rejection};
@@ -20,7 +17,7 @@ use crate::reply::Reply;
 
 use self::internal::{CorsFilter, IntoOrigin, Seconds};
 
-/// Create a wrapping filter that exposes [CORS][] behavior for a wrapped
+/// Create a wrapping [`Filter`](crate::Filter) that exposes [CORS][] behavior for a wrapped
 /// filter.
 ///
 /// [CORS]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
@@ -56,7 +53,7 @@ pub fn cors() -> Builder {
     }
 }
 
-/// A wrapping filter constructed via `warp::cors()`.
+/// A wrapping [`Filter`](crate::Filter) constructed via `warp::cors()`.
 #[derive(Clone, Debug)]
 pub struct Cors {
     config: Arc<Configured>,

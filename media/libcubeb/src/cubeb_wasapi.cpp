@@ -3323,7 +3323,8 @@ wasapi_create_device(cubeb * ctx, cubeb_device_info & ret,
     ret.preferred =
         (cubeb_device_pref)(ret.preferred | CUBEB_DEVICE_PREF_MULTIMEDIA |
                             CUBEB_DEVICE_PREF_NOTIFICATION);
-  } else if (defaults->is_default(flow, eCommunications, device_id.get())) {
+  }
+  if (defaults->is_default(flow, eCommunications, device_id.get())) {
     ret.preferred =
         (cubeb_device_pref)(ret.preferred | CUBEB_DEVICE_PREF_VOICE);
   }
@@ -3561,6 +3562,7 @@ cubeb_ops const wasapi_ops = {
     /*.get_max_channel_count =*/wasapi_get_max_channel_count,
     /*.get_min_latency =*/wasapi_get_min_latency,
     /*.get_preferred_sample_rate =*/wasapi_get_preferred_sample_rate,
+    /*.get_supported_input_processing_params =*/NULL,
     /*.enumerate_devices =*/wasapi_enumerate_devices,
     /*.device_collection_destroy =*/wasapi_device_collection_destroy,
     /*.destroy =*/wasapi_destroy,
@@ -3574,6 +3576,8 @@ cubeb_ops const wasapi_ops = {
     /*.stream_set_volume =*/wasapi_stream_set_volume,
     /*.stream_set_name =*/NULL,
     /*.stream_get_current_device =*/NULL,
+    /*.stream_set_input_mute =*/NULL,
+    /*.stream_set_input_processing_params =*/NULL,
     /*.stream_device_destroy =*/NULL,
     /*.stream_register_device_changed_callback =*/NULL,
     /*.register_device_collection_changed =*/

@@ -6,6 +6,7 @@
 #include "gfxPlatformFontList.h"
 #include "gfxFontUtils.h"
 #include "gfxFont.h"
+#include "mozilla/ipc/SharedMemory.h"
 #include "nsReadableUtils.h"
 #include "prerror.h"
 #include "mozilla/dom/ContentChild.h"
@@ -41,8 +42,12 @@ static double WSSDistance(const Face* aFace, const gfxFontStyle& aStyle) {
 
 void* Pointer::ToPtr(FontList* aFontList,
                      size_t aSize) const MOZ_NO_THREAD_SAFETY_ANALYSIS {
+  // On failure, we'll return null; callers need to handle this appropriately
+  // (e.g. via fallback).
+  void* result = nullptr;
+
   if (IsNull()) {
-    return nullptr;
+    return result;
   }
 
   // Ensure the list doesn't get replaced out from under us. Font-list rebuild
@@ -53,9 +58,6 @@ void* Pointer::ToPtr(FontList* aFontList,
     gfxPlatformFontList::PlatformFontList()->Lock();
   }
 
-  // On failure, we'll return null; callers need to handle this appropriately
-  // (e.g. via fallback).
-  void* result = nullptr;
   uint32_t blockIndex = Block();
 
   // If the Pointer refers to a block we have not yet mapped in this process,
@@ -63,8 +65,13 @@ void* Pointer::ToPtr(FontList* aFontList,
   // our mBlocks list.
   auto& blocks = aFontList->mBlocks;
   if (blockIndex >= blocks.Length()) {
-    if (XRE_IsParentProcess()) {
+    if (MOZ_UNLIKELY(XRE_IsParentProcess())) {
       // Shouldn't happen! A content process tried to pass a bad Pointer?
+      goto cleanup;
+    }
+    // If we're not on the main thread, we can't do the IPC involved in
+    // UpdateShmBlocks; just let the lookup fail for now.
+    if (!isMainThread) {
       goto cleanup;
     }
     // UpdateShmBlocks can fail, if the parent has replaced the font list with
@@ -73,9 +80,8 @@ void* Pointer::ToPtr(FontList* aFontList,
     // about to receive a notification of the new font list anyhow, at which
     // point it will flush its caches and reflow everything, so the temporary
     // failure of this font will be forgotten.
-    // We also return null if we're not on the main thread, as we cannot safely
-    // do the IPC messaging needed here.
-    if (!isMainThread || !aFontList->UpdateShmBlocks()) {
+    // UpdateShmBlocks will take the platform font-list lock during the update.
+    if (MOZ_UNLIKELY(!aFontList->UpdateShmBlocks(true))) {
       goto cleanup;
     }
     MOZ_ASSERT(blockIndex < blocks.Length(), "failure in UpdateShmBlocks?");
@@ -85,7 +91,7 @@ void* Pointer::ToPtr(FontList* aFontList,
     // In at least some cases, however, this can occur transiently while the
     // font list is being rebuilt by the parent; content will then be notified
     // that the list has changed, and should refresh everything successfully.
-    if (blockIndex >= blocks.Length()) {
+    if (MOZ_UNLIKELY(blockIndex >= blocks.Length())) {
       goto cleanup;
     }
   }
@@ -93,7 +99,7 @@ void* Pointer::ToPtr(FontList* aFontList,
   {
     // Don't create a pointer that's outside what the block has allocated!
     const auto& block = blocks[blockIndex];
-    if (Offset() + aSize <= block->Allocated()) {
+    if (MOZ_LIKELY(Offset() + aSize <= block->Allocated())) {
       result = static_cast<char*>(block->Memory()) + Offset();
     }
   }
@@ -133,11 +139,13 @@ Family::Family(FontList* aList, const InitData& aData)
 
 class SetCharMapRunnable : public mozilla::Runnable {
  public:
-  SetCharMapRunnable(uint32_t aListGeneration, Pointer aFacePtr,
-                     gfxCharacterMap* aCharMap)
+  SetCharMapRunnable(uint32_t aListGeneration,
+                     std::pair<uint32_t, bool> aFamilyIndex,
+                     uint32_t aFaceIndex, gfxCharacterMap* aCharMap)
       : Runnable("SetCharMapRunnable"),
         mListGeneration(aListGeneration),
-        mFacePtr(aFacePtr),
+        mFamilyIndex(aFamilyIndex),
+        mFaceIndex(aFaceIndex),
         mCharMap(aCharMap) {}
 
   NS_IMETHOD Run() override {
@@ -145,26 +153,46 @@ class SetCharMapRunnable : public mozilla::Runnable {
     if (!list || list->GetGeneration() != mListGeneration) {
       return NS_OK;
     }
-    dom::ContentChild::GetSingleton()->SendSetCharacterMap(mListGeneration,
-                                                           mFacePtr, *mCharMap);
+    dom::ContentChild::GetSingleton()->SendSetCharacterMap(
+        mListGeneration, mFamilyIndex.first, mFamilyIndex.second, mFaceIndex,
+        *mCharMap);
     return NS_OK;
   }
 
  private:
   uint32_t mListGeneration;
-  Pointer mFacePtr;
+  std::pair<uint32_t, bool> mFamilyIndex;
+  uint32_t mFaceIndex;
   RefPtr<gfxCharacterMap> mCharMap;
 };
 
-void Face::SetCharacterMap(FontList* aList, gfxCharacterMap* aCharMap) {
+void Face::SetCharacterMap(FontList* aList, gfxCharacterMap* aCharMap,
+                           const Family* aFamily) {
   if (!XRE_IsParentProcess()) {
-    Pointer ptr = aList->ToSharedPointer(this);
+    Maybe<std::pair<uint32_t, bool>> familyIndex = aFamily->FindIndex(aList);
+    if (!familyIndex) {
+      NS_WARNING("Family index not found! Ignoring SetCharacterMap");
+      return;
+    }
+    const auto* faces = aFamily->Faces(aList);
+    uint32_t faceIndex = 0;
+    while (faceIndex < aFamily->NumFaces()) {
+      if (faces[faceIndex].ToPtr<Face>(aList) == this) {
+        break;
+      }
+      ++faceIndex;
+    }
+    if (faceIndex >= aFamily->NumFaces()) {
+      NS_WARNING("Face not found in family! Ignoring SetCharacterMap");
+      return;
+    }
     if (NS_IsMainThread()) {
       dom::ContentChild::GetSingleton()->SendSetCharacterMap(
-          aList->GetGeneration(), ptr, *aCharMap);
+          aList->GetGeneration(), familyIndex->first, familyIndex->second,
+          faceIndex, *aCharMap);
     } else {
-      NS_DispatchToMainThread(
-          new SetCharMapRunnable(aList->GetGeneration(), ptr, aCharMap));
+      NS_DispatchToMainThread(new SetCharMapRunnable(
+          aList->GetGeneration(), familyIndex.value(), faceIndex, aCharMap));
     }
     return;
   }
@@ -235,7 +263,7 @@ void Family::AddFaces(FontList* aList, const nsTArray<Face::InitData>& aFaces) {
       (void)new (face) Face(aList, *initData);
       facePtrs[i] = fp;
       if (initData->mCharMap) {
-        face->SetCharacterMap(aList, initData->mCharMap);
+        face->SetCharacterMap(aList, initData->mCharMap, this);
       }
     }
   }
@@ -608,16 +636,23 @@ void Family::SetupFamilyCharMap(FontList* aList) {
   }
   if (!XRE_IsParentProcess()) {
     // |this| could be a Family record in either the Families() or Aliases()
-    // arrays
+    // arrays; FindIndex will map it back to its index and which array.
+    Maybe<std::pair<uint32_t, bool>> index = FindIndex(aList);
+    if (!index) {
+      NS_WARNING("Family index not found! Ignoring SetupFamilyCharMap");
+      return;
+    }
     if (NS_IsMainThread()) {
       dom::ContentChild::GetSingleton()->SendSetupFamilyCharMap(
-          aList->GetGeneration(), aList->ToSharedPointer(this));
+          aList->GetGeneration(), index->first, index->second);
       return;
     }
     NS_DispatchToMainThread(NS_NewRunnableFunction(
         "SetupFamilyCharMap callback",
-        [gen = aList->GetGeneration(), ptr = aList->ToSharedPointer(this)] {
-          dom::ContentChild::GetSingleton()->SendSetupFamilyCharMap(gen, ptr);
+        [gen = aList->GetGeneration(), idx = index->first,
+         alias = index->second] {
+          dom::ContentChild::GetSingleton()->SendSetupFamilyCharMap(gen, idx,
+                                                                    alias);
         }));
     return;
   }
@@ -662,6 +697,26 @@ void Family::SetupFamilyCharMap(FontList* aList) {
   }
 }
 
+Maybe<std::pair<uint32_t, bool>> Family::FindIndex(FontList* aList) const {
+  const auto* start = aList->Families();
+  const auto* end = start + aList->NumFamilies();
+  if (this >= start && this < end) {
+    uint32_t index = this - start;
+    MOZ_RELEASE_ASSERT(start + index == this, "misaligned Family ptr!");
+    return Some(std::pair(index, false));
+  }
+
+  start = aList->AliasFamilies();
+  end = start + aList->NumAliases();
+  if (this >= start && this < end) {
+    uint32_t index = this - start;
+    MOZ_RELEASE_ASSERT(start + index == this, "misaligned AliasFamily ptr!");
+    return Some(std::pair(index, true));
+  }
+
+  return Nothing();
+}
+
 FontList::FontList(uint32_t aGeneration) {
   if (XRE_IsParentProcess()) {
     // Create the initial shared block, and initialize Header
@@ -684,22 +739,23 @@ FontList::FontList(uint32_t aGeneration) {
     // SetXPCOMProcessAttributes.
     auto& blocks = dom::ContentChild::GetSingleton()->SharedFontListBlocks();
     for (auto& handle : blocks) {
-      auto newShm = MakeUnique<base::SharedMemory>();
+      auto newShm = MakeRefPtr<ipc::SharedMemory>();
       if (!newShm->IsHandleValid(handle)) {
         // Bail out and let UpdateShmBlocks try to do its thing below.
         break;
       }
-      if (!newShm->SetHandle(std::move(handle), true)) {
+      if (!newShm->SetHandle(std::move(handle),
+                             ipc::SharedMemory::OpenRights::RightsReadOnly)) {
         MOZ_CRASH("failed to set shm handle");
       }
-      if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->memory()) {
+      if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->Memory()) {
         MOZ_CRASH("failed to map shared memory");
       }
-      uint32_t size = static_cast<BlockHeader*>(newShm->memory())->mBlockSize;
+      uint32_t size = static_cast<BlockHeader*>(newShm->Memory())->mBlockSize;
       MOZ_ASSERT(size >= SHM_BLOCK_SIZE);
       if (size != SHM_BLOCK_SIZE) {
         newShm->Unmap();
-        if (!newShm->Map(size) || !newShm->memory()) {
+        if (!newShm->Map(size) || !newShm->Memory()) {
           MOZ_CRASH("failed to map shared memory");
         }
       }
@@ -708,7 +764,7 @@ FontList::FontList(uint32_t aGeneration) {
     blocks.Clear();
     // Update in case of any changes since the initial message was sent.
     for (unsigned retryCount = 0; retryCount < 3; ++retryCount) {
-      if (UpdateShmBlocks()) {
+      if (UpdateShmBlocks(false)) {
         return;
       }
       // The only reason for UpdateShmBlocks to fail is if the parent recreated
@@ -725,19 +781,37 @@ FontList::FontList(uint32_t aGeneration) {
 
 FontList::~FontList() { DetachShmBlocks(); }
 
+FontList::Header& FontList::GetHeader() const MOZ_NO_THREAD_SAFETY_ANALYSIS {
+  // We only need to lock if we're not on the main thread.
+  bool isMainThread = NS_IsMainThread();
+  if (!isMainThread) {
+    gfxPlatformFontList::PlatformFontList()->Lock();
+  }
+
+  // It's invalid to try and access this before the first block exists.
+  MOZ_ASSERT(mBlocks.Length() > 0);
+  auto& result = *static_cast<Header*>(mBlocks[0]->Memory());
+
+  if (!isMainThread) {
+    gfxPlatformFontList::PlatformFontList()->Unlock();
+  }
+
+  return result;
+}
+
 bool FontList::AppendShmBlock(uint32_t aSizeNeeded) {
   MOZ_ASSERT(XRE_IsParentProcess());
   uint32_t size = std::max(aSizeNeeded, SHM_BLOCK_SIZE);
-  auto newShm = MakeUnique<base::SharedMemory>();
-  if (!newShm->CreateFreezeable(size)) {
+  auto newShm = MakeRefPtr<ipc::SharedMemory>();
+  if (!newShm->CreateFreezable(size)) {
     MOZ_CRASH("failed to create shared memory");
     return false;
   }
-  if (!newShm->Map(size) || !newShm->memory()) {
+  if (!newShm->Map(size) || !newShm->Memory()) {
     MOZ_CRASH("failed to map shared memory");
     return false;
   }
-  auto readOnly = MakeUnique<base::SharedMemory>();
+  auto readOnly = MakeRefPtr<ipc::SharedMemory>();
   if (!newShm->ReadOnlyCopy(readOnly.get())) {
     MOZ_CRASH("failed to create read-only copy");
     return false;
@@ -772,15 +846,16 @@ bool FontList::AppendShmBlock(uint32_t aSizeNeeded) {
 }
 
 void FontList::ShmBlockAdded(uint32_t aGeneration, uint32_t aIndex,
-                             base::SharedMemoryHandle aHandle) {
+                             ipc::SharedMemory::Handle aHandle) {
   MOZ_ASSERT(!XRE_IsParentProcess());
   MOZ_ASSERT(mBlocks.Length() > 0);
 
-  auto newShm = MakeUnique<base::SharedMemory>();
+  auto newShm = MakeRefPtr<ipc::SharedMemory>();
   if (!newShm->IsHandleValid(aHandle)) {
     return;
   }
-  if (!newShm->SetHandle(std::move(aHandle), true)) {
+  if (!newShm->SetHandle(std::move(aHandle),
+                         ipc::SharedMemory::RightsReadOnly)) {
     MOZ_CRASH("failed to set shm handle");
   }
 
@@ -791,15 +866,15 @@ void FontList::ShmBlockAdded(uint32_t aGeneration, uint32_t aIndex,
     return;
   }
 
-  if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->memory()) {
+  if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->Memory()) {
     MOZ_CRASH("failed to map shared memory");
   }
 
-  uint32_t size = static_cast<BlockHeader*>(newShm->memory())->mBlockSize;
+  uint32_t size = static_cast<BlockHeader*>(newShm->Memory())->mBlockSize;
   MOZ_ASSERT(size >= SHM_BLOCK_SIZE);
   if (size != SHM_BLOCK_SIZE) {
     newShm->Unmap();
-    if (!newShm->Map(size) || !newShm->memory()) {
+    if (!newShm->Map(size) || !newShm->Memory()) {
       MOZ_CRASH("failed to map shared memory");
     }
   }
@@ -820,46 +895,57 @@ FontList::ShmBlock* FontList::GetBlockFromParent(uint32_t aIndex) {
   // If we have no existing blocks, we don't want a generation check yet;
   // the header in the first block will define the generation of this list
   uint32_t generation = aIndex == 0 ? 0 : GetGeneration();
-  base::SharedMemoryHandle handle = base::SharedMemory::NULLHandle();
+  ipc::SharedMemory::Handle handle = ipc::SharedMemory::NULLHandle();
   if (!dom::ContentChild::GetSingleton()->SendGetFontListShmBlock(
           generation, aIndex, &handle)) {
     return nullptr;
   }
-  auto newShm = MakeUnique<base::SharedMemory>();
+  auto newShm = MakeRefPtr<ipc::SharedMemory>();
   if (!newShm->IsHandleValid(handle)) {
     return nullptr;
   }
-  if (!newShm->SetHandle(std::move(handle), true)) {
+  if (!newShm->SetHandle(std::move(handle),
+                         ipc::SharedMemory::RightsReadOnly)) {
     MOZ_CRASH("failed to set shm handle");
   }
-  if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->memory()) {
+  if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->Memory()) {
     MOZ_CRASH("failed to map shared memory");
   }
-  uint32_t size = static_cast<BlockHeader*>(newShm->memory())->mBlockSize;
+  uint32_t size = static_cast<BlockHeader*>(newShm->Memory())->mBlockSize;
   MOZ_ASSERT(size >= SHM_BLOCK_SIZE);
   if (size != SHM_BLOCK_SIZE) {
     newShm->Unmap();
-    if (!newShm->Map(size) || !newShm->memory()) {
+    if (!newShm->Map(size) || !newShm->Memory()) {
       MOZ_CRASH("failed to map shared memory");
     }
   }
   return new ShmBlock(std::move(newShm));
 }
 
-bool FontList::UpdateShmBlocks() {
+// We don't take the lock when called from the constructor, so disable thread-
+// safety analysis here.
+bool FontList::UpdateShmBlocks(bool aMustLock) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   MOZ_ASSERT(!XRE_IsParentProcess());
+  if (aMustLock) {
+    gfxPlatformFontList::PlatformFontList()->Lock();
+  }
+  bool result = true;
   while (!mBlocks.Length() || mBlocks.Length() < GetHeader().mBlockCount) {
     ShmBlock* newBlock = GetBlockFromParent(mBlocks.Length());
     if (!newBlock) {
-      return false;
+      result = false;
+      break;
     }
     mBlocks.AppendElement(newBlock);
   }
-  return true;
+  if (aMustLock) {
+    gfxPlatformFontList::PlatformFontList()->Unlock();
+  }
+  return result;
 }
 
-void FontList::ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
-                                    base::ProcessId aPid) {
+void FontList::ShareBlocksToProcess(
+    nsTArray<ipc::SharedMemory::Handle>* aBlocks, base::ProcessId aPid) {
   MOZ_RELEASE_ASSERT(mReadOnlyShmems.Length() == mBlocks.Length());
   for (auto& shmem : mReadOnlyShmems) {
     auto handle = shmem->CloneHandle();
@@ -875,8 +961,8 @@ void FontList::ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
   }
 }
 
-base::SharedMemoryHandle FontList::ShareBlockToProcess(uint32_t aIndex,
-                                                       base::ProcessId aPid) {
+ipc::SharedMemory::Handle FontList::ShareBlockToProcess(uint32_t aIndex,
+                                                        base::ProcessId aPid) {
   MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
   MOZ_RELEASE_ASSERT(mReadOnlyShmems.Length() == mBlocks.Length());
   MOZ_RELEASE_ASSERT(aIndex < mReadOnlyShmems.Length());
@@ -938,6 +1024,14 @@ void FontList::SetFamilyNames(nsTArray<Family::InitData>& aFamilies) {
 
   size_t count = aFamilies.Length();
 
+  // Any font resources with an empty family-name will have been collected in
+  // a family with empty name, and sorted to the start of the list. Such fonts
+  // are not generally usable, or recognized as "installed", so we drop them.
+  if (count > 1 && aFamilies[0].mKey.IsEmpty()) {
+    aFamilies.RemoveElementAt(0);
+    --count;
+  }
+
   // Check for duplicate family entries (can occur if there is a bundled font
   // that has the same name as a system-installed one); in this case we keep
   // the bundled one as it will always be exposed.
@@ -990,6 +1084,13 @@ void FontList::SetAliases(
   aliasArray.Sort();
 
   size_t count = aliasArray.Length();
+
+  // Drop any entry with empty family-name as being unusable.
+  if (count && aliasArray[0].mKey.IsEmpty()) {
+    aliasArray.RemoveElementAt(0);
+    --count;
+  }
+
   if (count < header.mAliasCount) {
     // This shouldn't happen, but handle it safely by just bailing out.
     NS_WARNING("cannot reduce number of aliases");
@@ -1159,6 +1260,7 @@ Family* FontList::FindFamily(const nsCString& aName, bool aPrimaryNameOnly) {
       // to this code, and return.
       pfl->mAliasTable.Clear();
       pfl->mLocalNameTable.Clear();
+      mFaceNamesRead.Clear();
       return nullptr;
     }
 
@@ -1181,8 +1283,15 @@ Family* FontList::FindFamily(const nsCString& aName, bool aPrimaryNameOnly) {
       return nullptr;
     }
     nsAutoCString base(Substring(aName, 0, index));
-    if (BinarySearchIf(families, 0, header.mFamilyCount,
+    auto familyCount = header.mFamilyCount;
+    if (BinarySearchIf(families, 0, familyCount,
                        FamilyNameComparator(this, base), &match)) {
+      // Check to see if we have already read the face names for this base
+      // family. Note: EnsureLengthAtLeast will default new entries to false.
+      mFaceNamesRead.EnsureLengthAtLeast(familyCount);
+      if (mFaceNamesRead[match]) {
+        return nullptr;
+      }
       // This may be a possible base family to satisfy the search; call
       // ReadFaceNamesForFamily and see if the desired name ends up in
       // mAliasTable.
@@ -1193,6 +1302,7 @@ Family* FontList::FindFamily(const nsCString& aName, bool aPrimaryNameOnly) {
       // alias list is ready, then discarded.
       Family* baseFamily = &families[match];
       pfl->ReadFaceNamesForFamily(baseFamily, false);
+      mFaceNamesRead[match] = true;
       if (auto lookup = pfl->mAliasTable.Lookup(aName)) {
         if (lookup.Data()->mFaces.Length() != baseFamily->NumFaces()) {
           // If the alias family doesn't have all the faces of the base family,
@@ -1287,19 +1397,6 @@ void FontList::SearchForLocalFace(const nsACString& aName, Family** aFamily,
       }
     }
   }
-}
-
-Pointer FontList::ToSharedPointer(const void* aPtr) {
-  const char* p = (const char*)aPtr;
-  const uint32_t blockCount = mBlocks.Length();
-  for (uint32_t i = 0; i < blockCount; ++i) {
-    const char* blockAddr = (const char*)mBlocks[i]->Memory();
-    if (p >= blockAddr && p < blockAddr + SHM_BLOCK_SIZE) {
-      return Pointer(i, p - blockAddr);
-    }
-  }
-  MOZ_DIAGNOSTIC_ASSERT(false, "invalid shared-memory pointer");
-  return Pointer::Null();
 }
 
 size_t FontList::SizeOfIncludingThis(

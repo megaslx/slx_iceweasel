@@ -12,6 +12,7 @@
 #include "js/Value.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/StaticString.h"
 #include "nsISupports.h"
 
 namespace mozilla::dom {
@@ -58,7 +59,7 @@ class MozPromiseRejectOnDestruction final
   // (Accepting RefPtr<T> instead of T* because compiler fails to implicitly
   // convert it at call sites)
   MozPromiseRejectOnDestruction(const RefPtr<T>& aMozPromise,
-                                const char* aCallSite)
+                                StaticString aCallSite)
       : mMozPromise(aMozPromise), mCallSite(aCallSite) {
     MOZ_ASSERT(aMozPromise);
   }
@@ -70,33 +71,7 @@ class MozPromiseRejectOnDestruction final
   }
 
   RefPtr<T> mMozPromise;
-  const char* mCallSite;
-};
-
-// This class is used to set C++ callbacks once a dom Promise a resolved or
-// rejected.
-class DomPromiseListener final : public PromiseNativeHandler {
-  NS_DECL_ISUPPORTS
-
- public:
-  using CallbackTypeResolved =
-      std::function<void(JSContext*, JS::Handle<JS::Value>)>;
-  using CallbackTypeRejected = std::function<void(nsresult)>;
-
-  DomPromiseListener(CallbackTypeResolved&& aResolve,
-                     CallbackTypeRejected&& aReject);
-
-  void Clear();
-
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override;
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override;
-
- private:
-  ~DomPromiseListener();
-  CallbackTypeResolved mResolve;
-  CallbackTypeRejected mReject;
+  StaticString mCallSite;
 };
 
 }  // namespace mozilla::dom

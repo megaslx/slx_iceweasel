@@ -69,9 +69,8 @@ class nsNativeThemeWin : public Theme {
   virtual Transparency GetWidgetTransparency(
       nsIFrame* aFrame, StyleAppearance aAppearance) override;
 
-  NS_IMETHOD WidgetStateChanged(nsIFrame* aFrame, StyleAppearance aAppearance,
-                                nsAtom* aAttribute, bool* aShouldRepaint,
-                                const nsAttrValue* aOldValue) override;
+  bool WidgetAttributeChangeRequiresRepaint(StyleAppearance aAppearance,
+                                            nsAtom* aAttribute) override;
 
   NS_IMETHOD ThemeChanged() override;
 
@@ -80,9 +79,7 @@ class nsNativeThemeWin : public Theme {
 
   bool ThemeDrawsFocusForWidget(nsIFrame*, StyleAppearance) override;
 
-  bool ThemeWantsButtonInnerFocusRing(nsIFrame*, StyleAppearance) override {
-    return true;
-  }
+  bool ThemeWantsButtonInnerFocusRing() override { return true; }
 
   bool ThemeNeedsComboboxDropmarker() override;
 

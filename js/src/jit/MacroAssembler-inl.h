@@ -17,6 +17,7 @@
 #include "jit/CompileWrappers.h"
 #include "jit/JitFrames.h"
 #include "jit/JSJitFrameIter.h"
+#include "js/Prefs.h"
 #include "util/DifferentialTesting.h"
 #include "vm/BigIntType.h"
 #include "vm/JSObject.h"
@@ -63,20 +64,24 @@ DynFn DynamicFunction(Sig fun) {
 inline DynFn JitPreWriteBarrier(MIRType type) {
   switch (type) {
     case MIRType::Value: {
-      using Fn = void (*)(JSRuntime * rt, Value * vp);
+      using Fn = void (*)(JSRuntime* rt, Value* vp);
       return DynamicFunction<Fn>(JitValuePreWriteBarrier);
     }
     case MIRType::String: {
-      using Fn = void (*)(JSRuntime * rt, JSString * *stringp);
+      using Fn = void (*)(JSRuntime* rt, JSString** stringp);
       return DynamicFunction<Fn>(JitStringPreWriteBarrier);
     }
     case MIRType::Object: {
-      using Fn = void (*)(JSRuntime * rt, JSObject * *objp);
+      using Fn = void (*)(JSRuntime* rt, JSObject** objp);
       return DynamicFunction<Fn>(JitObjectPreWriteBarrier);
     }
     case MIRType::Shape: {
-      using Fn = void (*)(JSRuntime * rt, Shape * *shapep);
+      using Fn = void (*)(JSRuntime* rt, Shape** shapep);
       return DynamicFunction<Fn>(JitShapePreWriteBarrier);
+    }
+    case MIRType::WasmAnyRef: {
+      using Fn = void (*)(JSRuntime* rt, wasm::AnyRef* refp);
+      return DynamicFunction<Fn>(JitWasmAnyRefPreWriteBarrier);
     }
     default:
       MOZ_CRASH();
@@ -133,53 +138,40 @@ CodeOffset MacroAssembler::call(const wasm::CallSiteDesc& desc,
 // ABI function calls.
 
 void MacroAssembler::passABIArg(Register reg) {
-  passABIArg(MoveOperand(reg), MoveOp::GENERAL);
+  passABIArg(MoveOperand(reg), ABIType::General);
 }
 
-void MacroAssembler::passABIArg(FloatRegister reg, MoveOp::Type type) {
+void MacroAssembler::passABIArg(FloatRegister reg, ABIType type) {
   passABIArg(MoveOperand(reg), type);
 }
 
-void MacroAssembler::callWithABI(DynFn fun, MoveOp::Type result,
+void MacroAssembler::callWithABI(DynFn fun, ABIType result,
                                  CheckUnsafeCallWithABI check) {
   AutoProfilerCallInstrumentation profiler(*this);
   callWithABINoProfiler(fun.address, result, check);
 }
 
 template <typename Sig, Sig fun>
-void MacroAssembler::callWithABI(MoveOp::Type result,
-                                 CheckUnsafeCallWithABI check) {
+void MacroAssembler::callWithABI(ABIType result, CheckUnsafeCallWithABI check) {
   ABIFunction<Sig, fun> abiFun;
   AutoProfilerCallInstrumentation profiler(*this);
   callWithABINoProfiler(abiFun.address(), result, check);
 }
 
-void MacroAssembler::callWithABI(Register fun, MoveOp::Type result) {
+void MacroAssembler::callWithABI(Register fun, ABIType result) {
   AutoProfilerCallInstrumentation profiler(*this);
   callWithABINoProfiler(fun, result);
 }
 
-void MacroAssembler::callWithABI(const Address& fun, MoveOp::Type result) {
+void MacroAssembler::callWithABI(const Address& fun, ABIType result) {
   AutoProfilerCallInstrumentation profiler(*this);
   callWithABINoProfiler(fun, result);
 }
 
-void MacroAssembler::appendSignatureType(MoveOp::Type type) {
+void MacroAssembler::appendSignatureType(ABIType type) {
 #ifdef JS_SIMULATOR
-  signature_ <<= ArgType_Shift;
-  switch (type) {
-    case MoveOp::GENERAL:
-      signature_ |= ArgType_General;
-      break;
-    case MoveOp::DOUBLE:
-      signature_ |= ArgType_Float64;
-      break;
-    case MoveOp::FLOAT32:
-      signature_ |= ArgType_Float32;
-      break;
-    default:
-      MOZ_CRASH("Invalid argument type");
-  }
+  signature_ <<= ABITypeArgShift;
+  signature_ |= uint32_t(type);
 #endif
 }
 
@@ -199,7 +191,11 @@ ABIFunctionType MacroAssembler::signature() const {
     case Args_Double_None:
     case Args_Int_Double:
     case Args_Float32_Float32:
+    case Args_Float32_Float64:
+    case Args_Float32_General:
+    case Args_Float32_Int32:
     case Args_Int_Float32:
+    case Args_Int32_Float32:
     case Args_Double_Double:
     case Args_Double_Int:
     case Args_Double_DoubleInt:
@@ -211,6 +207,7 @@ ABIFunctionType MacroAssembler::signature() const {
     case Args_Int_IntDoubleIntInt:
     case Args_Double_DoubleDoubleDouble:
     case Args_Double_DoubleDoubleDoubleDouble:
+    case Args_Int64_GeneralGeneral:
       break;
     default:
       MOZ_CRASH("Unexpected type");
@@ -348,11 +345,13 @@ uint32_t MacroAssembler::buildFakeExitFrame(Register scratch) {
 // Exit frame footer.
 
 void MacroAssembler::enterExitFrame(Register cxreg, Register scratch,
-                                    const VMFunctionData* f) {
-  MOZ_ASSERT(f);
+                                    VMFunctionId f) {
   linkExitFrame(cxreg, scratch);
-  // Push VMFunction pointer, to mark arguments.
-  Push(ImmPtr(f));
+  // Push `ExitFrameType::VMFunction + VMFunctionId`, for marking the arguments.
+  // See ExitFooterFrame::data_.
+  uintptr_t type = uintptr_t(ExitFrameType::VMFunction) + uintptr_t(f);
+  MOZ_ASSERT(type <= INT32_MAX);
+  Push(Imm32(type));
 }
 
 void MacroAssembler::enterFakeExitFrame(Register cxreg, Register scratch,
@@ -387,6 +386,24 @@ void MacroAssembler::moveValue(const ConstantOrRegister& src,
 }
 
 // ===============================================================
+// Copy instructions
+
+void MacroAssembler::copy64(const Address& src, const Address& dest,
+                            Register scratch) {
+#if JS_BITS_PER_WORD == 32
+  MOZ_RELEASE_ASSERT(src.base != scratch && dest.base != scratch);
+  load32(LowWord(src), scratch);
+  store32(scratch, LowWord(dest));
+  load32(HighWord(src), scratch);
+  store32(scratch, HighWord(dest));
+#else
+  Register64 scratch64(scratch);
+  load64(src, scratch64);
+  store64(scratch64, dest);
+#endif
+}
+
+// ===============================================================
 // Arithmetic functions
 
 void MacroAssembler::addPtr(ImmPtr imm, Register dest) {
@@ -396,8 +413,12 @@ void MacroAssembler::addPtr(ImmPtr imm, Register dest) {
 // ===============================================================
 // Branch functions
 
-template <class L>
-void MacroAssembler::branchIfFalseBool(Register reg, L label) {
+void MacroAssembler::branchTest64(Condition cond, Register64 lhs,
+                                  Register64 rhs, Label* success, Label* fail) {
+  branchTest64(cond, lhs, rhs, InvalidReg, success, fail);
+}
+
+void MacroAssembler::branchIfFalseBool(Register reg, Label* label) {
   // Note that C++ bool is only 1 byte, so ignore the higher-order bits.
   branchTest32(Assembler::Zero, reg, Imm32(0xFF), label);
 }
@@ -405,6 +426,16 @@ void MacroAssembler::branchIfFalseBool(Register reg, L label) {
 void MacroAssembler::branchIfTrueBool(Register reg, Label* label) {
   // Note that C++ bool is only 1 byte, so ignore the higher-order bits.
   branchTest32(Assembler::NonZero, reg, Imm32(0xFF), label);
+}
+
+void MacroAssembler::branchIfNotNullOrUndefined(ValueOperand val,
+                                                Label* label) {
+  Label nullOrUndefined;
+  ScratchTagScope tag(*this, val);
+  splitTagForTest(val, tag);
+  branchTestNull(Assembler::Equal, tag, &nullOrUndefined);
+  branchTestUndefined(Assembler::NotEqual, tag, label);
+  bind(&nullOrUndefined);
 }
 
 void MacroAssembler::branchIfRope(Register str, Label* label) {
@@ -471,17 +502,13 @@ void MacroAssembler::branchIfNotFunctionIsNonBuiltinCtor(Register fun,
   branch32(Assembler::NotEqual, scratch, Imm32(expected), label);
 }
 
-void MacroAssembler::branchIfFunctionHasNoJitEntry(Register fun,
-                                                   bool isConstructing,
-                                                   Label* label) {
-  uint16_t flags = FunctionFlags::HasJitEntryFlags(isConstructing);
+void MacroAssembler::branchIfFunctionHasNoJitEntry(Register fun, Label* label) {
+  uint16_t flags = FunctionFlags::HasJitEntryFlags();
   branchTestFunctionFlags(fun, flags, Assembler::Zero, label);
 }
 
-void MacroAssembler::branchIfFunctionHasJitEntry(Register fun,
-                                                 bool isConstructing,
-                                                 Label* label) {
-  uint16_t flags = FunctionFlags::HasJitEntryFlags(isConstructing);
+void MacroAssembler::branchIfFunctionHasJitEntry(Register fun, Label* label) {
+  uint16_t flags = FunctionFlags::HasJitEntryFlags();
   branchTestFunctionFlags(fun, flags, Assembler::NonZero, label);
 }
 
@@ -528,15 +555,27 @@ void MacroAssembler::branchIfObjectEmulatesUndefined(Register objReg,
                                                      Register scratch,
                                                      Label* slowCheck,
                                                      Label* label) {
-  // The branches to out-of-line code here implement a conservative version
-  // of the JSObject::isWrapper test performed in EmulatesUndefined.
-  loadObjClassUnsafe(objReg, scratch);
+  MOZ_ASSERT(objReg != scratch);
 
-  branchTestClassIsProxy(true, scratch, slowCheck);
+  Label done;
+
+  loadPtr(
+      AbsoluteAddress(runtime()->addressOfHasSeenObjectEmulateUndefinedFuse()),
+      scratch);
+  branchPtr(Assembler::Equal, scratch, ImmPtr(nullptr), &done);
+
+  loadObjClassUnsafe(objReg, scratch);
 
   Address flags(scratch, JSClass::offsetOfFlags());
   branchTest32(Assembler::NonZero, flags, Imm32(JSCLASS_EMULATES_UNDEFINED),
                label);
+
+  // Call into C++ if the object is a wrapper.
+  branchTestClassIsProxy(false, scratch, &done);
+  branchTestProxyHandlerFamily(Assembler::Equal, objReg, scratch,
+                               &Wrapper::family, slowCheck);
+
+  bind(&done);
 }
 
 void MacroAssembler::branchFunctionKind(Condition cond,
@@ -582,9 +621,7 @@ void MacroAssembler::branchTestObjClass(Condition cond, Register obj,
   MOZ_ASSERT(obj != scratch);
   MOZ_ASSERT(scratch != spectreRegToZero);
 
-  loadPtr(Address(obj, JSObject::offsetOfShape()), scratch);
-  loadPtr(Address(scratch, Shape::offsetOfBaseShape()), scratch);
-  loadPtr(Address(scratch, BaseShape::offsetOfClasp()), scratch);
+  loadObjClassUnsafe(obj, scratch);
   branchPtr(cond, clasp, scratch, label);
 
   if (JitOptions.spectreObjectMitigations) {
@@ -596,9 +633,7 @@ void MacroAssembler::branchTestObjClassNoSpectreMitigations(
     Condition cond, Register obj, const Address& clasp, Register scratch,
     Label* label) {
   MOZ_ASSERT(obj != scratch);
-  loadPtr(Address(obj, JSObject::offsetOfShape()), scratch);
-  loadPtr(Address(scratch, Shape::offsetOfBaseShape()), scratch);
-  loadPtr(Address(scratch, BaseShape::offsetOfClasp()), scratch);
+  loadObjClassUnsafe(obj, scratch);
   branchPtr(cond, clasp, scratch, label);
 }
 
@@ -609,9 +644,7 @@ void MacroAssembler::branchTestObjClass(Condition cond, Register obj,
   MOZ_ASSERT(obj != scratch);
   MOZ_ASSERT(scratch != spectreRegToZero);
 
-  loadPtr(Address(obj, JSObject::offsetOfShape()), scratch);
-  loadPtr(Address(scratch, Shape::offsetOfBaseShape()), scratch);
-  loadPtr(Address(scratch, BaseShape::offsetOfClasp()), scratch);
+  loadObjClassUnsafe(obj, scratch);
   branchPtr(cond, clasp, scratch, label);
 
   if (JitOptions.spectreObjectMitigations) {
@@ -619,20 +652,51 @@ void MacroAssembler::branchTestObjClass(Condition cond, Register obj,
   }
 }
 
-void MacroAssembler::branchTestClassIsFunction(Condition cond, Register clasp,
-                                               Label* label) {
+void MacroAssembler::branchTestClass(
+    Condition cond, Register clasp,
+    std::pair<const JSClass*, const JSClass*> classes, Label* label) {
   MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
 
   if (cond == Assembler::Equal) {
-    branchPtr(Assembler::Equal, clasp, ImmPtr(&FunctionClass), label);
-    branchPtr(Assembler::Equal, clasp, ImmPtr(&ExtendedFunctionClass), label);
+    branchPtr(Assembler::Equal, clasp, ImmPtr(classes.first), label);
+    branchPtr(Assembler::Equal, clasp, ImmPtr(classes.second), label);
     return;
   }
 
-  Label isFunction;
-  branchPtr(Assembler::Equal, clasp, ImmPtr(&FunctionClass), &isFunction);
-  branchPtr(Assembler::NotEqual, clasp, ImmPtr(&ExtendedFunctionClass), label);
-  bind(&isFunction);
+  Label isClass;
+  branchPtr(Assembler::Equal, clasp, ImmPtr(classes.first), &isClass);
+  branchPtr(Assembler::NotEqual, clasp, ImmPtr(classes.second), label);
+  bind(&isClass);
+}
+
+void MacroAssembler::branchTestObjClass(
+    Condition cond, Register obj,
+    std::pair<const JSClass*, const JSClass*> classes, Register scratch,
+    Register spectreRegToZero, Label* label) {
+  MOZ_ASSERT(scratch != spectreRegToZero);
+
+  branchTestObjClassNoSpectreMitigations(cond, obj, classes, scratch, label);
+
+  if (JitOptions.spectreObjectMitigations) {
+    spectreZeroRegister(cond, scratch, spectreRegToZero);
+  }
+}
+
+void MacroAssembler::branchTestObjClassNoSpectreMitigations(
+    Condition cond, Register obj,
+    std::pair<const JSClass*, const JSClass*> classes, Register scratch,
+    Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  MOZ_ASSERT(obj != scratch);
+
+  loadObjClassUnsafe(obj, scratch);
+  branchTestClass(cond, scratch, classes, label);
+}
+
+void MacroAssembler::branchTestClassIsFunction(Condition cond, Register clasp,
+                                               Label* label) {
+  return branchTestClass(cond, clasp, {&FunctionClass, &ExtendedFunctionClass},
+                         label);
 }
 
 void MacroAssembler::branchTestObjIsFunction(Condition cond, Register obj,
@@ -653,9 +717,7 @@ void MacroAssembler::branchTestObjIsFunctionNoSpectreMitigations(
   MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
   MOZ_ASSERT(obj != scratch);
 
-  loadPtr(Address(obj, JSObject::offsetOfShape()), scratch);
-  loadPtr(Address(scratch, Shape::offsetOfBaseShape()), scratch);
-  loadPtr(Address(scratch, BaseShape::offsetOfClasp()), scratch);
+  loadObjClassUnsafe(obj, scratch);
   branchTestClassIsFunction(cond, scratch, label);
 }
 
@@ -733,22 +795,6 @@ void MacroAssembler::branchTestObjectIsProxy(bool proxy, Register object,
   branchTest32(proxy ? Assembler::Zero : Assembler::NonZero,
                Address(scratch, Shape::offsetOfImmutableFlags()),
                Imm32(ShiftedMask), label);
-}
-
-void MacroAssembler::branchTestObjectIsWasmGcObject(bool isGcObject,
-                                                    Register object,
-                                                    Register scratch,
-                                                    Label* label) {
-  constexpr uint32_t ShiftedMask = (Shape::kindMask() << Shape::kindShift());
-  constexpr uint32_t ShiftedKind =
-      (uint32_t(Shape::Kind::WasmGC) << Shape::kindShift());
-  MOZ_ASSERT(object != scratch);
-
-  loadPtr(Address(object, JSObject::offsetOfShape()), scratch);
-  load32(Address(scratch, Shape::offsetOfImmutableFlags()), scratch);
-  and32(Imm32(ShiftedMask), scratch);
-  branch32(isGcObject ? Assembler::Equal : Assembler::NotEqual, scratch,
-           Imm32(ShiftedKind), label);
 }
 
 void MacroAssembler::branchTestProxyHandlerFamily(Condition cond,
@@ -895,15 +941,16 @@ void MacroAssembler::canonicalizeDoubleIfDeterministic(FloatRegister reg) {
 // ========================================================================
 // Memory access primitives.
 template <class T>
-void MacroAssembler::storeDouble(FloatRegister src, const T& dest) {
+FaultingCodeOffset MacroAssembler::storeDouble(FloatRegister src,
+                                               const T& dest) {
   canonicalizeDoubleIfDeterministic(src);
-  storeUncanonicalizedDouble(src, dest);
+  return storeUncanonicalizedDouble(src, dest);
 }
 
-template void MacroAssembler::storeDouble(FloatRegister src,
-                                          const Address& dest);
-template void MacroAssembler::storeDouble(FloatRegister src,
-                                          const BaseIndex& dest);
+template FaultingCodeOffset MacroAssembler::storeDouble(FloatRegister src,
+                                                        const Address& dest);
+template FaultingCodeOffset MacroAssembler::storeDouble(FloatRegister src,
+                                                        const BaseIndex& dest);
 
 template <class T>
 void MacroAssembler::boxDouble(FloatRegister src, const T& dest) {
@@ -911,15 +958,16 @@ void MacroAssembler::boxDouble(FloatRegister src, const T& dest) {
 }
 
 template <class T>
-void MacroAssembler::storeFloat32(FloatRegister src, const T& dest) {
+FaultingCodeOffset MacroAssembler::storeFloat32(FloatRegister src,
+                                                const T& dest) {
   canonicalizeFloatIfDeterministic(src);
-  storeUncanonicalizedFloat32(src, dest);
+  return storeUncanonicalizedFloat32(src, dest);
 }
 
-template void MacroAssembler::storeFloat32(FloatRegister src,
-                                           const Address& dest);
-template void MacroAssembler::storeFloat32(FloatRegister src,
-                                           const BaseIndex& dest);
+template FaultingCodeOffset MacroAssembler::storeFloat32(FloatRegister src,
+                                                         const Address& dest);
+template FaultingCodeOffset MacroAssembler::storeFloat32(FloatRegister src,
+                                                         const BaseIndex& dest);
 
 template <typename T>
 void MacroAssembler::fallibleUnboxInt32(const T& src, Register dest,
@@ -963,6 +1011,26 @@ void MacroAssembler::fallibleUnboxBigInt(const T& src, Register dest,
 
 //}}} check_macroassembler_style
 // ===============================================================
+
+void MacroAssembler::ensureDouble(const ValueOperand& source,
+                                  FloatRegister dest, Label* failure) {
+  Label isDouble, done;
+
+  {
+    ScratchTagScope tag(*this, source);
+    splitTagForTest(source, tag);
+    branchTestDouble(Assembler::Equal, tag, &isDouble);
+    branchTestInt32(Assembler::NotEqual, tag, failure);
+  }
+
+  convertInt32ToDouble(source.payloadOrValueReg(), dest);
+  jump(&done);
+
+  bind(&isDouble);
+  unboxDouble(source, dest);
+
+  bind(&done);
+}
 
 #ifndef JS_CODEGEN_ARM64
 

@@ -47,13 +47,13 @@ class AudioSink : private AudioStream::DataSource {
   ~AudioSink();
 
   // Allocate and initialize mAudioStream. Returns NS_OK on success.
-  nsresult InitializeAudioStream(const PlaybackParams& aParams,
-                                 const RefPtr<AudioDeviceInfo>& aAudioDevice,
+  nsresult InitializeAudioStream(const RefPtr<AudioDeviceInfo>& aAudioDevice,
                                  InitializationType aInitializationType);
 
   // Start audio playback.  aStartTime is compared with MediaData::mTime to
   // identify the first audio frame to be played.
-  RefPtr<MediaSink::EndedPromise> Start(const media::TimeUnit& aStartTime);
+  RefPtr<MediaSink::EndedPromise> Start(const PlaybackParams& aParams,
+                                        const media::TimeUnit& aStartTime);
 
   /*
    * All public functions are not thread-safe.
@@ -91,8 +91,6 @@ class AudioSink : private AudioStream::DataSource {
   void UpdateStartTime(const media::TimeUnit& aStartTime) {
     mStartTime = aStartTime;
   }
-
-  void EnableTreatAudioUnderrunAsSilence(bool aEnabled);
 
  private:
   // Interface of AudioStream::DataSource.
@@ -175,10 +173,6 @@ class AudioSink : private AudioStream::DataSource {
   Atomic<bool> mProcessedQueueFinished;
   MediaQueue<AudioData>& mAudioQueue;
   const float mProcessedQueueThresholdMS;
-
-  // True if we'd like to treat underrun as silent frames. But that can only be
-  // applied in the special situation for seamless looping.
-  bool mTreatUnderrunAsSilence = false;
 };
 
 }  // namespace mozilla

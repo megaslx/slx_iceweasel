@@ -1,12 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-// Instead of loading EventUtils.js into the test scope in browser-test.js for all tests,
-// we only need EventUtils.js for a few files which is why we are using loadSubScript.
-var EventUtils = {};
-Services.scriptloader.loadSubScript(
-  "chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
-  EventUtils
-);
 
 add_task(async function test() {
   // Make sure the bookmarks bar is visible and restore its state on cleanup.
@@ -24,8 +17,9 @@ add_task(async function test() {
   // matter because we will set its data, effect, and mimeType manually.
   let placesItems = document.getElementById("PlacesToolbarItems");
   ok(placesItems, "PlacesToolbarItems should not be null");
-  ok(
-    placesItems.localName == "scrollbox",
+  Assert.equal(
+    placesItems.localName,
+    "scrollbox",
     "PlacesToolbarItems should not be null"
   );
 
@@ -38,7 +32,7 @@ add_task(async function test() {
    *        The mime type to use for the drop operation.
    */
   let simulateDragDrop = async function (aEffect, aMimeType) {
-    const url = "http://www.mozilla.org/D1995729-A152-4e30-8329-469B01F30AA7";
+    const url = "https://www.mozilla.org/D1995729-A152-4e30-8329-469B01F30AA7";
     let promiseItemAddedNotification = PlacesTestUtils.waitForNotification(
       "bookmark-added",
       events => events.some(({ url: eventUrl }) => eventUrl == url)
@@ -83,9 +77,9 @@ add_task(async function test() {
    */
   let simulateDragDropMultiple = async function (aEffect, aMimeType) {
     const urls = [
-      "http://www.mozilla.org/C54263C6-A484-46CF-8E2B-FE131586348A",
-      "http://www.mozilla.org/71381257-61E6-4376-AF7C-BF3C5FD8870D",
-      "http://www.mozilla.org/091A88BD-5743-4C16-A005-3D2EA3A3B71E",
+      "https://www.mozilla.org/C54263C6-A484-46CF-8E2B-FE131586348A",
+      "https://www.mozilla.org/71381257-61E6-4376-AF7C-BF3C5FD8870D",
+      "https://www.mozilla.org/091A88BD-5743-4C16-A005-3D2EA3A3B71E",
     ];
     let data;
     if (aMimeType == "text/x-moz-url") {

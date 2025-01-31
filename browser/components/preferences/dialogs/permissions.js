@@ -33,8 +33,8 @@ const permissionExceptionsL10n = {
     description: "permissions-exceptions-popup-desc",
   },
   "login-saving": {
-    window: "permissions-exceptions-saved-logins-window2",
-    description: "permissions-exceptions-saved-logins-desc",
+    window: "permissions-exceptions-saved-passwords-window",
+    description: "permissions-exceptions-saved-passwords-desc",
   },
   "https-only-load-insecure": {
     window: "permissions-exceptions-https-only-window2",
@@ -145,12 +145,42 @@ var gPermissionManager = {
     this._hideStatusColumn = params.hideStatusColumn;
     let statusCol = document.getElementById("statusCol");
     statusCol.hidden = this._hideStatusColumn;
+    const siteCol = document.getElementById("siteCol");
     if (this._hideStatusColumn) {
       statusCol.removeAttribute("data-isCurrentSortCol");
-      document
-        .getElementById("siteCol")
-        .setAttribute("data-isCurrentSortCol", "true");
+      siteCol.setAttribute("data-isCurrentSortCol", "true");
     }
+
+    window.addEventListener("unload", () => {
+      gPermissionManager.uninit();
+    });
+    window.addEventListener("keypress", event => {
+      gPermissionManager.onWindowKeyPress(event);
+    });
+    document
+      .getElementById("permissionsDialogCloseKey")
+      .addEventListener("command", () => {
+        window.close();
+      });
+    this._list.addEventListener("keypress", event => {
+      gPermissionManager.onPermissionKeyPress(event);
+    });
+    this._list.addEventListener("select", () => {
+      gPermissionManager.onPermissionSelect();
+    });
+    this.addCommandListeners();
+    this._urlField.addEventListener("input", event => {
+      gPermissionManager.onHostInput(event.target);
+    });
+    this._urlField.addEventListener("keypress", event => {
+      gPermissionManager.onHostKeyPress(event);
+    });
+    statusCol.addEventListener("click", event => {
+      gPermissionManager.buildPermissionsList(event.target);
+    });
+    siteCol.addEventListener("click", event => {
+      gPermissionManager.buildPermissionsList(event.target);
+    });
 
     Services.obs.notifyObservers(null, "flush-pending-permissions", this._type);
 
@@ -158,6 +188,47 @@ var gPermissionManager = {
     this.buildPermissionsList();
 
     this._urlField.focus();
+  },
+
+  addCommandListeners() {
+    window.addEventListener("command", event => {
+      switch (event.target.id) {
+        case "removePermission":
+          gPermissionManager.onPermissionDelete();
+          break;
+        case "removeAllPermissions":
+          gPermissionManager.onAllPermissionsDelete();
+          break;
+        case "btnCookieSession":
+          gPermissionManager.addPermission(
+            Ci.nsICookiePermission.ACCESS_SESSION
+          );
+          break;
+        case "btnBlock":
+          gPermissionManager.addPermission(Ci.nsIPermissionManager.DENY_ACTION);
+          break;
+        case "btnDisableETP":
+          gPermissionManager.addPermission(
+            Ci.nsIPermissionManager.ALLOW_ACTION
+          );
+          break;
+        case "btnAllow":
+          gPermissionManager.addPermission(
+            Ci.nsIPermissionManager.ALLOW_ACTION
+          );
+          break;
+        case "btnHttpsOnlyOff":
+          gPermissionManager.addPermission(
+            Ci.nsIPermissionManager.ALLOW_ACTION
+          );
+          break;
+        case "btnHttpsOnlyOffTmp":
+          gPermissionManager.addPermission(
+            Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION
+          );
+          break;
+      }
+    });
   },
 
   uninit() {
@@ -319,6 +390,15 @@ var gPermissionManager = {
         }
         principals.push(principal);
       } catch (ex) {
+        // If the `input_url` already starts with http:// or https://, it is
+        // definetely invalid here and can't be fixed by prefixing it with
+        // http:// or https://.
+        if (
+          input_url.startsWith("http://") ||
+          input_url.startsWith("https://")
+        ) {
+          throw ex;
+        }
         this._addNewPrincipalToList(
           principals,
           Services.io.newURI("http://" + input_url)
@@ -662,3 +742,7 @@ var gPermissionManager = {
     column.setAttribute("data-last-sortDirection", sortDirection);
   },
 };
+
+window.addEventListener("load", () => {
+  gPermissionManager.onLoad();
+});

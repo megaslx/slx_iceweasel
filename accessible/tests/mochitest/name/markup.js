@@ -335,14 +335,14 @@ function testNameForElmRule(aElm, aRule) {
   parentNode.removeChild(labelElm);
 }
 
-function testNameForSubtreeRule(aElm, aRule) {
+function testNameForSubtreeRule(aElm) {
   var msg = "From subtree test (" + gTestIterator.testID + ").";
   testName(aElm, aElm.getAttribute("textequiv"), msg);
   testAbsentAttrs(aElm, { "explicit-name": "true" });
 
   if (gDumpToConsole) {
     dump(
-      "\nProcessed from subtree rule. Wait for reorder event on " +
+      "\nProcessed from subtree rule. Wait for name change event on " +
         prettyName(aElm) +
         "\n"
     );

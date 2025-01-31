@@ -34,14 +34,11 @@ namespace {
 
 #if defined(XP_WIN)
 
-#  if (NTDDI_VERSION < NTDDI_WINBLUE) || \
-      (NTDDI_VERSION == NTDDI_WINBLUE && !defined(WINBLUE_KBSPRING14))
+#  if defined(__MINGW32__)
 // Definitions for heap optimization that require the Windows SDK to target the
 // Windows 8.1 Update
 static const HEAP_INFORMATION_CLASS HeapOptimizeResources =
     static_cast<HEAP_INFORMATION_CLASS>(3);
-
-static const DWORD HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION = 1;
 
 typedef struct _HEAP_OPTIMIZE_RESOURCES_INFORMATION {
   DWORD Version;

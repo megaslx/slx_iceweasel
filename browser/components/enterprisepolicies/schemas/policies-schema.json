@@ -20,6 +20,10 @@
       "type": "string"
     },
 
+    "AllowFileSelectionDialogs": {
+      "type": "boolean"
+    },
+
     "AppAutoUpdate": {
       "type": "boolean"
     },
@@ -84,6 +88,14 @@
           "type": "boolean"
         }
       }
+    },
+
+    "AutofillAddressEnabled": {
+      "type": "boolean"
+    },
+
+    "AutofillCreditCardEnabled": {
+      "type": "boolean"
     },
 
     "AutoLaunchProtocolsFromOrigins": {
@@ -223,6 +235,82 @@
       }
     },
 
+    "ContentAnalysis": {
+      "type": "object",
+      "properties": {
+        "Enabled": {
+          "type": "boolean"
+        },
+        "PipePathName": {
+          "type": "string"
+        },
+        "AgentTimeout": {
+          "type": "number"
+        },
+        "AllowUrlRegexList": {
+          "type": "string"
+        },
+        "DenyUrlRegexList": {
+          "type": "string"
+        },
+        "AgentName": {
+          "type": "string"
+        },
+        "ClientSignature": {
+          "type": "string"
+        },
+        "IsPerUser": {
+          "type": "boolean"
+        },
+        "ShowBlockedResult": {
+          "type": "boolean"
+        },
+        "DefaultResult": {
+          "type": "number"
+        },
+        "BypassForSameTabOperations": {
+          "type": "boolean"
+        },
+        "InterceptionPoints": {
+          "type": "object",
+          "properties": {
+            "Clipboard": {
+              "type": "object",
+              "properties": {
+                "Enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "DragAndDrop": {
+              "type": "object",
+              "properties": {
+                "Enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "FileUpload": {
+              "type": "object",
+              "properties": {
+                "Enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "Print": {
+              "type": "object",
+              "properties": {
+                "Enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
     "Cookies": {
       "type": "object",
       "properties": {
@@ -301,6 +389,10 @@
       "type": "string"
     },
 
+    "DisableAccounts": {
+      "type": "boolean"
+    },
+
     "DisableAppUpdate": {
       "type": "boolean"
     },
@@ -371,6 +463,10 @@
     },
 
     "DisableDeveloperTools": {
+      "type": "boolean"
+    },
+
+    "DisableEncryptedClientHello": {
       "type": "boolean"
     },
 
@@ -479,6 +575,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "Fallback": {
+          "type": "boolean"
         },
         "Locked": {
           "type": "boolean"
@@ -613,6 +712,9 @@
               "items": {
                 "type": "string"
               }
+            },
+            "temporarily_allow_weak_signatures": {
+              "type": "boolean"
             }
           }
         }
@@ -642,6 +744,9 @@
             "default_area": {
               "type": "string",
               "enum": ["navbar", "menupanel"]
+            },
+            "temporarily_allow_weak_signatures": {
+              "type": "boolean"
             }
           }
         }
@@ -674,6 +779,24 @@
           "type": "boolean"
         },
         "Snippets": {
+          "type": "boolean"
+        },
+        "Locked": {
+          "type": "boolean"
+        }
+      }
+    },
+
+    "FirefoxSuggest": {
+      "type": "object",
+      "properties": {
+        "WebSuggestions": {
+          "type": "boolean"
+        },
+        "SponsoredSuggestions": {
+          "type": "boolean"
+        },
+        "ImproveSuggest": {
           "type": "boolean"
         },
         "Locked": {
@@ -751,6 +874,19 @@
           "enum": ["none", "homepage", "previous-session", "homepage-locked"]
         }
       }
+    },
+
+    "HttpAllowlist": {
+      "type": "array",
+      "strict": false,
+      "items": {
+        "type": "origin"
+      }
+    },
+
+    "HttpsOnlyMode": {
+      "type": "string",
+      "enum": ["allowed", "disallowed", "enabled", "force_enabled"]
     },
 
     "InstallAddonsPermission": {
@@ -833,6 +969,10 @@
     },
 
     "ManualAppUpdateOnly": {
+      "type": "boolean"
+    },
+
+    "MicrosoftEntraSSO": {
       "type": "boolean"
     },
 
@@ -1101,6 +1241,10 @@
       }
     },
 
+    "PostQuantumKeyAgreementEnabled": {
+      "type": "boolean"
+    },
+
     "Preferences": {
       "type": ["object", "JSON"],
       "patternProperties": {
@@ -1113,6 +1257,10 @@
             "Status": {
               "type": "string",
               "enum": ["default", "locked", "user", "clear"]
+            },
+            "Type": {
+              "type": "string",
+              "enum": ["number", "boolean", "string"]
             }
           }
         }
@@ -1121,6 +1269,15 @@
 
     "PrimaryPassword": {
       "type": "boolean"
+    },
+
+    "PrintingEnabled": {
+      "type": "boolean"
+    },
+
+    "PrivateBrowsingModeAvailability": {
+      "type": "number",
+      "enum": [0, 1, 2]
     },
 
     "PromptForDownloadLocation": {
@@ -1347,6 +1504,10 @@
       "required": ["Title", "URL"]
     },
 
+    "TranslateEnabled": {
+      "type": "boolean"
+    },
+
     "UserMessaging": {
       "type": "object",
       "properties": {
@@ -1366,6 +1527,9 @@
           "type": "boolean"
         },
         "MoreFromMozilla": {
+          "type": "boolean"
+        },
+        "FirefoxLabs": {
           "type": "boolean"
         },
         "Locked": {

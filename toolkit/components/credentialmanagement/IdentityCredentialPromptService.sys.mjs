@@ -127,7 +127,7 @@ export class IdentityCredentialPromptService {
 
     // Map each identity manifest to a promise that would resolve to its icon
     let promises = identityManifests.map(async providerManifest => {
-      // we don't need to set default icon because default icon is already set on popup-notifications.inc
+      // we don't need to set default icon because default icon is already set on popup-notifications.inc.xhtml
       const iconResult = await this.loadIconFromManifest(providerManifest);
       // If we didn't have a manifest with an icon, push a rejection.
       // This will be replaced with the default icon.
@@ -149,15 +149,15 @@ export class IdentityCredentialPromptService {
       for (const [providerIndex, provider] of identityProviders.entries()) {
         let providerURL = new URL(provider.configURL);
         let displayDomain = lazy.IDNService.convertToDisplayIDN(
-          providerURL.host,
-          {}
+          providerURL.host
         );
 
         let iconResult = iconResults[providerIndex];
         const data = {
           id: providerIndex,
           icon: iconResult.value,
-          name: displayDomain,
+          name: providerNames[providerIndex],
+          domain: displayDomain,
         };
         providers.push(data);
       }
@@ -203,10 +203,7 @@ export class IdentityCredentialPromptService {
     );
     for (const [providerIndex, provider] of identityProviders.entries()) {
       let providerURL = new URL(provider.configURL);
-      let displayDomain = lazy.IDNService.convertToDisplayIDN(
-        providerURL.host,
-        {}
-      );
+      let displayDomain = lazy.IDNService.convertToDisplayIDN(providerURL.host);
       let newItem = itemTemplate.content.firstElementChild.cloneNode(true);
 
       // Create the radio button,
@@ -272,7 +269,7 @@ export class IdentityCredentialPromptService {
       let mainAction = {
         label: acceptLabel,
         accessKey: acceptKey,
-        callback(event) {
+        callback(_event) {
           let result = listBox.querySelector(
             ".identity-credential-list-item-radio:checked"
           ).value;
@@ -283,7 +280,7 @@ export class IdentityCredentialPromptService {
         {
           label: cancelLabel,
           accessKey: cancelKey,
-          callback(event) {
+          callback(_event) {
             reject();
           },
         },
@@ -357,8 +354,7 @@ export class IdentityCredentialPromptService {
 
       let providerURL = new URL(identityProvider.configURL);
       let providerDisplayDomain = lazy.IDNService.convertToDisplayIDN(
-        providerURL.host,
-        {}
+        providerURL.host
       );
       let currentBaseDomain =
         browsingContext.currentWindowContext.documentPrincipal.baseDomain;
@@ -450,7 +446,7 @@ export class IdentityCredentialPromptService {
         let mainAction = {
           label: acceptLabel,
           accessKey: acceptKey,
-          callback(event) {
+          callback(_event) {
             resolve(true);
           },
         };
@@ -458,7 +454,7 @@ export class IdentityCredentialPromptService {
           {
             label: cancelLabel,
             accessKey: cancelKey,
-            callback(event) {
+            callback(_event) {
               resolve(false);
             },
           },
@@ -466,18 +462,14 @@ export class IdentityCredentialPromptService {
 
         // Show the popup
         let ownerDocument = browser.ownerDocument;
-        ownerDocument.getElementById(
-          "identity-credential-provider"
-        ).hidden = true;
-        ownerDocument.getElementById(
-          "identity-credential-policy"
-        ).hidden = false;
-        ownerDocument.getElementById(
-          "identity-credential-account"
-        ).hidden = true;
-        ownerDocument.getElementById(
-          "identity-credential-header"
-        ).hidden = false;
+        ownerDocument.getElementById("identity-credential-provider").hidden =
+          true;
+        ownerDocument.getElementById("identity-credential-policy").hidden =
+          false;
+        ownerDocument.getElementById("identity-credential-account").hidden =
+          true;
+        ownerDocument.getElementById("identity-credential-header").hidden =
+          false;
         browser.ownerGlobal.PopupNotifications.show(
           browser,
           "identity-credential",
@@ -539,9 +531,12 @@ export class IdentityCredentialPromptService {
     );
     const providerName = providerManifest?.branding?.name;
     let providerURL = new URL(provider.configURL);
-    let displayDomain = lazy.IDNService.convertToDisplayIDN(
-      providerURL.host,
-      {}
+    let displayDomain = lazy.IDNService.convertToDisplayIDN(providerURL.host);
+
+    let headerIconResult = await this.loadIconFromManifest(
+      providerManifest,
+      BEST_HEADER_ICON_SIZE,
+      "chrome://global/skin/icons/defaultFavicon.svg"
     );
 
     if (AppConstants.platform === "android") {
@@ -565,8 +560,14 @@ export class IdentityCredentialPromptService {
         console.log(data);
       }
 
+      const provider = {
+        name: providerName || displayDomain,
+        domain: displayDomain,
+        icon: headerIconResult,
+      };
+
       const result = {
-        provider: displayDomain,
+        provider,
         accounts,
       };
 
@@ -649,12 +650,6 @@ export class IdentityCredentialPromptService {
       listBox.append(newItem);
     }
 
-    let headerIconResult = await this.loadIconFromManifest(
-      providerManifest,
-      BEST_HEADER_ICON_SIZE,
-      "chrome://global/skin/icons/defaultFavicon.svg"
-    );
-
     // Create a new promise to wrap the callbacks of the popup buttons
     return new Promise(function (resolve, reject) {
       // Construct the necessary arguments for notification behavior
@@ -669,7 +664,7 @@ export class IdentityCredentialPromptService {
       let mainAction = {
         label: acceptLabel,
         accessKey: acceptKey,
-        callback(event) {
+        callback(_event) {
           let result = listBox.querySelector(
             ".identity-credential-list-item-radio:checked"
           ).value;
@@ -680,7 +675,7 @@ export class IdentityCredentialPromptService {
         {
           label: cancelLabel,
           accessKey: cancelKey,
-          callback(event) {
+          callback(_event) {
             reject();
           },
         },
@@ -730,7 +725,7 @@ export class IdentityCredentialPromptService {
    */
   close(browsingContext) {
     let browser = browsingContext.top.embedderElement;
-    if (!browser) {
+    if (!browser || AppConstants.platform === "android") {
       return;
     }
     let notification = browser.ownerGlobal.PopupNotifications.getNotification(

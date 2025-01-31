@@ -25,6 +25,7 @@ class MOZ_STACK_CLASS WarpOracle {
   HandleScript outerScript_;
   WarpBailoutInfo bailoutInfo_;
   WarpScriptSnapshotList scriptSnapshots_;
+  WarpZoneStubsSnapshot zoneStubs_{};
   size_t accumulatedBytecodeSize_ = 0;
 #ifdef DEBUG
   mozilla::HashNumber runningScriptHash_ = 0;
@@ -49,6 +50,8 @@ class MOZ_STACK_CLASS WarpOracle {
   [[nodiscard]] bool registerNurseryObject(JSObject* obj,
                                            uint32_t* nurseryIndex);
 
+  [[nodiscard]] bool snapshotJitZoneStub(JitZone::StubKind kind);
+
   AbortReasonOr<WarpSnapshot*> createSnapshot();
 
   mozilla::GenericErrorResult<AbortReason> abort(HandleScript script,
@@ -60,6 +63,7 @@ class MOZ_STACK_CLASS WarpOracle {
                          size_t bytecodeLength);
 
   size_t accumulatedBytecodeSize() { return accumulatedBytecodeSize_; }
+  void ignoreFailedICHash();
 };
 
 }  // namespace jit

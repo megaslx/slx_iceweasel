@@ -14,6 +14,7 @@
 #include "jstypes.h"  // JS_PUBLIC_API
 
 #include "js/AllocPolicy.h"     // js::SystemAllocPolicy
+#include "js/ColumnNumber.h"    // JS::ColumnNumberOneOrigin
 #include "js/CompileOptions.h"  // JS::ReadOnlyCompileOptions
 #include "js/RootingAPI.h"      // JS::{Mutable,}Handle
 #include "js/Value.h"           // JS::Value
@@ -35,19 +36,15 @@ union Utf8Unit;
 
 namespace JS {
 
-enum class ImportAssertion { Type };
+// This enum is used to index into an array, and we assume that we have
+// sequential numbers starting at zero for the unknown type.
+enum class ModuleType : uint32_t {
+  Unknown = 0,
+  JavaScript,
+  JSON,
 
-using ImportAssertionVector =
-    js::Vector<ImportAssertion, 1, js::SystemAllocPolicy>;
-
-/**
- * Set the supported assertions for the runtime to the given vector.
- *
- * See:
- * https://tc39.es/proposal-import-assertions/#sec-hostgetsupportedimportassertions
- */
-extern JS_PUBLIC_API void SetSupportedImportAssertions(
-    JSRuntime* rt, const ImportAssertionVector& assertions);
+  Limit = JSON,
+};
 
 /**
  * The HostResolveImportedModule hook.
@@ -183,6 +180,23 @@ extern JS_PUBLIC_API JSObject* CompileModule(
     SourceText<mozilla::Utf8Unit>& srcBuf);
 
 /**
+ * Parse the given source buffer as a JSON module in the scope of the current
+ * global of cx and return a synthetic module record.
+ */
+extern JS_PUBLIC_API JSObject* CompileJsonModule(
+    JSContext* cx, const ReadOnlyCompileOptions& options,
+    SourceText<char16_t>& srcBuf);
+
+/**
+ * Parse the given source buffer as a JSON module in the scope of the current
+ * global of cx and return a synthetic module record. An error is reported if a
+ * UTF-8 encoding error is encountered.
+ */
+extern JS_PUBLIC_API JSObject* CompileJsonModule(
+    JSContext* cx, const ReadOnlyCompileOptions& options,
+    SourceText<mozilla::Utf8Unit>& srcBuf);
+
+/**
  * Set a private value associated with a source text module record.
  */
 extern JS_PUBLIC_API void SetModulePrivate(JSObject* module,
@@ -199,6 +213,11 @@ extern JS_PUBLIC_API void ClearModulePrivate(JSObject* module);
  * Get the private value associated with a source text module record.
  */
 extern JS_PUBLIC_API Value GetModulePrivate(JSObject* module);
+
+/**
+ * Checks if the given module is a cyclic module.
+ */
+extern JS_PUBLIC_API bool IsCyclicModule(JSObject* module);
 
 /*
  * Perform the ModuleLink operation on the given source text module record.
@@ -263,9 +282,18 @@ GetRequestedModulesCount(JSContext* cx, Handle<JSObject*> moduleRecord);
 extern JS_PUBLIC_API JSString* GetRequestedModuleSpecifier(
     JSContext* cx, Handle<JSObject*> moduleRecord, uint32_t index);
 
+/*
+ * Get the position of a requested module's name in the source.
+ */
 extern JS_PUBLIC_API void GetRequestedModuleSourcePos(
     JSContext* cx, Handle<JSObject*> moduleRecord, uint32_t index,
-    uint32_t* lineNumber, uint32_t* columnNumber);
+    uint32_t* lineNumber, JS::ColumnNumberOneOrigin* columnNumber);
+
+/*
+ * Get the module type of a requested module.
+ */
+extern JS_PUBLIC_API ModuleType GetRequestedModuleType(
+    JSContext* cx, Handle<JSObject*> moduleRecord, uint32_t index);
 
 /*
  * Get the top-level script for a module which has not yet been executed.
@@ -273,9 +301,15 @@ extern JS_PUBLIC_API void GetRequestedModuleSourcePos(
 extern JS_PUBLIC_API JSScript* GetModuleScript(Handle<JSObject*> moduleRecord);
 
 extern JS_PUBLIC_API JSObject* CreateModuleRequest(
-    JSContext* cx, Handle<JSString*> specifierArg);
+    JSContext* cx, Handle<JSString*> specifierArg, ModuleType moduleType);
 extern JS_PUBLIC_API JSString* GetModuleRequestSpecifier(
     JSContext* cx, Handle<JSObject*> moduleRequestArg);
+
+/*
+ * Get the module type of the specified module request.
+ */
+extern JS_PUBLIC_API ModuleType
+GetModuleRequestType(JSContext* cx, Handle<JSObject*> moduleRequestArg);
 
 /*
  * Get the module record for a module script.
@@ -299,10 +333,7 @@ extern JS_PUBLIC_API JSObject* GetModuleEnvironment(
  */
 extern JS_PUBLIC_API void ClearModuleEnvironment(JSObject* moduleObj);
 
-/*
- * Diagnostic assert that the module is has status |Unlinked|.
- */
-extern JS_PUBLIC_API void AssertModuleUnlinked(JSObject* moduleObj);
+extern JS_PUBLIC_API bool ModuleIsLinked(JSObject* moduleObj);
 
 }  // namespace JS
 

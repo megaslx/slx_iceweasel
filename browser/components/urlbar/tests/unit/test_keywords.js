@@ -20,7 +20,7 @@ add_task(async function test_non_keyword() {
     matches: [
       makeVisitResult(context, {
         uri: "http://mozilla.org/",
-        fallbackTitle: "mozilla.org",
+        fallbackTitle: UrlbarTestUtils.trimURL("http://mozilla.org"),
         heuristic: true,
       }),
       makeBookmarkResult(context, {
@@ -73,7 +73,7 @@ add_task(async function test_more_than_keyword() {
     matches: [
       makeVisitResult(context, {
         uri: "http://mozilla.org/",
-        fallbackTitle: "mozilla.org",
+        fallbackTitle: UrlbarTestUtils.trimURL("http://mozilla.org"),
         heuristic: true,
       }),
       makeBookmarkResult(context, {
@@ -103,7 +103,7 @@ add_task(async function test_less_than_keyword() {
     matches: [
       makeVisitResult(context, {
         uri: "http://mozilla.org/",
-        fallbackTitle: "mozilla.org",
+        fallbackTitle: UrlbarTestUtils.trimURL("http://mozilla.org"),
         heuristic: true,
       }),
       makeBookmarkResult(context, {
@@ -177,7 +177,7 @@ add_task(async function test_less_then_equal_than_keyword_bug_1124238() {
     matches: [
       makeKeywordSearchResult(context, {
         uri: "http://mozilla.com/",
-        title: "http://mozilla.com/",
+        title: "http://mozilla.com",
         keyword: "moz",
         heuristic: true,
       }),

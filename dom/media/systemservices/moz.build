@@ -9,12 +9,12 @@ if CONFIG["MOZ_WEBRTC"]:
     EXPORTS += [
         "CamerasChild.h",
         "CamerasParent.h",
-        "VideoEngine.h",
         "VideoFrameUtils.h",
     ]
     UNIFIED_SOURCES += [
         "CamerasChild.cpp",
         "CamerasParent.cpp",
+        "video_engine/video_capture_factory.cc",
         "VideoEngine.cpp",
         "VideoFrameUtils.cpp",
     ]
@@ -22,8 +22,8 @@ if CONFIG["MOZ_WEBRTC"]:
         "/dom/media/webrtc",
         "/media/libyuv/libyuv/include",
         "/mfbt",
+        "/third_party/abseil-cpp",
         "/third_party/libwebrtc",
-        "/third_party/libwebrtc/third_party/abseil-cpp",
         "/tools/profiler/public",
     ]
 
@@ -50,16 +50,19 @@ if CONFIG["MOZ_WEBRTC"]:
         ]
 
     if CONFIG["OS_TARGET"] != "Android":
-        UNIFIED_SOURCES += [
+        SOURCES += [
             "video_engine/desktop_capture_impl.cc",
-            "video_engine/desktop_device_info.cc",
             "video_engine/tab_capturer.cc",
+        ]
+        UNIFIED_SOURCES += [
+            "video_engine/desktop_device_info.cc",
         ]
 
     if "WEBRTC_USE_PIPEWIRE" in DEFINES:
         UNIFIED_SOURCES += [
-            "video_engine/pipewire_camera_impl.cc",
+            "video_engine/placeholder_device_info.cc",
         ]
+        CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
 
 if CONFIG["OS_TARGET"] == "Android":
     DEFINES["WEBRTC_ANDROID"] = True
@@ -102,10 +105,6 @@ IPDL_SOURCES += [
     "PCameras.ipdl",
     "PMedia.ipdl",
     "PMediaSystemResourceManager.ipdl",
-]
-# /dom/base needed for nsGlobalWindow.h in MediaChild.cpp
-LOCAL_INCLUDES += [
-    "/dom/base",
 ]
 
 include("/ipc/chromium/chromium-config.mozbuild")

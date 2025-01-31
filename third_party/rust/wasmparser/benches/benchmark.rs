@@ -58,7 +58,8 @@ fn collect_test_files(path: &Path, list: &mut Vec<BenchmarkInput>) -> Result<()>
                 };
                 for directive in wast.directives {
                     match directive {
-                        wast::WastDirective::Wat(mut module) => {
+                        wast::WastDirective::Module(mut module)
+                        | wast::WastDirective::ModuleDefinition(mut module) => {
                             let wasm = module.encode()?;
                             list.push(BenchmarkInput::new(path.clone(), wasm));
                         }
@@ -217,6 +218,24 @@ fn read_all_wasm(wasm: &[u8]) -> Result<()> {
             | CustomSection { .. }
             | CodeSectionStart { .. }
             | End(_) => {}
+
+            other => {
+                // NB: if you hit this panic if you'd be so kind as to grep
+                // through other locations in the code base that need to be
+                // updated as well. As of the time of this writing the locations
+                // might be:
+                //
+                //  * src/bin/wasm-tools/objdump.rs
+                //  * src/bin/wasm-tools/dump.rs
+                //  * crates/wasm-encoder/src/reencode.rs
+                //  * crates/wasm-encoder/src/reencode/component.rs
+                //  * crates/wasmprinter/src/lib.rs
+                //  * crates/wit-component/src/gc.rs
+                //
+                // This is required due to the `#[non_exhaustive]` nature of
+                // the `Payload` enum.
+                panic!("a new match statement should be added above for this case: {other:?}")
+            }
         }
     }
     Ok(())
@@ -232,29 +251,26 @@ fn collect_benchmark_inputs() -> Vec<BenchmarkInput> {
     ret
 }
 
+fn skip_validation(test: &Path) -> bool {
+    let broken = [
+        "gc/gc-rec-sub.wat",
+        "proposals/gc/type-equivalence.wast",
+        "proposals/gc/type-subtyping.wast",
+    ];
+
+    let test_path = test.to_str().unwrap().replace("\\", "/"); // for windows paths
+    if broken.iter().any(|x| test_path.contains(x)) {
+        return true;
+    }
+
+    false
+}
+
 fn define_benchmarks(c: &mut Criterion) {
+    let _ = env_logger::try_init();
+
     fn validator() -> Validator {
-        Validator::new_with_features(WasmFeatures {
-            reference_types: true,
-            multi_value: true,
-            simd: true,
-            relaxed_simd: true,
-            exceptions: true,
-            component_model: true,
-            bulk_memory: true,
-            threads: true,
-            tail_call: true,
-            multi_memory: true,
-            memory64: true,
-            extended_const: true,
-            floats: true,
-            mutable_global: true,
-            saturating_float_to_int: true,
-            sign_extension: true,
-            function_references: true,
-            memory_control: true,
-            gc: true,
-        })
+        Validator::new_with_features(WasmFeatures::all())
     }
 
     let test_inputs = once_cell::unsync::Lazy::new(collect_benchmark_inputs);
@@ -280,6 +296,10 @@ fn define_benchmarks(c: &mut Criterion) {
     let validate_inputs = once_cell::unsync::Lazy::new(|| {
         let mut list = Vec::new();
         for input in test_inputs.iter() {
+            if skip_validation(&input.path) {
+                continue;
+            }
+            log::debug!("Validating {}", input.path.display());
             if validator().validate_all(&input.wasm).is_ok() {
                 list.push(&input.wasm);
             }
@@ -324,7 +344,7 @@ criterion_main!(benchmark);
 struct NopVisit;
 
 macro_rules! define_visit_operator {
-    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             fn $visit(&mut self $($(,$arg: $argty)*)?) {
                 define_visit_operator!(@visit $op $( $($arg)* )?);

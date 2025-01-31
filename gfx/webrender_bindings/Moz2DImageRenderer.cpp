@@ -78,8 +78,9 @@ struct FontInstanceData {
 };
 
 StaticMutex sFontDataTableLock;
-std::unordered_map<WrFontKey, FontTemplate> sFontDataTable;
-std::unordered_map<WrFontInstanceKey, FontInstanceData> sBlobFontTable;
+MOZ_RUNINIT std::unordered_map<WrFontKey, FontTemplate> sFontDataTable;
+MOZ_RUNINIT std::unordered_map<WrFontInstanceKey, FontInstanceData>
+    sBlobFontTable;
 
 // Fixed-size ring buffer logging font deletion events to aid debugging.
 static struct FontDeleteLog {
@@ -370,21 +371,24 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
     return false;
   }
 
+  // aRenderRect is the part of the blob that we are currently rendering
+  // (for example a tile) in the same coordinate space as aVisibleRect.
+  IntPoint origin = gfx::IntPoint(aRenderRect->min.x, aRenderRect->min.y);
+
+  dt = gfx::Factory::CreateOffsetDrawTarget(dt, origin);
+  if (!dt) {
+    return false;
+  }
+
   // We try hard to not have empty blobs but we can end up with
   // them because of CompositorHitTestInfo and merging.
   size_t footerSize = sizeof(size_t);
   MOZ_RELEASE_ASSERT(aBlob.length() >= footerSize);
   size_t indexOffset = ConvertFromBytes<size_t>(aBlob.end().get() - footerSize);
 
-  // aRenderRect is the part of the blob that we are currently rendering
-  // (for example a tile) in the same coordinate space as aVisibleRect.
-  IntPoint origin = gfx::IntPoint(aRenderRect->min.x, aRenderRect->min.y);
-
   MOZ_RELEASE_ASSERT(indexOffset <= aBlob.length() - footerSize);
   Reader reader(aBlob.begin().get() + indexOffset,
                 aBlob.length() - footerSize - indexOffset);
-
-  dt = gfx::Factory::CreateOffsetDrawTarget(dt, origin);
 
   auto bounds = gfx::IntRect(origin, size);
 
@@ -403,6 +407,7 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
   while (reader.pos < reader.len) {
     size_t end = reader.ReadSize();
     size_t extra_end = reader.ReadSize();
+    MOZ_RELEASE_ASSERT(offset <= end);
     MOZ_RELEASE_ASSERT(extra_end >= end);
     MOZ_RELEASE_ASSERT(extra_end < aBlob.length());
 

@@ -4,8 +4,7 @@
 
 //! Generic types for color properties.
 
-use crate::color::mix::ColorInterpolationMethod;
-use crate::color::AbsoluteColor;
+use crate::color::{mix::ColorInterpolationMethod, AbsoluteColor, ColorFunction};
 use crate::values::specified::percentage::ToPercentage;
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ToCss};
@@ -17,17 +16,20 @@ use style_traits::{CssWriter, ToCss};
 pub enum GenericColor<Percentage> {
     /// The actual numeric color.
     Absolute(AbsoluteColor),
+    /// A unresolvable color.
+    ColorFunction(Box<ColorFunction<Self>>),
     /// The `CurrentColor` keyword.
     CurrentColor,
     /// The color-mix() function.
     ColorMix(Box<GenericColorMix<Self, Percentage>>),
 }
 
+/// Flags used to modify the calculation of a color mix result.
+#[derive(Clone, Copy, Debug, Default, MallocSizeOf, PartialEq, ToShmem)]
+#[repr(C)]
+pub struct ColorMixFlags(u8);
 bitflags! {
-    /// Flags used to modify the calculation of a color mix result.
-    #[derive(Clone, Copy, Default, MallocSizeOf, PartialEq, ToShmem)]
-    #[repr(C)]
-    pub struct ColorMixFlags : u8 {
+    impl ColorMixFlags : u8 {
         /// Normalize the weights of the mix.
         const NORMALIZE_WEIGHTS = 1 << 0;
         /// The result should always be converted to the modern color syntax.

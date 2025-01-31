@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -10,10 +10,10 @@ description: >
 features: [BigInt, Symbol, Temporal]
 ---*/
 
-const timeZone = new Temporal.TimeZone("UTC");
+const timeZone = "UTC";
 const instance = new Temporal.Duration(1, 0, 0, 0, 24);
 
-const rangeErrorTests = [
+const primitiveTests = [
   [null, "null"],
   [true, "boolean"],
   ["", "empty string"],
@@ -21,15 +21,18 @@ const rangeErrorTests = [
   [1n, "bigint"],
 ];
 
-for (const [calendar, description] of rangeErrorTests) {
+for (const [calendar, description] of primitiveTests) {
   const relativeTo = { year: 2019, monthCode: "M11", day: 1, calendar };
-  assert.throws(RangeError, () => instance.round({ largestUnit: "years", relativeTo }), `${description} does not convert to a valid ISO string`);
+  assert.throws(
+    typeof calendar === 'string' ? RangeError : TypeError,
+    () => instance.round({ largestUnit: "years", relativeTo }),
+    `${description} does not convert to a valid ISO string`
+  );
 }
 
 const typeErrorTests = [
   [Symbol(), "symbol"],
-  [{}, "plain object that doesn't implement the protocol"],
-  [new Temporal.TimeZone("UTC"), "time zone instance"],
+  [{}, "object"],
   [Temporal.PlainDate, "Temporal.PlainDate, object"],
   [Temporal.PlainDate.prototype, "Temporal.PlainDate.prototype, object"],
   [Temporal.ZonedDateTime, "Temporal.ZonedDateTime, object"],

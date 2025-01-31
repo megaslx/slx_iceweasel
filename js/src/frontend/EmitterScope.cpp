@@ -7,12 +7,13 @@
 #include "frontend/EmitterScope.h"
 
 #include "frontend/AbstractScopePtr.h"
+#include "frontend/BytecodeControlStructures.h"
 #include "frontend/BytecodeEmitter.h"
 #include "frontend/ModuleSharedContext.h"
 #include "frontend/TDZCheckCache.h"
+#include "frontend/UsingEmitter.h"
 #include "js/friend/ErrorMessages.h"  // JSMSG_*
 #include "vm/EnvironmentObject.h"     // ClassBodyLexicalEnvironmentObject
-#include "vm/WellKnownAtom.h"         // js_*_str
 
 using namespace js;
 using namespace js::frontend;
@@ -64,7 +65,7 @@ bool EmitterScope::checkEnvironmentChainLength(BytecodeEmitter* bce) {
   }
 
   if (hops >= ENVCOORD_HOPS_LIMIT - 1) {
-    bce->reportError(nullptr, JSMSG_TOO_DEEP, js_function_str);
+    bce->reportError(nullptr, JSMSG_TOO_DEEP, "function");
     return false;
   }
 
@@ -140,7 +141,7 @@ mozilla::Maybe<ScopeIndex> EmitterScope::enclosingScopeIndex(
 bool EmitterScope::nameCanBeFree(BytecodeEmitter* bce,
                                  TaggedParserAtomIndex name) {
   // '.generator' cannot be accessed by name.
-  return name != TaggedParserAtomIndex::WellKnown::dotGenerator();
+  return name != TaggedParserAtomIndex::WellKnown::dot_generator_();
 }
 
 NameLocation EmitterScope::searchAndCache(BytecodeEmitter* bce,
@@ -334,8 +335,94 @@ void EmitterScope::dump(BytecodeEmitter* bce) {
   fprintf(stdout, "\n");
 }
 
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+bool EmitterScope::prepareForDisposableScopeBody(BytecodeEmitter* bce) {
+  if (hasDisposables()) {
+    if (!usingEmitter_->prepareForDisposableScopeBody(blockKind_)) {
+      return false;
+    }
+
+    if (blockKind_ == BlockKind::Switch) {
+      // If there are disposables inside the switch case
+      // and if an exception is thrown we would need to unwind
+      // to the environment right before the switch statement for that
+      // purpose we emit a Dup code so that the switch statement consumes
+      // one and the stack remains balanced in case we have to jump out
+      // of the switch.
+      if (!bce->emit1(JSOp::Dup)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool EmitterScope::prepareForModuleDisposableScopeBody(BytecodeEmitter* bce) {
+  return prepareForDisposableScopeBody(bce);
+}
+
+bool EmitterScope::prepareForDisposableAssignment(UsingHint hint) {
+  MOZ_ASSERT(hasDisposables());
+  return usingEmitter_->prepareForAssignment(hint);
+}
+
+bool EmitterScope::emitSwitchBlockEndForDisposableScopeBodyEnd(
+    BytecodeEmitter* bce) {
+  MOZ_ASSERT(hasDisposables());
+
+  if (blockKind_ == BlockKind::Switch) {
+    // See `JSOp::Dup` in EmitterScope::prepareForDisposableScopeBody.
+    if (!bce->emit1(JSOp::Pop)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool EmitterScope::emitDisposableScopeBodyEndForNonLocalJump(
+    BytecodeEmitter* bce) {
+  if (hasDisposables()) {
+    if (!usingEmitter_->emitNonLocalJump(this)) {
+      return false;
+    };
+
+    if (!emitSwitchBlockEndForDisposableScopeBodyEnd(bce)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EmitterScope::emitDisposableScopeBodyEnd(BytecodeEmitter* bce) {
+  // For-of loops emit the dispose loop in the different place and timing.
+  // (See ForOfEmitter::emitInitialize,
+  // ForOfLoopControl::emitPrepareForNonLocalJumpFromScope and
+  // ForOfLoopControl::emitEndCodeNeedingIteratorClose())
+  if (hasDisposables() && (blockKind_ != BlockKind::ForOf)) {
+    if (!usingEmitter_->emitEnd()) {
+      return false;
+    }
+
+    if (!emitSwitchBlockEndForDisposableScopeBodyEnd(bce)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EmitterScope::emitModuleDisposableScopeBodyEnd(BytecodeEmitter* bce) {
+  return emitDisposableScopeBodyEnd(bce);
+}
+#endif
+
 bool EmitterScope::enterLexical(BytecodeEmitter* bce, ScopeKind kind,
-                                LexicalScope::ParserData* bindings) {
+                                LexicalScope::ParserData* bindings
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+                                ,
+                                BlockKind blockKind
+#endif
+) {
   MOZ_ASSERT(kind != ScopeKind::NamedLambda &&
              kind != ScopeKind::StrictNamedLambda);
   MOZ_ASSERT(this == bce->innermostEmitterScopeNoCheck());
@@ -361,6 +448,11 @@ bool EmitterScope::enterLexical(BytecodeEmitter* bce, ScopeKind kind,
     if (!tdzCache->noteTDZCheck(bce, bi.name(), CheckTDZ)) {
       return false;
     }
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+    if (bi.kind() == BindingKind::Using) {
+      setHasDisposables(bce);
+    }
+#endif
   }
 
   updateFrameFixedSlots(bce, bi);
@@ -395,6 +487,17 @@ bool EmitterScope::enterLexical(BytecodeEmitter* bce, ScopeKind kind,
   if (!deadZoneFrameSlotRange(bce, firstFrameSlot, frameSlotEnd())) {
     return false;
   }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  MOZ_ASSERT_IF(blockKind_ != BlockKind::Other, kind == ScopeKind::Lexical);
+  MOZ_ASSERT_IF(kind != ScopeKind::Lexical, blockKind_ == BlockKind::Other);
+
+  blockKind_ = blockKind;
+
+  if (!prepareForDisposableScopeBody(bce)) {
+    return false;
+  }
+#endif
 
   return checkEnvironmentChainLength(bce);
 }
@@ -847,6 +950,12 @@ bool EmitterScope::enterModule(BytecodeEmitter* bce,
           return false;
         }
       }
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+      if (bi.kind() == BindingKind::Using) {
+        setHasDisposables(bce);
+      }
+#endif
     }
 
     updateFrameFixedSlots(bce, bi);
@@ -927,12 +1036,26 @@ bool EmitterScope::leave(BytecodeEmitter* bce, bool nonLocal) {
     case ScopeKind::Catch:
     case ScopeKind::FunctionLexical:
     case ScopeKind::ClassBody:
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+      if (nonLocal) {
+        if (!emitDisposableScopeBodyEndForNonLocalJump(bce)) {
+          return false;
+        }
+      } else {
+        if (!emitDisposableScopeBodyEnd(bce)) {
+          return false;
+        }
+      }
+#endif
+
       if (bce->sc->isFunctionBox() &&
           bce->sc->asFunctionBox()->needsClearSlotsOnExit()) {
         if (!deadZoneFrameSlots(bce)) {
           return false;
         }
       }
+
       if (!bce->emit1(hasEnvironment() ? JSOp::PopLexicalEnv
                                        : JSOp::DebugLeaveLexicalEnv)) {
         return false;

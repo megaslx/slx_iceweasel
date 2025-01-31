@@ -163,7 +163,7 @@ static void SendPing(void* aClosure, nsIContent* aContent, nsIURI* aURI,
     bool isPrivateWin = false;
     if (doc) {
       isPrivateWin =
-          doc->NodePrincipal()->OriginAttributesRef().mPrivateBrowsingId > 0;
+          doc->NodePrincipal()->OriginAttributesRef().IsPrivateBrowsing();
     }
 
     bool sameOrigin = NS_SUCCEEDED(
@@ -319,7 +319,7 @@ nsresult nsPingListener::StartTimeout(DocGroup* aDocGroup) {
   return NS_NewTimerWithFuncCallback(
       getter_AddRefs(mTimer), OnPingTimeout, mLoadGroup, PING_TIMEOUT,
       nsITimer::TYPE_ONE_SHOT, "nsPingListener::StartTimeout",
-      aDocGroup->EventTargetFor(TaskCategory::Network));
+      GetMainThreadSerialEventTarget());
 }
 
 NS_IMETHODIMP

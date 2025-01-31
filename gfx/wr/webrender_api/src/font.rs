@@ -5,13 +5,12 @@
 use peek_poke::PeekPoke;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use std::path::PathBuf;
 use std::sync::Arc;
 // local imports
 use crate::IdNamespace;
 use crate::channel::Sender;
-use crate::color::ColorU;
 use crate::units::LayoutPoint;
 
 /// Hashable floating-point storage for font size.
@@ -53,17 +52,18 @@ impl FontSize {
     pub fn to_f64_px(&self) -> f64 { self.0 as f64 }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NativeFontHandle {
     pub path: PathBuf,
     pub index: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NativeFontHandle {
     pub name: String,
+    pub path: String,
 }
 
 #[repr(C)]
@@ -181,10 +181,12 @@ impl Default for GlyphOptions {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Deserialize, MallocSizeOf, Serialize, PeekPoke)]
+pub struct FontInstanceFlags(u32);
+
 bitflags! {
-    #[repr(C)]
-    #[derive(Deserialize, MallocSizeOf, Serialize, PeekPoke)]
-    pub struct FontInstanceFlags: u32 {
+    impl FontInstanceFlags: u32 {
         // Common flags
         // Use native synthetic bold, if supported.
         const SYNTHETIC_BOLD    = 1 << 1;
@@ -218,19 +220,29 @@ bitflags! {
     }
 }
 
+impl core::fmt::Debug for FontInstanceFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{:#x}", Self::empty().bits())
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
+    }
+}
+
 impl Default for FontInstanceFlags {
     #[cfg(target_os = "windows")]
     fn default() -> FontInstanceFlags {
         FontInstanceFlags::SUBPIXEL_POSITION
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     fn default() -> FontInstanceFlags {
         FontInstanceFlags::SUBPIXEL_POSITION |
         FontInstanceFlags::FONT_SMOOTHING
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
     fn default() -> FontInstanceFlags {
         FontInstanceFlags::SUBPIXEL_POSITION
     }
@@ -248,7 +260,7 @@ impl SyntheticItalics {
     pub const ANGLE_SCALE: f32 = 256.0;
 
     pub fn from_degrees(degrees: f32) -> Self {
-        SyntheticItalics { angle: (degrees.max(-89.0).min(89.0) * Self::ANGLE_SCALE) as i16 }
+        SyntheticItalics { angle: (degrees.clamp(-89.0, 89.0) * Self::ANGLE_SCALE) as i16 }
     }
 
     pub fn to_degrees(self) -> f32 {
@@ -285,13 +297,14 @@ impl Default for SyntheticItalics {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Deserialize, Hash, Eq, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize)]
 pub struct FontInstanceOptions {
-    pub render_mode: FontRenderMode,
     pub flags: FontInstanceFlags,
-    /// When bg_color.a is != 0 and render_mode is FontRenderMode::Subpixel,
-    /// the text will be rendered with bg_color.r/g/b as an opaque estimated
-    /// background color.
-    pub bg_color: ColorU,
     pub synthetic_italics: SyntheticItalics,
+    pub render_mode: FontRenderMode,
+    // We need to pad this struct out so that all bytes are part of fields, in
+    // order to satisfy the robustness requirements (and static_asserts) of
+    // ParamTraits_TiedFields.
+    // The sizeof(T) must be equal to the sum of the sizeof each field in T.
+    pub _padding: u8,
 }
 
 impl Default for FontInstanceOptions {
@@ -299,8 +312,8 @@ impl Default for FontInstanceOptions {
         FontInstanceOptions {
             render_mode: FontRenderMode::Subpixel,
             flags: Default::default(),
-            bg_color: ColorU::new(0, 0, 0, 0),
             synthetic_italics: SyntheticItalics::disabled(),
+            _padding: 0,
         }
     }
 }
@@ -325,14 +338,14 @@ impl Default for FontInstancePlatformOptions {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Deserialize, Hash, Eq, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize)]
 pub struct FontInstancePlatformOptions {
     pub unused: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 impl Default for FontInstancePlatformOptions {
     fn default() -> FontInstancePlatformOptions {
         FontInstancePlatformOptions {
@@ -341,7 +354,7 @@ impl Default for FontInstancePlatformOptions {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize)]
 pub enum FontLCDFilter {
@@ -351,7 +364,7 @@ pub enum FontLCDFilter {
     Legacy,
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize)]
 pub enum FontHinting {
@@ -362,7 +375,7 @@ pub enum FontHinting {
     LCD,
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Deserialize, Hash, Eq, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize)]
 pub struct FontInstancePlatformOptions {
@@ -370,7 +383,7 @@ pub struct FontInstancePlatformOptions {
     pub hinting: FontHinting,
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 impl Default for FontInstancePlatformOptions {
     fn default() -> FontInstancePlatformOptions {
         FontInstancePlatformOptions {
@@ -424,7 +437,7 @@ impl Default for GlyphInstance {
 
 impl Eq for GlyphInstance {}
 
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::derive_hash_xor_eq))]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl Hash for GlyphInstance {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Note: this is inconsistent with the Eq impl for -0.0 (don't care).

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
 <link rel="author" href="mailto:masonf@chromium.org">
+<link rel=help href="https://html.spec.whatwg.org/multipage/popover.html">
 <link rel=help href="https://open-ui.org/components/popover.research.explainer">
 <meta name="timeout" content="long">
 <script src="/resources/testharness.js"></script>
@@ -231,6 +232,31 @@ window.onload = () => {
     assert_false(other_popover.matches(':popover-open'),'unrelated popover is hidden');
     assert_false(popover.matches(':popover-open'),'popover is not shown if its type changed during show');
   },`Changing the popover type in a "beforetoggle" event handler should throw an exception (during showPopover())`);
+
+  test((t) => {
+    const other_popover = createPopover(t);
+    other_popover.setAttribute('popover','auto');
+    other_popover.showPopover();
+    const popover = createPopover(t);
+    popover.setAttribute('popover','auto');
+    other_popover.addEventListener('beforetoggle', (e) => {
+      if (e.newState !== "closed")
+        return;
+      popover.setAttribute('popover','manual');
+    },{once: true});
+    assert_true(other_popover.matches(':popover-open'));
+    assert_false(popover.matches(':popover-open'));
+
+    popover.id = 'type-change-test';
+    const invoker = document.createElement('button');
+    document.body.appendChild(invoker);
+    t.add_cleanup(() => invoker.remove());
+    invoker.setAttribute('popovertarget', 'type-change-test');
+    invoker.click();
+
+    assert_false(other_popover.matches(':popover-open'),'unrelated popover is hidden');
+    assert_false(popover.matches(':popover-open'),'popover is not shown if its type changed during show');
+  },`Changing the popover type in a "beforetoggle" event handler should not show the popover (during popovertarget invoking)`);
 
   test((t) => {
     const popover = createPopover(t);

@@ -11,6 +11,7 @@
 #include "ipc/EnumSerializer.h"
 #include "mozilla/TimeStamp.h"
 #include "nsIContentPolicy.h"
+#include "nsIEncodedChannel.h"
 #include "nsIStreamListener.h"
 #include "nsUnknownDecoder.h"
 #include "nsMimeTypes.h"
@@ -130,7 +131,7 @@ class OpaqueResponseBlocker final : public nsIStreamListener {
                               nsILoadInfo* aLoadInfo);
 
   void ResolveAndProcessData(HttpBaseChannel* aChannel, bool aAllowed,
-                             Maybe<ipc::Shmem>& aSharedData);
+                             Maybe<mozilla::ipc::Shmem>& aSharedData);
 
   void MaybeRunOnStopRequest(HttpBaseChannel* aChannel);
 
@@ -193,6 +194,11 @@ class nsCompressedAudioVideoImageDetector : public nsUnknownDecoder {
       mContentType = contentType;
     } else {
       mContentType = UNKNOWN_CONTENT_TYPE;
+    }
+
+    nsCOMPtr<nsIEncodedChannel> encodedChannel = do_QueryInterface(httpChannel);
+    if (encodedChannel) {
+      encodedChannel->SetHasContentDecompressed(true);
     }
   }
 };

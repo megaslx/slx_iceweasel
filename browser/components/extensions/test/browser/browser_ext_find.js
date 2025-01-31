@@ -38,20 +38,18 @@ add_task(async function testFind() {
   async function background() {
     function awaitLoad(tabId, url) {
       return new Promise(resolve => {
-        browser.tabs.onUpdated.addListener(function listener(
-          tabId_,
-          changed,
-          tab
-        ) {
-          if (
-            tabId == tabId_ &&
-            changed.status == "complete" &&
-            tab.url == url
-          ) {
-            browser.tabs.onUpdated.removeListener(listener);
-            resolve();
+        browser.tabs.onUpdated.addListener(
+          function listener(tabId_, changed, tab) {
+            if (
+              tabId == tabId_ &&
+              changed.status == "complete" &&
+              tab.url == url
+            ) {
+              browser.tabs.onUpdated.removeListener(listener);
+              resolve();
+            }
           }
-        });
+        );
       });
     }
 
@@ -297,20 +295,18 @@ add_task(async function testRemoveHighlighting() {
   async function background() {
     function awaitLoad(tabId, url) {
       return new Promise(resolve => {
-        browser.tabs.onUpdated.addListener(function listener(
-          tabId_,
-          changed,
-          tab
-        ) {
-          if (
-            tabId == tabId_ &&
-            changed.status == "complete" &&
-            tab.url == url
-          ) {
-            browser.tabs.onUpdated.removeListener(listener);
-            resolve();
+        browser.tabs.onUpdated.addListener(
+          function listener(tabId_, changed, tab) {
+            if (
+              tabId == tabId_ &&
+              changed.status == "complete" &&
+              tab.url == url
+            ) {
+              browser.tabs.onUpdated.removeListener(listener);
+              resolve();
+            }
           }
-        });
+        );
       });
     }
 
@@ -412,7 +408,7 @@ add_task(async function testIncognitoFind() {
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
   });
-  BrowserTestUtils.loadURIString(
+  BrowserTestUtils.startLoadingURIString(
     privateWin.gBrowser.selectedBrowser,
     "http://example.com"
   );
@@ -447,7 +443,10 @@ add_task(async function testIncognitoFindAllowed() {
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
   });
-  BrowserTestUtils.loadURIString(privateWin.gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(
+    privateWin.gBrowser.selectedBrowser,
+    url
+  );
   await BrowserTestUtils.browserLoaded(privateWin.gBrowser.selectedBrowser);
 
   let extension = ExtensionTestUtils.loadExtension({

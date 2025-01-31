@@ -9,9 +9,11 @@
 
 #include "nsGenericHTMLElement.h"
 #include "nsTArray.h"
-#include "mozilla/dom/HTMLSlotElementBinding.h"
 
 namespace mozilla::dom {
+
+struct AssignedNodesOptions;
+class OwningElementOrText;
 
 class HTMLSlotElement final : public nsGenericHTMLElement {
  public:
@@ -26,7 +28,7 @@ class HTMLSlotElement final : public nsGenericHTMLElement {
 
   // nsIContent
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  void UnbindFromTree(bool aNullParent) override;
+  void UnbindFromTree(UnbindContext&) override;
 
   void BeforeSetAttr(int32_t aNameSpaceID, nsAtom* aName,
                      const nsAttrValue* aValue, bool aNotify) override;

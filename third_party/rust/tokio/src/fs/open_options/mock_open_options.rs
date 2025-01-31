@@ -1,4 +1,5 @@
-//! Mock version of std::fs::OpenOptions;
+#![allow(unreachable_pub)]
+//! Mock version of `std::fs::OpenOptions`;
 use mockall::mock;
 
 use crate::fs::mocks::MockFile;

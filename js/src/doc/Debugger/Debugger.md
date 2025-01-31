@@ -43,6 +43,18 @@ Setting this to `false` prevents this `Debugger` instance from requiring any
 code coverage instrumentation, but it does not guarantee that the
 instrumentation is not present.
 
+### `exclusiveDebuggerOnEval`
+A boolean value indicating whether other Debugger instances should
+have their hook functions called when this instance uses:
+* Debugger.Frame.evalWithBindings,
+* Debugger.Object.executeInGlobalWithBindings
+* Debugger.Object.call
+When set to true, other Debugger instances are not notified.
+
+### `inspectNativeCallArguments`
+A boolean value, to be set to true in order to pass the two last
+arguments of `onNativeCall` hook.
+
 ### `uncaughtExceptionHook`
 Either `null` or a function that SpiderMonkey calls when a call to a
 debug event handler, breakpoint handler, or similar
@@ -74,6 +86,13 @@ debugger developers. For example, an uncaught exception hook may have
 access to browser-level features like the `alert` function, which this
 API's implementation does not, making it possible to present debugger
 errors to the developer in a way suited to the context.)
+
+### `shouldAvoidSideEffects`
+A boolean value used to ask a side-effectful native code to abort.
+
+If set to true, `JS::dbg::ShouldAvoidSideEffects(cx)` returns true.
+Native code can opt into this to support debugger who wants to perform
+side-effect-free evaluation.
 
 
 ## Debugger Handler Functions
@@ -159,6 +178,14 @@ has one of the following values:
 `get`: The native is the getter for a property which is being accessed.
 `set`: The native is the setter for a property being written to.
 `call`: Any call not fitting into the above categories.
+
+<i>object</i> is a [`Debugger.Object`][object] reference to the object
+ onto which the native method is called, if any.
+<i>args</i> is a [`Debugger.Object`][object] for the array of arguments
+being passed to the native function.
+
+The two last arguments, <i>object</i> and <i>args</i> are only passed
+if `Debugger.inspectNativeCallArguments` is set to true.
 
 This method should return a [resumption value][rv] specifying how the debuggee's
 execution should proceed. If a return value is overridden for a constructor
@@ -395,19 +422,25 @@ instances for all debuggee scripts.
 
 * `line`
 
-  The script must at least partially cover the given source line. If this
-  property is present, the `url` property must be present as well.
+  The script must at least partially overlap the given source line. If this
+  property is present, the `url`, `source`, or `displayURL` property must be present as well.
 
-* `column`
+* `start` and `end`
 
-  The script must include given column on the line given by the `line`property.
-  If this property is present, the `url` and `line` properties must both be
-  present as well.
+  These properties define a target range of source that the script must at least partially overlap. Their value must be an object with a `line` property and an optional, 1-based `column` property. The script must at least partially overlap the range [`start.line`, `end.line`] to be included in the results.
+
+  If the `start.column` property is provided, the target range's start line only includes the columns [`start.column`, Infinity). If the `end.column` property is provided, the target range's end line only includes the [1, `end.column`] columns.
+
+  Example <i>query</i>: `{ start: { line: 7, column: 11 }, end: { line: 13, column: 5} }`
+
+  If these properties are present, they take precedence over `line`.
+
+  These properties must be present together. If they are present, the `url`, `source`, or `displayURL` property must be present as well.
 
 * `innermost`
 
   If this property is present and true, the script must be the innermost
-  script covering the given source location; scripts of enclosing code are
+  script overlapping the target source range; scripts of enclosing code are
   omitted.
 
 * `global`
@@ -446,12 +479,19 @@ The *query* object may have the following properties:
 
 * `class`
 
-  If present, only return objects whose internal `[[Class]]`'s name
-  matches the given string. Note that in some cases, the prototype object
-  for a given constructor has the same `[[Class]]` as the instances that
-  refer to it, but cannot itself be used as a valid instance of the
-  class. Code gathering objects by class name may need to examine them
+  If present with a string value, only return objects whose internal
+  `[[Class]]`'s name matches the given string. Note that in some cases,
+  the prototype object for a given constructor has the same `[[Class]]` as
+  the instances that refer to it, but cannot itself be used as a valid instance
+  of the class. Code gathering objects by class name may need to examine them
   further before trying to use them.
+
+  If present with a [`Debugger.Object`][object] value, only return objects
+  which has given object as constructor or prototype in the prototype chain.
+  Note that objects with dynamic prototype (e.g. `Proxy`) cannot be matched with
+  this query, given accessing the prototype for such object can have some
+  side effects. Also note that, currently an object with `null` prototype
+  cannot be matched with this query.
 
 All properties of *query* are optional. Passing an empty object returns all
 objects in debuggee globals.

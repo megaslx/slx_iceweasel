@@ -10,9 +10,10 @@
 #include <stddef.h>  // for size_t
 #include <stdint.h>  // for uint32_t, uint64_t
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"  // for override
-#include "mozilla/RefPtr.h"      // for already_AddRefed
-#include "mozilla/StaticPtr.h"   // for StaticRefPtr
+#include "mozilla/Attributes.h"                    // for override
+#include "mozilla/RefPtr.h"                        // for already_AddRefed
+#include "mozilla/StaticPtr.h"                     // for StaticRefPtr
+#include "mozilla/layers/CompositableForwarder.h"  // for FwdTransactionCounter
 #include "mozilla/layers/PCompositorManagerChild.h"
 
 namespace mozilla {
@@ -50,8 +51,9 @@ class CompositorManagerChild : public PCompositorManagerChild {
     return sInstance;
   }
 
-  // Threadsafe way to get the compositor process ID.
-  static base::ProcessId GetOtherPid() { return sOtherPid; }
+  // Threadsafe way to snapshot the current compositor process info from another
+  // thread.
+  static mozilla::ipc::EndpointProcInfo GetCompositorProcInfo();
 
   bool CanSend() const {
     MOZ_ASSERT(NS_IsMainThread());
@@ -92,15 +94,18 @@ class CompositorManagerChild : public PCompositorManagerChild {
   mozilla::ipc::IPCResult RecvNotifyWebRenderError(
       const WebRenderError&& aError);
 
+  FwdTransactionCounter& GetFwdTransactionCounter() {
+    return mFwdTransactionCounter;
+  }
+
+  void SetSyncIPCStartTimeStamp();
+  void ClearSyncIPCStartTimeStamp();
+
  private:
   static StaticRefPtr<CompositorManagerChild> sInstance;
-  static Atomic<base::ProcessId> sOtherPid;
 
-  CompositorManagerChild(CompositorManagerParent* aParent,
-                         uint64_t aProcessToken, uint32_t aNamespace);
-
-  CompositorManagerChild(Endpoint<PCompositorManagerChild>&& aEndpoint,
-                         uint64_t aProcessToken, uint32_t aNamespace);
+  CompositorManagerChild(uint64_t aProcessToken, uint32_t aNamespace,
+                         bool aSameProcess);
 
   virtual ~CompositorManagerChild() = default;
 
@@ -111,6 +116,9 @@ class CompositorManagerChild : public PCompositorManagerChild {
   uint32_t mResourceId;
   bool mCanSend;
   bool mSameProcess;
+  FwdTransactionCounter mFwdTransactionCounter;
+  // Used to extend sync IPC reply timeout
+  Maybe<TimeStamp> mSyncIPCStartTimeStamp;
 };
 
 }  // namespace layers

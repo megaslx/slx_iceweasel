@@ -28,8 +28,12 @@ class FileSystemManagerParent : public PFileSystemManagerParent {
 
   void AssertIsOnIOTarget() const;
 
+  bool IsAlive() const;
+
   // Safe to call while the actor is live.
   const RefPtr<fs::data::FileSystemDataManager>& DataManagerStrongRef() const;
+
+  void SetRegistered(bool aRegistered) { mRegistered = aRegistered; }
 
   mozilla::ipc::IPCResult RecvGetRootHandle(GetRootHandleResolver&& aResolver);
 
@@ -78,6 +82,8 @@ class FileSystemManagerParent : public PFileSystemManagerParent {
   FileSystemGetHandleResponse mRootResponse;
 
   FlippedOnce<false> mRequestedAllowToClose;
+
+  bool mRegistered = false;
 
   DEBUGONLY(bool mActorDestroyed = false);
 };

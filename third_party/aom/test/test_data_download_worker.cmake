@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, Alliance for Open Media. All rights reserved
+# Copyright (c) 2017, Alliance for Open Media. All rights reserved.
 #
 # This source code is subject to the terms of the BSD 2 Clause License and the
 # Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License was
@@ -20,15 +20,15 @@ if (NOT AOM_ROOT OR NOT AOM_CONFIG_DIR OR NOT AOM_TEST_FILE
 endif ()
 # cmake-format: on
 
-set(AOM_TEST_DATA_URL "http://storage.googleapis.com/aom-test-data")
+set(AOM_TEST_DATA_URL "https://storage.googleapis.com/aom-test-data")
 
 if(NOT AOM_TEST_DATA_PATH)
   set(AOM_TEST_DATA_PATH "$ENV{LIBAOM_TEST_DATA_PATH}")
 endif()
 
 if("${AOM_TEST_DATA_PATH}" STREQUAL "")
-  message(WARNING
-            "Writing test data to ${AOM_CONFIG_DIR}, set "
+  message(
+    WARNING "Writing test data to ${AOM_CONFIG_DIR}, set "
             "$LIBAOM_TEST_DATA_PATH in your environment to avoid this warning.")
   set(AOM_TEST_DATA_PATH "${AOM_CONFIG_DIR}")
 endif()

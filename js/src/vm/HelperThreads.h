@@ -13,10 +13,11 @@
 
 #include "mozilla/Variant.h"
 
-#include "js/OffThreadScriptCompilation.h"
+#include "js/AllocPolicy.h"
+#include "js/HelperThreadAPI.h"
 #include "js/shadow/Zone.h"
-#include "js/Transcoding.h"
 #include "js/UniquePtr.h"
+#include "js/Vector.h"
 #include "threading/LockGuard.h"
 #include "threading/Mutex.h"
 #include "wasm/WasmConstants.h"
@@ -26,8 +27,8 @@ union Utf8Unit;
 }
 
 namespace JS {
-class OffThreadToken {};
 class JS_PUBLIC_API ReadOnlyCompileOptions;
+class JS_PUBLIC_API ReadOnlyDecodeOptions;
 class Zone;
 
 template <typename UnitT>
@@ -41,7 +42,7 @@ struct PromiseHelperTask;
 class SourceCompressionTask;
 
 namespace frontend {
-struct CompilationStencil;
+struct InitialStencilAndDelazifications;
 }
 
 namespace gc {
@@ -51,13 +52,17 @@ class GCRuntime;
 namespace jit {
 class IonCompileTask;
 class IonFreeTask;
+class JitRuntime;
+using IonFreeCompileTasks = Vector<IonCompileTask*, 8, SystemAllocPolicy>;
 }  // namespace jit
 
 namespace wasm {
 struct CompileTask;
 struct CompileTaskState;
-struct Tier2GeneratorTask;
-using UniqueTier2GeneratorTask = UniquePtr<Tier2GeneratorTask>;
+struct CompleteTier2GeneratorTask;
+using UniqueCompleteTier2GeneratorTask = UniquePtr<CompleteTier2GeneratorTask>;
+struct PartialTier2CompileTask;
+using UniquePartialTier2CompileTask = UniquePtr<PartialTier2CompileTask>;
 }  // namespace wasm
 
 /*
@@ -66,20 +71,41 @@ using UniqueTier2GeneratorTask = UniquePtr<Tier2GeneratorTask>;
  */
 extern Mutex gHelperThreadLock MOZ_UNANNOTATED;
 
-class MOZ_RAII AutoLockHelperThreadState : public LockGuard<Mutex> {
-  using Base = LockGuard<Mutex>;
-
+// Set of tasks to dispatch when the helper thread state lock is released.
+class AutoHelperTaskQueue {
  public:
-  explicit AutoLockHelperThreadState() : Base(gHelperThreadLock) {}
+  ~AutoHelperTaskQueue() { dispatchQueuedTasks(); }
+  bool hasQueuedTasks() const { return !tasksToDispatch.empty(); }
+  void queueTaskToDispatch(JS::HelperThreadTask* task) const;
+  void dispatchQueuedTasks();
+
+ private:
+  // TODO: Convert this to use a linked list.
+  mutable Vector<JS::HelperThreadTask*, 1, SystemAllocPolicy> tasksToDispatch;
 };
 
-class MOZ_RAII AutoUnlockHelperThreadState : public UnlockGuard<Mutex> {
-  using Base = UnlockGuard<Mutex>;
-
+// A lock guard for data protected by the helper thread lock.
+//
+// This can also queue helper thread tasks to be triggered when the lock is
+// released.
+class MOZ_RAII AutoLockHelperThreadState
+    : public AutoHelperTaskQueue,  // Must come before LockGuard.
+      public LockGuard<Mutex> {
  public:
-  explicit AutoUnlockHelperThreadState(AutoLockHelperThreadState& locked)
-      : Base(locked) {}
+  AutoLockHelperThreadState() : LockGuard<Mutex>(gHelperThreadLock) {}
+  AutoLockHelperThreadState(const AutoLockHelperThreadState&) = delete;
+
+ private:
+  friend class UnlockGuard<AutoLockHelperThreadState>;
+  void unlock() {
+    LockGuard<Mutex>::unlock();
+    dispatchQueuedTasks();
+  }
+
+  friend class GlobalHelperThreadState;
 };
+
+using AutoUnlockHelperThreadState = UnlockGuard<AutoLockHelperThreadState>;
 
 // Create data structures used by helper threads.
 bool CreateHelperThreadsState();
@@ -99,20 +125,33 @@ size_t GetMaxWasmCompilationThreads();
 bool SetFakeCPUCount(size_t count);
 
 // Enqueues a wasm compilation task.
-bool StartOffThreadWasmCompile(wasm::CompileTask* task, wasm::CompileMode mode);
+bool StartOffThreadWasmCompile(wasm::CompileTask* task,
+                               wasm::CompileState state);
 
 // Remove any pending wasm compilation tasks queued with
 // StartOffThreadWasmCompile that match the arguments. Return the number
 // removed.
 size_t RemovePendingWasmCompileTasks(const wasm::CompileTaskState& taskState,
-                                     wasm::CompileMode mode,
+                                     wasm::CompileState state,
                                      const AutoLockHelperThreadState& lock);
 
-// Enqueues a wasm compilation task.
-void StartOffThreadWasmTier2Generator(wasm::UniqueTier2GeneratorTask task);
+// Enqueues a wasm Complete Tier-2 compilation task.  This (logically, at
+// least) manages a set of sub-tasks that perform compilation of groups of
+// functions.
+void StartOffThreadWasmCompleteTier2Generator(
+    wasm::UniqueCompleteTier2GeneratorTask task);
 
-// Cancel all background Wasm Tier-2 compilations.
-void CancelOffThreadWasmTier2Generator();
+// Enqueues a wasm Partial Tier-2 compilation task.  This compiles one
+// function, doing so itself, without any sub-tasks.
+void StartOffThreadWasmPartialTier2Compile(
+    wasm::UniquePartialTier2CompileTask task);
+
+// Cancel all background Wasm Complete Tier-2 compilations, both the generator
+// task and the individual compilation tasks.
+void CancelOffThreadWasmCompleteTier2Generator();
+
+// Cancel a single background Wasm Partial Tier-2 compilation.
+void CancelOffThreadWasmPartialTier2Compile();
 
 /*
  * If helper threads are available, call execute() then dispatchResolve() on the
@@ -142,22 +181,31 @@ bool StartOffThreadPromiseHelperTask(PromiseHelperTask* task);
 bool StartOffThreadIonCompile(jit::IonCompileTask* task,
                               const AutoLockHelperThreadState& lock);
 
-/*
- * Schedule deletion of Ion compilation data.
- */
-bool StartOffThreadIonFree(jit::IonCompileTask* task,
-                           const AutoLockHelperThreadState& lock);
-
 void FinishOffThreadIonCompile(jit::IonCompileTask* task,
                                const AutoLockHelperThreadState& lock);
+
+// RAII class to handle batching compile tasks and starting an IonFreeTask.
+class MOZ_RAII AutoStartIonFreeTask {
+  jit::JitRuntime* jitRuntime_;
+
+  // If true, start an IonFreeTask even if the batch is small.
+  bool force_;
+
+ public:
+  explicit AutoStartIonFreeTask(jit::JitRuntime* jitRuntime, bool force = false)
+      : jitRuntime_(jitRuntime), force_(force) {}
+  ~AutoStartIonFreeTask();
+
+  [[nodiscard]] bool addIonCompileToFreeTaskBatch(jit::IonCompileTask* task);
+};
 
 struct ZonesInState {
   JSRuntime* runtime;
   JS::shadow::Zone::GCState state;
 };
 
-using CompilationSelector = mozilla::Variant<JSScript*, JS::Realm*, JS::Zone*,
-                                             ZonesInState, JSRuntime*>;
+using CompilationSelector =
+    mozilla::Variant<JSScript*, JS::Zone*, ZonesInState, JSRuntime*>;
 
 /*
  * Cancel scheduled or in progress Ion compilations.
@@ -166,10 +214,6 @@ void CancelOffThreadIonCompile(const CompilationSelector& selector);
 
 inline void CancelOffThreadIonCompile(JSScript* script) {
   CancelOffThreadIonCompile(CompilationSelector(script));
-}
-
-inline void CancelOffThreadIonCompile(JS::Realm* realm) {
-  CancelOffThreadIonCompile(CompilationSelector(realm));
 }
 
 inline void CancelOffThreadIonCompile(JS::Zone* zone) {
@@ -186,18 +230,8 @@ inline void CancelOffThreadIonCompile(JSRuntime* runtime) {
 }
 
 #ifdef DEBUG
-bool HasOffThreadIonCompile(JS::Realm* realm);
+bool HasOffThreadIonCompile(JS::Zone* zone);
 #endif
-
-/*
- * Cancel all scheduled, in progress or finished parses for runtime.
- *
- * Parse tasks which have completed but for which JS::FinishOffThreadScript (or
- * equivalent) has not been called are removed from the system. This is only
- * safe to do during shutdown, or if you know that the main thread isn't waiting
- * for tasks to complete.
- */
-void CancelOffThreadParses(JSRuntime* runtime);
 
 /*
  * Cancel all scheduled or in progress eager delazification phases for a
@@ -210,39 +244,11 @@ void CancelOffThreadDelazify(JSRuntime* runtime);
  */
 void WaitForAllDelazifyTasks(JSRuntime* rt);
 
-/*
- * Start a parse/emit cycle for a stream of source. The characters must stay
- * alive until the compilation finishes.
- */
-
-JS::OffThreadToken* StartOffThreadCompileToStencil(
-    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-    JS::SourceText<char16_t>& srcBuf, JS::OffThreadCompileCallback callback,
-    void* callbackData);
-JS::OffThreadToken* StartOffThreadCompileToStencil(
-    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-    JS::SourceText<mozilla::Utf8Unit>& srcBuf,
-    JS::OffThreadCompileCallback callback, void* callbackData);
-
-JS::OffThreadToken* StartOffThreadCompileModuleToStencil(
-    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-    JS::SourceText<char16_t>& srcBuf, JS::OffThreadCompileCallback callback,
-    void* callbackData);
-JS::OffThreadToken* StartOffThreadCompileModuleToStencil(
-    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-    JS::SourceText<mozilla::Utf8Unit>& srcBuf,
-    JS::OffThreadCompileCallback callback, void* callbackData);
-
-JS::OffThreadToken* StartOffThreadDecodeStencil(
-    JSContext* cx, const JS::DecodeOptions& options,
-    const JS::TranscodeRange& range, JS::OffThreadCompileCallback callback,
-    void* callbackData);
-
 // Start off-thread delazification task, to race the delazification of inner
 // functions.
-void StartOffThreadDelazification(JSContext* cx,
-                                  const JS::ReadOnlyCompileOptions& options,
-                                  const frontend::CompilationStencil& stencil);
+void StartOffThreadDelazification(
+    JSContext* maybeCx, const JS::ReadOnlyCompileOptions& options,
+    frontend::InitialStencilAndDelazifications* stencils);
 
 // Drain the task queues and wait for all helper threads to finish running.
 //

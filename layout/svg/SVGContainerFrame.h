@@ -76,17 +76,7 @@ class SVGContainerFrame : public nsContainerFrame {
   void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
                     const nsLineList::iterator* aPrevFrameLine,
                     nsFrameList&& aFrameList) override;
-  void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) override;
-
-  bool IsFrameOfType(uint32_t aFlags) const override {
-    if (aFlags & eSupportsContainLayoutAndPaint) {
-      return false;
-    }
-
-    return nsContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eSVG | nsIFrame::eSVGContainer));
-  }
-
+  void RemoveFrame(DestroyContext&, ChildListID, nsIFrame*) override;
   void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                         const nsDisplayListSet& aLists) override {}
 
@@ -126,18 +116,18 @@ class SVGDisplayContainerFrame : public SVGContainerFrame,
   NS_DECL_ABSTRACT_FRAME(SVGDisplayContainerFrame)
 
   // nsIFrame:
+  void DidSetComputedStyle(ComputedStyle*) override;
   void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
                     const nsLineList::iterator* aPrevFrameLine,
                     nsFrameList&& aFrameList) override;
-  void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) override;
+  void RemoveFrame(DestroyContext&, ChildListID, nsIFrame*) override;
   void Init(nsIContent* aContent, nsContainerFrame* aParent,
             nsIFrame* aPrevInFlow) override;
 
   void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                         const nsDisplayListSet& aLists) override;
 
-  bool IsSVGTransformed(Matrix* aOwnTransform = nullptr,
-                        Matrix* aFromParentTransform = nullptr) const override;
+  bool DoGetParentSVGTransforms(Matrix*) const override;
 
   // ISVGDisplayableFrame interface:
   void PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,

@@ -10,15 +10,18 @@ These transforms are useful when follow-up tasks are needed for some
 indeterminate subset of existing tasks. For example, running a signing task
 after each build task, whatever builds may exist.
 """
+
 from copy import deepcopy
 from textwrap import dedent
 
 from voluptuous import Any, Extra, Optional, Required
 
 from taskgraph.transforms.base import TransformSequence
+from taskgraph.transforms.run import fetches_schema
 from taskgraph.util.attributes import attrmatch
-from taskgraph.util.dependencies import GROUP_BY_MAP
-from taskgraph.util.schema import Schema
+from taskgraph.util.dependencies import GROUP_BY_MAP, get_dependencies
+from taskgraph.util.schema import Schema, validate_schema
+from taskgraph.util.set_name import SET_NAME_MAP
 
 FROM_DEPS_SCHEMA = Schema(
     {
@@ -36,6 +39,18 @@ FROM_DEPS_SCHEMA = Schema(
                 """.lstrip()
                 ),
             ): list,
+            Optional(
+                "set-name",
+                description=dedent(
+                    """
+                UPDATE ME AND DOCS
+                """.lstrip()
+                ),
+            ): Any(
+                None,
+                *SET_NAME_MAP,
+                {Any(*SET_NAME_MAP): object},
+            ),
             Optional(
                 "with-attributes",
                 description=dedent(
@@ -80,6 +95,17 @@ FROM_DEPS_SCHEMA = Schema(
                 """.lstrip()
                 ),
             ): bool,
+            Optional(
+                "fetches",
+                description=dedent(
+                    """
+                If present, a `fetches` entry will be added for each task
+                dependency. Attributes of the upstream task may be used as
+                substitution values in the `artifact` or `dest` values of the
+                `fetches` entry.
+                """.lstrip()
+                ),
+            ): {str: [fetches_schema]},
         },
         Extra: object,
     },
@@ -139,15 +165,19 @@ def from_deps(config, tasks):
             group_by, arg = group_by.popitem()
             func = GROUP_BY_MAP[group_by]
             if func.schema:
-                func.schema(arg)
+                validate_schema(
+                    func.schema, arg, f"Invalid group-by {group_by} argument"
+                )
             groups = func(config, deps, arg)
         else:
             func = GROUP_BY_MAP[group_by]
             groups = func(config, deps)
 
         # Split the task, one per group.
+        set_name = from_deps.get("set-name", "strip-kind")
         copy_attributes = from_deps.get("copy-attributes", False)
         unique_kinds = from_deps.get("unique-kinds", True)
+        fetches = from_deps.get("fetches", [])
         for group in groups:
             # Verify there is only one task per kind in each group.
             group_kinds = {t.kind for t in group}
@@ -157,9 +187,10 @@ def from_deps(config, tasks):
                 )
 
             new_task = deepcopy(task)
-            new_task["dependencies"] = {
-                dep.kind if unique_kinds else dep.label: dep.label for dep in group
-            }
+            new_task.setdefault("dependencies", {})
+            new_task["dependencies"].update(
+                {dep.kind if unique_kinds else dep.label: dep.label for dep in group}
+            )
 
             # Set name and copy attributes from the primary kind.
             for kind in kinds:
@@ -169,20 +200,45 @@ def from_deps(config, tasks):
             else:
                 raise Exception("Could not detect primary kind!")
 
-            new_task.setdefault("attributes", {})[
-                "primary-kind-dependency"
-            ] = primary_kind
+            new_task.setdefault("attributes", {})["primary-kind-dependency"] = (
+                primary_kind
+            )
 
             primary_dep = [dep for dep in group if dep.kind == primary_kind][0]
 
-            if primary_dep.label.startswith(primary_kind):
-                new_task["name"] = primary_dep.label[len(primary_kind) + 1 :]
-            else:
-                new_task["name"] = primary_dep.label
+            if set_name:
+                func = SET_NAME_MAP[set_name]
+                new_task["name"] = func(config, deps, primary_dep, primary_kind)
 
             if copy_attributes:
-                attrs = new_task.get("attributes", {})
+                attrs = new_task.setdefault("attributes", {})
                 new_task["attributes"] = primary_dep.attributes.copy()
                 new_task["attributes"].update(attrs)
+
+            if fetches:
+                task_fetches = new_task.setdefault("fetches", {})
+
+                for dep_task in get_dependencies(config, new_task):
+                    # Nothing to do if this kind has no fetches listed
+                    if dep_task.kind not in fetches:
+                        continue
+
+                    fetches_from_dep = []
+                    for kind, kind_fetches in fetches.items():
+                        if kind != dep_task.kind:
+                            continue
+
+                        for fetch in kind_fetches:
+                            entry = fetch.copy()
+                            entry["artifact"] = entry["artifact"].format(
+                                **dep_task.attributes
+                            )
+                            if "dest" in entry:
+                                entry["dest"] = entry["dest"].format(
+                                    **dep_task.attributes
+                                )
+                            fetches_from_dep.append(entry)
+
+                    task_fetches[dep_task.label] = fetches_from_dep
 
             yield new_task

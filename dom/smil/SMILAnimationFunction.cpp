@@ -57,7 +57,7 @@ nsAttrValue::EnumTable SMILAnimationFunction::sCalcModeTable[] = {
 SMILAnimationFunction::SMILAnimationFunction()
     : mSampleTime(-1),
       mRepeatIteration(0),
-      mBeginTime(INT64_MIN),
+      mBeginTime(std::numeric_limits<SMILTime>::min()),
       mAnimationElement(nullptr),
       mErrorFlags(0),
       mIsActive(false),
@@ -170,7 +170,7 @@ void SMILAnimationFunction::SampleAt(SMILTime aSampleTime,
 }
 
 void SMILAnimationFunction::SampleLastValue(uint32_t aRepeatIteration) {
-  if (mHasChanged || !mLastValue || mRepeatIteration != aRepeatIteration) {
+  if (!mLastValue || mRepeatIteration != aRepeatIteration) {
     mHasChanged = true;
   }
 
@@ -231,7 +231,7 @@ void SMILAnimationFunction::ComposeResult(const SMILAttr& aSMILAttr,
 
   } else if (mLastValue) {
     // Sampling last value
-    const SMILValue& last = values[values.Length() - 1];
+    const SMILValue& last = values.LastElement();
     result = last;
 
     // See comment in AccumulateResult: to-animation does not accumulate
@@ -258,7 +258,10 @@ int8_t SMILAnimationFunction::CompareTo(
     const SMILAnimationFunction* aOther) const {
   NS_ENSURE_TRUE(aOther, 0);
 
-  NS_ASSERTION(aOther != this, "Trying to compare to self");
+  if (aOther == this) {
+    // std::sort will sometimes compare an element to itself. It's fine.
+    return 0;
+  }
 
   // Inactive animations sort first
   if (!IsActiveOrFrozen() && aOther->IsActiveOrFrozen()) return -1;
@@ -279,7 +282,7 @@ int8_t SMILAnimationFunction::CompareTo(
 
   // Animations that appear later in the document sort after those earlier in
   // the document
-  MOZ_ASSERT(mAnimationElement != aOther->mAnimationElement,
+  MOZ_ASSERT(!HasSameAnimationElement(aOther),
              "Two animations cannot have the same animation content element!");
 
   return (nsContentUtils::PositionIsBefore(mAnimationElement,
@@ -471,11 +474,9 @@ nsresult SMILAnimationFunction::InterpolateResult(const SMILValueArray& aValues,
 nsresult SMILAnimationFunction::AccumulateResult(const SMILValueArray& aValues,
                                                  SMILValue& aResult) {
   if (!IsToAnimation() && GetAccumulate() && mRepeatIteration) {
-    const SMILValue& lastValue = aValues[aValues.Length() - 1];
-
     // If the target attribute type doesn't support addition, Add will
     // fail and we leave aResult untouched.
-    aResult.Add(lastValue, mRepeatIteration);
+    aResult.Add(aValues.LastElement(), mRepeatIteration);
   }
 
   return NS_OK;
@@ -833,7 +834,7 @@ void SMILAnimationFunction::CheckKeyTimes(uint32_t aNumValues) {
 
   // last value must be 1 for linear or spline calcModes
   if (calcMode != CALC_DISCRETE && numKeyTimes > 1 &&
-      mKeyTimes[numKeyTimes - 1] != 1.0) {
+      mKeyTimes.LastElement() != 1.0) {
     SetKeyTimesErrorFlag(true);
     return;
   }

@@ -31,7 +31,7 @@
 #include "prthread.h"
 #endif /* THREADMARK */
 
-#if defined(XP_UNIX) || defined(XP_OS2)
+#if defined(XP_UNIX)
 #include <stdlib.h>
 #else
 #include "wtypes.h"
@@ -303,23 +303,23 @@ PORT_ArenaAlloc(PLArenaPool *arena, size_t size)
     } else
         /* Is it one of ours?  Assume so and check the magic */
         if (ARENAPOOL_MAGIC == pool->magic) {
-        PZ_Lock(pool->lock);
+            PZ_Lock(pool->lock);
 #ifdef THREADMARK
-        /* Most likely one of ours.  Is there a thread id? */
-        if (pool->marking_thread &&
-            pool->marking_thread != PR_GetCurrentThread()) {
-            /* Another thread holds a mark in this arena */
+            /* Most likely one of ours.  Is there a thread id? */
+            if (pool->marking_thread &&
+                pool->marking_thread != PR_GetCurrentThread()) {
+                /* Another thread holds a mark in this arena */
+                PZ_Unlock(pool->lock);
+                PORT_SetError(SEC_ERROR_NO_MEMORY);
+                PORT_Assert(0);
+                return NULL;
+            } /* tid != null */
+#endif        /* THREADMARK */
+            PL_ARENA_ALLOCATE(p, arena, size);
             PZ_Unlock(pool->lock);
-            PORT_SetError(SEC_ERROR_NO_MEMORY);
-            PORT_Assert(0);
-            return NULL;
-        } /* tid != null */
-#endif    /* THREADMARK */
-        PL_ARENA_ALLOCATE(p, arena, size);
-        PZ_Unlock(pool->lock);
-    } else {
-        PL_ARENA_ALLOCATE(p, arena, size);
-    }
+        } else {
+            PL_ARENA_ALLOCATE(p, arena, size);
+        }
 
     if (!p) {
         PORT_SetError(SEC_ERROR_NO_MEMORY);
@@ -876,4 +876,50 @@ NSS_SecureSelect(void *dest, const void *src0, const void *src1, size_t n, unsig
         // if mask == -1 this simplifies to s0 ^ s0 ^ s1
         ((unsigned char *)dest)[i] = s0i ^ (mask & (s0i ^ s1i));
     }
+}
+
+/*
+ * consolidate all the calls to get the system FIPS status in one spot.
+ * This function allows an environment variable to override what is returned.
+ */
+PRBool
+NSS_GetSystemFIPSEnabled(void)
+{
+/* if FIPS is disabled in NSS, always return FALSE, even if the environment
+ * variable is set, or the system is in FIPS mode */
+#ifndef NSS_FIPS_DISABLED
+    const char *env;
+
+    /* The environment variable is active for all platforms */
+    env = PR_GetEnvSecure("NSS_FIPS");
+    /* we generally accept y, Y, 1, FIPS, TRUE, and ON as turning on FIPS
+     * mode. Anything else is considered 'off' */
+    if (env && (*env == 'y' || *env == '1' || *env == 'Y' ||
+                (PORT_Strcasecmp(env, "fips") == 0) ||
+                (PORT_Strcasecmp(env, "true") == 0) ||
+                (PORT_Strcasecmp(env, "on") == 0))) {
+        return PR_TRUE;
+    }
+
+/* currently only Linux has a system FIPS indicator. Add others here
+ * as they become available/known */
+#ifdef LINUX
+    {
+        FILE *f;
+        char d;
+        size_t size;
+        f = fopen("/proc/sys/crypto/fips_enabled", "r");
+        if (!f)
+            return PR_FALSE;
+
+        size = fread(&d, 1, 1, f);
+        fclose(f);
+        if (size != 1)
+            return PR_FALSE;
+        if (d == '1')
+            return PR_TRUE;
+    }
+#endif /* LINUX */
+#endif /* NSS_FIPS_DISABLED == 0 */
+    return PR_FALSE;
 }

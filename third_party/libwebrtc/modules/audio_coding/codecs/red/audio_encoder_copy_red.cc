@@ -104,7 +104,14 @@ AudioEncoder::EncodedInfo AudioEncoderCopyRed::EncodeImpl(
   RTC_CHECK(info.redundant.empty()) << "Cannot use nested redundant encoders.";
   RTC_DCHECK_EQ(primary_encoded_.size(), info.encoded_bytes);
 
-  if (info.encoded_bytes == 0 || info.encoded_bytes >= kRedMaxPacketSize) {
+  if (info.encoded_bytes == 0) {
+    return info;
+  }
+  if (info.encoded_bytes >= kRedMaxPacketSize) {
+    // Fallback to the primary encoding if the encoded size is more than
+    // what RED can encode as redundancy (1024 bytes). This can happen with
+    // Opus stereo at the highest bitrate which consumes up to 1276 bytes.
+    encoded->AppendData(primary_encoded_);
     return info;
   }
   RTC_DCHECK_GT(max_packet_length_, info.encoded_bytes);
@@ -230,7 +237,7 @@ void AudioEncoderCopyRed::OnReceivedUplinkPacketLossFraction(
 
 void AudioEncoderCopyRed::OnReceivedUplinkBandwidth(
     int target_audio_bitrate_bps,
-    absl::optional<int64_t> bwe_period_ms) {
+    std::optional<int64_t> bwe_period_ms) {
   speech_encoder_->OnReceivedUplinkBandwidth(target_audio_bitrate_bps,
                                              bwe_period_ms);
 }
@@ -240,7 +247,7 @@ void AudioEncoderCopyRed::OnReceivedUplinkAllocation(
   speech_encoder_->OnReceivedUplinkAllocation(update);
 }
 
-absl::optional<std::pair<TimeDelta, TimeDelta>>
+std::optional<std::pair<TimeDelta, TimeDelta>>
 AudioEncoderCopyRed::GetFrameLengthRange() const {
   return speech_encoder_->GetFrameLengthRange();
 }

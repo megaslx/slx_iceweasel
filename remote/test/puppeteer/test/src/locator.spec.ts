@@ -1,25 +1,15 @@
 /**
- * Copyright 2023 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2023 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import expect from 'expect';
 import {TimeoutError} from 'puppeteer-core';
 import {
   Locator,
-  LocatorEmittedEvents,
-} from 'puppeteer-core/internal/api/Locator.js';
+  LocatorEvent,
+} from 'puppeteer-core/internal/api/locators/locators.js';
 import sinon from 'sinon';
 
 import {getTestState, setupTestBrowserHooks} from './mocha-utils.js';
@@ -38,11 +28,11 @@ describe('Locator', function () {
     await page
       .mainFrame()
       .locator('button')
-      .on(LocatorEmittedEvents.Action, () => {
+      .on(LocatorEvent.Action, () => {
         willClick = true;
       })
       .click();
-    const button = await page.$('button');
+    using button = await page.$('button');
     const text = await button?.evaluate(el => {
       return el.innerText;
     });
@@ -65,11 +55,11 @@ describe('Locator', function () {
       .setVisibility(null)
       .setWaitForEnabled(false)
       .setWaitForStableBoundingBox(false)
-      .on(LocatorEmittedEvents.Action, () => {
+      .on(LocatorEvent.Action, () => {
         willClick = true;
       })
       .click();
-    const button = await page.$('button');
+    using button = await page.$('button');
     const text = await button?.evaluate(el => {
       return el.innerText;
     });
@@ -88,11 +78,11 @@ describe('Locator', function () {
       let willClick = false;
       await page
         .locator('button')
-        .on(LocatorEmittedEvents.Action, () => {
+        .on(LocatorEvent.Action, () => {
           willClick = true;
         })
         .click();
-      const button = await page.$('button');
+      using button = await page.$('button');
       const text = await button?.evaluate(el => {
         return el.innerText;
       });
@@ -110,11 +100,11 @@ describe('Locator', function () {
       let clicked = false;
       await page
         .locator('::-p-text(test), ::-p-xpath(/button)')
-        .on(LocatorEmittedEvents.Action, () => {
+        .on(LocatorEvent.Action, () => {
           clicked = true;
         })
         .click();
-      const button = await page.$('button');
+      using button = await page.$('button');
       const text = await button?.evaluate(el => {
         return el.innerText;
       });
@@ -130,7 +120,7 @@ describe('Locator', function () {
         <button style="margin-top: 600px;" onclick="this.innerText = 'clicked';">test</button>
       `);
       await page.locator('button').click();
-      const button = await page.$('button');
+      using button = await page.$('button');
       const text = await button?.evaluate(el => {
         return el.innerText;
       });
@@ -144,7 +134,7 @@ describe('Locator', function () {
       await page.setContent(`
         <button style="display: none;" onclick="this.innerText = 'clicked';">test</button>
       `);
-      const button = await page.$('button');
+      using button = await page.$('button');
       const result = page
         .locator('button')
         .click()
@@ -177,7 +167,7 @@ describe('Locator', function () {
       await page.setContent(`
         <button disabled onclick="this.innerText = 'clicked';">test</button>
       `);
-      const button = await page.$('button');
+      using button = await page.$('button');
       const result = page.locator('button').click();
       expect(
         await button?.evaluate(el => {
@@ -202,7 +192,7 @@ describe('Locator', function () {
       await page.setContent(`
         <button style="margin-top: 600px;" style="display: none;" disabled onclick="this.innerText = 'clicked';">test</button>
       `);
-      const button = await page.$('button');
+      using button = await page.$('button');
       const result = page.locator('button').click();
       expect(
         await button?.evaluate(el => {
@@ -224,6 +214,7 @@ describe('Locator', function () {
     it('should time out', async () => {
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         const {page} = await getTestState();
@@ -236,7 +227,7 @@ describe('Locator', function () {
         const result = page.locator('button').click();
         clock.tick(5100);
         await expect(result).rejects.toEqual(
-          new TimeoutError('waitForFunction timed out. The timeout is 5000ms.')
+          new TimeoutError('Timed out after waiting 5000ms')
         );
       } finally {
         clock.restore();
@@ -247,6 +238,7 @@ describe('Locator', function () {
       const {page} = await getTestState();
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         page.setDefaultTimeout(5000);
@@ -257,7 +249,7 @@ describe('Locator', function () {
         const result = page.locator('button').click();
         clock.tick(5100);
         await expect(result).rejects.toEqual(
-          new TimeoutError('waitForFunction timed out. The timeout is 5000ms.')
+          new TimeoutError('Timed out after waiting 5000ms')
         );
       } finally {
         clock.restore();
@@ -268,6 +260,7 @@ describe('Locator', function () {
       const {page} = await getTestState();
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         page.setDefaultTimeout(5000);
@@ -287,6 +280,31 @@ describe('Locator', function () {
         clock.restore();
       }
     });
+
+    it('should work with a OOPIF', async () => {
+      const {page} = await getTestState();
+
+      await page.setViewport({width: 500, height: 500});
+      await page.setContent(`
+        <iframe src="data:text/html,<button onclick=&quot;this.innerText = 'clicked';&quot;>test</button>"></iframe>
+      `);
+      const frame = await page.waitForFrame(frame => {
+        return frame.url().startsWith('data');
+      });
+      let willClick = false;
+      await frame
+        .locator('button')
+        .on(LocatorEvent.Action, () => {
+          willClick = true;
+        })
+        .click();
+      using button = await frame.$('button');
+      const text = await button?.evaluate(el => {
+        return el.innerText;
+      });
+      expect(text).toBe('clicked');
+      expect(willClick).toBe(true);
+    });
   });
 
   describe('Locator.hover', function () {
@@ -300,11 +318,11 @@ describe('Locator', function () {
       let hovered = false;
       await page
         .locator('button')
-        .on(LocatorEmittedEvents.Action, () => {
+        .on(LocatorEvent.Action, () => {
           hovered = true;
         })
         .hover();
-      const button = await page.$('button');
+      using button = await page.$('button');
       const text = await button?.evaluate(el => {
         return el.innerText;
       });
@@ -326,14 +344,14 @@ describe('Locator', function () {
       let scrolled = false;
       await page
         .locator('div')
-        .on(LocatorEmittedEvents.Action, () => {
+        .on(LocatorEvent.Action, () => {
           scrolled = true;
         })
         .scroll({
           scrollTop: 500,
           scrollLeft: 500,
         });
-      const scrollable = await page.$('div');
+      using scrollable = await page.$('div');
       const scroll = await scrollable?.evaluate(el => {
         return el.scrollTop + ' ' + el.scrollLeft;
       });
@@ -342,7 +360,28 @@ describe('Locator', function () {
     });
   });
 
-  describe('Locator.change', function () {
+  describe('Locator.fill', function () {
+    it('should work for textarea', async () => {
+      const {page} = await getTestState();
+
+      await page.setContent(`
+        <textarea></textarea>
+      `);
+      let filled = false;
+      await page
+        .locator('textarea')
+        .on(LocatorEvent.Action, () => {
+          filled = true;
+        })
+        .fill('test');
+      expect(
+        await page.evaluate(() => {
+          return document.querySelector('textarea')?.value === 'test';
+        })
+      ).toBe(true);
+      expect(filled).toBe(true);
+    });
+
     it('should work for selects', async () => {
       const {page} = await getTestState();
 
@@ -355,7 +394,7 @@ describe('Locator', function () {
       let filled = false;
       await page
         .locator('select')
-        .on(LocatorEmittedEvents.Action, () => {
+        .on(LocatorEvent.Action, () => {
           filled = true;
         })
         .fill('value2');
@@ -386,7 +425,7 @@ describe('Locator', function () {
       await page.setContent(`
         <input disabled>
       `);
-      const input = await page.$('input');
+      using input = await page.$('input');
       const result = page.locator('input').fill('test');
       expect(
         await input?.evaluate(el => {
@@ -484,6 +523,7 @@ describe('Locator', function () {
       const {page} = await getTestState();
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         await page.setViewport({width: 500, height: 500});
@@ -510,18 +550,20 @@ describe('Locator', function () {
     it('should time out when all locators do not match', async () => {
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         const {page} = await getTestState();
-        page.setDefaultTimeout(5000);
         await page.setContent(`<button>test</button>`);
         const result = Locator.race([
           page.locator('not-found'),
           page.locator('not-found'),
-        ]).click();
+        ])
+          .setTimeout(5000)
+          .click();
         clock.tick(5100);
         await expect(result).rejects.toEqual(
-          new TimeoutError('waitForFunction timed out. The timeout is 5000ms.')
+          new TimeoutError('Timed out after waiting 5000ms')
         );
       } finally {
         clock.restore();
@@ -539,46 +581,83 @@ describe('Locator', function () {
     });
   });
 
-  describe('Locator.prototype.expect', () => {
-    it('should not resolve if the predicate does not match', async () => {
-      const clock = sinon.useFakeTimers({
-        shouldClearNativeTimers: true,
-      });
-      try {
-        const {page} = await getTestState();
-        page.setDefaultTimeout(5000);
-        await page.setContent(`<div>test</div>`);
-        const result = page
+  describe('Locator.prototype.map', () => {
+    it('should work', async () => {
+      const {page} = await getTestState();
+      await page.setContent(`<div>test</div>`);
+      await expect(
+        page
           .locator('::-p-text(test)')
-          .expect((element): Promise<boolean> => {
-            return Promise.resolve(
-              element.getAttribute('clickable') === 'true'
-            );
+          .map(element => {
+            return element.getAttribute('clickable');
           })
-          .hover();
-        clock.tick(5100);
-        await expect(result).rejects.toEqual(
-          new TimeoutError('waitForFunction timed out. The timeout is 5000ms.')
-        );
-      } finally {
-        clock.restore();
-      }
+          .wait()
+      ).resolves.toEqual(null);
+      await page.evaluate(() => {
+        document.querySelector('div')?.setAttribute('clickable', 'true');
+      });
+      await expect(
+        page
+          .locator('::-p-text(test)')
+          .map(element => {
+            return element.getAttribute('clickable');
+          })
+          .wait()
+      ).resolves.toEqual('true');
     });
+    it('should work with throws', async () => {
+      const {page} = await getTestState();
+      await page.setContent(`<div>test</div>`);
+      const result = page
+        .locator('::-p-text(test)')
+        .map(element => {
+          const clickable = element.getAttribute('clickable');
+          if (!clickable) {
+            throw new Error('Missing `clickable` as an attribute');
+          }
+          return clickable;
+        })
+        .wait();
+      await page.evaluate(() => {
+        document.querySelector('div')?.setAttribute('clickable', 'true');
+      });
+      await expect(result).resolves.toEqual('true');
+    });
+    it('should work with expect', async () => {
+      const {page} = await getTestState();
+      await page.setContent(`<div>test</div>`);
+      const result = page
+        .locator('::-p-text(test)')
+        .filter(element => {
+          return element.getAttribute('clickable') !== null;
+        })
+        .map(element => {
+          return element.getAttribute('clickable');
+        })
+        .wait();
+      await page.evaluate(() => {
+        document.querySelector('div')?.setAttribute('clickable', 'true');
+      });
+      await expect(result).resolves.toEqual('true');
+    });
+  });
 
+  describe('Locator.prototype.filter', () => {
     it('should resolve as soon as the predicate matches', async () => {
       const clock = sinon.useFakeTimers({
         shouldClearNativeTimers: true,
+        shouldAdvanceTime: true,
       });
       try {
         const {page} = await getTestState();
-        page.setDefaultTimeout(5000);
         await page.setContent(`<div>test</div>`);
         const result = page
           .locator('::-p-text(test)')
-          .expect(async element => {
+          .setTimeout(5000)
+          .filter(async element => {
             return element.getAttribute('clickable') === 'true';
           })
-          .expect(element => {
+          .filter(element => {
             return element.getAttribute('clickable') === 'true';
           })
           .hover();
@@ -586,11 +665,99 @@ describe('Locator', function () {
         await page.evaluate(() => {
           document.querySelector('div')?.setAttribute('clickable', 'true');
         });
-        clock.tick(2000);
+        clock.restore();
         await expect(result).resolves.toEqual(undefined);
       } finally {
         clock.restore();
       }
+    });
+  });
+
+  describe('Locator.prototype.wait', () => {
+    it('should work', async () => {
+      const {page} = await getTestState();
+      void page.setContent(`
+        <script>
+          setTimeout(() => {
+            const element = document.createElement("div");
+            element.innerText = "test2"
+            document.body.append(element);
+          }, 50);
+        </script>
+      `);
+      // This shouldn't throw.
+      await page.locator('div').wait();
+    });
+  });
+
+  describe('Locator.prototype.waitHandle', () => {
+    it('should work', async () => {
+      const {page} = await getTestState();
+      void page.setContent(`
+        <script>
+          setTimeout(() => {
+            const element = document.createElement("div");
+            element.innerText = "test2"
+            document.body.append(element);
+          }, 50);
+        </script>
+      `);
+      await expect(page.locator('div').waitHandle()).resolves.toBeDefined();
+    });
+  });
+
+  describe('Locator.prototype.clone', () => {
+    it('should work', async () => {
+      const {page} = await getTestState();
+      const locator = page.locator('div');
+      const clone = locator.clone();
+      expect(locator).not.toStrictEqual(clone);
+    });
+    it('should work internally with delegated locators', async () => {
+      const {page} = await getTestState();
+      const locator = page.locator('div');
+      const delegatedLocators = [
+        locator.map(div => {
+          return div.textContent;
+        }),
+        locator.filter(div => {
+          return div.textContent?.length === 0;
+        }),
+      ];
+      for (let delegatedLocator of delegatedLocators) {
+        delegatedLocator = delegatedLocator.setTimeout(500);
+        expect(delegatedLocator.timeout).not.toStrictEqual(locator.timeout);
+      }
+    });
+  });
+
+  describe('FunctionLocator', () => {
+    it('should work', async () => {
+      const {page} = await getTestState();
+      const result = page
+        .locator(() => {
+          return new Promise<boolean>(resolve => {
+            return setTimeout(() => {
+              return resolve(true);
+            }, 100);
+          });
+        })
+        .wait();
+      await expect(result).resolves.toEqual(true);
+    });
+    it('should work with actions', async () => {
+      const {page} = await getTestState();
+      await page.setContent(`<div onclick="window.clicked = true">test</div>`);
+      await page
+        .locator(() => {
+          return document.getElementsByTagName('div')[0]!;
+        })
+        .click();
+      await expect(
+        page.evaluate(() => {
+          return (window as unknown as {clicked: boolean}).clicked;
+        })
+      ).resolves.toEqual(true);
     });
   });
 });

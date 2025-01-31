@@ -23,9 +23,9 @@ export function NarrateControls(win, languagePromise) {
   win.document.head.appendChild(style);
 
   let elemL10nMap = {
-    ".narrate-skip-previous": "back",
+    ".narrate-skip-previous": "previous-label",
     ".narrate-start-stop": "start-label",
-    ".narrate-skip-next": "forward",
+    ".narrate-skip-next": "next-label",
     ".narrate-rate-input": "speed",
   };
 
@@ -38,7 +38,7 @@ export function NarrateControls(win, languagePromise) {
   toggleButton.dataset.telemetryId = "reader-listen";
   let tip = win.document.createElement("span");
   let shortcutNarrateKey = gStrings.GetStringFromName("narrate-key-shortcut");
-  let labelText = gStrings.formatStringFromName("listen-label", [
+  let labelText = gStrings.formatStringFromName("read-aloud-label", [
     shortcutNarrateKey,
   ]);
   tip.textContent = labelText;
@@ -53,6 +53,11 @@ export function NarrateControls(win, languagePromise) {
   dropdownList.className = "dropdown-popup";
   dropdown.appendChild(dropdownList);
 
+  let narrateHeader = win.document.createElement("h2");
+  narrateHeader.id = "narrate-header";
+  narrateHeader.textContent = gStrings.GetStringFromName("read-aloud-header");
+  dropdownList.appendChild(narrateHeader);
+
   let narrateControl = win.document.createElement("div");
   narrateControl.className = "narrate-row narrate-control";
   dropdownList.appendChild(narrateControl);
@@ -61,33 +66,52 @@ export function NarrateControls(win, languagePromise) {
   narrateRate.className = "narrate-row narrate-rate";
   dropdownList.appendChild(narrateRate);
 
+  let hr = win.document.createElement("hr");
+  let voiceHeader = win.document.createElement("h2");
+  voiceHeader.id = "voice-header";
+  voiceHeader.textContent = gStrings.GetStringFromName("select-voice-header");
+  dropdownList.appendChild(hr);
+  dropdownList.appendChild(voiceHeader);
+
   let narrateVoices = win.document.createElement("div");
   narrateVoices.className = "narrate-row narrate-voices";
   dropdownList.appendChild(narrateVoices);
 
-  let dropdownArrow = win.document.createElement("div");
-  dropdownArrow.className = "dropdown-arrow";
-  dropdownList.appendChild(dropdownArrow);
-
   let narrateSkipPrevious = win.document.createElement("button");
   narrateSkipPrevious.className = "narrate-skip-previous";
   narrateSkipPrevious.disabled = true;
+  narrateSkipPrevious.ariaKeyShortcuts = "ArrowLeft";
   narrateControl.appendChild(narrateSkipPrevious);
 
   let narrateStartStop = win.document.createElement("button");
   narrateStartStop.className = "narrate-start-stop";
+  narrateStartStop.ariaKeyShortcuts = "N";
   narrateControl.appendChild(narrateStartStop);
-
-  win.document.addEventListener("keydown", function (event) {
-    if (win.document.hasFocus() && event.key === "n") {
-      narrateStartStop.click();
-    }
-  });
 
   let narrateSkipNext = win.document.createElement("button");
   narrateSkipNext.className = "narrate-skip-next";
   narrateSkipNext.disabled = true;
+  narrateSkipNext.ariaKeyShortcuts = "ArrowRight";
   narrateControl.appendChild(narrateSkipNext);
+
+  win.document.addEventListener("keydown", function (event) {
+    if (
+      win.document.hasFocus() &&
+      event.key === "n" &&
+      !event.metaKey &&
+      !event.shiftKey
+    ) {
+      narrateStartStop.click();
+    }
+    //Arrow key direction also hardcoded for RTL in order to be
+    //consistent with playback arrows in UI panel
+    if (win.document.hasFocus() && event.key === "ArrowLeft") {
+      narrateSkipPrevious.click();
+    }
+    if (win.document.hasFocus() && event.key === "ArrowRight") {
+      narrateSkipNext.click();
+    }
+  });
 
   let narrateRateInput = win.document.createElement("input");
   narrateRateInput.className = "narrate-rate-input";
@@ -96,34 +120,78 @@ export function NarrateControls(win, languagePromise) {
   narrateRateInput.setAttribute("max", "100");
   narrateRateInput.setAttribute("min", "-100");
   narrateRateInput.setAttribute("type", "range");
+  narrateRateInput.setAttribute(
+    "aria-label",
+    "Choose a narration speed from -100 to 100, where 0 is the default speed."
+  );
+
+  let narrateRateSlowIcon = win.document.createElement("span");
+  narrateRateSlowIcon.className = "narrate-rate-icon slow";
+  narrateRateSlowIcon.title = gStrings.GetStringFromName("slow-speed-label");
+
+  let narrateRateFastIcon = win.document.createElement("span");
+  narrateRateFastIcon.className = "narrate-rate-icon fast";
+  narrateRateFastIcon.title = gStrings.GetStringFromName("fast-speed-label");
+
+  narrateRate.appendChild(narrateRateSlowIcon);
   narrateRate.appendChild(narrateRateInput);
+  narrateRate.appendChild(narrateRateFastIcon);
 
-  for (let [selector, stringID] of Object.entries(elemL10nMap)) {
-    if (selector === ".narrate-start-stop") {
-      let shortcut = gStrings.GetStringFromName("narrate-key-shortcut");
-      let label = gStrings.formatStringFromName(stringID, [shortcut]);
-
-      dropdown.querySelector(selector).setAttribute("title", label);
+  function setShortcutAttribute(
+    keyShortcut,
+    stringID,
+    selector,
+    isString = false
+  ) {
+    let shortcut;
+    if (isString) {
+      shortcut = keyShortcut;
     } else {
-      dropdown
-        .querySelector(selector)
-        .setAttribute("title", gStrings.GetStringFromName(stringID));
+      shortcut = gStrings.GetStringFromName(keyShortcut);
+    }
+    let label = gStrings.formatStringFromName(stringID, [shortcut]);
+
+    dropdown.querySelector(selector).setAttribute("title", label);
+  }
+
+  for (const [selector, stringID] of Object.entries(elemL10nMap)) {
+    switch (selector) {
+      case ".narrate-start-stop":
+        setShortcutAttribute("narrate-key-shortcut", stringID, selector);
+        break;
+
+      // Arrow direction also hardcoded for RTL in order to be
+      // consistent with playback arrows in UI panel
+      case ".narrate-skip-previous":
+        setShortcutAttribute("←", stringID, selector, true);
+        break;
+
+      case ".narrate-skip-next":
+        setShortcutAttribute("→", stringID, selector, true);
+        break;
+
+      default:
+        dropdown
+          .querySelector(selector)
+          .setAttribute("title", gStrings.GetStringFromName(stringID));
+        break;
     }
   }
 
   this.narrator = new Narrator(win, languagePromise);
 
   let branch = Services.prefs.getBranch("narrate.");
-  let selectLabel = gStrings.GetStringFromName("selectvoicelabel");
-  this.voiceSelect = new VoiceSelect(win, selectLabel);
+  this.voiceSelect = new VoiceSelect(win);
   this.voiceSelect.element.addEventListener("change", this);
   this.voiceSelect.element.classList.add("voice-select");
+  this.voiceSelect.selectToggle.setAttribute("aria-labelledby", "voice-header");
   win.speechSynthesis.addEventListener("voiceschanged", this);
   dropdown
     .querySelector(".narrate-voices")
     .appendChild(this.voiceSelect.element);
 
   dropdown.addEventListener("click", this, true);
+  dropdown.addEventListener("keydown", this, true);
 
   let rateRange = dropdown.querySelector(".narrate-rate > input");
   rateRange.addEventListener("change", this);
@@ -150,6 +218,15 @@ NarrateControls.prototype = {
       case "click":
         this._onButtonClick(evt);
         break;
+      case "keydown": {
+        let popup = this._doc.querySelector(
+          ".narrate-dropdown > .dropdown-popup"
+        );
+        if (evt.key === "Tab" && popup.contains(evt.target)) {
+          this._handleFocus(evt);
+        }
+        break;
+      }
       case "voiceschanged":
         this._setupVoices();
         break;
@@ -194,26 +271,6 @@ NarrateControls.prototype = {
       }
 
       let narrateToggle = win.document.querySelector(".narrate-toggle");
-      let histogram = Services.telemetry.getKeyedHistogramById(
-        "NARRATE_CONTENT_BY_LANGUAGE_2"
-      );
-      let initial = !this._voicesInitialized;
-      this._voicesInitialized = true;
-
-      // if language is null, re-assign it to "unknown-language"
-      if (language == null) {
-        language = "unknown-language";
-      }
-
-      if (initial) {
-        histogram.add(language, 0);
-      }
-
-      if (options.length && narrateToggle.hidden) {
-        // About to show for the first time..
-        histogram.add(language, 1);
-      }
-
       // We disable this entire feature if there are no available voices.
       narrateToggle.hidden = !options.length;
     });
@@ -256,7 +313,6 @@ NarrateControls.prototype = {
         this.narrator.stop();
       } else {
         this._updateSpeechControls(true);
-        TelemetryStopwatch.start("NARRATE_CONTENT_SPEAKTIME_MS", this);
         let options = { rate: this.rate, voice: this.voice };
         this.narrator
           .start(options)
@@ -265,7 +321,6 @@ NarrateControls.prototype = {
           })
           .then(() => {
             this._updateSpeechControls(false);
-            TelemetryStopwatch.finish("NARRATE_CONTENT_SPEAKTIME_MS", this);
           });
       }
     }
@@ -282,15 +337,26 @@ NarrateControls.prototype = {
     dropdown.classList.toggle("speaking", speaking);
 
     let startStopButton = this._doc.querySelector(".narrate-start-stop");
-    let shortcutId = gStrings.GetStringFromName("narrate-key-shortcut");
+    let skipPreviousButton = this._doc.querySelector(".narrate-skip-previous");
+    let skipNextButton = this._doc.querySelector(".narrate-skip-next");
+
+    skipPreviousButton.disabled = !speaking;
+    skipNextButton.disabled = !speaking;
+
+    let narrateShortcutId = gStrings.GetStringFromName("narrate-key-shortcut");
+    let skipPreviousShortcut = "←";
+    let skipNextShortcut = "→";
 
     startStopButton.title = gStrings.formatStringFromName(
       speaking ? "stop-label" : "start-label",
-      [shortcutId]
+      [narrateShortcutId]
     );
-
-    this._doc.querySelector(".narrate-skip-previous").disabled = !speaking;
-    this._doc.querySelector(".narrate-skip-next").disabled = !speaking;
+    skipPreviousButton.title = gStrings.formatStringFromName("previous-label", [
+      skipPreviousShortcut,
+    ]);
+    skipNextButton.title = gStrings.formatStringFromName("next-label", [
+      skipNextShortcut,
+    ]);
   },
 
   _createVoiceLabel(voice) {
@@ -354,5 +420,29 @@ NarrateControls.prototype = {
 
   get voice() {
     return this.voiceSelect.value;
+  },
+
+  _handleFocus(e) {
+    let classList = e.target.classList;
+    let narrateDropdown = this._doc.querySelector(".narrate-dropdown");
+    if (!e.shiftKey) {
+      if (classList.contains("option") || classList.contains("select-toggle")) {
+        e.preventDefault();
+      } else {
+        return;
+      }
+      if (narrateDropdown.classList.contains("speaking")) {
+        let skipPrevious = this._doc.querySelector(".narrate-skip-previous");
+        skipPrevious.focus();
+      } else {
+        let startStop = this._doc.querySelector(".narrate-start-stop");
+        startStop.focus();
+      }
+    }
+    let firstFocusableButton = narrateDropdown.querySelector("button:enabled");
+    if (e.target === firstFocusableButton) {
+      e.preventDefault();
+      narrateDropdown.querySelector(".select-toggle").focus();
+    }
   },
 };

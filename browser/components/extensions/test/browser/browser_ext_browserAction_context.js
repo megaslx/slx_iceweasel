@@ -29,9 +29,8 @@ async function runTests(options) {
         "expected value from getBadge"
       );
 
-      let badgeBackgroundColor = await browser[action].getBadgeBackgroundColor(
-        details
-      );
+      let badgeBackgroundColor =
+        await browser[action].getBadgeBackgroundColor(details);
       browser.test.assertEq(
         String(expecting.badgeBackgroundColor),
         String(badgeBackgroundColor),
@@ -153,7 +152,7 @@ async function runTests(options) {
     }
 
     let node = document.getElementById(browserActionId);
-    let button = node.firstElementChild;
+    let button = node.querySelector(".unified-extensions-item-action-button");
 
     ok(button, "button exists");
 
@@ -184,7 +183,11 @@ async function runTests(options) {
     is(getListStyleImage(button), details.icon, "icon URL is correct");
     is(button.getAttribute("tooltiptext"), title, "image title is correct");
     is(button.getAttribute("label"), title, "image label is correct");
-    is(button.getAttribute("badge"), details.badge, "badge text is correct");
+    is(
+      button.getAttribute("badge") || "",
+      details.badge,
+      "badge text is correct"
+    );
     is(
       button.getAttribute("disabled") == "true",
       !details.enabled,
@@ -258,7 +261,7 @@ let tabSwitchTestData = {
     "2.png": imageBuffer,
   },
 
-  getTests: function (tabs, windows) {
+  getTests: function (tabs) {
     let manifest = browser.runtime.getManifest();
     let { manifest_version } = manifest;
     const action = manifest_version < 3 ? "browserAction" : "action";
@@ -491,7 +494,7 @@ add_task(async function testDefaultTitle() {
       "icon.png": imageBuffer,
     },
 
-    getTests: function (tabs, windows) {
+    getTests: function (tabs) {
       let details = [
         {
           title: "Foo Extension",
@@ -570,7 +573,8 @@ add_task(async function testBadgeColorPersistence() {
 
   function getBadgeForWindow(win) {
     const widget = getBrowserActionWidget(extension).forWindow(win).node;
-    return widget.firstElementChild.badgeLabel;
+    return widget.querySelector(".unified-extensions-item-action-button")
+      .badgeLabel;
   }
 
   let badge = getBadgeForWindow(window);

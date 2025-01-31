@@ -8,16 +8,18 @@
 
 use crate::parser::{Parse, ParserContext};
 use crate::properties::PropertyDeclarationBlock;
-use crate::shared_lock::{DeepCloneParams, DeepCloneWithLock, Locked};
-use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
+use crate::shared_lock::{
+    DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
+};
 use crate::str::CssStringWriter;
+use crate::stylesheets::{CssRules, style_or_page_rule_to_css};
 use crate::values::{AtomIdent, CustomIdent};
 use cssparser::{Parser, SourceLocation, Token};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;
-use std::fmt::{self, Write};
 use smallvec::SmallVec;
+use std::fmt::{self, Write};
 use style_traits::{CssWriter, ParseError, ToCss};
 
 macro_rules! page_pseudo_classes {
@@ -123,7 +125,7 @@ type PagePseudoClasses = SmallVec<[PagePseudoClass; 4]>;
 ///
 /// [page-selectors]: https://drafts.csswg.org/css2/page.html#page-selectors
 #[derive(Clone, Debug, MallocSizeOf, ToShmem)]
-pub struct PageSelector{
+pub struct PageSelector {
     /// Page name
     ///
     /// https://drafts.csswg.org/css-page-3/#page-type-selector
@@ -132,6 +134,28 @@ pub struct PageSelector{
     ///
     /// [page-selectors]: https://drafts.csswg.org/css2/page.html#page-selectors
     pub pseudos: PagePseudoClasses,
+}
+
+/// Computes the [specificity] given the g, h, and f values as in the spec.
+///
+/// g is number of `:first` or `:blank`, h is number of `:left` or `:right`,
+/// f is if the selector includes a page-name (selectors can only include one
+/// or zero page-names).
+///
+/// This places hard limits of 65535 on h and 32767 on g, at which point all
+/// higher values are treated as those limits respectively.
+///
+/// [specificity]: https://drafts.csswg.org/css-page/#specificity
+#[inline]
+fn selector_specificity(g: usize, h: usize, f: bool) -> u32 {
+    let h = h.min(0xFFFF) as u32;
+    let g = (g.min(0x7FFF) as u32) << 16;
+    let f = if f {
+        0x80000000
+    } else {
+        0
+    };
+    h + g + f
 }
 
 impl PageSelector {
@@ -177,26 +201,21 @@ impl PageSelector {
         let mut h: usize = 0;
         for pc in self.pseudos.iter() {
             if !flags.contains_class(pc) {
-                return None
+                return None;
             }
             match pc {
-                PagePseudoClass::First |
-                PagePseudoClass::Blank => g += 1,
-                PagePseudoClass::Left |
-                PagePseudoClass::Right => h += 1,
+                PagePseudoClass::First | PagePseudoClass::Blank => g += 1,
+                PagePseudoClass::Left | PagePseudoClass::Right => h += 1,
             }
         }
-        let h = h.min(0xFFFF) as u32;
-        let g = (g.min(0x7FFF) as u32) << 16;
-        let f = if self.name.0.is_empty() { 0 } else { 0x80000000 };
-        Some(h + g + f)
+        Some(selector_specificity(g, h, !self.name.0.is_empty()))
     }
 }
 
 impl ToCss for PageSelector {
     fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
     where
-        W: Write
+        W: Write,
     {
         self.name.to_css(dest)?;
         for pc in self.pseudos.iter() {
@@ -206,9 +225,7 @@ impl ToCss for PageSelector {
     }
 }
 
-fn parse_page_name<'i, 't>(
-    input: &mut Parser<'i, 't>
-) -> Result<AtomIdent, ParseError<'i>> {
+fn parse_page_name<'i, 't>(input: &mut Parser<'i, 't>) -> Result<AtomIdent, ParseError<'i>> {
     let s = input.expect_ident()?;
     Ok(AtomIdent::from(&**s))
 }
@@ -218,12 +235,18 @@ impl Parse for PageSelector {
         _context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let name = input.try_parse(parse_page_name).unwrap_or(AtomIdent(atom!("")));
+        let name = input.try_parse(parse_page_name);
         let mut pseudos = PagePseudoClasses::default();
         while let Ok(pc) = input.try_parse(PagePseudoClass::parse) {
             pseudos.push(pc);
         }
-        Ok(PageSelector{name, pseudos})
+        // If the result was empty, then we didn't get a selector.
+        let name = match name {
+            Ok(name) => name,
+            Err(..) if !pseudos.is_empty() => AtomIdent::new(atom!("")),
+            Err(err) => return Err(err),
+        };
+        Ok(PageSelector { name, pseudos })
     }
 }
 
@@ -274,6 +297,8 @@ impl Parse for PageSelectors {
 pub struct PageRule {
     /// Selectors of the page-rule
     pub selectors: PageSelectors,
+    /// Nested rules.
+    pub rules: Arc<Locked<CssRules>>,
     /// The declaration block this page rule contains.
     pub block: Arc<Locked<PropertyDeclarationBlock>>,
     /// The source position this rule was found at.
@@ -285,7 +310,9 @@ impl PageRule {
     #[cfg(feature = "gecko")]
     pub fn size_of(&self, guard: &SharedRwLockReadGuard, ops: &mut MallocSizeOfOps) -> usize {
         // Measurement of other fields may be added later.
-        self.block.unconditional_shallow_size_of(ops) +
+        self.rules.unconditional_shallow_size_of(ops) +
+            self.rules.read_with(guard).size_of(guard, ops) +
+            self.block.unconditional_shallow_size_of(ops) +
             self.block.read_with(guard).size_of(ops) +
             self.selectors.size_of(ops)
     }
@@ -299,6 +326,11 @@ impl PageRule {
     ///
     /// The return type is ordered by page-rule specificity.
     pub fn match_specificity(&self, flags: PagePseudoClassFlags) -> Option<u32> {
+        if self.selectors.is_empty() {
+            // A page-rule with no selectors matches all pages, but with the
+            // lowest possible specificity.
+            return Some(selector_specificity(0, 0, false));
+        }
         let mut specificity = None;
         for s in self.selectors.0.iter().map(|s| s.match_specificity(flags)) {
             specificity = s.max(specificity);
@@ -308,21 +340,15 @@ impl PageRule {
 }
 
 impl ToCssWithGuard for PageRule {
-    /// Serialization of PageRule is not specced, adapted from steps for
-    /// StyleRule.
+    /// Serialization of PageRule is not specced, adapted from steps for StyleRule.
     fn to_css(&self, guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
+        // https://drafts.csswg.org/cssom/#serialize-a-css-rule
         dest.write_str("@page ")?;
         if !self.selectors.is_empty() {
             self.selectors.to_css(&mut CssWriter::new(dest))?;
             dest.write_char(' ')?;
         }
-        dest.write_str("{ ")?;
-        let declaration_block = self.block.read_with(guard);
-        declaration_block.to_css(dest)?;
-        if !declaration_block.declarations().is_empty() {
-            dest.write_char(' ')?;
-        }
-        dest.write_char('}')
+        style_or_page_rule_to_css(Some(&self.rules), &self.block, guard, dest)
     }
 }
 
@@ -331,11 +357,12 @@ impl DeepCloneWithLock for PageRule {
         &self,
         lock: &SharedRwLock,
         guard: &SharedRwLockReadGuard,
-        _params: &DeepCloneParams,
     ) -> Self {
+        let rules = self.rules.read_with(&guard);
         PageRule {
             selectors: self.selectors.clone(),
             block: Arc::new(lock.wrap(self.block.read_with(&guard).clone())),
+            rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard))),
             source_location: self.source_location.clone(),
         }
     }

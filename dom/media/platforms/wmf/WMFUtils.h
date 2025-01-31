@@ -7,16 +7,55 @@
 #ifndef WMFUtils_h
 #define WMFUtils_h
 
+#include <hstring.h>
+#include <winstring.h>
+
 #include "ImageTypes.h"
+#include "PlatformDecoderModule.h"
 #include "TimeUnits.h"
 #include "VideoUtils.h"
 #include "WMF.h"
+#include "mozilla/DefineEnum.h"
 #include "mozilla/gfx/Rect.h"
 #include "nsString.h"
 
 // Various utilities shared by WMF backend files.
 
 namespace mozilla {
+
+namespace gfx {
+enum class ColorDepth : uint8_t;
+}
+extern LazyLogModule sPDMLog;
+
+#define LOG_AND_WARNING_PDM(msg, ...)                            \
+  do {                                                           \
+    NS_WARNING(nsPrintfCString(msg, rv).get());                  \
+    MOZ_LOG(sPDMLog, LogLevel::Debug,                            \
+            ("%s:%d, " msg, __FILE__, __LINE__, ##__VA_ARGS__)); \
+  } while (false)
+
+#ifndef RETURN_IF_FAILED
+#  define RETURN_IF_FAILED(x)                               \
+    do {                                                    \
+      HRESULT rv = x;                                       \
+      if (MOZ_UNLIKELY(FAILED(rv))) {                       \
+        LOG_AND_WARNING_PDM("(" #x ") failed, rv=%lx", rv); \
+        return rv;                                          \
+      }                                                     \
+    } while (false)
+#endif
+
+#ifndef RETURN_PARAM_IF_FAILED
+#  define RETURN_PARAM_IF_FAILED(x, defaultOut)             \
+    do {                                                    \
+      HRESULT rv = x;                                       \
+      if (MOZ_UNLIKELY(FAILED(rv))) {                       \
+        LOG_AND_WARNING_PDM("(" #x ") failed, rv=%lx", rv); \
+        return defaultOut;                                  \
+      }                                                     \
+    } while (false)
+#endif
 
 static const GUID CLSID_MSOpusDecoder = {
     0x63e17c10,
@@ -25,27 +64,20 @@ static const GUID CLSID_MSOpusDecoder = {
     {0x8f, 0xe3, 0x8d, 0x8b, 0x63, 0xe4, 0x6a, 0x6a}};
 
 // Media types supported by Media Foundation.
-enum class WMFStreamType {
-  Unknown,
-  H264,
-  VP8,
-  VP9,
-  AV1,
-  MP3,
-  AAC,
-  OPUS,
-  VORBIS,
-  SENTINEL
-};
+MOZ_DEFINE_ENUM_CLASS_WITH_TOSTRING(WMFStreamType,
+                                    (Unknown, H264, VP8, VP9, AV1, HEVC, MP3,
+                                     AAC, OPUS, VORBIS, SENTINEL));
 
 bool StreamTypeIsVideo(const WMFStreamType& aType);
 
 bool StreamTypeIsAudio(const WMFStreamType& aType);
 
-// Get a string representation of the stream type. Useful for logging.
-const char* StreamTypeToString(WMFStreamType aStreamType);
-
 WMFStreamType GetStreamTypeFromMimeType(const nsCString& aMimeType);
+
+GUID GetOutputSubType(const gfx::ColorDepth& aColorDepth,
+                      bool aIsHardwareDecoding);
+
+nsCString GetSubTypeStr(const GUID& aSubtype);
 
 // Converts from microseconds to hundreds of nanoseconds.
 // We use microseconds for our timestamps, whereas WMF uses
@@ -98,6 +130,21 @@ void AACAudioSpecificConfigToUserData(uint8_t aAACProfileLevelIndication,
                                       const uint8_t* aAudioSpecConfig,
                                       uint32_t aConfigLength,
                                       nsTArray<BYTE>& aOutUserData);
+
+class ScopedHString final {
+ public:
+  explicit ScopedHString(const nsAString& aStr) {
+    WindowsCreateString(PromiseFlatString(aStr).get(), aStr.Length(), &mString);
+  }
+  explicit ScopedHString(const WCHAR aCharArray[]) {
+    WindowsCreateString(aCharArray, wcslen(aCharArray), &mString);
+  }
+  ~ScopedHString() { WindowsDeleteString(mString); }
+  const HSTRING& Get() { return mString; }
+
+ private:
+  HSTRING mString;
+};
 
 }  // namespace mozilla
 

@@ -29,7 +29,6 @@
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/CSSOrderAwareFrameIterator.h"
 #include "nsContainerFrame.h"
-#include "nsContentCID.h"
 #include "nsLayoutUtils.h"
 #include "nsDisplayList.h"
 #include "nsContentUtils.h"
@@ -216,14 +215,13 @@ nsSplitterFrame::nsSplitterFrame(ComputedStyle* aStyle,
                                  nsPresContext* aPresContext)
     : SimpleXULLeafFrame(aStyle, aPresContext, kClassID) {}
 
-void nsSplitterFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                  PostDestroyData& aPostDestroyData) {
+void nsSplitterFrame::Destroy(DestroyContext& aContext) {
   if (mInner) {
     mInner->RemoveListener();
     mInner->Disconnect();
     mInner = nullptr;
   }
-  SimpleXULLeafFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+  SimpleXULLeafFrame::Destroy(aContext);
 }
 
 nsresult nsSplitterFrame::AttributeChanged(int32_t aNameSpaceID,
@@ -478,11 +476,16 @@ void nsSplitterFrameInner::RemoveListener() {
 nsresult nsSplitterFrameInner::HandleEvent(dom::Event* aEvent) {
   nsAutoString eventType;
   aEvent->GetType(eventType);
-  if (eventType.EqualsLiteral("mouseup")) return MouseUp(aEvent);
-  if (eventType.EqualsLiteral("mousedown")) return MouseDown(aEvent);
+  if (eventType.EqualsLiteral("mouseup")) {
+    return MouseUp(aEvent);
+  }
+  if (eventType.EqualsLiteral("mousedown")) {
+    return MouseDown(aEvent);
+  }
   if (eventType.EqualsLiteral("mousemove") ||
-      eventType.EqualsLiteral("mouseout"))
+      eventType.EqualsLiteral("mouseout")) {
     return MouseMove(aEvent);
+  }
 
   MOZ_ASSERT_UNREACHABLE("Unexpected eventType");
   return NS_OK;
@@ -536,8 +539,9 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
   }
 
   if (SplitterElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::disabled,
-                                     nsGkAtoms::_true, eCaseMatters))
+                                     nsGkAtoms::_true, eCaseMatters)) {
     return NS_OK;
+  }
 
   mParentBox = GetValidParentBox(mOuter);
   if (!mParentBox) {
@@ -633,18 +637,18 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
 
     nsSize curSize = childBox->GetSize();
     const auto& pos = *childBox->StylePosition();
-    nsSize minSize = ToLengthWithFallback(pos.mMinWidth, pos.mMinHeight);
-    nsSize maxSize = ToLengthWithFallback(pos.mMaxWidth, pos.mMaxHeight,
+    nsSize minSize =
+        ToLengthWithFallback(pos.GetMinWidth(), pos.GetMinHeight());
+    nsSize maxSize = ToLengthWithFallback(pos.GetMaxWidth(), pos.GetMaxHeight(),
                                           NS_UNCONSTRAINEDSIZE);
-    nsSize prefSize(ToLengthWithFallback(pos.mWidth, curSize.width),
-                    ToLengthWithFallback(pos.mHeight, curSize.height));
+    nsSize prefSize(ToLengthWithFallback(pos.GetWidth(), curSize.width),
+                    ToLengthWithFallback(pos.GetHeight(), curSize.height));
 
     maxSize.width = std::max(maxSize.width, minSize.width);
     maxSize.height = std::max(maxSize.height, minSize.height);
-    prefSize.width =
-        NS_CSS_MINMAX(prefSize.width, minSize.width, maxSize.width);
+    prefSize.width = CSSMinMax(prefSize.width, minSize.width, maxSize.width);
     prefSize.height =
-        NS_CSS_MINMAX(prefSize.height, minSize.height, maxSize.height);
+        CSSMinMax(prefSize.height, minSize.height, maxSize.height);
 
     nsMargin m;
     childBox->StyleMargin()->GetMargin(m);

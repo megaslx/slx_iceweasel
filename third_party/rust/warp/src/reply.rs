@@ -35,15 +35,12 @@
 
 use std::borrow::Cow;
 use std::convert::TryFrom;
-use std::error::Error as StdError;
-use std::fmt;
 
 use crate::generic::{Either, One};
 use http::header::{HeaderName, HeaderValue, CONTENT_TYPE};
 use http::StatusCode;
 use hyper::Body;
 use serde::Serialize;
-use serde_json;
 
 // This re-export just looks weird in docs...
 pub(crate) use self::sealed::Reply_;
@@ -130,17 +127,6 @@ impl Reply for Json {
         }
     }
 }
-
-#[derive(Debug)]
-pub(crate) struct ReplyJsonError;
-
-impl fmt::Display for ReplyJsonError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("warp::reply::json() failed")
-    }
-}
-
-impl StdError for ReplyJsonError {}
 
 /// Reply with a body and `content-type` set to `text/html; charset=utf-8`.
 ///
@@ -411,18 +397,24 @@ impl Reply for ::http::StatusCode {
     }
 }
 
-impl<T> Reply for Result<T, ::http::Error>
+impl Reply for ::http::Error {
+    #[inline]
+    fn into_response(self) -> Response {
+        tracing::error!("reply error: {:?}", self);
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+}
+
+impl<T, E> Reply for Result<T, E>
 where
-    T: Reply + Send,
+    T: Reply,
+    E: Reply,
 {
     #[inline]
     fn into_response(self) -> Response {
         match self {
             Ok(t) => t.into_response(),
-            Err(e) => {
-                tracing::error!("reply error: {:?}", e);
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
+            Err(e) => e.into_response(),
         }
     }
 }

@@ -11,7 +11,8 @@
  * and create derivative works of this document.
  */
 
-[Exposed=Window]
+[Exposed=Window,
+ InstrumentedProps=(disableRemotePlayback,remote)]
 interface HTMLMediaElement : HTMLElement {
 
   // error state
@@ -240,9 +241,6 @@ partial interface HTMLMediaElement {
 
   [ChromeOnly]
   readonly attribute double invisiblePlayTime;
-
-  [ChromeOnly]
-  readonly attribute double videoDecodeSuspendedTime;
 
   [ChromeOnly]
   readonly attribute double totalAudioPlayTime;

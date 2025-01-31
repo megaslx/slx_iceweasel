@@ -108,7 +108,7 @@ std::vector<MetricValidationInfo> ToValidationInfo(
 TEST(PeerConnectionE2EQualityTestMetricNamesTest,
      ExportedMetricsHasCorrectNamesAndAnnotation) {
   std::unique_ptr<NetworkEmulationManager> network_emulation =
-      CreateNetworkEmulationManager(TimeMode::kSimulated);
+      CreateNetworkEmulationManager({.time_mode = TimeMode::kSimulated});
   DefaultMetricsLogger metrics_logger(
       network_emulation->time_controller()->GetClock());
   PeerConnectionE2EQualityTest fixture(
@@ -549,6 +549,18 @@ TEST(PeerConnectionE2EQualityTestMetricNamesTest,
                             "test_case"}}},
           MetricValidationInfo{
               .test_case = "test_case/alice_video",
+              .name = "rendered_frame_qp",
+              .unit = Unit::kUnitless,
+              .improvement_direction = ImprovementDirection::kSmallerIsBetter,
+              .metadata = {{MetricMetadataKey::kPeerMetadataKey, "alice"},
+                           {MetricMetadataKey::kVideoStreamMetadataKey,
+                            "alice_video"},
+                           {MetricMetadataKey::kSenderMetadataKey, "alice"},
+                           {MetricMetadataKey::kReceiverMetadataKey, "bob"},
+                           {MetricMetadataKey::kExperimentalTestNameMetadataKey,
+                            "test_case"}}},
+          MetricValidationInfo{
+              .test_case = "test_case/alice_video",
               .name = "actual_encode_bitrate",
               .unit = Unit::kKilobitsPerSecond,
               .improvement_direction = ImprovementDirection::kNeitherIsBetter,
@@ -810,6 +822,18 @@ TEST(PeerConnectionE2EQualityTestMetricNamesTest,
                            {MetricMetadataKey::kSenderMetadataKey, "bob"},
                            {MetricMetadataKey::kReceiverMetadataKey, "alice"},
                            {MetricMetadataKey::kSpatialLayerMetadataKey, "0"},
+                           {MetricMetadataKey::kExperimentalTestNameMetadataKey,
+                            "test_case"}}},
+          MetricValidationInfo{
+              .test_case = "test_case/bob_video",
+              .name = "rendered_frame_qp",
+              .unit = Unit::kUnitless,
+              .improvement_direction = ImprovementDirection::kSmallerIsBetter,
+              .metadata = {{MetricMetadataKey::kPeerMetadataKey, "bob"},
+                           {MetricMetadataKey::kVideoStreamMetadataKey,
+                            "bob_video"},
+                           {MetricMetadataKey::kSenderMetadataKey, "bob"},
+                           {MetricMetadataKey::kReceiverMetadataKey, "alice"},
                            {MetricMetadataKey::kExperimentalTestNameMetadataKey,
                             "test_case"}}},
           MetricValidationInfo{
@@ -1090,10 +1114,32 @@ TEST(PeerConnectionE2EQualityTestMetricNamesTest,
               .name = "video_ahead_ms",
               .unit = Unit::kMilliseconds,
               .improvement_direction = ImprovementDirection::kSmallerIsBetter,
+              .metadata =
+                  {{MetricMetadataKey::kAudioStreamMetadataKey, "bob_video"},
+                   {MetricMetadataKey::kPeerMetadataKey, "alice"},
+                   {MetricMetadataKey::kPeerSyncGroupMetadataKey, "bob"},
+                   {MetricMetadataKey::kReceiverMetadataKey, "alice"},
+                   {MetricMetadataKey::kExperimentalTestNameMetadataKey,
+                    "test_case"}}},
+          MetricValidationInfo{
+              .test_case = "test_case/alice_audio",
+              .name = "energy",
+              .unit = Unit::kUnitless,
+              .improvement_direction = ImprovementDirection::kNeitherIsBetter,
+              .metadata = {{MetricMetadataKey::kAudioStreamMetadataKey,
+                            "alice_audio"},
+                           {MetricMetadataKey::kPeerMetadataKey, "bob"},
+                           {MetricMetadataKey::kReceiverMetadataKey, "bob"},
+                           {MetricMetadataKey::kExperimentalTestNameMetadataKey,
+                            "test_case"}}},
+          MetricValidationInfo{
+              .test_case = "test_case/bob_audio",
+              .name = "energy",
+              .unit = Unit::kUnitless,
+              .improvement_direction = ImprovementDirection::kNeitherIsBetter,
               .metadata = {
-                  {MetricMetadataKey::kAudioStreamMetadataKey, "bob_video"},
+                  {MetricMetadataKey::kAudioStreamMetadataKey, "bob_audio"},
                   {MetricMetadataKey::kPeerMetadataKey, "alice"},
-                  {MetricMetadataKey::kPeerSyncGroupMetadataKey, "bob"},
                   {MetricMetadataKey::kReceiverMetadataKey, "alice"},
                   {MetricMetadataKey::kExperimentalTestNameMetadataKey,
                    "test_case"}}}));
@@ -1102,7 +1148,7 @@ TEST(PeerConnectionE2EQualityTestMetricNamesTest,
 TEST(PeerConnectionE2EQualityTestMetricNamesTest,
      ExportedNetworkMetricsHaveCustomNetworkLabelIfSet) {
   std::unique_ptr<NetworkEmulationManager> network_emulation =
-      CreateNetworkEmulationManager(TimeMode::kSimulated);
+      CreateNetworkEmulationManager({.time_mode = TimeMode::kSimulated});
   DefaultMetricsLogger metrics_logger(
       network_emulation->time_controller()->GetClock());
   PeerConnectionE2EQualityTest fixture(

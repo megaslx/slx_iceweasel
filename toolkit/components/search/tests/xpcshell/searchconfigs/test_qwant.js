@@ -12,9 +12,10 @@ const test = new SearchConfigTest({
   available: {
     included: [
       {
-        locales: {
-          matches: ["fr"],
-        },
+        locales: ["fr"],
+      },
+      {
+        regions: ["be", "ch", "es", "fr", "it", "nl"],
       },
     ],
   },
@@ -29,7 +30,7 @@ const test = new SearchConfigTest({
   ],
 });
 
-add_task(async function setup() {
+add_setup(async function () {
   await test.setup();
 });
 

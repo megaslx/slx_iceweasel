@@ -62,6 +62,7 @@
     "talos/tests/perf-reftest-singletons/nth-index-2.html",
     "talos/tests/perf-reftest-singletons/only-children-1.html",
     "talos/tests/perf-reftest-singletons/parent-basic-singleton.html",
+    "talos/tests/perf-reftest-singletons/resize-lengthy-textarea.html",
     "talos/tests/perf-reftest-singletons/scrollbar-styles-1.html",
     "talos/tests/perf-reftest-singletons/slow-selector-1.html",
     "talos/tests/perf-reftest-singletons/slow-selector-2.html",
@@ -73,6 +74,7 @@
     "talos/tests/perf-reftest-singletons/tiny-traversal-singleton.html",
     "talos/tests/perf-reftest-singletons/window-named-property-get.html",
     "webkit/PerformanceTests/Speedometer/index.html",
+    "http://localhost:8000/index.html?startAutomatically=true",
     "webkit/PerformanceTests/webaudio/index.html?raptor&rendering-buffer-length=30",
     "add/index-webp.html",
     "add/index-webgl-demo3.html",
@@ -98,15 +100,18 @@
     if (testURL.includes("Speedometer")) {
       interval = 180000;
     }
- 	else if (testURL.includes("webaudio")) {
-		 interval = 60000;
-	}
- 	else if (testURL.includes("3d-thingy")) {
-		 interval = 16000;
-	}
-	else if (testURL.includes("add")) {
-		 interval = 30000;
-	}
+    else if (testURL.includes("localhost")) {
+      interval = 300000;
+    }
+    else if (testURL.includes("webaudio")) {
+      interval = 60000;
+    }
+    else if (testURL.includes("3d-thingy")) {
+      interval = 16000;
+    }
+    else if (testURL.includes("add")) {
+      interval = 30000;
+    }
     w.close();
     w = window.open(testURL);
 

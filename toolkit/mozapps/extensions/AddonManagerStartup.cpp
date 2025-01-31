@@ -28,11 +28,12 @@
 #include "mozilla/Unused.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Services.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/ipc/StructuredCloneData.h"
+#include "mozilla/dom/TypedArray.h"
 
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsAppRunner.h"
-#include "nsContentUtils.h"
 #include "nsChromeRegistry.h"
 #include "nsIDOMWindowUtils.h"  // for nsIJSRAIIHelper
 #include "nsIFileURL.h"
@@ -427,12 +428,12 @@ Result<nsCOMPtr<nsIFile>, nsresult> Addon::FullPath() {
 
   // First check for an absolute path, in case we have a proxy file.
   nsCOMPtr<nsIFile> file;
-  if (NS_SUCCEEDED(NS_NewLocalFile(path, false, getter_AddRefs(file)))) {
+  if (NS_SUCCEEDED(NS_NewLocalFile(path, getter_AddRefs(file)))) {
     return std::move(file);
   }
 
   // If not an absolute path, fall back to a relative path from the location.
-  MOZ_TRY(NS_NewLocalFile(mLocation.Path(), false, getter_AddRefs(file)));
+  MOZ_TRY(NS_NewLocalFile(mLocation.Path(), getter_AddRefs(file)));
 
   MOZ_TRY(file->AppendRelativePath(path));
   return std::move(file);
@@ -478,7 +479,7 @@ Result<bool, nsresult> Addon::UpdateLastModifiedTime() {
 }
 
 InstallLocation::InstallLocation(JSContext* cx, const JS::Value& value)
-    : WrapperBase(cx, value), mAddonsObj(cx), mAddonsIter() {
+    : WrapperBase(cx, value), mAddonsObj(cx) {
   mAddonsObj = GetObject("addons");
   if (!mAddonsObj) {
     mAddonsObj = JS_NewPlainObject(cx);
@@ -549,16 +550,18 @@ nsresult AddonManagerStartup::EncodeBlob(JS::Handle<JS::Value> value,
 
   nsAutoCString scData;
 
-  holder.Data().ForEachDataChunk([&](const char* aData, size_t aSize) {
-    scData.Append(nsDependentCSubstring(aData, aSize));
-    return true;
-  });
+  bool ok =
+      holder.Data().ForEachDataChunk([&](const char* aData, size_t aSize) {
+        return scData.Append(nsDependentCSubstring(aData, aSize),
+                             mozilla::fallible);
+      });
+  NS_ENSURE_TRUE(ok, NS_ERROR_OUT_OF_MEMORY);
 
   nsCString lz4;
   MOZ_TRY_VAR(lz4, EncodeLZ4(scData, STRUCTURED_CLONE_MAGIC));
 
-  JS::Rooted<JSObject*> obj(cx);
-  MOZ_TRY(nsContentUtils::CreateArrayBuffer(cx, lz4, &obj.get()));
+  JS::Rooted<JSObject*> obj(cx, dom::ArrayBuffer::Create(cx, lz4, rv));
+  RETURN_NSRESULT_ON_FAILURE(rv);
 
   result.set(JS::ObjectValue(*obj));
   return NS_OK;
@@ -596,7 +599,6 @@ nsresult AddonManagerStartup::DecodeBlob(JS::Handle<JS::Value> value,
   ErrorResult rv;
   holder.Read(cx, result, rv);
   return rv.StealNSResult();
-  ;
 }
 
 static nsresult EnumerateZip(nsIZipReader* zip, const nsACString& pattern,

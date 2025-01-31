@@ -35,18 +35,23 @@
 #include "mozilla/dom/PBackgroundSDBRequestParent.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/dom/quota/Client.h"
+#include "mozilla/dom/quota/ClientDirectoryLock.h"
 #include "mozilla/dom/quota/ClientImpl.h"
 #include "mozilla/dom/quota/DirectoryLock.h"
+#include "mozilla/dom/quota/DirectoryLockInlines.h"
 #include "mozilla/dom/quota/FileStreams.h"
+#include "mozilla/dom/quota/PrincipalUtils.h"
 #include "mozilla/dom/quota/QuotaCommon.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/dom/quota/ResultExtensions.h"
+#include "mozilla/dom/quota/ThreadUtils.h"
 #include "mozilla/dom/quota/UsageInfo.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundParent.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/ipc/ProtocolUtils.h"
+#include "NotifyUtils.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsError.h"
@@ -112,7 +117,7 @@ class StreamHelper final : public Runnable {
 };
 
 class Connection final : public PBackgroundSDBConnectionParent {
-  RefPtr<DirectoryLock> mDirectoryLock;
+  RefPtr<ClientDirectoryLock> mDirectoryLock;
   nsCOMPtr<nsIFileRandomAccessStream> mFileRandomAccessStream;
   const PrincipalInfo mPrincipalInfo;
   nsCString mOrigin;
@@ -128,9 +133,9 @@ class Connection final : public PBackgroundSDBConnectionParent {
   Connection(PersistenceType aPersistenceType,
              const PrincipalInfo& aPrincipalInfo);
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(mozilla::dom::Connection)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(mozilla::dom::Connection, override)
 
-  Maybe<DirectoryLock&> MaybeDirectoryLockRef() const {
+  Maybe<ClientDirectoryLock&> MaybeDirectoryLockRef() const {
     AssertIsOnBackgroundThread();
 
     return ToMaybeRef(mDirectoryLock.get());
@@ -170,7 +175,7 @@ class Connection final : public PBackgroundSDBConnectionParent {
 
   void OnOpen(
       const nsACString& aOrigin, const nsAString& aName,
-      already_AddRefed<DirectoryLock> aDirectoryLock,
+      already_AddRefed<ClientDirectoryLock> aDirectoryLock,
       already_AddRefed<nsIFileRandomAccessStream> aFileRandomAccessStream);
 
   void OnClose();
@@ -302,8 +307,7 @@ class ConnectionOperationBase : public Runnable,
   void ActorDestroy(ActorDestroyReason aWhy) override;
 };
 
-class OpenOp final : public ConnectionOperationBase,
-                     public OpenDirectoryListener {
+class OpenOp final : public ConnectionOperationBase {
   enum class State {
     // Just created on the PBackground thread, dispatched to the main thread.
     // Next step is FinishOpen.
@@ -332,7 +336,7 @@ class OpenOp final : public ConnectionOperationBase,
   };
 
   const SDBRequestOpenParams mParams;
-  RefPtr<DirectoryLock> mDirectoryLock;
+  RefPtr<ClientDirectoryLock> mDirectoryLock;
   nsCOMPtr<nsIFileRandomAccessStream> mFileRandomAccessStream;
   // XXX Consider changing this to ClientMetadata.
   quota::OriginMetadata mOriginMetadata;
@@ -367,15 +371,12 @@ class OpenOp final : public ConnectionOperationBase,
 
   void Cleanup() override;
 
-  NS_DECL_ISUPPORTS_INHERITED
-
   NS_IMETHOD
   Run() override;
 
-  // OpenDirectoryListener overrides.
-  void DirectoryLockAcquired(DirectoryLock* aLock) override;
+  void DirectoryLockAcquired(ClientDirectoryLock* aLock);
 
-  void DirectoryLockFailed() override;
+  void DirectoryLockFailed();
 };
 
 class SeekOp final : public ConnectionOperationBase {
@@ -474,8 +475,7 @@ class QuotaClient final : public mozilla::dom::quota::Client {
       PersistenceType aPersistenceType, const OriginMetadata& aOriginMetadata,
       const AtomicBool& aCanceled) override;
 
-  void OnOriginClearCompleted(PersistenceType aPersistenceType,
-                              const nsACString& aOrigin) override;
+  void OnOriginClearCompleted(const OriginMetadata& aOriginMetadata) override;
 
   void OnRepositoryClearCompleted(PersistenceType aPersistenceType) override;
 
@@ -529,9 +529,9 @@ void AllowToCloseConnectionsMatching(const Condition& aCondition) {
  * Exported functions
  ******************************************************************************/
 
-PBackgroundSDBConnectionParent* AllocPBackgroundSDBConnectionParent(
-    const PersistenceType& aPersistenceType,
-    const PrincipalInfo& aPrincipalInfo) {
+already_AddRefed<PBackgroundSDBConnectionParent>
+AllocPBackgroundSDBConnectionParent(const PersistenceType& aPersistenceType,
+                                    const PrincipalInfo& aPrincipalInfo) {
   AssertIsOnBackgroundThread();
 
   if (NS_WARN_IF(QuotaClient::IsShuttingDownOnBackgroundThread())) {
@@ -548,14 +548,14 @@ PBackgroundSDBConnectionParent* AllocPBackgroundSDBConnectionParent(
     return nullptr;
   }
 
-  if (NS_WARN_IF(!QuotaManager::IsPrincipalInfoValid(aPrincipalInfo))) {
+  if (NS_WARN_IF(!quota::IsPrincipalInfoValid(aPrincipalInfo))) {
     MOZ_CRASH_UNLESS_FUZZING();
     return nullptr;
   }
 
   RefPtr<Connection> actor = new Connection(aPersistenceType, aPrincipalInfo);
 
-  return actor.forget().take();
+  return actor.forget();
 }
 
 bool RecvPBackgroundSDBConnectionConstructor(
@@ -566,15 +566,6 @@ bool RecvPBackgroundSDBConnectionConstructor(
   MOZ_ASSERT(aActor);
   MOZ_ASSERT(!QuotaClient::IsShuttingDownOnBackgroundThread());
 
-  return true;
-}
-
-bool DeallocPBackgroundSDBConnectionParent(
-    PBackgroundSDBConnectionParent* aActor) {
-  AssertIsOnBackgroundThread();
-  MOZ_ASSERT(aActor);
-
-  RefPtr<Connection> actor = dont_AddRef(static_cast<Connection*>(aActor));
   return true;
 }
 
@@ -698,7 +689,7 @@ void Connection::OnRequestFinished() {
 
 void Connection::OnOpen(
     const nsACString& aOrigin, const nsAString& aName,
-    already_AddRefed<DirectoryLock> aDirectoryLock,
+    already_AddRefed<ClientDirectoryLock> aDirectoryLock,
     already_AddRefed<nsIFileRandomAccessStream> aFileRandomAccessStream) {
   AssertIsOnBackgroundThread();
   MOZ_ASSERT(!aOrigin.IsEmpty());
@@ -720,6 +711,10 @@ void Connection::OnOpen(
   }
 
   gOpenConnections->AppendElement(WrapNotNullUnchecked(this));
+
+  if (mDirectoryLock->Invalidated()) {
+    AllowToClose();
+  }
 }
 
 void Connection::OnClose() {
@@ -731,7 +726,9 @@ void Connection::OnClose() {
 
   mOrigin.Truncate();
   mName.Truncate();
-  mDirectoryLock = nullptr;
+
+  DropDirectoryLock(mDirectoryLock);
+
   mFileRandomAccessStream = nullptr;
   mOpen = false;
 
@@ -992,15 +989,13 @@ void ConnectionOperationBase::SendResults() {
 
       MOZ_ASSERT(response.type() != SDBRequestResponse::T__None);
       MOZ_ASSERT(response.type() != SDBRequestResponse::Tnsresult);
+
+      OnSuccess();
     } else {
       response = mResultCode;
     }
 
     Unused << PBackgroundSDBRequestParent::Send__delete__(this, response);
-
-    if (NS_SUCCEEDED(mResultCode)) {
-      OnSuccess();
-    }
   }
 
   Cleanup();
@@ -1108,13 +1103,13 @@ nsresult OpenOp::FinishOpen() {
   PersistenceType persistenceType = GetConnection()->GetPersistenceType();
 
   if (principalInfo.type() == PrincipalInfo::TSystemPrincipalInfo) {
-    mOriginMetadata = {QuotaManager::GetInfoForChrome(), persistenceType};
+    mOriginMetadata = {quota::GetInfoForChrome(), persistenceType};
   } else {
     MOZ_ASSERT(principalInfo.type() == PrincipalInfo::TContentPrincipalInfo);
 
     QM_TRY_UNWRAP(
         auto principalMetadata,
-        quotaManager->GetInfoFromValidatedPrincipalInfo(principalInfo));
+        quota::GetInfoFromValidatedPrincipalInfo(*quotaManager, principalInfo));
 
     mOriginMetadata = {std::move(principalMetadata), persistenceType};
   }
@@ -1130,13 +1125,20 @@ nsresult OpenOp::FinishOpen() {
 
   // Open the directory
 
-  RefPtr<DirectoryLock> directoryLock = quotaManager->CreateDirectoryLock(
-      GetConnection()->GetPersistenceType(), mOriginMetadata,
-      mozilla::dom::quota::Client::SDB,
-      /* aExclusive */ false);
-
   mState = State::DirectoryOpenPending;
-  directoryLock->Acquire(this);
+
+  quotaManager
+      ->OpenClientDirectory({mOriginMetadata, mozilla::dom::quota::Client::SDB})
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr(this)](
+              const ClientDirectoryLockPromise::ResolveOrRejectValue& aValue) {
+            if (aValue.IsResolve()) {
+              self->DirectoryLockAcquired(aValue.ResolveValue());
+            } else {
+              self->DirectoryLockFailed();
+            }
+          });
 
   return NS_OK;
 }
@@ -1165,6 +1167,8 @@ nsresult OpenOp::SendToIOThread() {
     return rv;
   }
 
+  simpledb::NotifyDatabaseWorkStarted();
+
   return NS_OK;
 }
 
@@ -1182,24 +1186,17 @@ nsresult OpenOp::DatabaseWork() {
   QuotaManager* quotaManager = QuotaManager::Get();
   MOZ_ASSERT(quotaManager);
 
-  QM_TRY(MOZ_TO_RESULT(quotaManager->EnsureStorageIsInitialized()));
-
   QM_TRY_INSPECT(
       const auto& dbDirectory,
       ([persistenceType = GetConnection()->GetPersistenceType(), &quotaManager,
-        this]()
-           -> mozilla::Result<std::pair<nsCOMPtr<nsIFile>, bool>, nsresult> {
+        this]() -> mozilla::Result<nsCOMPtr<nsIFile>, nsresult> {
         if (persistenceType == PERSISTENCE_TYPE_PERSISTENT) {
-          QM_TRY_RETURN(quotaManager->EnsurePersistentOriginIsInitialized(
-              mOriginMetadata));
+          QM_TRY_RETURN(quotaManager->GetOriginDirectory(mOriginMetadata));
         }
 
-        QM_TRY(
-            MOZ_TO_RESULT(quotaManager->EnsureTemporaryStorageIsInitialized()));
-        QM_TRY_RETURN(quotaManager->EnsureTemporaryOriginIsInitialized(
-            persistenceType, mOriginMetadata));
-      }()
-                  .map([](const auto& res) { return res.first; })));
+        QM_TRY_RETURN(
+            quotaManager->GetOrCreateTemporaryOriginDirectory(mOriginMetadata));
+      }()));
 
   nsresult rv =
       dbDirectory->Append(NS_LITERAL_STRING_FROM_CSTRING(SDB_DIRECTORY_NAME));
@@ -1275,7 +1272,8 @@ void OpenOp::StreamClosedCallback() {
   MOZ_ASSERT(mFileRandomAccessStream);
   MOZ_ASSERT(mFileRandomAccessStreamOpen);
 
-  mDirectoryLock = nullptr;
+  DropDirectoryLock(mDirectoryLock);
+
   mFileRandomAccessStream = nullptr;
   mFileRandomAccessStreamOpen = false;
 }
@@ -1283,6 +1281,9 @@ void OpenOp::StreamClosedCallback() {
 nsresult OpenOp::DoDatabaseWork(
     nsIFileRandomAccessStream* aFileRandomAccessStream) {
   AssertIsOnIOThread();
+
+  SleepIfEnabled(
+      StaticPrefs::dom_simpledb_databaseInitialization_pauseOnIOThreadMs());
 
   return NS_OK;
 }
@@ -1301,7 +1302,7 @@ void OpenOp::OnSuccess() {
   MOZ_ASSERT(mFileRandomAccessStream);
   MOZ_ASSERT(mFileRandomAccessStreamOpen);
 
-  RefPtr<DirectoryLock> directoryLock;
+  RefPtr<ClientDirectoryLock> directoryLock;
   nsCOMPtr<nsIFileRandomAccessStream> fileRandomAccessStream;
 
   mDirectoryLock.swap(directoryLock);
@@ -1333,16 +1334,14 @@ void OpenOp::Cleanup() {
         new StreamHelper(mFileRandomAccessStream, callback);
     helper->AsyncClose();
   } else {
-    MOZ_ASSERT(!mFileRandomAccessStreamOpen);
+    SafeDropDirectoryLock(mDirectoryLock);
 
-    mDirectoryLock = nullptr;
     mFileRandomAccessStream = nullptr;
+    MOZ_ASSERT(!mFileRandomAccessStreamOpen);
   }
 
   ConnectionOperationBase::Cleanup();
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(OpenOp, ConnectionOperationBase)
 
 NS_IMETHODIMP
 OpenOp::Run() {
@@ -1387,25 +1386,28 @@ OpenOp::Run() {
   return NS_OK;
 }
 
-void OpenOp::DirectoryLockAcquired(DirectoryLock* aLock) {
+void OpenOp::DirectoryLockAcquired(ClientDirectoryLock* aLock) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mState == State::DirectoryOpenPending);
   MOZ_ASSERT(!mDirectoryLock);
 
   mDirectoryLock = aLock;
 
-  nsresult rv = SendToIOThread();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    MaybeSetFailureCode(rv);
+  auto cleanupAndReturn = [self = RefPtr(this)](const nsresult rv) {
+    self->MaybeSetFailureCode(rv);
 
     // The caller holds a strong reference to us, no need for a self reference
     // before calling Run().
 
-    mState = State::SendingResults;
-    MOZ_ALWAYS_SUCCEEDS(Run());
+    self->mState = State::SendingResults;
+    MOZ_ALWAYS_SUCCEEDS(self->Run());
+  };
 
-    return;
+  if (mDirectoryLock->Invalidated()) {
+    return cleanupAndReturn(NS_ERROR_ABORT);
   }
+
+  QM_TRY(MOZ_TO_RESULT(SendToIOThread()), cleanupAndReturn);
 }
 
 void OpenOp::DirectoryLockFailed() {
@@ -1728,8 +1730,8 @@ Result<UsageInfo, nsresult> QuotaClient::GetUsageForOrigin(
       }));
 }
 
-void QuotaClient::OnOriginClearCompleted(PersistenceType aPersistenceType,
-                                         const nsACString& aOrigin) {
+void QuotaClient::OnOriginClearCompleted(
+    const OriginMetadata& aOriginMetadata) {
   AssertIsOnIOThread();
 }
 

@@ -97,6 +97,14 @@ struct BaseRect {
     return Contains(aPoint.x, aPoint.y);
   }
 
+  // Returns true if this rectangle contains the point, considering points on
+  // all edges of the rectangle to be contained (as compared to Contains()
+  // which only includes points on the top & left but not bottom & right edges).
+  MOZ_ALWAYS_INLINE bool ContainsInclusively(const Point& aPoint) const {
+    return x <= aPoint.x && aPoint.x <= XMost() && y <= aPoint.y &&
+           aPoint.y <= YMost();
+  }
+
   // Intersection. Returns TRUE if the receiver's area has non-empty
   // intersection with aRect's area, and FALSE otherwise.
   // Always returns false if aRect is empty or 'this' is empty.
@@ -669,11 +677,12 @@ struct BaseRect {
   /**
    * Clamp aPoint to this rectangle. It is allowed to end up on any
    * edge of the rectangle.
+   * Return the rectangle as a point if the rectangle is empty.
    */
   [[nodiscard]] Point ClampPoint(const Point& aPoint) const {
     using Coord = decltype(aPoint.x);
-    return Point(std::max(Coord(x), std::min(Coord(XMost()), aPoint.x)),
-                 std::max(Coord(y), std::min(Coord(YMost()), aPoint.y)));
+    return {std::max(Coord(x), std::min(Coord(XMost()), aPoint.x)),
+            std::max(Coord(y), std::min(Coord(YMost()), aPoint.y))};
   }
 
   /**

@@ -4,13 +4,10 @@
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
-
 const lazy = {};
 // Get the theme variables from the app resource directory.
 // This allows per-app variables.
 ChromeUtils.defineESModuleGetters(lazy, {
-  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   ThemeContentPropertyList: "resource:///modules/ThemeVariableMap.sys.mjs",
   ThemeVariableMap: "resource:///modules/ThemeVariableMap.sys.mjs",
@@ -27,16 +24,12 @@ XPCOMUtils.defineLazyPreferenceGetter(
 
 const DEFAULT_THEME_ID = "default-theme@mozilla.org";
 
-// On Linux, the default theme picks up the right colors from dark GTK themes.
-const DEFAULT_THEME_RESPECTS_SYSTEM_COLOR_SCHEME =
-  AppConstants.platform == "linux";
-
 const toolkitVariableMap = [
   [
     "--lwt-accent-color",
     {
       lwtProperty: "accentcolor",
-      processColor(rgbaChannels, element) {
+      processColor(rgbaChannels) {
         if (!rgbaChannels || rgbaChannels.a == 0) {
           return "white";
         }
@@ -50,7 +43,7 @@ const toolkitVariableMap = [
     "--lwt-text-color",
     {
       lwtProperty: "textcolor",
-      processColor(rgbaChannels, element) {
+      processColor(rgbaChannels) {
         if (!rgbaChannels) {
           rgbaChannels = { r: 0, g: 0, b: 0 };
         }
@@ -82,18 +75,33 @@ const toolkitVariableMap = [
     "--toolbar-field-background-color",
     {
       lwtProperty: "toolbar_field",
+      fallbackColor: "rgba(255, 255, 255, 0.8)",
+    },
+  ],
+  [
+    "--toolbar-bgcolor",
+    {
+      lwtProperty: "toolbarColor",
+    },
+  ],
+  [
+    "--toolbar-color",
+    {
+      lwtProperty: "toolbar_text",
     },
   ],
   [
     "--toolbar-field-color",
     {
       lwtProperty: "toolbar_field_text",
+      fallbackColor: "black",
     },
   ],
   [
     "--toolbar-field-border-color",
     {
       lwtProperty: "toolbar_field_border",
+      fallbackColor: "transparent",
     },
   ],
   [
@@ -101,6 +109,7 @@ const toolkitVariableMap = [
     {
       lwtProperty: "toolbar_field_focus",
       fallbackProperty: "toolbar_field",
+      fallbackColor: "white",
       processColor(rgbaChannels, element, propertyOverrides) {
         if (!rgbaChannels) {
           return null;
@@ -124,6 +133,7 @@ const toolkitVariableMap = [
     {
       lwtProperty: "toolbar_field_text_focus",
       fallbackProperty: "toolbar_field_text",
+      fallbackColor: "black",
     },
   ],
   [
@@ -136,7 +146,7 @@ const toolkitVariableMap = [
     "--lwt-toolbar-field-highlight",
     {
       lwtProperty: "toolbar_field_highlight",
-      processColor(rgbaChannels, element) {
+      processColor(rgbaChannels) {
         if (!rgbaChannels) {
           return null;
         }
@@ -149,6 +159,18 @@ const toolkitVariableMap = [
     "--lwt-toolbar-field-highlight-text",
     {
       lwtProperty: "toolbar_field_highlight_text",
+    },
+  ],
+  [
+    "--toolbarbutton-icon-fill",
+    {
+      lwtProperty: "icon_color",
+    },
+  ],
+  [
+    "--toolbarbutton-icon-fill-attention",
+    {
+      lwtProperty: "icon_attention_color",
     },
   ],
   // The following 3 are given to the new tab page by contentTheme.js. They are
@@ -172,7 +194,26 @@ const toolkitVariableMap = [
     "--newtab-background-color-secondary",
     { lwtProperty: "ntp_card_background" },
   ],
-  ["--newtab-text-primary-color", { lwtProperty: "ntp_text" }],
+  [
+    "--newtab-text-primary-color",
+    {
+      lwtProperty: "ntp_text",
+      processColor(rgbaChannels, element) {
+        if (!rgbaChannels) {
+          element.removeAttribute("lwt-newtab-brighttext");
+          return null;
+        }
+
+        const { r, g, b } = rgbaChannels;
+        element.toggleAttribute(
+          "lwt-newtab-brighttext",
+          0.2125 * r + 0.7154 * g + 0.0721 * b > 110
+        );
+
+        return _rgbaToString(rgbaChannels);
+      },
+    },
+  ],
 ];
 
 export function LightweightThemeConsumer(aDocument) {
@@ -196,7 +237,7 @@ export function LightweightThemeConsumer(aDocument) {
 LightweightThemeConsumer.prototype = {
   _lastData: null,
 
-  observe(aSubject, aTopic, aData) {
+  observe(aSubject, aTopic) {
     if (aTopic != "lightweight-theme-styling-update") {
       return;
     }
@@ -237,18 +278,14 @@ LightweightThemeConsumer.prototype = {
       if (!hasDarkTheme) {
         return false;
       }
+
       if (this.darkThemeMediaQuery?.matches) {
-        return (
-          themeData.darkTheme.id != DEFAULT_THEME_ID ||
-          !DEFAULT_THEME_RESPECTS_SYSTEM_COLOR_SCHEME
-        );
+        return themeData.darkTheme.id != DEFAULT_THEME_ID;
       }
 
       // If enabled, apply the dark theme variant to private browsing windows.
       if (
-        !lazy.NimbusFeatures.majorRelease2022.getVariable(
-          "feltPrivacyPBMDarkTheme"
-        ) ||
+        !Services.prefs.getBoolPref("browser.theme.dark-private-windows") ||
         !lazy.PrivateBrowsingUtils.isWindowPrivate(this._win) ||
         lazy.PrivateBrowsingUtils.permanentPrivateBrowsing
       ) {
@@ -258,6 +295,10 @@ LightweightThemeConsumer.prototype = {
       // _determineToolbarAndContentTheme, because it applies the color scheme
       // globally for all windows. Skipping this method also means we don't
       // switch the content theme to dark.
+      //
+      // TODO: On Linux we most likely need to apply the dark theme, but on
+      // Windows and macOS we should be able to render light and dark windows
+      // with the default theme at the same time.
       updateGlobalThemeData = false;
       return true;
     })();
@@ -279,51 +320,45 @@ LightweightThemeConsumer.prototype = {
     if (!theme) {
       theme = { id: DEFAULT_THEME_ID };
     }
-
-    let active = (this._active = Object.keys(theme).length);
+    let hasTheme = theme.id != DEFAULT_THEME_ID || useDarkTheme;
 
     let root = this._doc.documentElement;
-
-    if (active && theme.headerURL) {
+    if (hasTheme && theme.headerURL) {
       root.setAttribute("lwtheme-image", "true");
     } else {
       root.removeAttribute("lwtheme-image");
     }
 
-    this._setExperiment(active, themeData.experiment, theme.experimental);
-    _setImage(this._win, root, active, "--lwt-header-image", theme.headerURL);
+    this._setExperiment(hasTheme, themeData.experiment, theme.experimental);
+    _setImage(this._win, root, hasTheme, "--lwt-header-image", theme.headerURL);
     _setImage(
       this._win,
       root,
-      active,
+      hasTheme,
       "--lwt-additional-images",
       theme.additionalBackgrounds
     );
-    _setProperties(root, active, theme);
+    let _processedColors = _setProperties(root, hasTheme, theme);
 
-    if (theme.id != DEFAULT_THEME_ID || useDarkTheme) {
+    if (hasTheme) {
       if (updateGlobalThemeData) {
         _determineToolbarAndContentTheme(
           this._doc,
           theme,
+          _processedColors,
           hasDarkTheme,
           useDarkTheme
         );
       }
       root.setAttribute("lwtheme", "true");
     } else {
-      _determineToolbarAndContentTheme(this._doc, null);
+      _determineToolbarAndContentTheme(this._doc, null, null);
       root.removeAttribute("lwtheme");
     }
-    if (theme.id == DEFAULT_THEME_ID && useDarkTheme) {
-      root.setAttribute("lwt-default-theme-in-dark-mode", "true");
-    } else {
-      root.removeAttribute("lwt-default-theme-in-dark-mode");
-    }
 
-    _setDarkModeAttributes(this._doc, root, theme._processedColors);
+    _setDarkModeAttributes(this._doc, root, _processedColors, hasTheme);
 
-    let contentThemeData = _getContentProperties(this._doc, active, theme);
+    let contentThemeData = _getContentProperties(this._doc, hasTheme, theme);
     Services.ppmm.sharedData.set(`theme/${this._winId}`, contentThemeData);
     // We flush sharedData because contentThemeData can be responsible for
     // painting large background surfaces. If this data isn't delivered to the
@@ -334,7 +369,7 @@ LightweightThemeConsumer.prototype = {
     this._win.dispatchEvent(new CustomEvent("windowlwthemeupdate"));
   },
 
-  _setExperiment(active, experiment, properties) {
+  _setExperiment(hasTheme, experiment, properties) {
     const root = this._doc.documentElement;
     if (this._lastExperimentData) {
       const { stylesheet, usedVariables } = this._lastExperimentData;
@@ -350,7 +385,7 @@ LightweightThemeConsumer.prototype = {
 
     this._lastExperimentData = {};
 
-    if (!active || !experiment) {
+    if (!hasTheme || !experiment) {
       return;
     }
 
@@ -398,11 +433,11 @@ LightweightThemeConsumer.prototype = {
   },
 };
 
-function _getContentProperties(doc, active, data) {
-  if (!active) {
-    return {};
+function _getContentProperties(doc, hasTheme, data) {
+  let properties = { hasTheme };
+  if (!hasTheme) {
+    return properties;
   }
-  let properties = {};
   for (let property in data) {
     if (lazy.ThemeContentPropertyList.includes(property)) {
       properties[property] = _cssColorToRGBA(doc, data[property]);
@@ -443,33 +478,47 @@ function _setImage(aWin, aRoot, aActive, aVariableName, aURLs) {
   );
 }
 
-function _setProperty(elem, active, variableName, value) {
-  if (active && value) {
+function _setProperty(elem, hasTheme, variableName, value) {
+  if (hasTheme && value) {
     elem.style.setProperty(variableName, value);
   } else {
     elem.style.removeProperty(variableName);
   }
 }
 
+function _isToolbarDark(aDoc, aColors) {
+  // We prefer looking at toolbar background first (if it's opaque) because
+  // some text colors can be dark enough for our heuristics, but still
+  // contrast well enough with a dark background, see bug 1743010.
+  if (aColors.toolbarColor) {
+    let color = _cssColorToRGBA(aDoc, aColors.toolbarColor);
+    if (color.a == 1) {
+      return _isColorDark(color.r, color.g, color.b);
+    }
+  }
+  if (aColors.toolbar_text) {
+    let color = _cssColorToRGBA(aDoc, aColors.toolbar_text);
+    return !_isColorDark(color.r, color.g, color.b);
+  }
+  // It'd seem sensible to try looking at the "frame" background (accentcolor),
+  // but we don't because some themes that use background images leave it to
+  // black, see bug 1741931.
+  //
+  // Fall back to black as per the textcolor processing above.
+  let color = _cssColorToRGBA(aDoc, aColors.textcolor || "black");
+  return !_isColorDark(color.r, color.g, color.b);
+}
+
 function _determineToolbarAndContentTheme(
   aDoc,
   aTheme,
+  colors,
   aHasDarkTheme = false,
   aIsDarkTheme = false
 ) {
   const kDark = 0;
   const kLight = 1;
   const kSystem = 2;
-
-  const colors = aTheme?._processedColors;
-  function prefValue(aColor, aIsForeground = false) {
-    if (typeof aColor != "object") {
-      aColor = _cssColorToRGBA(aDoc, aColor);
-    }
-    return _isColorDark(aColor.r, aColor.g, aColor.b) == aIsForeground
-      ? kLight
-      : kDark;
-  }
 
   function colorSchemeValue(aColorScheme) {
     if (!aColorScheme) {
@@ -491,9 +540,6 @@ function _determineToolbarAndContentTheme(
 
   let toolbarTheme = (function () {
     if (!aTheme) {
-      if (!DEFAULT_THEME_RESPECTS_SYSTEM_COLOR_SCHEME) {
-        return kLight;
-      }
       return kSystem;
     }
     let themeValue = colorSchemeValue(aTheme.color_scheme);
@@ -503,24 +549,7 @@ function _determineToolbarAndContentTheme(
     if (aHasDarkTheme) {
       return aIsDarkTheme ? kDark : kLight;
     }
-    // We prefer looking at toolbar background first (if it's opaque) because
-    // some text colors can be dark enough for our heuristics, but still
-    // contrast well enough with a dark background, see bug 1743010.
-    if (colors.toolbarColor) {
-      let color = _cssColorToRGBA(aDoc, colors.toolbarColor);
-      if (color.a == 1) {
-        return prefValue(color);
-      }
-    }
-    if (colors.toolbar_text) {
-      return prefValue(colors.toolbar_text, /* aIsForeground = */ true);
-    }
-    // It'd seem sensible to try looking at the "frame" background (accentcolor),
-    // but we don't because some themes that use background images leave it to
-    // black, see bug 1741931.
-    //
-    // Fall back to black as per the textcolor processing above.
-    return prefValue(colors.textcolor || "black", /* aIsForeground = */ true);
+    return _isToolbarDark(aDoc, colors) ? kDark : kLight;
   })();
 
   let contentTheme = (function () {
@@ -528,9 +557,6 @@ function _determineToolbarAndContentTheme(
       return toolbarTheme;
     }
     if (!aTheme) {
-      if (!DEFAULT_THEME_RESPECTS_SYSTEM_COLOR_SCHEME) {
-        return kLight;
-      }
       return kSystem;
     }
     let themeValue = colorSchemeValue(
@@ -554,8 +580,9 @@ function _determineToolbarAndContentTheme(
  * @param {Element} root
  * @param {object} colors
  *   The `_processedColors` object from the object created for our theme.
+ * @param {boolean} hasTheme
  */
-function _setDarkModeAttributes(doc, root, colors) {
+function _setDarkModeAttributes(doc, root, colors, hasTheme) {
   {
     let textColor = _cssColorToRGBA(doc, colors.textcolor);
     if (textColor && !_isColorDark(textColor.r, textColor.g, textColor.b)) {
@@ -565,37 +592,48 @@ function _setDarkModeAttributes(doc, root, colors) {
     }
   }
 
-  if (
-    _determineIfColorPairIsDark(
-      doc,
-      colors,
-      "toolbar_field_text",
-      "toolbar_field"
-    )
-  ) {
-    root.setAttribute("lwt-toolbar-field-brighttext", "true");
+  if (hasTheme) {
+    root.setAttribute(
+      "lwt-toolbar",
+      _isToolbarDark(doc, colors) ? "dark" : "light"
+    );
   } else {
-    root.removeAttribute("lwt-toolbar-field-brighttext");
+    root.removeAttribute("lwt-toolbar");
   }
 
-  if (
-    _determineIfColorPairIsDark(
+  const setAttribute = function (
+    attribute,
+    textPropertyName,
+    backgroundPropertyName
+  ) {
+    let dark = _determineIfColorPairIsDark(
       doc,
       colors,
-      "toolbar_field_text_focus",
-      "toolbar_field_focus"
-    )
-  ) {
-    root.setAttribute("lwt-toolbar-field-focus-brighttext", "true");
-  } else {
-    root.removeAttribute("lwt-toolbar-field-focus-brighttext");
-  }
+      textPropertyName,
+      backgroundPropertyName
+    );
+    if (dark === null) {
+      root.removeAttribute(attribute);
+    } else {
+      root.setAttribute(attribute, dark ? "dark" : "light");
+    }
+  };
 
-  if (_determineIfColorPairIsDark(doc, colors, "popup_text", "popup")) {
-    root.setAttribute("lwt-popup-brighttext", "true");
-  } else {
-    root.removeAttribute("lwt-popup-brighttext");
-  }
+  setAttribute("lwt-tab-selected", "tab_text", "tab_selected");
+  setAttribute("lwt-toolbar-field", "toolbar_field_text", "toolbar_field");
+  setAttribute(
+    "lwt-toolbar-field-focus",
+    "toolbar_field_text_focus",
+    "toolbar_field_focus"
+  );
+  setAttribute("lwt-popup", "popup_text", "popup");
+  setAttribute("lwt-sidebar", "sidebar_text", "sidebar");
+  // NOTE: icon_attention_text prop does never really exist.
+  setAttribute(
+    "lwt-icon-fill-attention",
+    /* textPropertyName = */ null,
+    "icon_attention_color"
+  );
 }
 
 /**
@@ -605,12 +643,12 @@ function _setDarkModeAttributes(doc, root, colors) {
  * still contrast well enough with a dark background
  * @param {Document} doc
  * @param {object} colors
- * @param {string} foregroundElementId
+ * @param {string?} textPropertyName
  *   The key for the foreground element in `colors`.
- * @param {string} backgroundElementId
+ * @param {string?} backgroundPropertyName
  *   The key for the background element in `colors`.
- * @returns {boolean} True if the element should be considered dark, false
- *   otherwise.
+ * @returns {boolean | null} True if the element should be considered dark, false
+ *   if light, null for preferred scheme.
  */
 function _determineIfColorPairIsDark(
   doc,
@@ -618,27 +656,30 @@ function _determineIfColorPairIsDark(
   textPropertyName,
   backgroundPropertyName
 ) {
-  if (!colors[backgroundPropertyName] && !colors[textPropertyName]) {
+  let backgroundColor =
+    backgroundPropertyName && colors[backgroundPropertyName];
+  let textColor = textPropertyName && colors[textPropertyName];
+  if (!backgroundColor && !textColor) {
     // Handles the system theme.
-    return false;
+    return null;
   }
 
-  let color = _cssColorToRGBA(doc, colors[backgroundPropertyName]);
+  let color = _cssColorToRGBA(doc, backgroundColor);
   if (color && color.a == 1) {
     return _isColorDark(color.r, color.g, color.b);
   }
 
-  color = _cssColorToRGBA(doc, colors[textPropertyName]);
+  color = _cssColorToRGBA(doc, textColor);
   if (!color) {
     // Handles the case where a theme only provides a background color and it is
     // semi-transparent.
-    return false;
+    return null;
   }
 
   return !_isColorDark(color.r, color.g, color.b);
 }
 
-function _setProperties(root, active, themeData) {
+function _setProperties(root, hasTheme, themeData) {
   let propertyOverrides = new Map();
   let doc = root.ownerDocument;
 
@@ -647,38 +688,39 @@ function _setProperties(root, active, themeData) {
   // content) are not processed here, but are referenced in places that check
   // _processedColors. Copying means _processedColors will contain irrelevant
   // properties like `id`. There aren't too many, so that's OK.
-  themeData._processedColors = { ...themeData };
+  let _processedColors = { ...themeData };
   for (let map of [toolkitVariableMap, lazy.ThemeVariableMap]) {
     for (let [cssVarName, definition] of map) {
       const {
         lwtProperty,
         fallbackProperty,
-        optionalElementID,
+        fallbackColor,
         processColor,
         isColor = true,
       } = definition;
-      let elem = optionalElementID
-        ? doc.getElementById(optionalElementID)
-        : root;
       let val = propertyOverrides.get(lwtProperty) || themeData[lwtProperty];
       if (isColor) {
         val = _cssColorToRGBA(doc, val);
         if (!val && fallbackProperty) {
           val = _cssColorToRGBA(doc, themeData[fallbackProperty]);
         }
+        if (!val && hasTheme && fallbackColor) {
+          val = _cssColorToRGBA(doc, fallbackColor);
+        }
         if (processColor) {
-          val = processColor(val, elem, propertyOverrides);
+          val = processColor(val, root, propertyOverrides);
         } else {
           val = _rgbaToString(val);
         }
       }
 
       // Add processed color to themeData.
-      themeData._processedColors[lwtProperty] = val;
+      _processedColors[lwtProperty] = val;
 
-      _setProperty(elem, active, cssVarName, val);
+      _setProperty(root, hasTheme, cssVarName, val);
     }
   }
+  return _processedColors;
 }
 
 const kInvalidColor = { r: 0, g: 0, b: 0, a: 1 };

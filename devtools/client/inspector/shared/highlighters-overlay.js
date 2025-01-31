@@ -14,6 +14,10 @@ const {
   VIEW_NODE_SHAPE_POINT_TYPE,
 } = require("resource://devtools/client/inspector/shared/node-types.js");
 
+const { TYPES } = ChromeUtils.importESModule(
+  "resource://devtools/shared/highlighters.mjs"
+);
+
 loader.lazyRequireGetter(
   this,
   "parseURL",
@@ -53,16 +57,6 @@ loader.lazyGetter(this, "HighlightersBundle", () => {
 const DEFAULT_HIGHLIGHTER_COLOR = "#9400FF";
 const SUBGRID_PARENT_ALPHA = 0.5;
 
-const TYPES = {
-  BOXMODEL: "BoxModelHighlighter",
-  FLEXBOX: "FlexboxHighlighter",
-  GEOMETRY: "GeometryEditorHighlighter",
-  GRID: "CssGridHighlighter",
-  SHAPES: "ShapesHighlighter",
-  SELECTOR: "SelectorHighlighter",
-  TRANSFORM: "CssTransformHighlighter",
-};
-
 /**
  * While refactoring to an abstracted way to show and hide highlighters,
  * we did not update all tests and code paths which listen for exact events.
@@ -101,18 +95,18 @@ const TELEMETRY_TOOL_IDS = {
   [TYPES.GRID]: "GRID_HIGHLIGHTER",
 };
 
-// Scalars mapped by highlighter type. Used to log telemetry about highlighter triggers.
-const TELEMETRY_SCALARS = {
+// Glean counter names mapped by highlighter type. Used to log telemetry about highlighter triggers.
+const GLEAN_COUNTER_NAMES = {
   [TYPES.FLEXBOX]: {
-    layout: "devtools.layout.flexboxhighlighter.opened",
-    markup: "devtools.markup.flexboxhighlighter.opened",
-    rule: "devtools.rules.flexboxhighlighter.opened",
+    layout: "devtoolsLayoutFlexboxhighlighter",
+    markup: "devtoolsMarkupFlexboxhighlighter",
+    rule: "devtoolsRulesFlexboxhighlighter",
   },
 
   [TYPES.GRID]: {
-    grid: "devtools.grid.gridinspector.opened",
-    markup: "devtools.markup.gridinspector.opened",
-    rule: "devtools.rules.gridinspector.opened",
+    grid: "devtoolsGridGridinspector",
+    markup: "devtoolsMarkupGridinspector",
+    rule: "devtoolsRulesGridinspector",
   },
 };
 
@@ -286,9 +280,9 @@ class HighlightersOverlay {
           this.telemetry.toolOpened(toolID, this);
         }
 
-        const scalar = TELEMETRY_SCALARS[type]?.[options?.trigger];
-        if (scalar) {
-          this.telemetry.scalarAdd(scalar, 1);
+        const counterName = GLEAN_COUNTER_NAMES[type]?.[options?.trigger];
+        if (counterName) {
+          Glean[counterName].opened.add(1);
         }
 
         break;
@@ -793,13 +787,8 @@ class HighlightersOverlay {
 
   /**
    * Called after the shapes highlighter was hidden.
-   *
-   * @param  {Object} data
-   *         Data associated with the event.
-   *         Contains:
-   *         - {NodeFront} node: The NodeFront of the element that was highlighted.
    */
-  onShapesHighlighterHidden(data) {
+  onShapesHighlighterHidden() {
     this.emit(
       "shapes-highlighter-hidden",
       this.shapesHighlighterShown,
@@ -1034,9 +1023,8 @@ class HighlightersOverlay {
     let parentGridHighlighter = null;
     if (node.displayType === "subgrid") {
       parentGridNode = await node.walkerFront.getParentGridNode(node);
-      parentGridHighlighter = await this.showParentGridHighlighter(
-        parentGridNode
-      );
+      parentGridHighlighter =
+        await this.showParentGridHighlighter(parentGridNode);
     }
 
     // When changing highlighter colors, we call highlighter.show() again with new options
@@ -1118,11 +1106,18 @@ class HighlightersOverlay {
     if (!highlighter) {
       highlighter = await this._getHighlighterTypeForNode(TYPES.GRID, node);
     }
-
-    await highlighter.show(node, {
+    const options = {
       ...this.getGridHighlighterSettings(node),
       // Configure the highlighter with faded-out colors.
       globalAlpha: SUBGRID_PARENT_ALPHA,
+    };
+    await highlighter.show(node, options);
+
+    this.emitForTests("highlighter-shown", {
+      type: TYPES.GRID,
+      nodeFront: node,
+      highlighter,
+      options,
     });
 
     return highlighter;
@@ -1171,7 +1166,7 @@ class HighlightersOverlay {
   async restoreParentGridHighlighter(node) {
     // Find the highlighter map entry for the subgrid whose parent grid is the given node.
     const entry = Array.from(this.gridHighlighters.entries()).find(
-      ([key, value]) => {
+      ([, value]) => {
         return value?.parentGridNode === node;
       }
     );
@@ -1289,7 +1284,7 @@ class HighlightersOverlay {
    */
   async showGeometryEditor(node) {
     const highlighter = await this._getHighlighterTypeForNode(
-      "GeometryEditorHighlighter",
+      TYPES.GEOMETRY,
       node
     );
     if (!highlighter) {
@@ -1315,7 +1310,7 @@ class HighlightersOverlay {
 
     const highlighter =
       this.geometryEditorHighlighterShown.inspectorFront.getKnownHighlighter(
-        "GeometryEditorHighlighter"
+        TYPES.GEOMETRY
       );
 
     if (!highlighter) {
@@ -1433,7 +1428,7 @@ class HighlightersOverlay {
     switch (type) {
       case "shapesEditor":
         const highlighter = await this._getHighlighterTypeForNode(
-          "ShapesHighlighter",
+          TYPES.SHAPES,
           node
         );
         if (!highlighter) {
@@ -1591,7 +1586,7 @@ class HighlightersOverlay {
    */
   _isRuleViewShapeSwatch(node) {
     return (
-      this.isRuleView(node) && node.classList.contains("ruleview-shapeswatch")
+      this.isRuleView(node) && node.classList.contains("inspector-shapeswatch")
     );
   }
 
@@ -1730,7 +1725,7 @@ class HighlightersOverlay {
       this._isRuleViewTransform(nodeInfo) ||
       this._isComputedViewTransform(nodeInfo)
     ) {
-      type = "CssTransformHighlighter";
+      type = TYPES.TRANSFORM;
     }
 
     if (type) {

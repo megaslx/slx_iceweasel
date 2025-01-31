@@ -154,7 +154,11 @@ function navigateSubframe(browser, url, frameDepth = 0) {
     name: "Navigate",
     url,
   });
-  let subframeLoad = BrowserTestUtils.browserLoaded(browser, true);
+  let subframeLoad = BrowserTestUtils.browserLoaded(
+    browser,
+    true,
+    new URL(url).href
+  );
   return Promise.all([navigatePromise, subframeLoad]);
 }
 
@@ -368,7 +372,7 @@ async function prepareSubframes(browser, options) {
     [{ options, PAGE_URL }],
     async function (args) {
       let { options: allSubframeOptions, PAGE_URL: contentPageURL } = args;
-      function loadBeforeUnloadHelper(doc, subframeOptions) {
+      function loadBeforeUnloadHelper(doc, url, subframeOptions) {
         let subframe = doc.getElementById("subframe");
         subframe.remove();
         if (subframeOptions.sandboxAttributes === null) {
@@ -377,15 +381,23 @@ async function prepareSubframes(browser, options) {
           subframe.setAttribute("sandbox", subframeOptions.sandboxAttributes);
         }
         doc.body.appendChild(subframe);
-        subframe.contentWindow.location = contentPageURL;
+        subframe.contentWindow.location = url;
         return ContentTaskUtils.waitForEvent(subframe, "load").then(() => {
           return subframe.contentDocument;
         });
       }
 
       let currentDoc = content.document;
+      let depth = 1;
       for (let subframeOptions of allSubframeOptions) {
-        currentDoc = await loadBeforeUnloadHelper(currentDoc, subframeOptions);
+        // Circumvent recursive load checks.
+        let url = new URL(contentPageURL);
+        url.search = `depth=${depth++}`;
+        currentDoc = await loadBeforeUnloadHelper(
+          currentDoc,
+          url.href,
+          subframeOptions
+        );
       }
     }
   );
@@ -460,7 +472,7 @@ add_task(async function test_inner_window_scenarios() {
 
       // Now send the page back to the test page for
       // the next few tests.
-      BrowserTestUtils.loadURIString(browser, PAGE_URL);
+      BrowserTestUtils.startLoadingURIString(browser, PAGE_URL);
       await BrowserTestUtils.browserLoaded(browser);
 
       // We want to test hasBeforeUnload works properly with
@@ -675,7 +687,7 @@ add_task(async function test_outer_window_scenarios() {
 
       // Now send the page back to the test page for
       // the next few tests.
-      BrowserTestUtils.loadURIString(browser, PAGE_URL);
+      BrowserTestUtils.startLoadingURIString(browser, PAGE_URL);
       await BrowserTestUtils.browserLoaded(browser);
 
       // We should initially start with hasBeforeUnload set to false.

@@ -28,7 +28,7 @@ namespace mozilla {
 /* static */
 CrossProcessSemaphore* CrossProcessSemaphore::Create(const char*,
                                                      uint32_t aInitialValue) {
-  RefPtr<ipc::SharedMemoryBasic> sharedBuffer = new ipc::SharedMemoryBasic;
+  RefPtr<ipc::SharedMemory> sharedBuffer = new ipc::SharedMemory;
   if (!sharedBuffer->Create(sizeof(SemaphoreData))) {
     return nullptr;
   }
@@ -37,7 +37,7 @@ CrossProcessSemaphore* CrossProcessSemaphore::Create(const char*,
     return nullptr;
   }
 
-  SemaphoreData* data = static_cast<SemaphoreData*>(sharedBuffer->memory());
+  SemaphoreData* data = static_cast<SemaphoreData*>(sharedBuffer->Memory());
 
   if (!data) {
     return nullptr;
@@ -61,7 +61,7 @@ CrossProcessSemaphore* CrossProcessSemaphore::Create(const char*,
 /* static */
 CrossProcessSemaphore* CrossProcessSemaphore::Create(
     CrossProcessSemaphoreHandle aHandle) {
-  RefPtr<ipc::SharedMemoryBasic> sharedBuffer = new ipc::SharedMemoryBasic;
+  RefPtr<ipc::SharedMemory> sharedBuffer = new ipc::SharedMemory;
 
   if (!sharedBuffer->IsHandleValid(aHandle)) {
     return nullptr;
@@ -78,7 +78,7 @@ CrossProcessSemaphore* CrossProcessSemaphore::Create(
 
   sharedBuffer->CloseHandle();
 
-  SemaphoreData* data = static_cast<SemaphoreData*>(sharedBuffer->memory());
+  SemaphoreData* data = static_cast<SemaphoreData*>(sharedBuffer->Memory());
 
   if (!data) {
     return nullptr;
@@ -127,9 +127,9 @@ bool CrossProcessSemaphore::Wait(const Maybe<TimeDuration>& aWaitTime) {
       return false;
     }
 
-    ts.tv_nsec += (kNsPerMs * aWaitTime->ToMilliseconds());
-    ts.tv_sec += ts.tv_nsec / kNsPerSec;
-    ts.tv_nsec %= kNsPerSec;
+    uint64_t ns = uint64_t(kNsPerMs * aWaitTime->ToMilliseconds()) + ts.tv_nsec;
+    ts.tv_sec += ns / kNsPerSec;
+    ts.tv_nsec = ns % kNsPerSec;
 
     while ((ret = sem_timedwait(mSemaphore, &ts)) == -1 && errno == EINTR) {
     }
@@ -147,7 +147,7 @@ void CrossProcessSemaphore::Signal() {
 }
 
 CrossProcessSemaphoreHandle CrossProcessSemaphore::CloneHandle() {
-  CrossProcessSemaphoreHandle result = ipc::SharedMemoryBasic::NULLHandle();
+  CrossProcessSemaphoreHandle result = ipc::SharedMemory::NULLHandle();
 
   if (mSharedBuffer) {
     result = mSharedBuffer->CloneHandle();

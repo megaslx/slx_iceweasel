@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -9,7 +9,12 @@
  * PATENTS file, you can obtain it at www.aomedia.org/license/patent.
  */
 
-/* Sum the difference between every corresponding element of the buffers. */
+/*
+ * Sum the square of the difference between every corresponding element of the
+ * buffers.
+ */
+
+#include <stdlib.h>
 
 #include "config/aom_config.h"
 #include "config/aom_dsp_rtcd.h"
@@ -33,6 +38,7 @@ int64_t aom_sse_c(const uint8_t *a, int a_stride, const uint8_t *b,
   return sse;
 }
 
+#if CONFIG_AV1_HIGHBITDEPTH
 int64_t aom_highbd_sse_c(const uint8_t *a8, int a_stride, const uint8_t *b8,
                          int b_stride, int width, int height) {
   int y, x;
@@ -50,3 +56,4 @@ int64_t aom_highbd_sse_c(const uint8_t *a8, int a_stride, const uint8_t *b8,
   }
   return sse;
 }
+#endif

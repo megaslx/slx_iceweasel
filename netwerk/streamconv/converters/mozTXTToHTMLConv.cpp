@@ -7,6 +7,7 @@
 #include "mozTXTToHTMLConv.h"
 #include "mozilla/intl/Segmenter.h"
 #include "mozilla/Maybe.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #include "nsNetUtil.h"
 #include "nsUnicharUtils.h"
 #include "nsUnicodeProperties.h"
@@ -165,10 +166,6 @@ void mozTXTToHTMLConv::CompleteAbbreviatedURL(const char16_t* aInString,
     if (ItMatchesDelimited(aInString, aInLength, u"www.", 4, LT_IGNORE,
                            LT_IGNORE)) {
       aOutString.AssignLiteral("http://");
-      aOutString += aInString;
-    } else if (ItMatchesDelimited(aInString, aInLength, u"ftp.", 4, LT_IGNORE,
-                                  LT_IGNORE)) {
-      aOutString.AssignLiteral("ftp://");
       aOutString += aInString;
     }
   }
@@ -526,7 +523,7 @@ bool mozTXTToHTMLConv::FindURL(const char16_t* aInString, int32_t aInLength,
         state[check] = success;
       }
     }  // if
-  }    // for
+  }  // for
   return state[check] == success;
 }
 
@@ -909,7 +906,8 @@ bool mozTXTToHTMLConv::GlyphHit(const char16_t* aInString, int32_t aInLength,
 ****************************************************************************/
 
 NS_IMPL_ISUPPORTS(mozTXTToHTMLConv, mozITXTToHTMLConv, nsIStreamConverter,
-                  nsIStreamListener, nsIRequestObserver)
+                  nsIThreadRetargetableStreamListener, nsIStreamListener,
+                  nsIRequestObserver)
 
 int32_t mozTXTToHTMLConv::CiteLevelTXT(const char16_t* line,
                                        uint32_t& logLineStart) {
@@ -935,12 +933,10 @@ int32_t mozTXTToHTMLConv::CiteLevelTXT(const char16_t* line,
     uint32_t i = logLineStart;
 
 #ifdef QUOTE_RECOGNITION_AGGRESSIVE
-    for (; int32_t(i) < lineLength && IsSpace(line[i]); i++)
-      ;
+    for (; int32_t(i) < lineLength && IsSpace(line[i]); i++);
     for (; int32_t(i) < lineLength && IsAsciiAlpha(line[i]) &&
            nsCRT::IsUpper(line[i]);
-         i++)
-      ;
+         i++);
     if (int32_t(i) < lineLength && (line[i] == '>' || line[i] == ']'))
 #else
     if (int32_t(i) < lineLength && line[i] == '>')
@@ -1253,6 +1249,19 @@ mozTXTToHTMLConv::GetConvertedType(const nsACString& aFromType,
 NS_IMETHODIMP
 mozTXTToHTMLConv::OnDataAvailable(nsIRequest* request, nsIInputStream* inStr,
                                   uint64_t sourceOffset, uint32_t count) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+mozTXTToHTMLConv::OnDataFinished(nsresult aStatus) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+mozTXTToHTMLConv::CheckListenerChain() { return NS_ERROR_NOT_IMPLEMENTED; }
+
+NS_IMETHODIMP
+mozTXTToHTMLConv::MaybeRetarget(nsIRequest* request) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

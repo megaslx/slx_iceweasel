@@ -18,6 +18,7 @@ class BrowserParent;
 
 namespace layers {
 
+struct DoubleTapToZoomMetrics;
 /**
  * RemoteContentController implements PAPZChild and is used to access a
  * GeckoContentController that lives in a different process.
@@ -42,9 +43,10 @@ class RemoteContentController : public GeckoContentController,
 
   void RequestContentRepaint(const RepaintRequest& aRequest) override;
 
-  void HandleTap(TapType aTapType, const LayoutDevicePoint& aPoint,
-                 Modifiers aModifiers, const ScrollableLayerGuid& aGuid,
-                 uint64_t aInputBlockId) override;
+  void HandleTap(
+      TapType aTapType, const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+      const ScrollableLayerGuid& aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics) override;
 
   void NotifyPinchGesture(PinchGestureInput::PinchGestureType aType,
                           const ScrollableLayerGuid& aGuid,
@@ -65,6 +67,8 @@ class RemoteContentController : public GeckoContentController,
 
   void UpdateOverscrollOffset(const ScrollableLayerGuid& aGuid, float aX,
                               float aY, bool aIsRootContent) override;
+
+  void HideDynamicToolbar(const ScrollableLayerGuid& aGuid) override;
 
   void NotifyMozMouseScrollEvent(const ScrollableLayerGuid::ViewID& aScrollId,
                                  const nsString& aEvent) override;
@@ -96,13 +100,14 @@ class RemoteContentController : public GeckoContentController,
   nsCOMPtr<nsISerialEventTarget> mCompositorThread;
   bool mCanSend;
 
-  void HandleTapOnMainThread(TapType aType, LayoutDevicePoint aPoint,
-                             Modifiers aModifiers, ScrollableLayerGuid aGuid,
-                             uint64_t aInputBlockId);
-  void HandleTapOnCompositorThread(TapType aType, LayoutDevicePoint aPoint,
-                                   Modifiers aModifiers,
-                                   ScrollableLayerGuid aGuid,
-                                   uint64_t aInputBlockId);
+  void HandleTapOnParentProcessMainThread(
+      TapType aTapType, LayoutDevicePoint aPoint, Modifiers aModifiers,
+      ScrollableLayerGuid aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
+  void HandleTapOnGPUProcessMainThread(
+      TapType aTapType, LayoutDevicePoint aPoint, Modifiers aModifiers,
+      ScrollableLayerGuid aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
   void NotifyPinchGestureOnCompositorThread(
       PinchGestureInput::PinchGestureType aType,
       const ScrollableLayerGuid& aGuid, const LayoutDevicePoint& aFocusPoint,

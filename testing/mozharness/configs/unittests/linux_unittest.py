@@ -8,8 +8,9 @@ import platform
 # OS Specifics
 ABS_WORK_DIR = os.path.join(os.getcwd(), "build")
 BINARY_PATH = os.path.join(ABS_WORK_DIR, "application", "firefox", "firefox-bin")
-INSTALLER_PATH = os.path.join(ABS_WORK_DIR, "installer.tar.bz2")
+INSTALLER_PATH = os.path.join(ABS_WORK_DIR, "installer.tar.xz")
 XPCSHELL_NAME = "xpcshell"
+PLUGIN_CONTAINER_NAME = "plugin-container"
 HTTP3SERVER_NAME = "http3server"
 EXE_SUFFIX = ""
 DISABLE_SCREEN_SAVER = True
@@ -33,10 +34,11 @@ else:
 #####
 config = {
     ###
-    "virtualenv_modules": ["six==1.13.0", "vcversioner==2.16.0.0"],
+    "virtualenv_modules": ["six==1.16.0", "vcversioner==2.16.0.0"],
     "installer_path": INSTALLER_PATH,
     "binary_path": BINARY_PATH,
     "xpcshell_name": XPCSHELL_NAME,
+    "plugin_container_name": PLUGIN_CONTAINER_NAME,
     "http3server_name": HTTP3SERVER_NAME,
     "exe_suffix": EXE_SUFFIX,
     "run_file_names": {
@@ -159,7 +161,7 @@ config = {
             "--chunk-by-runtime",
             "--timeout=1200",
         ],
-        "mochitest-browser-chrome-screenshots": [
+        "mochitest-browser-screenshots": [
             "--flavor=browser",
             "--subsuite=screenshots",
         ],
@@ -182,6 +184,10 @@ config = {
         ],
         "mochitest-browser-a11y": ["--flavor=browser", "--subsuite=a11y"],
         "mochitest-browser-media": ["--flavor=browser", "--subsuite=media-bc"],
+        "mochitest-browser-translations": [
+            "--flavor=browser",
+            "--subsuite=translations",
+        ],
         "mochitest-a11y": ["--flavor=a11y", "--disable-e10s"],
         "mochitest-remote": ["--flavor=browser", "--subsuite=remote"],
     },
@@ -200,27 +206,7 @@ config = {
             "tests": ["tests/jsreftest/tests/js/src/tests/jstests.list"],
         },
         "reftest": {
-            "options": [
-                "--suite=reftest",
-                "--setpref=layers.acceleration.force-enabled=true",
-                "--topsrcdir=tests/reftest/tests",
-            ],
-            "tests": ["tests/reftest/tests/layout/reftests/reftest.list"],
-        },
-        "reftest-no-accel": {
-            "options": [
-                "--suite=reftest",
-                "--setpref=layers.acceleration.disabled=true",
-                "--topsrcdir=tests/reftest/tests",
-            ],
-            "tests": ["tests/reftest/tests/layout/reftests/reftest.list"],
-        },
-        "reftest-snapshot": {
-            "options": [
-                "--suite=reftest",
-                "--setpref=reftest.use-draw-snapshot=true",
-                "--topsrcdir=tests/reftest/tests",
-            ],
+            "options": ["--suite=reftest", "--topsrcdir=tests/reftest/tests"],
             "tests": ["tests/reftest/tests/layout/reftests/reftest.list"],
         },
     },
@@ -229,7 +215,7 @@ config = {
             "options": [
                 "--xpcshell=%(abs_app_dir)s/" + XPCSHELL_NAME,
                 "--http3server=%(abs_app_dir)s/" + HTTP3SERVER_NAME,
-                "--manifest=tests/xpcshell/tests/xpcshell.ini",
+                "--manifest=tests/xpcshell/tests/xpcshell.toml",
             ],
             "tests": [],
         },
@@ -237,7 +223,7 @@ config = {
             "options": [
                 "--xpcshell=%(abs_app_dir)s/" + XPCSHELL_NAME,
                 "--http3server=%(abs_app_dir)s/" + HTTP3SERVER_NAME,
-                "--manifest=tests/xpcshell/tests/xpcshell.ini",
+                "--manifest=tests/xpcshell/tests/xpcshell.toml",
                 "--sequential",
             ],
             "tests": [],

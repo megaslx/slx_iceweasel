@@ -2,43 +2,41 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import React, { Component } from "react";
-import PropTypes from "prop-types";
-import { connect } from "../../utils/connect";
+import React, { Component } from "devtools/client/shared/vendor/react";
+import { div, span } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import SourceIcon from "../shared/SourceIcon";
 import AccessibleImage from "../shared/AccessibleImage";
 
 import {
   getGeneratedSourceByURL,
-  getFirstSourceActorForGeneratedSource,
-  isSourceOverridden,
   getHideIgnoredSources,
-} from "../../selectors";
-import actions from "../../actions";
+  isSourceOverridden,
+} from "../../selectors/index";
+import actions from "../../actions/index";
 
 import { sourceTypes } from "../../utils/source";
 import { createLocation } from "../../utils/location";
-import { safeDecodeItemName } from "../../utils/sources-tree/utils";
 
-const classnames = require("devtools/client/shared/classnames.js");
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
-class SourceTreeItem extends Component {
+class SourceTreeItemContents extends Component {
   static get propTypes() {
     return {
       autoExpand: PropTypes.bool.isRequired,
-      depth: PropTypes.bool.isRequired,
+      depth: PropTypes.number.isRequired,
       expanded: PropTypes.bool.isRequired,
       focusItem: PropTypes.func.isRequired,
       focused: PropTypes.bool.isRequired,
-      hasMatchingGeneratedSource: PropTypes.bool.isRequired,
+      hasMatchingGeneratedSource: PropTypes.bool,
       item: PropTypes.object.isRequired,
-      getFirstSourceActorForGeneratedSource: PropTypes.func.isRequired,
       selectSourceItem: PropTypes.func.isRequired,
       setExpanded: PropTypes.func.isRequired,
       getParent: PropTypes.func.isRequired,
-      isOverridden: PropTypes.bool,
       hideIgnoredSources: PropTypes.bool,
+      arrow: PropTypes.object,
     };
   }
 
@@ -49,7 +47,7 @@ class SourceTreeItem extends Component {
     }
   }
 
-  onClick = e => {
+  onClick = () => {
     const { item, focusItem, selectSourceItem } = this.props;
 
     focusItem(item);
@@ -66,65 +64,65 @@ class SourceTreeItem extends Component {
       this.props.item,
       this.props.depth,
       this.props.setExpanded,
-      this.renderItemName()
+      this.renderItemName(),
+      this.props.isSourceOverridden
     );
   };
-
-  renderItemArrow() {
-    const { item, expanded } = this.props;
-    return item.type != "source" ? (
-      <AccessibleImage className={classnames("arrow", { expanded })} />
-    ) : (
-      <span className="img no-arrow" />
-    );
-  }
 
   renderIcon(item) {
     if (item.type == "thread") {
       const icon = item.thread.targetType.includes("worker")
         ? "worker"
         : "window";
-      return <AccessibleImage className={classnames(icon)} />;
+      return React.createElement(AccessibleImage, {
+        className: classnames(icon),
+      });
     }
     if (item.type == "group") {
       if (item.groupName === "Webpack") {
-        return <AccessibleImage className="webpack" />;
+        return React.createElement(AccessibleImage, {
+          className: "webpack",
+        });
       } else if (item.groupName === "Angular") {
-        return <AccessibleImage className="angular" />;
+        return React.createElement(AccessibleImage, {
+          className: "angular",
+        });
       }
       // Check if the group relates to an extension.
       // This happens when a webextension injects a content script.
       if (item.isForExtensionSource) {
-        return <AccessibleImage className="extension" />;
+        return React.createElement(AccessibleImage, {
+          className: "extension",
+        });
       }
-
-      return <AccessibleImage className="globe-small" />;
+      return React.createElement(AccessibleImage, {
+        className: "globe-small",
+      });
     }
     if (item.type == "directory") {
-      return <AccessibleImage className="folder" />;
+      return React.createElement(AccessibleImage, {
+        className: "folder",
+      });
     }
     if (item.type == "source") {
       const { source, sourceActor } = item;
-      return (
-        <SourceIcon
-          location={createLocation({ source, sourceActor })}
-          modifier={icon => {
-            // In the SourceTree, extension files should use the file-extension based icon,
-            // whereas we use the extension icon in other Components (eg. source tabs and breakpoints pane).
-            if (icon === "extension") {
-              return (
-                sourceTypes[source.displayURL.fileExtension] || "javascript"
-              );
-            }
-            return icon + (this.props.isOverridden ? " override" : "");
-          }}
-        />
-      );
+      return React.createElement(SourceIcon, {
+        location: createLocation({
+          source,
+          sourceActor,
+        }),
+        modifier: icon => {
+          // In the SourceTree, extension files should use the file-extension based icon,
+          // whereas we use the extension icon in other Components (eg. source tabs and breakpoints pane).
+          if (icon === "extension") {
+            return sourceTypes[source.displayURL.fileExtension] || "javascript";
+          }
+          return icon + (this.props.isSourceOverridden ? " override" : "");
+        },
+      });
     }
-
     return null;
   }
-
   renderItemName() {
     const { item } = this.props;
 
@@ -136,19 +134,14 @@ class SourceTreeItem extends Component {
       );
     }
     if (item.type == "group") {
-      return safeDecodeItemName(item.groupName);
+      return item.groupName;
     }
     if (item.type == "directory") {
       const parentItem = this.props.getParent(item);
-      return safeDecodeItemName(
-        item.path.replace(parentItem.path, "").replace(/^\//, "")
-      );
+      return item.path.replace(parentItem.path, "").replace(/^\//, "");
     }
     if (item.type == "source") {
-      const { displayURL } = item.source;
-      const name =
-        displayURL.filename + (displayURL.search ? displayURL.search : "");
-      return safeDecodeItemName(name);
+      return item.source.longName;
     }
 
     return null;
@@ -180,28 +173,34 @@ class SourceTreeItem extends Component {
     if (hideIgnoredSources && item.isBlackBoxed) {
       return null;
     }
-    const suffix = hasMatchingGeneratedSource ? (
-      <span className="suffix">{L10N.getStr("sourceFooter.mappedSuffix")}</span>
-    ) : null;
-
-    return (
-      <div
-        className={classnames("node", {
+    const suffix = hasMatchingGeneratedSource
+      ? span(
+          {
+            className: "suffix",
+          },
+          L10N.getStr("sourceFooter.mappedSuffix")
+        )
+      : null;
+    return div(
+      {
+        className: classnames("node", {
           focused,
           blackboxed: item.type == "source" && item.isBlackBoxed,
-        })}
-        key={item.path}
-        onClick={this.onClick}
-        onContextMenu={this.onContextMenu}
-        title={this.renderItemTooltip()}
-      >
-        {this.renderItemArrow()}
-        {this.renderIcon(item)}
-        <span className="label">
-          {this.renderItemName()}
-          {suffix}
-        </span>
-      </div>
+        }),
+        key: item.path,
+        onClick: this.onClick,
+        onContextMenu: this.onContextMenu,
+        title: this.renderItemTooltip(),
+      },
+      this.props.arrow,
+      this.renderIcon(item),
+      span(
+        {
+          className: "label",
+        },
+        this.renderItemName(),
+        suffix
+      )
     );
   }
 }
@@ -214,24 +213,67 @@ function getHasMatchingGeneratedSource(state, source) {
   return !!getGeneratedSourceByURL(state, source.url);
 }
 
+const toolboxMapStateToProps = (state, props) => {
+  const { item } = props;
+  return {
+    isSourceOverridden: isSourceOverridden(state, item.source),
+  };
+};
+
+const SourceTreeItemInner = connect(toolboxMapStateToProps, {}, undefined, {
+  storeKey: "toolbox-store",
+})(SourceTreeItemContents);
+
+class SourcesTreeItem extends Component {
+  static get propTypes() {
+    return {
+      autoExpand: PropTypes.bool.isRequired,
+      depth: PropTypes.bool.isRequired,
+      expanded: PropTypes.bool.isRequired,
+      focusItem: PropTypes.func.isRequired,
+      focused: PropTypes.bool.isRequired,
+      hasMatchingGeneratedSource: PropTypes.bool.isRequired,
+      item: PropTypes.object.isRequired,
+      selectSourceItem: PropTypes.func.isRequired,
+      setExpanded: PropTypes.func.isRequired,
+      showSourceTreeItemContextMenu: PropTypes.func.isRequired,
+      getParent: PropTypes.func.isRequired,
+      hideIgnoredSources: PropTypes.bool,
+      arrow: PropTypes.object,
+    };
+  }
+
+  render() {
+    return React.createElement(SourceTreeItemInner, {
+      autoExpand: this.props.autoExpand,
+      depth: this.props.depth,
+      expanded: this.props.expanded,
+      focusItem: this.props.focusItem,
+      focused: this.props.focused,
+      hasMatchingGeneratedSource: this.props.hasMatchingGeneratedSource,
+      item: this.props.item,
+      selectSourceItem: this.props.selectSourceItem,
+      setExpanded: this.props.setExpanded,
+      showSourceTreeItemContextMenu: this.props.showSourceTreeItemContextMenu,
+      getParent: this.props.getParent,
+      hideIgnoredSources: this.props.hideIgnoredSources,
+      arrow: this.props.arrow,
+    });
+  }
+}
+
 const mapStateToProps = (state, props) => {
   const { item } = props;
   if (item.type == "source") {
     const { source } = item;
     return {
       hasMatchingGeneratedSource: getHasMatchingGeneratedSource(state, source),
-      getFirstSourceActorForGeneratedSource: (sourceId, threadId) =>
-        getFirstSourceActorForGeneratedSource(state, sourceId, threadId),
-      isOverridden: isSourceOverridden(state, source),
       hideIgnoredSources: getHideIgnoredSources(state),
     };
   }
-  return {
-    getFirstSourceActorForGeneratedSource: (sourceId, threadId) =>
-      getFirstSourceActorForGeneratedSource(state, sourceId, threadId),
-  };
+  return {};
 };
 
 export default connect(mapStateToProps, {
   showSourceTreeItemContextMenu: actions.showSourceTreeItemContextMenu,
-})(SourceTreeItem);
+})(SourcesTreeItem);

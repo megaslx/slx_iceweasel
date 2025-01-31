@@ -1,9 +1,7 @@
 #!/usr/bin/env python
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """Python usage, esp. virtualenv.
 """
 
@@ -39,6 +37,10 @@ external_tools_path = os.path.join(
     os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__))),
     "external_tools",
 )
+
+
+class MultipleWheelMatchError(Exception):
+    pass
 
 
 def get_tlsv1_post():
@@ -128,7 +130,6 @@ class VirtualenvMixin(object):
         method=None,
         requirements=None,
         optional=False,
-        two_pass=False,
         editable=False,
     ):
         """Register a module to be installed with the virtualenv.
@@ -140,7 +141,7 @@ class VirtualenvMixin(object):
         applied.
         """
         self._virtualenv_modules.append(
-            (name, url, method, requirements, optional, two_pass, editable)
+            (name, url, method, requirements, optional, editable)
         )
 
     def query_virtualenv_path(self):
@@ -185,8 +186,7 @@ class VirtualenvMixin(object):
             [
                 python,
                 "-c",
-                "from distutils.sysconfig import get_python_lib; "
-                + "print(get_python_lib())",
+                "from sysconfig; print(sysconfig.get_paths()['purelib'])",
             ]
         )
         return self.site_packages_path
@@ -291,6 +291,9 @@ class VirtualenvMixin(object):
                 command = [pip, "install"]
             if no_deps:
                 command += ["--no-deps"]
+
+            command += ["--no-use-pep517"]
+
             # To avoid timeouts with our pypi server, increase default timeout:
             # https://bugzilla.mozilla.org/show_bug.cgi?id=1007230#c802
             command += ["--timeout", str(c.get("pip_timeout", 120))]
@@ -313,46 +316,55 @@ class VirtualenvMixin(object):
         fl_retry_loops = (fl_max_retry_minutes * 60) / fl_retry_sleep_seconds
         for link in c.get("find_links", []):
             parsed = urlparse.urlparse(link)
-            dns_result = None
-            get_result = None
-            retry_counter = 0
-            while retry_counter < fl_retry_loops and (
-                dns_result is None or get_result is None
-            ):
-                try:
-                    dns_result = socket.gethostbyname(parsed.hostname)
-                    get_result = urllib.request.urlopen(link, timeout=10).read()
-                    break
-                except socket.gaierror:
-                    retry_counter += 1
-                    self.warning(
-                        "find_links: dns check failed for %s, sleeping %ss and retrying..."
-                        % (parsed.hostname, fl_retry_sleep_seconds)
+            if parsed.scheme in ["http", "https"]:
+                dns_result = None
+                get_result = None
+                retry_counter = 0
+                while retry_counter < fl_retry_loops and (
+                    dns_result is None or get_result is None
+                ):
+                    try:
+                        dns_result = socket.gethostbyname(parsed.hostname)
+                        get_result = urllib.request.urlopen(link, timeout=10).read()
+                        break
+                    except socket.gaierror:
+                        retry_counter += 1
+                        self.warning(
+                            "find_links: dns check failed for %s, sleeping %ss and retrying..."
+                            % (parsed.hostname, fl_retry_sleep_seconds)
+                        )
+                        time.sleep(fl_retry_sleep_seconds)
+                    except (
+                        urllib.error.HTTPError,
+                        urllib.error.URLError,
+                        socket.timeout,
+                        http.client.RemoteDisconnected,
+                    ) as e:
+                        retry_counter += 1
+                        self.warning(
+                            "find_links: connection check failed for %s, sleeping %ss and retrying..."
+                            % (link, fl_retry_sleep_seconds)
+                        )
+                        self.warning("find_links: exception: %s" % e)
+                        time.sleep(fl_retry_sleep_seconds)
+                # now that the connectivity check is good, add the link
+                if dns_result and get_result:
+                    self.info(
+                        "find_links: connection checks passed for %s, adding." % link
                     )
-                    time.sleep(fl_retry_sleep_seconds)
-                except (
-                    urllib.error.HTTPError,
-                    urllib.error.URLError,
-                    socket.timeout,
-                    http.client.RemoteDisconnected,
-                ) as e:
-                    retry_counter += 1
+                    find_links_added += 1
+                    command.extend(["--find-links", link])
+                else:
                     self.warning(
-                        "find_links: connection check failed for %s, sleeping %ss and retrying..."
-                        % (link, fl_retry_sleep_seconds)
+                        "find_links: connection checks failed for %s"
+                        ", but max retries reached. continuing..." % link
                     )
-                    self.warning("find_links: exception: %s" % e)
-                    time.sleep(fl_retry_sleep_seconds)
-            # now that the connectivity check is good, add the link
-            if dns_result and get_result:
-                self.info("find_links: connection checks passed for %s, adding." % link)
+            elif len(parsed.path) > 0 and os.path.isdir(link):
+                self.info("find_links: dir exists %s, adding." % link)
                 find_links_added += 1
                 command.extend(["--find-links", link])
             else:
-                self.warning(
-                    "find_links: connection checks failed for %s"
-                    ", but max retries reached. continuing..." % link
-                )
+                self.warning("find_links: not a valid path nor URL %s" % link)
 
         # TODO: make this fatal if we always see failures after this
         if find_links_added == 0:
@@ -458,33 +470,52 @@ class VirtualenvMixin(object):
         ]
         if "abs_src_dir" not in dirs and "repo_path" in self.config:
             dirs["abs_src_dir"] = os.path.normpath(self.config["repo_path"])
+
+        wheels = {}
+
         for d in vendor_search_dirs:
             try:
                 src_dir = Path(d.format(**dirs))
             except KeyError:
                 continue
 
-            pip_wheel_path = (
-                src_dir
-                / "third_party"
-                / "python"
-                / "_venv"
-                / "wheels"
-                / "pip-23.0.1-py3-none-any.whl"
+            src_dir_wheels_path = (
+                src_dir / "third_party" / "python" / "_venv" / "wheels"
             )
-            setuptools_wheel_path = (
-                src_dir
-                / "third_party"
-                / "python"
-                / "_venv"
-                / "wheels"
-                / "setuptools-51.2.0-py3-none-any.whl"
-            )
+            wheel_patterns = {
+                "wheel": "wheel*.whl",
+                "pip": "pip*.whl",
+                "setuptools": "setuptools*.whl",
+            }
+            wheel_matches = {}
+            multi_match_errors = []
 
-            if all(path.exists() for path in (pip_wheel_path, setuptools_wheel_path)):
+            for key, pattern in wheel_patterns.items():
+                files = list(src_dir_wheels_path.glob(pattern))
+                num_matches = len(files)
+                if num_matches > 1:
+                    multi_match_errors.append(
+                        f"{num_matches} wheels for '{key}' were found."
+                    )
+                elif num_matches == 1:
+                    wheel_matches[key] = files[0]
+
+            if multi_match_errors:
+                error_message = (
+                    "Found multiple matches for wheels of the same package. "
+                    "Please ensure that only a single wheel is vendored for each:\n"
+                    + "\n".join(multi_match_errors)
+                )
+                raise MultipleWheelMatchError(error_message)
+
+            # At this point, we've errored out if there's more than one match for a specific wheel.
+            # So if every wheel has a single match, we're done and can break out. If we didn't match
+            # all the wheels we expect, continue searching in another directory.
+            if set(wheel_patterns.keys()) == set(wheel_matches.keys()):
+                wheels = wheel_matches
                 break
         else:
-            self.fatal("Can't find 'pip' and 'setuptools' wheels")
+            self.fatal("Can't find all of 'pip', 'setuptools', and 'wheel' wheels.")
 
         venv_python_bin = Path(self.query_python_path())
 
@@ -508,13 +539,12 @@ class VirtualenvMixin(object):
                     )
 
                     if debug_exe_dir.exists():
-
-                        for executable in {
+                        for executable in (
                             "python.exe",
                             "python_d.exe",
                             "pythonw.exe",
                             "pythonw_d.exe",
-                        }:
+                        ):
                             expected_python_debug_exe = debug_exe_dir / executable
                             if not expected_python_debug_exe.exists():
                                 shutil.copy(
@@ -556,8 +586,9 @@ class VirtualenvMixin(object):
                     "--only-binary",
                     ":all:",
                     "--disable-pip-version-check",
-                    str(pip_wheel_path),
-                    str(setuptools_wheel_path),
+                    wheels["pip"],
+                    wheels["setuptools"],
+                    wheels["wheel"],
                 ],
                 cwd=dirs["abs_work_dir"],
                 error_list=VirtualenvErrorList,
@@ -626,19 +657,8 @@ class VirtualenvMixin(object):
             method,
             requirements,
             optional,
-            two_pass,
             editable,
         ) in self._virtualenv_modules:
-            if two_pass:
-                self.install_module(
-                    module=module,
-                    module_url=url,
-                    install_method=method,
-                    requirements=requirements or (),
-                    optional=optional,
-                    no_deps=True,
-                    editable=editable,
-                )
             self.install_module(
                 module=module,
                 module_url=url,
@@ -772,9 +792,6 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
         super(ResourceMonitoringMixin, self).__init__(*args, **kwargs)
 
         self.register_virtualenv_module("psutil>=5.9.0", method="pip", optional=True)
-        self.register_virtualenv_module(
-            "mozsystemmonitor==1.0.1", method="pip", optional=True
-        )
         self.register_virtualenv_module("jsonschema==2.5.1", method="pip")
         self._resource_monitor = None
 
@@ -799,7 +816,24 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
             from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
 
             self.info("Starting resource monitoring.")
-            self._resource_monitor = SystemResourceMonitor(poll_interval=1.0)
+            metadata = {}
+            if "TASKCLUSTER_WORKER_TYPE" in os.environ:
+                metadata["device"] = os.environ["TASKCLUSTER_WORKER_TYPE"]
+            if "MOZHARNESS_TEST_PATHS" in os.environ:
+                metadata["product"] = " ".join(
+                    json.loads(os.environ["MOZHARNESS_TEST_PATHS"]).keys()
+                )
+            if "MOZ_SOURCE_CHANGESET" in os.environ and "MOZ_SOURCE_REPO" in os.environ:
+                metadata["sourceURL"] = (
+                    os.environ["MOZ_SOURCE_REPO"]
+                    + "/rev/"
+                    + os.environ["MOZ_SOURCE_CHANGESET"]
+                )
+            if "TASK_ID" in os.environ:
+                metadata["appBuildID"] = os.environ["TASK_ID"]
+            self._resource_monitor = SystemResourceMonitor(
+                poll_interval=0.1, metadata=metadata
+            )
             self._resource_monitor.start()
         except Exception:
             self.warning(
@@ -827,28 +861,28 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
         if not self._resource_monitor:
             return
 
-        # This should never raise an exception. This is a workaround until
-        # mozsystemmonitor is fixed. See bug 895388.
+        self._resource_monitor.stop()
+        self._log_resource_usage()
+
+        # Upload a JSON file containing the raw resource data.
         try:
-            self._resource_monitor.stop()
-            self._log_resource_usage()
-
-            # Upload a JSON file containing the raw resource data.
-            try:
-                upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
-                if not os.path.exists(upload_dir):
-                    os.makedirs(upload_dir)
-                with open(os.path.join(upload_dir, "resource-usage.json"), "w") as fh:
-                    json.dump(
-                        self._resource_monitor.as_dict(), fh, sort_keys=True, indent=4
-                    )
-            except (AttributeError, KeyError):
-                self.exception("could not upload resource usage JSON", level=WARNING)
-
-        except Exception:
-            self.warning(
-                "Exception when reporting resource usage: %s" % traceback.format_exc()
-            )
+            upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir)
+            with open(os.path.join(upload_dir, "resource-usage.json"), "w") as fh:
+                json.dump(
+                    self._resource_monitor.as_dict(), fh, sort_keys=True, indent=4
+                )
+            with open(
+                os.path.join(upload_dir, "profile_resource-usage.json"), "w"
+            ) as fh:
+                json.dump(
+                    self._resource_monitor.as_profile(),
+                    fh,
+                    separators=(",", ":"),
+                )
+        except (AttributeError, KeyError):
+            self.exception("could not upload resource usage JSON", level=WARNING)
 
     def _log_resource_usage(self):
         # Delay import because not available until virtualenv is populated.
@@ -1119,6 +1153,8 @@ class Python3Virtualenv(object):
 
         if c.get("find_links") and not c["pip_index"]:
             pip_args += ["--no-index"]
+
+        pip_args += ["--no-use-pep517"]
 
         # Add --find-links pages to look at. Add --trusted-host automatically if
         # the host isn't secure. This allows modern versions of pip to connect

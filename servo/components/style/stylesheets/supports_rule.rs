@@ -8,7 +8,7 @@ use crate::font_face::{FontFaceSourceFormatKeyword, FontFaceSourceTechFlags};
 use crate::parser::ParserContext;
 use crate::properties::{PropertyDeclaration, PropertyId, SourcePropertyDeclaration};
 use crate::selector_parser::{SelectorImpl, SelectorParser};
-use crate::shared_lock::{DeepCloneParams, DeepCloneWithLock, Locked};
+use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
 use crate::str::CssStringWriter;
 use crate::stylesheets::{CssRuleType, CssRules};
@@ -19,7 +19,6 @@ use cssparser::{ParseError as CssParseError, ParserInput};
 use malloc_size_of::{MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use selectors::parser::{Selector, SelectorParseErrorKind};
 use servo_arc::Arc;
-use std::ffi::{CStr, CString};
 use std::fmt::{self, Write};
 use std::str;
 use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
@@ -62,12 +61,11 @@ impl DeepCloneWithLock for SupportsRule {
         &self,
         lock: &SharedRwLock,
         guard: &SharedRwLockReadGuard,
-        params: &DeepCloneParams,
     ) -> Self {
         let rules = self.rules.read_with(guard);
         SupportsRule {
             condition: self.condition.clone(),
-            rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard, params))),
+            rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard))),
             enabled: self.enabled,
             source_location: self.source_location.clone(),
         }
@@ -91,10 +89,6 @@ pub enum SupportsCondition {
     Declaration(Declaration),
     /// A `selector()` function.
     Selector(RawSelector),
-    /// `-moz-bool-pref("pref-name")`
-    /// Since we need to pass it through FFI to get the pref value,
-    /// we store it as CString directly.
-    MozBoolPref(CString),
     /// `font-format(<font-format>)`
     FontFormat(FontFaceSourceFormatKeyword),
     /// `font-tech(<font-tech>)`
@@ -151,18 +145,6 @@ impl SupportsCondition {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         match_ignore_ascii_case! { function,
-            // Although this is an internal syntax, it is not necessary
-            // to check parsing context as far as we accept any
-            // unexpected token as future syntax, and evaluate it to
-            // false when not in chrome / ua sheet.
-            // See https://drafts.csswg.org/css-conditional-3/#general_enclosed
-            "-moz-bool-pref" => {
-                let name = {
-                    let name = input.expect_string()?;
-                    CString::new(name.as_bytes())
-                }.map_err(|_| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?;
-                Ok(SupportsCondition::MozBoolPref(name))
-            },
             "selector" => {
                 let pos = input.position();
                 consume_any_value(input)?;
@@ -233,7 +215,6 @@ impl SupportsCondition {
             SupportsCondition::And(ref vec) => vec.iter().all(|c| c.eval(cx)),
             SupportsCondition::Or(ref vec) => vec.iter().any(|c| c.eval(cx)),
             SupportsCondition::Declaration(ref decl) => decl.eval(cx),
-            SupportsCondition::MozBoolPref(ref name) => eval_moz_bool_pref(name, cx),
             SupportsCondition::Selector(ref selector) => selector.eval(cx),
             SupportsCondition::FontFormat(ref format) => eval_font_format(format),
             SupportsCondition::FontTech(ref tech) => eval_font_tech(tech),
@@ -243,26 +224,24 @@ impl SupportsCondition {
 }
 
 #[cfg(feature = "gecko")]
-fn eval_moz_bool_pref(name: &CStr, cx: &ParserContext) -> bool {
-    use crate::gecko_bindings::bindings;
-    if !cx.in_ua_or_chrome_sheet() {
-        return false;
-    }
-    unsafe { bindings::Gecko_GetBoolPrefValue(name.as_ptr()) }
-}
-
 fn eval_font_format(kw: &FontFaceSourceFormatKeyword) -> bool {
     use crate::gecko_bindings::bindings;
     unsafe { bindings::Gecko_IsFontFormatSupported(*kw) }
 }
 
+#[cfg(feature = "gecko")]
 fn eval_font_tech(flag: &FontFaceSourceTechFlags) -> bool {
     use crate::gecko_bindings::bindings;
     unsafe { bindings::Gecko_IsFontTechSupported(*flag) }
 }
 
 #[cfg(feature = "servo")]
-fn eval_moz_bool_pref(_: &CStr, _: &ParserContext) -> bool {
+fn eval_font_format(_: &FontFaceSourceFormatKeyword) -> bool {
+    false
+}
+
+#[cfg(feature = "servo")]
+fn eval_font_tech(_: &FontFaceSourceTechFlags) -> bool {
     false
 }
 
@@ -319,13 +298,6 @@ impl ToCss for SupportsCondition {
             SupportsCondition::Selector(ref selector) => {
                 dest.write_str("selector(")?;
                 selector.to_css(dest)?;
-                dest.write_char(')')
-            },
-            SupportsCondition::MozBoolPref(ref name) => {
-                dest.write_str("-moz-bool-pref(")?;
-                let name =
-                    str::from_utf8(name.as_bytes()).expect("Should be parsed from valid UTF-8");
-                name.to_css(dest)?;
                 dest.write_char(')')
             },
             SupportsCondition::FontFormat(ref kw) => {

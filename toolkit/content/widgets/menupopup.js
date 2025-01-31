@@ -7,24 +7,32 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  // For the non-native context menu styling, we need to know if we need
-  // a gutter for checkboxes. To do this, check whether there are any
-  // radio/checkbox type menuitems in a menupopup when showing it. We use a
-  // system bubbling event listener to ensure we run *after* the "normal"
-  // popupshowing listeners, so (visibility) changes they make to their items
-  // take effect first, before we check for checkable menuitems.
-  Services.els.addSystemEventListener(
-    document,
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
+  );
+
+  document.addEventListener(
     "popupshowing",
     function (e) {
+      // For the non-native context menu styling, we need to know if we need
+      // a gutter for checkboxes. To do this, check whether there are any
+      // radio/checkbox type menuitems in a menupopup when showing it.
       if (e.target.nodeName == "menupopup") {
         let haveCheckableChild = e.target.querySelector(
-          ":scope > menuitem:not([hidden]):is([type=checkbox],[type=radio])"
+          `:scope > menuitem:not([hidden]):is(${
+            // On macOS, selected menuitems are checked regardless of type
+            AppConstants.platform == "macosx"
+              ? "[checked=true],[selected=true]"
+              : "[type=checkbox],[type=radio]"
+          })`
         );
         e.target.toggleAttribute("needsgutter", haveCheckableChild);
       }
     },
-    false
+    // we use a system bubbling event listener to ensure we run *after* the
+    // "normal" popupshowing listeners, so (visibility) changes they make to
+    // their items take effect first, before we check for checkable menuitems.
+    { mozSystemGroup: true }
   );
 
   class MozMenuPopup extends MozElements.MozElementMixin(XULPopupElement) {
@@ -65,13 +73,13 @@
 
     initShadowDOM() {
       // Retarget events from shadow DOM arrowscrollbox to the host.
-      this.scrollBox.addEventListener("scroll", ev =>
+      this.scrollBox.addEventListener("scroll", () =>
         this.dispatchEvent(new Event("scroll"))
       );
-      this.scrollBox.addEventListener("overflow", ev =>
+      this.scrollBox.addEventListener("overflow", () =>
         this.dispatchEvent(new Event("overflow"))
       );
-      this.scrollBox.addEventListener("underflow", ev =>
+      this.scrollBox.addEventListener("underflow", () =>
         this.dispatchEvent(new Event("underflow"))
       );
     }
@@ -123,9 +131,7 @@
         :host(.in-menulist) arrowscrollbox::part(scrollbox) {
           overflow: auto;
           margin: 0;
-        }
-        :host(.in-menulist) arrowscrollbox::part(scrollbox-clip) {
-          overflow: visible;
+          padding: 0;
         }
       `;
     }
@@ -261,7 +267,7 @@
       // further to stay clear of the buttons.
       if (
         this.parentNode?.localName == "menulist" ||
-        !this.scrollBox.hasAttribute("overflowing")
+        !this.scrollBox.overflowing
       ) {
         return;
       }

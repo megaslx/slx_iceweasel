@@ -70,14 +70,16 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   NS_DECL_FRAMEARENA_HELPERS(nsImageFrame)
   NS_DECL_QUERYFRAME
 
-  void DestroyFrom(nsIFrame* aDestructRoot, PostDestroyData&) override;
+  void Destroy(DestroyContext&) override;
   void DidSetComputedStyle(ComputedStyle* aOldStyle) final;
 
   void Init(nsIContent* aContent, nsContainerFrame* aParent,
             nsIFrame* aPrevInFlow) override;
   void BuildDisplayList(nsDisplayListBuilder*, const nsDisplayListSet&) final;
-  nscoord GetMinISize(gfxContext* aRenderingContext) final;
-  nscoord GetPrefISize(gfxContext* aRenderingContext) final;
+
+  nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                         mozilla::IntrinsicISizeType aType) final;
+
   mozilla::IntrinsicSize GetIntrinsicSize() final { return mIntrinsicSize; }
   mozilla::AspectRatio GetIntrinsicRatio() const final {
     return mIntrinsicRatio;
@@ -90,7 +92,7 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
                               nsIContent** aContent) final;
   nsresult HandleEvent(nsPresContext*, mozilla::WidgetGUIEvent*,
                        nsEventStatus*) override;
-  mozilla::Maybe<Cursor> GetCursor(const nsPoint&) override;
+  Cursor GetCursor(const nsPoint&) override;
   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
                             int32_t aModType) final;
 
@@ -114,11 +116,6 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 #ifdef ACCESSIBILITY
   mozilla::a11y::AccType AccessibleType() override;
 #endif
-
-  bool IsFrameOfType(uint32_t aFlags) const final {
-    return nsAtomicContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedSizing));
-  }
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override;
@@ -177,7 +174,7 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   nsImageMap* GetImageMap();
   nsImageMap* GetExistingImageMap() const { return mImageMap; }
 
-  void AddInlineMinISize(gfxContext* aRenderingContext,
+  void AddInlineMinISize(const mozilla::IntrinsicSizeInput& aInput,
                          InlineMinISizeData* aData) final;
 
   void DisconnectMap();
@@ -204,6 +201,9 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   // Creates a suitable continuing frame for this frame.
   nsImageFrame* CreateContinuingFrame(mozilla::PresShell*,
                                       ComputedStyle*) const;
+
+  mozilla::AspectRatio ComputeIntrinsicRatioForImage(
+      imgIContainer*, bool aIgnoreContainment = false) const;
 
  private:
   friend nsIFrame* NS_NewImageFrame(mozilla::PresShell*, ComputedStyle*);
@@ -295,12 +295,17 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 
   void OnSizeAvailable(imgIRequest* aRequest, imgIContainer* aImage);
   void OnFrameUpdate(imgIRequest* aRequest, const nsIntRect* aRect);
-  void OnLoadComplete(imgIRequest* aRequest, nsresult aStatus);
+  void OnLoadComplete(imgIRequest* aRequest);
+  mozilla::IntrinsicSize ComputeIntrinsicSize(
+      bool aIgnoreContainment = false) const;
+  // Whether the image frame should use the mapped aspect ratio from width=""
+  // and height="".
+  bool ShouldUseMappedAspectRatio() const;
 
   /**
    * Notification that aRequest will now be the current request.
    */
-  void NotifyNewCurrentRequest(imgIRequest* aRequest, nsresult aStatus);
+  void NotifyNewCurrentRequest(imgIRequest* aRequest);
 
   /// Always sync decode our image when painting if @aForce is true.
   void SetForceSyncDecoding(bool aForce) { mForceSyncDecoding = aForce; }
@@ -313,20 +318,16 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 #endif
 
   /**
-   * Computes the predicted dest rect that we'll draw into, in app units, based
-   * upon the provided frame content box. (The content box is what
-   * nsDisplayImage::GetBounds() returns.)
-   * The result is not necessarily contained in the frame content box.
+   * Computes the dest rect that we'll draw into, in app units, based upon the
+   * provided frame content box. The result is not necessarily contained in the
+   * frame content box.
    */
-  nsRect PredictedDestRect(const nsRect& aFrameContentBox);
+  nsRect GetDestRect(const nsRect& aFrameContentBox,
+                     nsPoint* aAnchorPoint = nullptr);
 
  private:
   nscoord GetContinuationOffset() const;
   bool ShouldDisplaySelection();
-
-  // Whether the image frame should use the mapped aspect ratio from width=""
-  // and height="".
-  bool ShouldUseMappedAspectRatio() const;
 
   // Recalculate mIntrinsicSize from the image.
   bool UpdateIntrinsicSize();
@@ -425,14 +426,12 @@ class nsDisplayImage final : public nsPaintedDisplayItem {
  public:
   typedef mozilla::layers::LayerManager LayerManager;
 
-  nsDisplayImage(nsDisplayListBuilder* aBuilder, nsImageFrame* aFrame,
-                 imgIContainer* aImage, imgIContainer* aPrevImage)
-      : nsPaintedDisplayItem(aBuilder, aFrame),
-        mImage(aImage),
-        mPrevImage(aPrevImage) {
+  nsDisplayImage(nsDisplayListBuilder* aBuilder, nsImageFrame* aFrame)
+      : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayImage);
   }
-  ~nsDisplayImage() final { MOZ_COUNT_DTOR(nsDisplayImage); }
+
+  MOZ_COUNTED_DTOR_FINAL(nsDisplayImage)
 
   void Paint(nsDisplayListBuilder*, gfxContext* aCtx) final;
 
@@ -459,10 +458,12 @@ class nsDisplayImage final : public nsPaintedDisplayItem {
                                mozilla::layers::RenderRootStateManager*,
                                nsDisplayListBuilder*) final;
 
+  nsImageFrame* Frame() const {
+    MOZ_ASSERT(mFrame->IsImageFrame() || mFrame->IsImageControlFrame());
+    return static_cast<nsImageFrame*>(mFrame);
+  }
+
   NS_DISPLAY_DECL_NAME("Image", TYPE_IMAGE)
- private:
-  nsCOMPtr<imgIContainer> mImage;
-  nsCOMPtr<imgIContainer> mPrevImage;
 };
 
 }  // namespace mozilla

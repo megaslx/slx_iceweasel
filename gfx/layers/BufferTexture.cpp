@@ -68,6 +68,8 @@ class MemoryTextureData : public BufferTextureData {
 
   virtual size_t GetBufferSize() override { return mBufferSize; }
 
+  TextureType GetTextureType() const override { return TextureType::Unknown; }
+
  protected:
   uint8_t* mBuffer;
   size_t mBufferSize;
@@ -183,7 +185,7 @@ void BufferTextureData::FillInfo(TextureData::Info& aInfo) const {
   aInfo.canExposeMappedData = true;
 
   switch (aInfo.format) {
-    case gfx::SurfaceFormat::YUV:
+    case gfx::SurfaceFormat::YUV420:
     case gfx::SurfaceFormat::UNKNOWN:
       aInfo.supportsMoz2D = false;
       break;
@@ -266,7 +268,7 @@ already_AddRefed<gfx::DrawTarget> BufferTextureData::BorrowDrawTarget() {
 }
 
 bool BufferTextureData::BorrowMappedData(MappedTextureData& aData) {
-  if (GetFormat() == gfx::SurfaceFormat::YUV) {
+  if (GetFormat() == gfx::SurfaceFormat::YUV420) {
     return false;
   }
 
@@ -420,7 +422,7 @@ MemoryTextureData* MemoryTextureData::Create(gfx::IntSize aSize,
                                              TextureAllocationFlags aAllocFlags,
                                              IShmemAllocator* aAllocator) {
   // Should have used CreateForYCbCr.
-  MOZ_ASSERT(aFormat != gfx::SurfaceFormat::YUV);
+  MOZ_ASSERT(aFormat != gfx::SurfaceFormat::YUV420);
 
   if (aSize.width <= 0 || aSize.height <= 0) {
     gfxDebug() << "Asking for buffer of invalid size " << aSize.width << "x"
@@ -485,7 +487,7 @@ ShmemTextureData* ShmemTextureData::Create(gfx::IntSize aSize,
                                            IShmemAllocator* aAllocator) {
   MOZ_ASSERT(aAllocator);
   // Should have used CreateForYCbCr.
-  MOZ_ASSERT(aFormat != gfx::SurfaceFormat::YUV);
+  MOZ_ASSERT(aFormat != gfx::SurfaceFormat::YUV420);
 
   if (!aAllocator) {
     return nullptr;

@@ -22,13 +22,13 @@ add_task(async function () {
   // expression, which can break synthesizeMouseAtCenter. So here we wait for the
   // whyPaused element to be displayed then hidden before testing the highlight feature.
   const onWhyPausedDisplayed = waitUntil(() =>
-    dbg.win.document.querySelector(".why-paused")
+    dbg.win.document.querySelector(".why-paused:not(.hidden)")
   );
   await addExpression(dbg, "window.document.querySelector('button')");
   // TODO: Remove when Bug 1562165 lands.
   await onWhyPausedDisplayed;
   // TODO: Remove when Bug 1562165 lands.
-  await waitUntil(() => !dbg.win.document.querySelector(".why-paused"));
+  await waitUntil(() => dbg.win.document.querySelector(".why-paused.hidden"));
 
   info(
     "Check that hovering over DOM element highlights the node in content panel"
@@ -114,12 +114,23 @@ add_task(async function () {
   await waitForPaused(dbg);
 
   findElement(dbg, "frame", 2).focus();
-  await clickElement(dbg, "frame", 2);
+  clickElement(dbg, "frame", 2);
+  await waitForPaused(dbg);
+  await waitForSelectedSource(dbg, "doc-event-handler.html");
+
+  // Wait for all the updates to the document to complete to make all
+  // token elements have been rendered
+  await waitForDocumentLoadComplete(dbg);
 
   // Hover over the token to launch preview popup
   await tryHovering(dbg, 5, 8, "popup");
 
-  // Click the first inspector buttom to view node in inspector
+  info("Wait for top level node to expand and child nodes to load");
+  await waitUntil(
+    () => dbg.win.document.querySelectorAll(".preview-popup .node").length > 1
+  );
+
+  // Click the first inspector button to view node in inspector
   await waitForElement(dbg, "openInspector");
 
   // Loading the inspector panel at first, to make it possible to listen for

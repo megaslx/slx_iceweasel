@@ -166,7 +166,7 @@ nsPrintSettingsWin::nsPrintSettingsWin(const nsPrintSettingsWin& aPS)
 /* static */
 void nsPrintSettingsWin::PaperSizeUnitFromDmPaperSize(short aPaperSize,
                                                       int16_t& aPaperSizeUnit) {
-  if (aPaperSize > 0 && aPaperSize < int32_t(ArrayLength(kPaperSizeUnits))) {
+  if (aPaperSize > 0 && aPaperSize < int32_t(std::size(kPaperSizeUnits))) {
     aPaperSizeUnit = kPaperSizeUnits[aPaperSize];
   }
 }
@@ -294,7 +294,7 @@ void nsPrintSettingsWin::CopyFromNative(HDC aHdc, DEVMODEW* aDevMode) {
     // we've got a pages-per-sheet value with orthogonal pages/sheets, in which
     // case it's reversed.
     const bool arePagesPortraitMode =
-        (areSheetsOfPaperPortraitMode != HasOrthogonalSheetsAndPages());
+        (areSheetsOfPaperPortraitMode != HasOrthogonalPagesPerSheet());
 
     // Record the orientation of the pages (determined above) in mOrientation:
     mOrientation = int32_t(arePagesPortraitMode ? kPortraitOrientation

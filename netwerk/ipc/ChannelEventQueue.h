@@ -102,6 +102,8 @@ class NeckoTargetChannelFunctionEvent : public ChannelFunctionEvent {
 // event loop (ex: IPDL rpc) could cause listener->OnDataAvailable (for
 // instance) to be dispatched and called before mListener->OnStartRequest has
 // completed.
+// The ChannelEventQueue implementation ensures strict ordering of
+// event execution across target threads.
 
 class ChannelEventQueue final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ChannelEventQueue)
@@ -112,8 +114,8 @@ class ChannelEventQueue final {
         mSuspended(false),
         mForcedCount(0),
         mFlushing(false),
-        mHasCheckedForXMLHttpRequest(false),
-        mForXMLHttpRequest(false),
+        mHasCheckedForAsyncXMLHttpRequest(false),
+        mForAsyncXMLHttpRequest(false),
         mOwner(owner),
         mMutex("ChannelEventQueue::mMutex"),
         mRunningMutex("ChannelEventQueue::mRunningMutex") {}
@@ -129,6 +131,8 @@ class ChannelEventQueue final {
 
   // Append ChannelEvent in front of the event queue.
   inline void PrependEvent(UniquePtr<ChannelEvent>&& aEvent);
+  inline void PrependEventInternal(UniquePtr<ChannelEvent>&& aEvent)
+      MOZ_REQUIRES(mMutex);
   inline void PrependEvents(nsTArray<UniquePtr<ChannelEvent>>& aEvents);
 
   // After StartForcedQueueing is called, RunOrEnqueue() will start enqueuing
@@ -163,13 +167,13 @@ class ChannelEventQueue final {
   // Private destructor, to discourage deletion outside of Release():
   ~ChannelEventQueue() = default;
 
-  void SuspendInternal();
-  void ResumeInternal();
+  void SuspendInternal() MOZ_REQUIRES(mMutex);
+  void ResumeInternal() MOZ_REQUIRES(mMutex);
 
   bool MaybeSuspendIfEventsAreSuppressed() MOZ_REQUIRES(mMutex);
 
-  inline void MaybeFlushQueue();
-  void FlushQueue();
+  inline void MaybeFlushQueue() MOZ_REQUIRES(mMutex);
+  void FlushQueue() MOZ_REQUIRES(mMutex);
   inline void CompleteResume();
 
   ChannelEvent* TakeEvent();
@@ -182,10 +186,11 @@ class ChannelEventQueue final {
       MOZ_GUARDED_BY(mMutex);
   bool mFlushing MOZ_GUARDED_BY(mMutex);
 
-  // Whether the queue is associated with an XHR. This is lazily instantiated
-  // the first time it is needed. These are MainThread-only.
-  bool mHasCheckedForXMLHttpRequest;
-  bool mForXMLHttpRequest;
+  // Whether the queue is associated with an ssync XHR.
+  // This is lazily instantiated the first time it is needed.
+  // These are MainThread-only.
+  bool mHasCheckedForAsyncXMLHttpRequest;
+  bool mForAsyncXMLHttpRequest;
 
   // Keep ptr to avoid refcount cycle: only grab ref during flushing.
   nsISupports* mOwner MOZ_GUARDED_BY(mMutex);
@@ -220,7 +225,12 @@ inline void ChannelEventQueue::RunOrEnqueue(ChannelEvent* aCallback,
     bool enqueue = !!mForcedCount || mSuspended || mFlushing ||
                    !mEventQueue.IsEmpty() ||
                    MaybeSuspendIfEventsAreSuppressed();
-
+    // To ensure strict ordering of events across multiple threads we buffer the
+    // events for the below cases:
+    // a. event queuing is forced by AutoEventEnqueuer
+    // b. event queue is suspended
+    // c. an event is currently flushed/executed from the queue
+    // d. queue is non-empty (pending events on remote thread targets)
     if (enqueue) {
       mEventQueue.AppendElement(std::move(event));
       return;
@@ -236,6 +246,14 @@ inline void ChannelEventQueue::RunOrEnqueue(ChannelEvent* aCallback,
     if (!isCurrentThread) {
       // Leverage Suspend/Resume mechanism to trigger flush procedure without
       // creating a new one.
+      // The execution of further events in the queue is blocked until the
+      // target thread completes the execution of this event.
+      // A callback is dispatched to the target thread to flush events from the
+      // queue. This is done
+      // by ResumeInternal which dispatches a runnable
+      // (CompleteResumeRunnable) to the target thread. The target thread will
+      // call CompleteResume to flush the queue. All the events are run
+      // synchronously in their respective target threads.
       SuspendInternal();
       mEventQueue.AppendElement(std::move(event));
       ResumeInternal();
@@ -244,6 +262,8 @@ inline void ChannelEventQueue::RunOrEnqueue(ChannelEvent* aCallback,
   }
 
   MOZ_RELEASE_ASSERT(!aAssertionWhenNotQueued);
+  // execute the event synchronously if we are not queuing it and
+  // the target thread is the current thread
   event->Run();
 }
 
@@ -253,22 +273,21 @@ inline void ChannelEventQueue::StartForcedQueueing() {
 }
 
 inline void ChannelEventQueue::EndForcedQueueing() {
-  bool tryFlush = false;
-  {
-    MutexAutoLock lock(mMutex);
-    MOZ_ASSERT(mForcedCount > 0);
-    if (!--mForcedCount) {
-      tryFlush = true;
-    }
-  }
-
-  if (tryFlush) {
+  MutexAutoLock lock(mMutex);
+  MOZ_ASSERT(mForcedCount > 0);
+  if (!--mForcedCount) {
     MaybeFlushQueue();
   }
 }
 
 inline void ChannelEventQueue::PrependEvent(UniquePtr<ChannelEvent>&& aEvent) {
   MutexAutoLock lock(mMutex);
+  PrependEventInternal(std::move(aEvent));
+}
+
+inline void ChannelEventQueue::PrependEventInternal(
+    UniquePtr<ChannelEvent>&& aEvent) {
+  mMutex.AssertCurrentThreadOwns();
 
   // Prepending event while no queue flush foreseen might cause the following
   // channel events not run. This assertion here guarantee there must be a
@@ -297,50 +316,37 @@ inline void ChannelEventQueue::PrependEvents(
 }
 
 inline void ChannelEventQueue::CompleteResume() {
-  bool tryFlush = false;
-  {
-    MutexAutoLock lock(mMutex);
+  MutexAutoLock lock(mMutex);
 
-    // channel may have been suspended again since Resume fired event to call
-    // this.
-    if (!mSuspendCount) {
-      // we need to remain logically suspended (for purposes of queuing incoming
-      // messages) until this point, else new incoming messages could run before
-      // queued ones.
-      mSuspended = false;
-      tryFlush = true;
-    }
-  }
-
-  if (tryFlush) {
+  // channel may have been suspended again since Resume fired event to call
+  // this.
+  if (!mSuspendCount) {
+    // we need to remain logically suspended (for purposes of queuing incoming
+    // messages) until this point, else new incoming messages could run before
+    // queued ones.
+    mSuspended = false;
     MaybeFlushQueue();
   }
 }
 
 inline void ChannelEventQueue::MaybeFlushQueue() {
+  mMutex.AssertCurrentThreadOwns();
   // Don't flush if forced queuing on, we're already being flushed, or
   // suspended, or there's nothing to flush
-  bool flushQueue = false;
+  bool flushQueue = !mForcedCount && !mFlushing && !mSuspended &&
+                    !mEventQueue.IsEmpty() &&
+                    !MaybeSuspendIfEventsAreSuppressed();
 
-  {
-    MutexAutoLock lock(mMutex);
-    flushQueue = !mForcedCount && !mFlushing && !mSuspended &&
-                 !mEventQueue.IsEmpty() && !MaybeSuspendIfEventsAreSuppressed();
-
-    // Only one thread is allowed to run FlushQueue at a time.
-    if (flushQueue) {
-      mFlushing = true;
-    }
-  }
-
+  // Only one thread is allowed to run FlushQueue at a time.
   if (flushQueue) {
+    mFlushing = true;
     FlushQueue();
   }
 }
 
 // Ensures that RunOrEnqueue() will be collecting events during its lifetime
-// (letting caller know incoming IPDL msgs should be queued). Flushes the queue
-// when it goes out of scope.
+// (letting caller know incoming IPDL msgs should be queued). Flushes the
+// queue when it goes out of scope.
 class MOZ_STACK_CLASS AutoEventEnqueuer {
  public:
   explicit AutoEventEnqueuer(ChannelEventQueue* queue) : mEventQueue(queue) {

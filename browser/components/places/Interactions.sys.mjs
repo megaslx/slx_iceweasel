@@ -45,6 +45,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
   10000
 );
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "isHistoryEnabled",
+  "places.history.enabled",
+  false
+);
+
 const DOMWINDOW_OPENED_TOPIC = "domwindowopened";
 
 /**
@@ -93,7 +100,6 @@ function monotonicNow() {
  *   Last updated time as the number of milliseconds since the epoch.
  * @property {string} referrer
  *   The referrer to the url of the page that was interacted with (may be empty)
- *
  */
 
 /**
@@ -238,8 +244,11 @@ class _Interactions {
    *   The document information of the page associated with the interaction.
    */
   registerNewInteraction(browser, docInfo) {
-    if (!browser) {
-      // The browser may have already gone away.
+    if (
+      !browser ||
+      !lazy.isHistoryEnabled ||
+      !browser.browsingContext.useGlobalHistory
+    ) {
       return;
     }
     let interaction = this.#interactions.get(browser);
@@ -291,7 +300,11 @@ class _Interactions {
     // tab. Since that will be a non-active tab, it is acceptable that we don't
     // update the interaction. When switching away from active tabs, a TabSelect
     // notification is generated which we handle elsewhere.
-    if (!browser) {
+    if (
+      !browser ||
+      !lazy.isHistoryEnabled ||
+      !browser.browsingContext.useGlobalHistory
+    ) {
       return;
     }
     lazy.logConsole.debug("Saw the end of an interaction");
@@ -434,11 +447,8 @@ class _Interactions {
 
   /**
    * Handles a window going inactive.
-   *
-   * @param {DOMWindow} win
-   *   The window that is going inactive.
    */
-  #onDeactivateWindow(win) {
+  #onDeactivateWindow() {
     lazy.logConsole.debug("Window deactivate");
 
     this.#updateInteraction();
@@ -490,10 +500,8 @@ class _Interactions {
    *   The subject of the notification.
    * @param {string} topic
    *   The topic of the notification.
-   * @param {string} data
-   *   The data attached to the notification.
    */
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     switch (topic) {
       case DOMWINDOW_OPENED_TOPIC:
         this.#onWindowOpen(subject);
@@ -603,7 +611,7 @@ class InteractionsStore {
     // Block async shutdown to ensure the last write goes through.
     this.progress = {};
     lazy.PlacesUtils.history.shutdownClient.jsclient.addBlocker(
-      "Interactions.jsm:: store",
+      "Interactions.sys.mjs:: store",
       async () => this.flush(),
       { fetchState: () => this.progress }
     );
@@ -631,7 +639,7 @@ class InteractionsStore {
    */
   async reset() {
     await lazy.PlacesUtils.withConnectionWrapper(
-      "Interactions.jsm::reset",
+      "Interactions.sys.mjs::reset",
       async db => {
         await db.executeCached(`DELETE FROM moz_places_metadata`);
       }
@@ -726,7 +734,7 @@ class InteractionsStore {
 
     this.progress.pendingUpdates = i;
     await lazy.PlacesUtils.withConnectionWrapper(
-      "Interactions.jsm::updateDatabase",
+      "Interactions.sys.mjs::updateDatabase",
       async db => {
         await db.executeCached(
           `

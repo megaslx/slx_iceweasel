@@ -4,111 +4,395 @@
 
 //! Parsing for registered custom properties.
 
-use super::syntax::{
-    data_type::DataType, Component as SyntaxComponent, ComponentName, Descriptor, Multiplier,
+use std::fmt::{self, Write};
+
+use super::{
+    registry::PropertyRegistrationData,
+    syntax::{
+        data_type::DataType, Component as SyntaxComponent, ComponentName, Descriptor, Multiplier,
+    },
 };
 use crate::custom_properties::ComputedValue as ComputedPropertyValue;
 use crate::parser::{Parse, ParserContext};
+use crate::properties;
 use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
-use crate::values::{specified, CustomIdent};
-use cssparser::{BasicParseErrorKind, ParseErrorKind, Parser as CSSParser};
+use crate::values::{
+    animated::{self, Animate, Procedure},
+    computed::{self, ToComputedValue},
+    specified, CustomIdent,
+};
+use cssparser::{BasicParseErrorKind, ParseErrorKind, Parser as CSSParser, TokenSerializationType};
 use selectors::matching::QuirksMode;
 use servo_arc::Arc;
 use smallvec::SmallVec;
 use style_traits::{
-    arc_slice::ArcSlice, ParseError as StyleParseError, ParsingMode, PropertySyntaxParseError,
-    StyleParseErrorKind,
+    owned_str::OwnedStr, CssWriter, ParseError as StyleParseError, ParsingMode,
+    PropertySyntaxParseError, StyleParseErrorKind, ToCss,
 };
 
-#[derive(Clone)]
 /// A single component of the computed value.
-pub enum ValueComponent {
+pub type ComputedValueComponent = GenericValueComponent<
+    computed::Length,
+    computed::Number,
+    computed::Percentage,
+    computed::LengthPercentage,
+    computed::Color,
+    computed::Image,
+    computed::url::ComputedUrl,
+    computed::Integer,
+    computed::Angle,
+    computed::Time,
+    computed::Resolution,
+    computed::Transform,
+>;
+
+/// A single component of the specified value.
+pub type SpecifiedValueComponent = GenericValueComponent<
+    specified::Length,
+    specified::Number,
+    specified::Percentage,
+    specified::LengthPercentage,
+    specified::Color,
+    specified::Image,
+    specified::url::SpecifiedUrl,
+    specified::Integer,
+    specified::Angle,
+    specified::Time,
+    specified::Resolution,
+    specified::Transform,
+>;
+
+impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
+    GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
+{
+    fn serialization_types(&self) -> (TokenSerializationType, TokenSerializationType) {
+        let first_token_type = match self {
+            Self::Length(_) | Self::Angle(_) | Self::Time(_) | Self::Resolution(_) => {
+                TokenSerializationType::Dimension
+            },
+            Self::Number(_) | Self::Integer(_) => TokenSerializationType::Number,
+            Self::Percentage(_) | Self::LengthPercentage(_) => TokenSerializationType::Percentage,
+            Self::Color(_) |
+            Self::Image(_) |
+            Self::Url(_) |
+            Self::TransformFunction(_) |
+            Self::TransformList(_) => TokenSerializationType::Function,
+            Self::CustomIdent(_) => TokenSerializationType::Ident,
+            Self::String(_) => TokenSerializationType::Other,
+        };
+        let last_token_type = if first_token_type == TokenSerializationType::Function {
+            TokenSerializationType::Other
+        } else {
+            first_token_type
+        };
+        (first_token_type, last_token_type)
+    }
+}
+
+/// A generic enum used for both specified value components and computed value components.
+#[derive(
+    Animate, Clone, ToCss, ToComputedValue, ToResolvedValue, Debug, MallocSizeOf, PartialEq, ToShmem
+)]
+#[animation(no_bound(Image, Url))]
+pub enum GenericValueComponent<
+    Length,
+    Number,
+    Percentage,
+    LengthPercentage,
+    Color,
+    Image,
+    Url,
+    Integer,
+    Angle,
+    Time,
+    Resolution,
+    TransformFunction,
+> {
     /// A <length> value
-    Length(specified::Length),
+    Length(Length),
     /// A <number> value
-    Number(specified::Number),
+    Number(Number),
     /// A <percentage> value
-    Percentage(specified::Percentage),
+    Percentage(Percentage),
     /// A <length-percentage> value
-    LengthPercentage(specified::LengthPercentage),
+    LengthPercentage(LengthPercentage),
     /// A <color> value
-    Color(specified::Color),
+    Color(Color),
     /// An <image> value
-    Image(specified::Image),
+    #[animation(error)]
+    Image(Image),
     /// A <url> value
-    Url(specified::url::SpecifiedUrl),
+    #[animation(error)]
+    Url(Url),
     /// An <integer> value
-    Integer(specified::Integer),
+    Integer(Integer),
     /// An <angle> value
-    Angle(specified::Angle),
+    Angle(Angle),
     /// A <time> value
-    Time(specified::Time),
+    Time(Time),
     /// A <resolution> value
-    Resolution(specified::Resolution),
+    Resolution(Resolution),
     /// A <transform-function> value
-    TransformFunction(specified::Transform),
+    /// TODO(bug 1884606): <transform-function> `none` should not interpolate.
+    TransformFunction(TransformFunction),
     /// A <custom-ident> value
+    #[animation(error)]
     CustomIdent(CustomIdent),
-    /// A <transform-list> value
-    TransformList(ArcSlice<specified::Transform>),
+    /// A <transform-list> value, equivalent to <transform-function>+
+    /// TODO(bug 1884606): <transform-list> `none` should not interpolate.
+    TransformList(ComponentList<Self>),
+    /// A <string> value
+    #[animation(error)]
+    String(OwnedStr),
 }
 
-/// A parsed property value.
-pub enum ComputedValue {
-    /// A single parsed component value whose matched syntax descriptor component did not have a
-    /// multiplier.
-    Component(ValueComponent),
-    /// A parsed value whose syntax descriptor was the universal syntax definition.
-    Universal(Arc<ComputedPropertyValue>),
-    /// A list of parsed component values, whose matched syntax descriptor component had a
-    /// multiplier.
-    List(ArcSlice<ValueComponent>),
+/// A list of component values, including the list's multiplier.
+#[derive(Clone, ToComputedValue, ToResolvedValue, Debug, MallocSizeOf, PartialEq, ToShmem)]
+pub struct ComponentList<Component> {
+    /// Multiplier
+    pub multiplier: Multiplier,
+    /// The list of components contained.
+    pub components: crate::OwnedSlice<Component>,
 }
 
-impl ComputedValue {
+impl<Component: Animate> Animate for ComponentList<Component> {
+    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
+        if self.multiplier != other.multiplier {
+            return Err(());
+        }
+        let components = animated::lists::by_computed_value::animate(
+            &self.components,
+            &other.components,
+            procedure,
+        )?;
+        Ok(Self {
+            multiplier: self.multiplier,
+            components,
+        })
+    }
+}
+
+impl<Component: ToCss> ToCss for ComponentList<Component> {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        let mut iter = self.components.iter();
+        let Some(first) = iter.next() else {
+            return Ok(());
+        };
+        first.to_css(dest)?;
+
+        // The separator implied by the multiplier for this list.
+        let separator = match self.multiplier {
+            // <https://drafts.csswg.org/cssom-1/#serialize-a-whitespace-separated-list>
+            Multiplier::Space => " ",
+            // <https://drafts.csswg.org/cssom-1/#serialize-a-comma-separated-list>
+            Multiplier::Comma => ", ",
+        };
+        for component in iter {
+            dest.write_str(separator)?;
+            component.to_css(dest)?;
+        }
+        Ok(())
+    }
+}
+
+/// A struct for a single specified registered custom property value that includes its original URL
+// data so the value can be uncomputed later.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToCss, ToComputedValue, ToResolvedValue, ToShmem)]
+pub struct Value<Component> {
+    /// The registered custom property value.
+    pub(crate) v: ValueInner<Component>,
+    /// The URL data of the registered custom property from before it was computed. This is
+    /// necessary to uncompute registered custom properties.
+    #[css(skip)]
+    url_data: UrlExtraData,
+}
+
+impl<Component: Animate> Animate for Value<Component> {
+    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
+        let v = self.v.animate(&other.v, procedure)?;
+        Ok(Value {
+            v,
+            url_data: self.url_data.clone(),
+        })
+    }
+}
+
+impl<Component> Value<Component> {
+    /// Creates a new registered custom property value.
+    pub fn new(v: ValueInner<Component>, url_data: UrlExtraData) -> Self {
+        Self { v, url_data }
+    }
+
+    /// Creates a new registered custom property value presumed to have universal syntax.
+    pub fn universal(var: Arc<ComputedPropertyValue>) -> Self {
+        let url_data = var.url_data.clone();
+        let v = ValueInner::Universal(var);
+        Self { v, url_data }
+    }
+}
+
+/// A specified registered custom property value.
+#[derive(
+    Animate, ToComputedValue, ToResolvedValue, ToCss, Clone, Debug, MallocSizeOf, PartialEq, ToShmem,
+)]
+pub enum ValueInner<Component> {
+    /// A single specified component value whose syntax descriptor component did not have a
+    /// multiplier.
+    Component(Component),
+    /// A specified value whose syntax descriptor was the universal syntax definition.
+    #[animation(error)]
+    Universal(#[ignore_malloc_size_of = "Arc"] Arc<ComputedPropertyValue>),
+    /// A list of specified component values whose syntax descriptor component had a multiplier.
+    List(#[animation(field_bound)] ComponentList<Component>),
+}
+
+/// Specified custom property value.
+pub type SpecifiedValue = Value<SpecifiedValueComponent>;
+
+/// Computed custom property value.
+pub type ComputedValue = Value<ComputedValueComponent>;
+
+impl SpecifiedValue {
+    /// Convert a registered custom property to a Computed custom property value, given input and a
+    /// property registration.
+    pub fn compute<'i, 't>(
+        input: &mut CSSParser<'i, 't>,
+        registration: &PropertyRegistrationData,
+        url_data: &UrlExtraData,
+        context: &computed::Context,
+        allow_computationally_dependent: AllowComputationallyDependent,
+    ) -> Result<ComputedValue, ()> {
+        debug_assert!(!registration.syntax.is_universal(), "Shouldn't be needed");
+        let Ok(value) = Self::parse(
+            input,
+            &registration.syntax,
+            url_data,
+            allow_computationally_dependent,
+        ) else {
+            return Err(());
+        };
+
+        Ok(value.to_computed_value(context))
+    }
+
     /// Parse and validate a registered custom property value according to its syntax descriptor,
     /// and check for computational independence.
     pub fn parse<'i, 't>(
         mut input: &mut CSSParser<'i, 't>,
         syntax: &Descriptor,
         url_data: &UrlExtraData,
+        allow_computationally_dependent: AllowComputationallyDependent,
     ) -> Result<Self, StyleParseError<'i>> {
         if syntax.is_universal() {
-            return Ok(Self::Universal(ComputedPropertyValue::parse(&mut input)?));
+            let parsed = ComputedPropertyValue::parse(&mut input, url_data)?;
+            return Ok(SpecifiedValue {
+                v: ValueInner::Universal(Arc::new(parsed)),
+                url_data: url_data.clone(),
+            });
         }
 
         let mut values = SmallComponentVec::new();
-        let mut has_multiplier = false;
+        let mut multiplier = None;
         {
-            let mut parser = Parser::new(syntax, &mut values, &mut has_multiplier);
-            parser.parse(&mut input, url_data)?;
+            let mut parser = Parser::new(syntax, &mut values, &mut multiplier);
+            parser.parse(&mut input, url_data, allow_computationally_dependent)?;
         }
-        Ok(if has_multiplier {
-            Self::List(ArcSlice::from_iter(values.into_iter()))
+        let v = if let Some(multiplier) = multiplier {
+            ValueInner::List(ComponentList {
+                multiplier,
+                components: values.to_vec().into(),
+            })
         } else {
-            Self::Component(values[0].clone())
+            ValueInner::Component(values[0].clone())
+        };
+        Ok(Self {
+            v,
+            url_data: url_data.clone(),
         })
     }
 }
 
-type SmallComponentVec = SmallVec<[ValueComponent; 1]>;
+impl ComputedValue {
+    fn serialization_types(&self) -> (TokenSerializationType, TokenSerializationType) {
+        match &self.v {
+            ValueInner::Component(component) => component.serialization_types(),
+            ValueInner::Universal(_) => unreachable!(),
+            ValueInner::List(list) => list
+                .components
+                .first()
+                .map_or(Default::default(), |f| f.serialization_types()),
+        }
+    }
+
+    fn to_declared_value(&self) -> properties::CustomDeclarationValue {
+        if let ValueInner::Universal(ref var) = self.v {
+            return properties::CustomDeclarationValue::Unparsed(Arc::clone(var));
+        }
+        properties::CustomDeclarationValue::Parsed(Arc::new(ToComputedValue::from_computed_value(self)))
+    }
+
+    /// Returns the contained variable value if it exists, otherwise `None`.
+    pub fn as_universal(&self) -> Option<&Arc<ComputedPropertyValue>> {
+        if let ValueInner::Universal(ref var) = self.v {
+            Some(var)
+        } else {
+            None
+        }
+    }
+
+    /// Returns whether the the property is computed.
+    #[cfg(debug_assertions)]
+    pub fn is_parsed(&self, registration: &PropertyRegistrationData) -> bool {
+        registration.syntax.is_universal() || !matches!(self.v, ValueInner::Universal(_))
+    }
+
+    /// Convert to an untyped variable value.
+    pub fn to_variable_value(&self) -> ComputedPropertyValue {
+        if let ValueInner::Universal(ref value) = self.v {
+            return (**value).clone();
+        }
+        let serialization_types = self.serialization_types();
+        ComputedPropertyValue::new(
+            self.to_css_string(),
+            &self.url_data,
+            serialization_types.0,
+            serialization_types.1,
+        )
+    }
+}
+
+/// Whether the computed value parsing should allow computationaly dependent values like 3em or
+/// var(-foo).
+///
+/// https://drafts.css-houdini.org/css-properties-values-api-1/#computationally-independent
+pub enum AllowComputationallyDependent {
+    /// Only computationally independent values are allowed.
+    No,
+    /// Computationally independent and dependent values are allowed.
+    Yes,
+}
+
+type SmallComponentVec = SmallVec<[SpecifiedValueComponent; 1]>;
 
 struct Parser<'a> {
     syntax: &'a Descriptor,
     output: &'a mut SmallComponentVec,
-    output_has_multiplier: &'a mut bool,
+    output_multiplier: &'a mut Option<Multiplier>,
 }
 
 impl<'a> Parser<'a> {
     fn new(
         syntax: &'a Descriptor,
         output: &'a mut SmallComponentVec,
-        output_has_multiplier: &'a mut bool,
+        output_multiplier: &'a mut Option<Multiplier>,
     ) -> Self {
         Self {
             syntax,
             output,
-            output_has_multiplier,
+            output_multiplier,
         }
     }
 
@@ -116,18 +400,24 @@ impl<'a> Parser<'a> {
         &mut self,
         input: &mut CSSParser<'i, 't>,
         url_data: &UrlExtraData,
+        allow_computationally_dependent: AllowComputationallyDependent,
     ) -> Result<(), StyleParseError<'i>> {
+        use self::AllowComputationallyDependent::*;
+        let parsing_mode = match allow_computationally_dependent {
+            No => ParsingMode::DISALLOW_COMPUTATIONALLY_DEPENDENT,
+            Yes => ParsingMode::DEFAULT,
+        };
         let ref context = ParserContext::new(
             Origin::Author,
             url_data,
             Some(CssRuleType::Style),
-            ParsingMode::DISALLOW_FONT_RELATIVE,
+            parsing_mode,
             QuirksMode::NoQuirks,
             /* namespaces = */ Default::default(),
             None,
             None,
         );
-        for component in self.syntax.0.iter() {
+        for component in self.syntax.components.iter() {
             let result = input.try_parse(|input| {
                 input.parse_entirely(|input| {
                     Self::parse_value(context, input, &component.unpremultiplied())
@@ -135,7 +425,7 @@ impl<'a> Parser<'a> {
             });
             let Ok(values) = result else { continue };
             self.output.extend(values);
-            *self.output_has_multiplier = component.multiplier().is_some();
+            *self.output_multiplier = component.multiplier();
             break;
         }
         if self.output.is_empty() {
@@ -173,7 +463,7 @@ impl<'a> Parser<'a> {
         context: &ParserContext,
         input: &mut CSSParser<'i, 't>,
         component: &SyntaxComponent,
-    ) -> Result<ValueComponent, StyleParseError<'i>> {
+    ) -> Result<SpecifiedValueComponent, StyleParseError<'i>> {
         let data_type = match component.name() {
             ComponentName::DataType(ty) => ty,
             ComponentName::Ident(ref name) => {
@@ -181,38 +471,50 @@ impl<'a> Parser<'a> {
                 if ident != *name {
                     return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
                 }
-                return Ok(ValueComponent::CustomIdent(ident));
+                return Ok(SpecifiedValueComponent::CustomIdent(ident));
             },
         };
 
         let value = match data_type {
-            DataType::Length => ValueComponent::Length(specified::Length::parse(context, input)?),
-            DataType::Number => ValueComponent::Number(specified::Number::parse(context, input)?),
-            DataType::Percentage => {
-                ValueComponent::Percentage(specified::Percentage::parse(context, input)?)
+            DataType::Length => {
+                SpecifiedValueComponent::Length(specified::Length::parse(context, input)?)
             },
-            DataType::LengthPercentage => ValueComponent::LengthPercentage(
+            DataType::Number => {
+                SpecifiedValueComponent::Number(specified::Number::parse(context, input)?)
+            },
+            DataType::Percentage => {
+                SpecifiedValueComponent::Percentage(specified::Percentage::parse(context, input)?)
+            },
+            DataType::LengthPercentage => SpecifiedValueComponent::LengthPercentage(
                 specified::LengthPercentage::parse(context, input)?,
             ),
-            DataType::Color => ValueComponent::Color(specified::Color::parse(context, input)?),
-            DataType::Image => ValueComponent::Image(specified::Image::parse(context, input)?),
+            DataType::Color => {
+                SpecifiedValueComponent::Color(specified::Color::parse(context, input)?)
+            },
+            DataType::Image => {
+                SpecifiedValueComponent::Image(specified::Image::parse(context, input)?)
+            },
             DataType::Url => {
-                ValueComponent::Url(specified::url::SpecifiedUrl::parse(context, input)?)
+                SpecifiedValueComponent::Url(specified::url::SpecifiedUrl::parse(context, input)?)
             },
             DataType::Integer => {
-                ValueComponent::Integer(specified::Integer::parse(context, input)?)
+                SpecifiedValueComponent::Integer(specified::Integer::parse(context, input)?)
             },
-            DataType::Angle => ValueComponent::Angle(specified::Angle::parse(context, input)?),
-            DataType::Time => ValueComponent::Time(specified::Time::parse(context, input)?),
+            DataType::Angle => {
+                SpecifiedValueComponent::Angle(specified::Angle::parse(context, input)?)
+            },
+            DataType::Time => {
+                SpecifiedValueComponent::Time(specified::Time::parse(context, input)?)
+            },
             DataType::Resolution => {
-                ValueComponent::Resolution(specified::Resolution::parse(context, input)?)
+                SpecifiedValueComponent::Resolution(specified::Resolution::parse(context, input)?)
             },
-            DataType::TransformFunction => {
-                ValueComponent::TransformFunction(specified::Transform::parse(context, input)?)
-            },
+            DataType::TransformFunction => SpecifiedValueComponent::TransformFunction(
+                specified::Transform::parse(context, input)?,
+            ),
             DataType::CustomIdent => {
                 let name = CustomIdent::parse(input, &[])?;
-                ValueComponent::CustomIdent(name)
+                SpecifiedValueComponent::CustomIdent(name)
             },
             DataType::TransformList => {
                 let mut values = vec![];
@@ -226,14 +528,24 @@ impl<'a> Parser<'a> {
                 };
                 debug_assert_matches!(multiplier, Multiplier::Space);
                 loop {
-                    values.push(specified::Transform::parse(context, input)?);
+                    values.push(SpecifiedValueComponent::TransformFunction(
+                        specified::Transform::parse(context, input)?,
+                    ));
                     let result = Self::expect_multiplier(input, &multiplier);
                     if Self::expect_multiplier_yielded_eof_error(&result) {
                         break;
                     }
                     result?;
                 }
-                ValueComponent::TransformList(ArcSlice::from_iter(values.into_iter()))
+                let list = ComponentList {
+                    multiplier,
+                    components: values.into(),
+                };
+                SpecifiedValueComponent::TransformList(list)
+            },
+            DataType::String => {
+                let string = input.expect_string()?;
+                SpecifiedValueComponent::String(string.as_ref().to_owned().into())
             },
         };
         Ok(value)
@@ -264,5 +576,96 @@ impl<'a> Parser<'a> {
             },
             Multiplier::Comma => Ok(input.expect_comma()?),
         }
+    }
+}
+
+/// An animated value for custom property.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
+pub struct CustomAnimatedValue {
+    /// The name of the custom property.
+    pub(crate) name: crate::custom_properties::Name,
+    /// The computed value of the custom property.
+    value: ComputedValue,
+}
+
+impl Animate for CustomAnimatedValue {
+    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
+        if self.name != other.name {
+            return Err(());
+        }
+        let value = self.value.animate(&other.value, procedure)?;
+        Ok(Self {
+            name: self.name.clone(),
+            value,
+        })
+    }
+}
+
+impl CustomAnimatedValue {
+    pub(crate) fn from_computed(
+        name: &crate::custom_properties::Name,
+        value: &ComputedValue,
+    ) -> Self {
+        Self {
+            name: name.clone(),
+            value: value.clone(),
+        }
+    }
+
+    pub(crate) fn from_declaration(
+        declaration: &properties::CustomDeclaration,
+        context: &mut computed::Context,
+        _initial: &properties::ComputedValues,
+    ) -> Option<Self> {
+        let computed_value = match declaration.value {
+            properties::CustomDeclarationValue::Unparsed(ref value) => {
+                debug_assert!(
+                    context.builder.stylist.is_some(),
+                    "Need a Stylist to get property registration!"
+                );
+                let registration = context
+                    .builder
+                    .stylist
+                    .unwrap()
+                    .get_custom_property_registration(&declaration.name);
+                if registration.syntax.is_universal() {
+                    // FIXME: Do we need to perform substitution here somehow?
+                    ComputedValue {
+                        v: ValueInner::Universal(Arc::clone(value)),
+                        url_data: value.url_data.clone(),
+                    }
+                } else {
+                    let mut input = cssparser::ParserInput::new(&value.css);
+                    let mut input = CSSParser::new(&mut input);
+                    SpecifiedValue::compute(
+                        &mut input,
+                        registration,
+                        &value.url_data,
+                        context,
+                        AllowComputationallyDependent::Yes,
+                    ).unwrap_or_else(|_| {
+                        ComputedValue {
+                            v: ValueInner::Universal(Arc::clone(value)),
+                            url_data: value.url_data.clone(),
+                        }
+                    })
+                }
+            }
+            properties::CustomDeclarationValue::Parsed(ref v) => v.to_computed_value(context),
+            // FIXME: This should be made to work to the extent possible like for non-custom
+            // properties (using `initial` at least to handle unset / inherit).
+            properties::CustomDeclarationValue::CSSWideKeyword(..) => return None,
+        };
+        Some(Self {
+            name: declaration.name.clone(),
+            value: computed_value,
+        })
+    }
+
+    pub(crate) fn to_declaration(&self) -> properties::PropertyDeclaration {
+        properties::PropertyDeclaration::Custom(properties::CustomDeclaration {
+            name: self.name.clone(),
+            value: self.value.to_declared_value(),
+        })
     }
 }

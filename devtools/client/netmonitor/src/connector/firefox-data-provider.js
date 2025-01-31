@@ -345,9 +345,8 @@ class FirefoxDataProvider {
     // In any case, the previous target is destroyed and we can't fetch the stack anymore.
     let stacktrace = [];
     if (!actor.targetFront.isDestroyed()) {
-      const networkContentFront = await actor.targetFront.getFront(
-        "networkContent"
-      );
+      const networkContentFront =
+        await actor.targetFront.getFront("networkContent");
       stacktrace = await networkContentFront.getStackTrace(
         actor.stacktraceResourceId
       );
@@ -460,7 +459,7 @@ class FirefoxDataProvider {
    * @param {string} protocols webSocket protocols
    * @param {string} extensions
    */
-  async onWebSocketOpened(httpChannelId, effectiveURI, protocols, extensions) {}
+  async onWebSocketOpened() {}
 
   /**
    * The "webSocketClosed" message type handler.

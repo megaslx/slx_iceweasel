@@ -8,6 +8,14 @@ const permissionError =
   "error: NotAllowedError: The request is not allowed " +
   "by the user agent or the platform in the current context.";
 
+const getPerm = name =>
+  PermissionTestUtils.testExactPermission(gBrowser.contentPrincipal, name);
+
+function clearPermissions() {
+  PermissionTestUtils.remove(gBrowser.contentPrincipal, "camera");
+  PermissionTestUtils.remove(gBrowser.contentPrincipal, "microphone");
+}
+
 var gTests = [
   {
     desc: "getUserMedia audio+video",
@@ -46,6 +54,9 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ audio: true, video: true });
+      is(getPerm("microphone"), Services.perms.PROMPT_ACTION, "mic once");
+      is(getPerm("camera"), Services.perms.PROMPT_ACTION, "cam once");
+      clearPermissions();
       await closeStream();
     },
   },
@@ -86,6 +97,9 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ audio: true });
+      is(getPerm("microphone"), Services.perms.PROMPT_ACTION, "mic once");
+      is(getPerm("camera"), Services.perms.UNKNOWN_ACTION, "no cam once");
+      clearPermissions();
       await closeStream();
     },
   },
@@ -124,6 +138,9 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ video: true });
+      is(getPerm("microphone"), Services.perms.UNKNOWN_ACTION, "no mic once");
+      is(getPerm("camera"), Services.perms.PROMPT_ACTION, "cam once");
+      clearPermissions();
       await closeStream();
     },
   },
@@ -236,7 +253,13 @@ var gTests = [
       await indicator;
       await checkSharingUI({ video: true, audio: true });
 
+      is(getPerm("microphone"), Services.perms.PROMPT_ACTION, "mic once");
+      is(getPerm("camera"), Services.perms.PROMPT_ACTION, "cam once");
+
       await stopSharing();
+
+      is(getPerm("microphone"), Services.perms.UNKNOWN_ACTION, "mic revoked");
+      is(getPerm("camera"), Services.perms.UNKNOWN_ACTION, "cam revoked");
 
       // the stream is already closed, but this will do some cleanup anyway
       await closeStream(true);
@@ -307,6 +330,25 @@ var gTests = [
 
       await reloadAndAssertClosedStreams();
 
+      await checkSharingUI(
+        { video: false, audio: false },
+        undefined,
+        undefined,
+        {
+          audio: {
+            state: SitePermissions.PROMPT,
+            scope: SitePermissions.SCOPE_PERSISTENT,
+          },
+          video: {
+            state: SitePermissions.PROMPT,
+            scope: SitePermissions.SCOPE_PERSISTENT,
+          },
+        }
+      );
+
+      is(getPerm("microphone"), Services.perms.PROMPT_ACTION, "mic once");
+      is(getPerm("camera"), Services.perms.PROMPT_ACTION, "cam once");
+
       observerPromise = expectObserverCalled("getUserMedia:request");
       // After the reload, gUM(audio+camera) causes a prompt.
       promise = promisePopupNotificationShown("webRTC-shareDevices");
@@ -360,6 +402,23 @@ var gTests = [
         await promiseRequestDevice(aRequestAudio, aRequestVideo);
         await promise;
         await observerPromise;
+
+        let rememberCheckBoxLabel = "Remember this decision";
+        if (aRequestVideo) {
+          rememberCheckBoxLabel = "Remember for all cameras";
+          if (aRequestAudio) {
+            rememberCheckBoxLabel = "Remember for all cameras and microphones";
+          }
+        } else if (aRequestAudio) {
+          rememberCheckBoxLabel = "Remember for all microphones";
+        }
+
+        is(
+          PopupNotifications.getNotification("webRTC-shareDevices").options
+            .checkbox.label,
+          rememberCheckBoxLabel,
+          "Correct string used for decision checkbox"
+        );
 
         is(
           elt("webRTC-selectMicrophone").hidden,
@@ -823,66 +882,6 @@ var gTests = [
   },
 
   {
-    desc: "test showPermissionPanel",
-    run: async function checkShowPermissionPanel() {
-      if (!USING_LEGACY_INDICATOR) {
-        // The indicator only links to the permission panel for the
-        // legacy indicator.
-        return;
-      }
-
-      let observerPromise = expectObserverCalled("getUserMedia:request");
-      let promise = promisePopupNotificationShown("webRTC-shareDevices");
-      await promiseRequestDevice(false, true);
-      await promise;
-      await observerPromise;
-      checkDeviceSelectors(["camera"]);
-
-      let indicator = promiseIndicatorWindow();
-      let observerPromise1 = expectObserverCalled(
-        "getUserMedia:response:allow"
-      );
-      let observerPromise2 = expectObserverCalled("recording-device-events");
-      await promiseMessage("ok", () => {
-        PopupNotifications.panel.firstElementChild.button.click();
-      });
-      await observerPromise1;
-      await observerPromise2;
-      Assert.deepEqual(
-        await getMediaCaptureState(),
-        { video: true },
-        "expected camera to be shared"
-      );
-
-      await indicator;
-      await checkSharingUI({ video: true });
-
-      ok(permissionPopupHidden(), "permission panel should be hidden");
-      if (IS_MAC) {
-        let activeStreams = webrtcUI.getActiveStreams(true, false, false);
-        webrtcUI.showSharingDoorhanger(activeStreams[0]);
-      } else {
-        let win = Services.wm.getMostRecentWindow(
-          "Browser:WebRTCGlobalIndicator"
-        );
-
-        let elt = win.document.getElementById("audioVideoButton");
-        EventUtils.synthesizeMouseAtCenter(elt, {}, win);
-      }
-
-      await TestUtils.waitForCondition(
-        () => !permissionPopupHidden(),
-        "wait for permission panel to open"
-      );
-      ok(!permissionPopupHidden(), "permission panel should be open");
-
-      gPermissionPanel._permissionPopup.hidePopup();
-
-      await closeStream();
-    },
-  },
-
-  {
     desc: "'Always Allow' disabled on http pages",
     run: async function checkNoAlwaysOnHttp() {
       // Load an http page instead of the https version.
@@ -900,7 +899,7 @@ var gTests = [
       await disableObserverVerification();
 
       let browser = gBrowser.selectedBrowser;
-      BrowserTestUtils.loadURIString(
+      BrowserTestUtils.startLoadingURIString(
         browser,
         // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         browser.documentURI.spec.replace("https://", "http://")

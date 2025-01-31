@@ -247,11 +247,24 @@ impl ToCss for SVGPaintOrder {
     }
 }
 
+/// The context properties we understand.
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    Debug,
+    Default,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C)]
+pub struct ContextPropertyBits(u8);
 bitflags! {
-    /// The context properties we understand.
-    #[derive(Clone, Copy, Eq, Default, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToComputedValue, ToResolvedValue, ToShmem)]
-    #[repr(C)]
-    pub struct ContextPropertyBits: u8 {
+    impl ContextPropertyBits: u8 {
         /// `fill`
         const FILL = 1 << 0;
         /// `stroke`
@@ -349,6 +362,7 @@ impl Parse for MozContextProperties {
     PartialEq,
     Serialize,
     SpecifiedValueInfo,
+    ToAnimatedValue,
     ToAnimatedZero,
     ToComputedValue,
     ToCss,
@@ -387,5 +401,41 @@ impl Parse for DProperty {
         input.expect_function_matching("path")?;
         let path_data = input.parse_nested_block(|i| Parse::parse(context, i))?;
         Ok(DProperty::Path(path_data))
+    }
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[css(bitflags(single = "none", mixed = "non-scaling-stroke"))]
+#[repr(C)]
+/// https://svgwg.org/svg2-draft/coords.html#VectorEffects
+pub struct VectorEffect(u8);
+bitflags! {
+    impl VectorEffect: u8 {
+        /// `none`
+        const NONE = 0;
+        /// `non-scaling-stroke`
+        const NON_SCALING_STROKE = 1 << 0;
+    }
+}
+
+impl VectorEffect {
+    /// Returns the initial value of vector-effect
+    #[inline]
+    pub fn none() -> Self {
+        Self::NONE
     }
 }

@@ -139,18 +139,13 @@ content in your mozilla-central directory:
    ac_add_options --disable-sandbox
 
    # Keep symbols to symbolize TSan traces later
-   export MOZ_DEBUG_SYMBOLS=1
-   ac_add_options --enable-debug-symbols
    ac_add_options --disable-install-strip
 
-   # Settings for an opt build (preferred)
    # The -gline-tables-only ensures that all the necessary debug information for ASan
    # is present, but the rest is stripped so the resulting binaries are smaller.
-   ac_add_options --enable-optimize="-O2 -gline-tables-only"
-   ac_add_options --disable-debug
+   ac_add_options --enable-debug-symbols=-gline-tables-only
 
    # Settings for a debug+opt build
-   #ac_add_options --enable-optimize
    #ac_add_options --enable-debug
 
 
@@ -166,6 +161,23 @@ Starting Firefox
 After the build has completed, ``./mach run`` with the usual options for
 running in a debugger (``gdb``, ``lldb``, ``rr``, etc.) work fine, as do
 the ``--disable-e10s`` and other options.
+
+While running Firefox, ensure that it's not in safe mode since it might cause
+some tsan failures during startup. You can use a different profile or add
+``--temp-profile`` to use a temporary one.
+
+Firefox might crash on startup if you have an NVIDIA GPU with proprietary
+drivers. To fix this, disable the graphics acceleration by changing the following
+prefs:
+
+- ``gfx.x11-egl.force-disabled=true``
+- ``gfx.webrender.software.opengl=true``
+- ``layers.acceleration.disabled=true``
+
+You can either do this by passing these prefs to your ``./mach run`` command
+like this: ``./mach run --setpref "gfx.x11-egl.force-disabled=true" --setpref "gfx.webrender.software.opengl=true" --setpref "layers.acceleration.disabled=true"``
+or you can add them to your ``machrc`` file. Learn more about mach settings
+:ref:`here<mach_settings>`.
 
 Building only the JavaScript shell
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -190,7 +202,7 @@ subdirectory with that name.
         cd $1
         CC="/path/to/mozbuild/clang" \
         CXX="/path/to/mozbuild/clang++" \
-        ../configure --disable-debug --enable-optimize="-O2 -gline-tables-only" --enable-thread-sanitizer --disable-jemalloc
+        ../configure --enable-debug-symbols=-gline-tables-only --enable-thread-sanitizer --disable-jemalloc
    fi
 
 Thread Sanitizer and Symbols

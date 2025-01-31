@@ -11,9 +11,9 @@
 
 #include "nsGkAtoms.h"
 #include "mozilla/CSSEnabledState.h"
-#include "mozilla/Compiler.h"
 #include "mozilla/PseudoStyleType.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_layout.h"
 
 // Is this pseudo-element a CSS2 pseudo-element that can be specified
 // with the single colon syntax (in addition to the double-colon syntax,
@@ -58,8 +58,9 @@
 #define CSS_PSEUDO_ELEMENT_IS_FLEX_OR_GRID_ITEM (1 << 7)
 
 class nsCSSPseudoElements {
-  typedef mozilla::PseudoStyleType Type;
-  typedef mozilla::CSSEnabledState EnabledState;
+  using EnabledState = mozilla::CSSEnabledState;
+  using Request = mozilla::PseudoStyleRequest;
+  using Type = mozilla::PseudoStyleType;
 
  public:
   static bool IsEagerlyCascadedInServo(const Type aType) {
@@ -81,9 +82,9 @@ class nsCSSPseudoElements {
 #include "nsCSSPseudoElementList.h"
 #undef CSS_PSEUDO_ELEMENT
 
-  // Returns Nothing() for a syntactically invalid pseudo-element, and NotPseudo
-  // for the empty / null string.
-  static mozilla::Maybe<Type> GetPseudoType(
+  // Returns an empty Request for a syntactically invalid pseudo-element, and
+  // NotPseudo for the empty / null string.
+  static mozilla::Maybe<Request> ParsePseudoElement(
       const nsAString& aPseudoElement,
       EnabledState = EnabledState::ForAllContent);
 
@@ -91,11 +92,6 @@ class nsCSSPseudoElements {
   // PseudoType::CSSPseudoElementsEnd.
   // This only ever returns static atoms, so it's fine to return a raw pointer.
   static nsAtom* GetPseudoAtom(Type aType);
-
-  // Get the atom for a given pseudo-element string (e.g. "::before").  This can
-  // return dynamic atoms, for unrecognized pseudo-elements.
-  static already_AddRefed<nsAtom> GetPseudoAtom(
-      const nsAString& aPseudoElement);
 
   static bool PseudoElementContainsElements(const Type aType) {
     return PseudoElementHasFlags(aType, CSS_PSEUDO_ELEMENT_CONTAINS_ELEMENTS);
@@ -119,12 +115,25 @@ class nsCSSPseudoElements {
   }
 
   static bool EnabledInContent(Type aType) {
-    if (aType == Type::highlight &&
-        !mozilla::StaticPrefs::dom_customHighlightAPI_enabled()) {
-      return false;
+    switch (aType) {
+      case Type::highlight:
+        return mozilla::StaticPrefs::dom_customHighlightAPI_enabled();
+      case Type::targetText:
+        return mozilla::StaticPrefs::dom_text_fragments_enabled();
+      case Type::sliderTrack:
+      case Type::sliderThumb:
+      case Type::sliderFill:
+        return mozilla::StaticPrefs::layout_css_modern_range_pseudos_enabled();
+      case Type::viewTransition:
+      case Type::viewTransitionGroup:
+      case Type::viewTransitionImagePair:
+      case Type::viewTransitionOld:
+      case Type::viewTransitionNew:
+        return mozilla::StaticPrefs::dom_viewTransitions_enabled();
+      default:
+        return !PseudoElementHasAnyFlag(
+            aType, CSS_PSEUDO_ELEMENT_ENABLED_IN_UA_SHEETS_AND_CHROME);
     }
-    return !PseudoElementHasAnyFlag(
-        aType, CSS_PSEUDO_ELEMENT_ENABLED_IN_UA_SHEETS_AND_CHROME);
   }
 
   static bool IsEnabled(Type aType, EnabledState aEnabledState) {
@@ -145,7 +154,7 @@ class nsCSSPseudoElements {
     return false;
   }
 
-  static nsString PseudoTypeAsString(Type aPseudoType);
+  static nsString PseudoRequestAsString(const Request& aPseudoRequest);
 
  private:
   // Does the given pseudo-element have all of the flags given?

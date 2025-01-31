@@ -180,8 +180,8 @@ void IMEContext::Clear() {
 
 static UINT sWM_MSIME_MOUSE = 0;  // mouse message for MSIME 98/2000
 
-WritingMode IMMHandler::sWritingModeOfCompositionFont;
-nsString IMMHandler::sIMEName;
+MOZ_RUNINIT WritingMode IMMHandler::sWritingModeOfCompositionFont;
+MOZ_RUNINIT nsString IMMHandler::sIMEName;
 UINT IMMHandler::sCodePage = 0;
 DWORD IMMHandler::sIMEProperty = 0;
 DWORD IMMHandler::sIMEUIProperty = 0;
@@ -355,7 +355,7 @@ IMENotificationRequests IMMHandler::GetIMENotificationRequests() {
 // used for checking the lParam of WM_IME_COMPOSITION
 #define IS_COMPOSING_LPARAM(lParam) \
   ((lParam) & (GCS_COMPSTR | GCS_COMPATTR | GCS_COMPCLAUSE | GCS_CURSORPOS))
-#define IS_COMMITTING_LPARAM(lParam) ((lParam)&GCS_RESULTSTR)
+#define IS_COMMITTING_LPARAM(lParam) ((lParam) & GCS_RESULTSTR)
 // Some IMEs (e.g., the standard IME for Korean) don't have caret position,
 // then, we should not set caret position to compositionchange event.
 #define NO_IME_CARET -1

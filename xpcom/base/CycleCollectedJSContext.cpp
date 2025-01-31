@@ -22,13 +22,10 @@
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/Telemetry.h"
-#include "mozilla/TimelineConsumers.h"
-#include "mozilla/TimelineMarker.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMJSClass.h"
 #include "mozilla/dom/FinalizationRegistryBinding.h"
-#include "mozilla/dom/ProfileTimelineMarkerBinding.h"
 #include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/PromiseDebugging.h"
 #include "mozilla/dom/PromiseRejectionEvent.h"
@@ -44,7 +41,6 @@
 #include "nsDOMMutationObserver.h"
 #include "nsJSUtils.h"
 #include "nsPIDOMWindow.h"
-#include "nsStringBuffer.h"
 #include "nsThread.h"
 #include "nsThreadUtils.h"
 #include "nsWrapperCache.h"
@@ -232,24 +228,78 @@ class PromiseJobRunnable final : public MicroTaskRunnable {
   bool mPropagateUserInputEventHandling;
 };
 
-JSObject* CycleCollectedJSContext::getIncumbentGlobal(JSContext* aCx) {
+// Finalizer for instances of FinalizeHostDefinedData.
+//
+// HostDefinedData only contains incumbent global, no need to
+// clean that up.
+// TODO(sefeng): Bug 1929356 will add [[SchedulingState]] to HostDefinedData.
+void FinalizeHostDefinedData(JS::GCContext* gcx, JSObject* objSelf) {}
+
+static const JSClassOps sHostDefinedData = {
+    nullptr /* addProperty */, nullptr /* delProperty */,
+    nullptr /* enumerate */,   nullptr /* newEnumerate */,
+    nullptr /* resolve */,     nullptr /* mayResolve */,
+    FinalizeHostDefinedData /* finalize */
+};
+
+enum { INCUMBENT_SETTING_SLOT, HOSTDEFINED_DATA_SLOTS };
+
+// Implements `HostDefined` in https://html.spec.whatwg.org/#hostmakejobcallback
+static const JSClass sHostDefinedDataClass = {
+    "HostDefinedData",
+    JSCLASS_HAS_RESERVED_SLOTS(HOSTDEFINED_DATA_SLOTS) |
+        JSCLASS_BACKGROUND_FINALIZE,
+    &sHostDefinedData};
+
+bool CycleCollectedJSContext::getHostDefinedData(
+    JSContext* aCx, JS::MutableHandle<JSObject*> aData) const {
   nsIGlobalObject* global = mozilla::dom::GetIncumbentGlobal();
-  if (global) {
-    return global->GetGlobalJSObject();
+  if (!global) {
+    aData.set(nullptr);
+    return true;
   }
-  return nullptr;
+
+  JS::Rooted<JSObject*> incumbentGlobal(aCx, global->GetGlobalJSObject());
+
+  if (!incumbentGlobal) {
+    aData.set(nullptr);
+    return true;
+  }
+
+  JSAutoRealm ar(aCx, incumbentGlobal);
+
+  JS::Rooted<JSObject*> objResult(aCx,
+                                  JS_NewObject(aCx, &sHostDefinedDataClass));
+  if (!objResult) {
+    aData.set(nullptr);
+    return false;
+  }
+
+  JS_SetReservedSlot(objResult, INCUMBENT_SETTING_SLOT,
+                     JS::ObjectValue(*incumbentGlobal));
+  aData.set(objResult);
+
+  return true;
 }
 
 bool CycleCollectedJSContext::enqueuePromiseJob(
     JSContext* aCx, JS::HandleObject aPromise, JS::HandleObject aJob,
-    JS::HandleObject aAllocationSite, JS::HandleObject aIncumbentGlobal) {
+    JS::HandleObject aAllocationSite, JS::HandleObject hostDefinedData) {
   MOZ_ASSERT(aCx == Context());
   MOZ_ASSERT(Get() == this);
 
   nsIGlobalObject* global = nullptr;
-  if (aIncumbentGlobal) {
-    global = xpc::NativeGlobal(aIncumbentGlobal);
+
+  if (hostDefinedData) {
+    MOZ_RELEASE_ASSERT(JS::GetClass(hostDefinedData.get()) ==
+                       &sHostDefinedDataClass);
+    JS::Value incumbentGlobal =
+        JS::GetReservedSlot(hostDefinedData.get(), INCUMBENT_SETTING_SLOT);
+    // hostDefinedData is only created when incumbent global exists.
+    MOZ_ASSERT(incumbentGlobal.isObject());
+    global = xpc::NativeGlobal(&incumbentGlobal.toObject());
   }
+
   JS::RootedObject jobGlobal(aCx, JS::CurrentGlobalOrNull(aCx));
   RefPtr<PromiseJobRunnable> runnable = new PromiseJobRunnable(
       aPromise, aJob, jobGlobal, aAllocationSite, global);
@@ -284,10 +334,49 @@ class CycleCollectedJSContext::SavedMicroTaskQueue
   }
 
   ~SavedMicroTaskQueue() {
-    MOZ_RELEASE_ASSERT(ccjs->mPendingMicroTaskRunnables.empty());
+    // The JS Debugger attempts to maintain the invariant that microtasks which
+    // occur durring debugger operation are completely flushed from the task
+    // queue before returning control to the debuggee, in order to avoid
+    // micro-tasks generated during debugging from interfering with regular
+    // operation.
+    //
+    // While the vast majority of microtasks can be reliably flushed,
+    // synchronous operations (see nsAutoSyncOperation) such as printing and
+    // alert diaglogs suppress the execution of some microtasks.
+    //
+    // When PerformMicroTaskCheckpoint is run while microtasks are suppressed,
+    // any suppressed microtasks are gathered into a new SuppressedMicroTasks
+    // runnable, which is enqueued on exit from PerformMicroTaskCheckpoint. As a
+    // result, AutoDebuggerJobQueueInterruption::runJobs is not able to
+    // correctly guarantee that the microtask queue is totally empty in the
+    // presence of sync operations.
+    //
+    // Previous versions of this code release-asserted that the queue was empty,
+    // causing user observable crashes (Bug 1849675). To avoid this, we instead
+    // choose to move suspended microtasks from the SavedMicroTaskQueue to the
+    // main microtask queue in this destructor. This means that jobs enqueued
+    // during synchnronous events under debugger control may produce events
+    // which run outside the debugger, but this is viewed as strictly
+    // preferrable to crashing.
+    MOZ_RELEASE_ASSERT(ccjs->mPendingMicroTaskRunnables.size() <= 1);
     MOZ_RELEASE_ASSERT(ccjs->mDebuggerRecursionDepth);
+    RefPtr<MicroTaskRunnable> maybeSuppressedTasks;
+
+    // Handle the case where there is a SuppressedMicroTask still in the queue.
+    if (!ccjs->mPendingMicroTaskRunnables.empty()) {
+      maybeSuppressedTasks = ccjs->mPendingMicroTaskRunnables.front();
+      ccjs->mPendingMicroTaskRunnables.pop_front();
+    }
+
+    MOZ_RELEASE_ASSERT(ccjs->mPendingMicroTaskRunnables.empty());
     ccjs->mDebuggerRecursionDepth--;
     ccjs->mPendingMicroTaskRunnables.swap(mQueue);
+
+    // Re-enqueue the suppressed task now that we've put the original microtask
+    // queue back.
+    if (maybeSuppressedTasks) {
+      ccjs->mPendingMicroTaskRunnables.push_back(maybeSuppressedTasks);
+    }
   }
 
  private:
@@ -352,7 +441,10 @@ void CycleCollectedJSContext::PromiseRejectionTrackerCallback(
       nsIGlobalObject* global = xpc::NativeGlobal(aPromise);
       if (nsCOMPtr<EventTarget> owner = do_QueryInterface(global)) {
         RootedDictionary<PromiseRejectionEventInit> init(aCx);
-        init.mPromise = Promise::CreateFromExisting(global, aPromise);
+        if (RefPtr<Promise> newPromise =
+                Promise::CreateFromExisting(global, aPromise)) {
+          init.mPromise = newPromise->PromiseObj();
+        }
         init.mReason = JS::GetPromiseResult(aPromise);
 
         RefPtr<PromiseRejectionEvent> event =
@@ -360,7 +452,7 @@ void CycleCollectedJSContext::PromiseRejectionTrackerCallback(
                                                init);
 
         RefPtr<AsyncEventDispatcher> asyncDispatcher =
-            new AsyncEventDispatcher(owner, event);
+            new AsyncEventDispatcher(owner, event.forget());
         asyncDispatcher->PostDOMEvent();
       }
     }
@@ -744,7 +836,7 @@ NS_IMETHODIMP CycleCollectedJSContext::NotifyUnhandledRejections::Run() {
       if (nsCOMPtr<EventTarget> target =
               do_QueryInterface(promise->GetParentObject())) {
         RootedDictionary<PromiseRejectionEventInit> init(cx);
-        init.mPromise = promise;
+        init.mPromise = promiseObj;
         init.mReason = JS::GetPromiseResult(promiseObj);
         init.mCancelable = true;
 
@@ -789,6 +881,35 @@ nsresult CycleCollectedJSContext::NotifyUnhandledRejections::Cancel() {
   return NS_OK;
 }
 
+#ifdef MOZ_EXECUTION_TRACING
+
+void CycleCollectedJSContext::BeginExecutionTracingAsync() {
+  mOwningThread->Dispatch(NS_NewRunnableFunction(
+      "CycleCollectedJSContext::BeginExecutionTracingAsync", [] {
+        CycleCollectedJSContext* ccjs = CycleCollectedJSContext::Get();
+        if (ccjs) {
+          JS_TracerBeginTracing(ccjs->Context());
+        }
+      }));
+}
+
+void CycleCollectedJSContext::EndExecutionTracingAsync() {
+  mOwningThread->Dispatch(NS_NewRunnableFunction(
+      "CycleCollectedJSContext::EndExecutionTracingAsync", [] {
+        CycleCollectedJSContext* ccjs = CycleCollectedJSContext::Get();
+        if (ccjs) {
+          JS_TracerEndTracing(ccjs->Context());
+        }
+      }));
+}
+
+#else
+
+void CycleCollectedJSContext::BeginExecutionTracingAsync() {}
+void CycleCollectedJSContext::EndExecutionTracingAsync() {}
+
+#endif
+
 class FinalizationRegistryCleanup::CleanupRunnable
     : public DiscardableRunnable {
  public:
@@ -825,18 +946,29 @@ void FinalizationRegistryCleanup::Init() {
 
 /* static */
 void FinalizationRegistryCleanup::QueueCallback(JSFunction* aDoCleanup,
-                                                JSObject* aIncumbentGlobal,
+                                                JSObject* aHostDefinedData,
                                                 void* aData) {
   FinalizationRegistryCleanup* cleanup =
       static_cast<FinalizationRegistryCleanup*>(aData);
-  cleanup->QueueCallback(aDoCleanup, aIncumbentGlobal);
+  cleanup->QueueCallback(aDoCleanup, aHostDefinedData);
 }
 
 void FinalizationRegistryCleanup::QueueCallback(JSFunction* aDoCleanup,
-                                                JSObject* aIncumbentGlobal) {
+                                                JSObject* aHostDefinedData) {
   bool firstCallback = mCallbacks.empty();
 
-  MOZ_ALWAYS_TRUE(mCallbacks.append(Callback{aDoCleanup, aIncumbentGlobal}));
+  JSObject* incumbentGlobal = nullptr;
+
+  // Extract incumbentGlobal from aHostDefinedData.
+  if (aHostDefinedData) {
+    MOZ_RELEASE_ASSERT(JS::GetClass(aHostDefinedData) ==
+                       &sHostDefinedDataClass);
+    JS::Value global =
+        JS::GetReservedSlot(aHostDefinedData, INCUMBENT_SETTING_SLOT);
+    incumbentGlobal = &global.toObject();
+  }
+
+  MOZ_ALWAYS_TRUE(mCallbacks.append(Callback{aDoCleanup, incumbentGlobal}));
 
   if (firstCallback) {
     RefPtr<CleanupRunnable> cleanup = new CleanupRunnable(this);

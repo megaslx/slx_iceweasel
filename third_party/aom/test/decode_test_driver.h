@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -12,7 +12,7 @@
 #ifndef AOM_TEST_DECODE_TEST_DRIVER_H_
 #define AOM_TEST_DECODE_TEST_DRIVER_H_
 #include <cstring>
-#include "third_party/googletest/src/googletest/include/gtest/gtest.h"
+#include "gtest/gtest.h"
 
 #include "config/aom_config.h"
 
@@ -27,7 +27,7 @@ class CompressedVideoSource;
 class DxDataIterator {
  public:
   explicit DxDataIterator(aom_codec_ctx_t *decoder)
-      : decoder_(decoder), iter_(NULL) {}
+      : decoder_(decoder), iter_(nullptr) {}
 
   const aom_image_t *Next() { return aom_codec_get_frame(decoder_, &iter_); }
 
@@ -67,13 +67,13 @@ class Decoder {
 
   void Control(int ctrl_id, const void *arg) {
     InitOnce();
-    const aom_codec_err_t res = aom_codec_control_(&decoder_, ctrl_id, arg);
+    const aom_codec_err_t res = aom_codec_control(&decoder_, ctrl_id, arg);
     ASSERT_EQ(AOM_CODEC_OK, res) << DecodeError();
   }
 
   void Control(int ctrl_id, int arg, aom_codec_err_t expected_value) {
     InitOnce();
-    const aom_codec_err_t res = aom_codec_control_(&decoder_, ctrl_id, arg);
+    const aom_codec_err_t res = aom_codec_control(&decoder_, ctrl_id, arg);
     ASSERT_EQ(expected_value, res) << DecodeError();
   }
 
@@ -153,7 +153,7 @@ class DecoderTest {
   explicit DecoderTest(const CodecFactory *codec)
       : codec_(codec), cfg_(), flags_(0) {}
 
-  virtual ~DecoderTest() {}
+  virtual ~DecoderTest() = default;
 
   const CodecFactory *codec_;
   aom_codec_dec_cfg_t cfg_;

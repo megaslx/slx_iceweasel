@@ -50,11 +50,9 @@ DevToolsUtils.defineLazyGetter(
   () =>
     ChromeUtils.importESModule(
       "resource://devtools/shared/security/DevToolsSocketStatus.sys.mjs",
-      {
-        // DevToolsSocketStatus is also accessed by non-devtools modules and
-        // should be loaded in the regular / shared global.
-        loadInDevToolsLoader: false,
-      }
+      // DevToolsSocketStatus is also accessed by non-devtools modules and
+      // should be loaded in the regular / shared global.
+      { global: "shared" }
     ).DevToolsSocketStatus
 );
 
@@ -520,8 +518,7 @@ SocketListener.prototype = {
   ) {
     const connection = new ServerSocketConnection(this, socketTransport);
     connection.once("allowed", this.onAllowedConnection.bind(this));
-  },
-  "SocketListener.onSocketAccepted"),
+  }, "SocketListener.onSocketAccepted"),
 
   onStopListening(socket, status) {
     dumpn("onStopListening, status: " + status);

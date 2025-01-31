@@ -24,7 +24,7 @@ const BackgroundFileSaverOutputStream = Components.Constructor(
 const StringInputStream = Components.Constructor(
   "@mozilla.org/io/string-input-stream;1",
   "nsIStringInputStream",
-  "setData"
+  "setByteStringData"
 );
 
 const TEST_FILE_NAME_1 = "test-backgroundfilesaver-1.txt";
@@ -52,12 +52,12 @@ function getTempFile(leafName) {
 function promiseSaverComplete(aSaver, aOnTargetChangeFn) {
   return new Promise((resolve, reject) => {
     aSaver.observer = {
-      onTargetChange: function BFSO_onSaveComplete(aSaver, aTarget) {
+      onTargetChange: function BFSO_onSaveComplete(saver, aTarget) {
         if (aOnTargetChangeFn) {
           aOnTargetChangeFn(aTarget);
         }
       },
-      onSaveComplete: function BFSO_onSaveComplete(aSaver, aStatus) {
+      onSaveComplete: function BFSO_onSaveComplete(saver, aStatus) {
         if (Components.isSuccessCode(aStatus)) {
           resolve();
         } else {
@@ -84,10 +84,7 @@ function promiseSaverComplete(aSaver, aOnTargetChangeFn) {
  */
 function promiseCopyToSaver(aSourceString, aSaverOutputStream, aCloseWhenDone) {
   return new Promise((resolve, reject) => {
-    let inputStream = new StringInputStream(
-      aSourceString,
-      aSourceString.length
-    );
+    let inputStream = new StringInputStream(aSourceString);
     let copier = Cc[
       "@mozilla.org/network/async-stream-copier;1"
     ].createInstance(Ci.nsIAsyncStreamCopier);

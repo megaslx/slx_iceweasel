@@ -36,21 +36,30 @@ let patterns: string[];
 
 ## Available trigger actions
 
-* [openArticleURL](#openarticleurl)
-* [openBookmarkedURL](#openbookmarkedurl)
-* [frequentVisits](#frequentvisits)
-* [openURL](#openurl)
-* [newSavedLogin](#newsavedlogin)
-* [formAutofill](#formautofill)
-* [contentBlocking](#contentblocking)
-* [defaultBrowserCheck](#defaultbrowsercheck)
-* [captivePortalLogin](#captiveportallogin)
-* [preferenceObserver](#preferenceobserver)
-* [featureCalloutCheck](#featurecalloutcheck)
-* [nthTabClosed](#nthtabclosed)
-* [activityAfterIdle](#activityafteridle)
-* [cookieBannerDetected](#cookiebannerdetected)
-* [messagesLoaded](#messagesloaded)
+- [`openArticleURL`](#openarticleurl)
+- [`openBookmarkedURL`](#openbookmarkedurl)
+- [`frequentVisits`](#frequentvisits)
+- [`openURL`](#openurl)
+- [`newSavedLogin`](#newsavedlogin)
+- [`formAutofill`](#formautofill)
+- [`contentBlocking`](#contentblocking)
+- [`defaultBrowserCheck`](#defaultbrowsercheck)
+- [`deeplinkedToWindowsSettingsUI`](#deeplinkedtowindowssettingsui)
+- [`captivePortalLogin`](#captiveportallogin)
+- [`preferenceObserver`](#preferenceobserver)
+- [`featureCalloutCheck`](#featurecalloutcheck)
+- [`pdfJsFeatureCalloutCheck`](#pdfjsfeaturecalloutcheck)
+- [`newtabFeatureCalloutCheck`](#newtabfeaturecalloutcheck)
+- [`nthTabClosed`](#nthtabclosed)
+- [`nthTabOpened`](#nthtabopened)
+- [`activityAfterIdle`](#activityafteridle)
+- [`cookieBannerDetected`](#cookiebannerdetected)
+- [`cookieBannerHandled`](#cookiebannerhandled)
+- [`messagesLoaded`](#messagesloaded)
+- [`pageActionInUrlbar`](#pageactioninurlbar)
+- [`onSearch`](#onsearch)
+- [`sidebarToolOpened`](#sidebartoolopened)
+- [`elementClicked`](#elementclicked)
 
 ### `openArticleURL`
 
@@ -113,7 +122,7 @@ same reason, the trigger only fires after a 10-second delay. The trigger context
 includes an `event` and `type` that can be used in targeting. Possible events
 include `add`, `update`, and `use`. Possible types are `card` and `address`.
 This trigger is especially intended to be used in tandem with the
-`creditCardsSaved` and `addressesSaved` [targeting attributes](../../../../../browser/components/newtab/content-src/asrouter/docs/targeting-attributes.md).
+`creditCardsSaved` and `addressesSaved` [targeting attributes](/browser/components/asrouter/docs/targeting-attributes.md).
 
 ```js
 {
@@ -160,6 +169,12 @@ let willShowDefaultPrompt = boolean | undefined;
 }
 ```
 
+### `deeplinkedToWindowsSettingsUI`
+
+Triggers when the user has indicated they want to set Firefox as the default web
+browser and interaction with Windows Settings is necessary to finish setting
+Firefox as default.
+
 ### `captivePortalLogin`
 
 Happens when the user successfully goes through a captive portal authentication flow.
@@ -201,6 +216,43 @@ Happens when the user closes n or more tabs in a session
   targeting: "tabsClosedCount >= 2"
 }
 ```
+```js
+// The trigger also tracks the number of tabs currently open,
+// and the currentTabsOpen context variable can be used in targeting
+// to ensure a minimum number of tabs are open.
+// Here, the message will trigger on the next tab closed
+// after 4 tabs are opened (and remain open).
+{
+  trigger: { id: "nthTabClosed" },
+  targeting: "currentTabsOpen >= 4"
+}
+```
+
+### `nthTabOpened`
+
+Happens when the user opens n or more tabs in a session
+
+```js
+// Register a message with the following trigger and
+// include the tabsOpenedCount context variable in the targeting.
+// Here, the message triggers once two or more tabs are opened,
+// even if the tabs were closed in between.
+{
+  trigger: { id: "nthTabOpened" },
+  targeting: "tabsOpenedCount >= 2"
+}
+```
+```js
+// The trigger also tracks the number of tabs currently open,
+// and the currentTabsOpen context variable can be used in targeting
+// to ensure a minimum number of tabs are open.
+// Here, the message will trigger on the next tab opened
+// while 4 tabs remain open in the browser.
+{
+  trigger: { id: "nthTabOpened" },
+  targeting: "currentTabsOpen >= 4"
+}
+```
 
 ### `activityAfterIdle`
 
@@ -225,6 +277,15 @@ Happens when the `cookiebannerdetected` window event is dispatched. This event i
 2. The domain has a valid ruleset for automatically engaging with the consent banner, and
 3. The user has not explicitly opted in or out of the Cookie Banner Handling feature.
 
+### `cookieBannerHandled`
+
+Happens when the `cookiebannerhandled` window event is dispatched. This event is dispatched when the following conditions are true:
+
+1. The user is presented with a cookie consent banner on the webpage they're viewing,
+2. The domain has a valid ruleset for automatically engaging with the consent banner, and
+3. The user is opted into the Cookie Banner Handling feature (this is by default in private windows), and
+4. Firefox succeeds in automatically engaging with the consent banner.
+
 ### `messagesLoaded`
 
 Happens as soon as a message is loaded. This trigger does not require any user interaction, and may happen potentially as early as app launch, or at some time after experiment enrollment. Generally intended for use in reach experiments, because most messages cannot be routed unless the surfaces they display in are instantiated in a tabbed browser window (a reach message will not be displayed but its trigger will still be recorded). However, it is still possible to safely use this trigger for a normal message, with some caveats. This is potentially relevant on macOS, where the app can be running with no browser windows open, or even on Windows, where closing all browser windows but leaving open a non-browser window (e.g. the Library) causes the app to remain running.
@@ -235,5 +296,64 @@ A `toast_notification` or `update_action` message can function normally under th
 {
   trigger: { id: "messagesLoaded" },
   targeting: "browser && browserWindow"
+}
+```
+
+### `pageActionInUrlbar`
+
+Happens when a page action appears in the location bar. The specific page action(s) to watch for can be specified by id in the targeting expression. For example, to trigger when the reader mode button appears:
+
+```js
+{
+  trigger: { id: "pageActionInUrlbar" },
+  targeting: "pageAction == 'reader-mode-button'"
+}
+```
+
+### `onSearch`
+
+Happens when the user uses the search feature in the awesome bar.
+
+The `isSuggestion` boolean context variable is available in targeting, and will evaluate to true if the search was initiated from a recommendation in the awesomebar.
+
+The `searchSource` string context variable is also available in targeting, and returns the search source. It will be one of four values: `urlbar-handoff` if one of the faux-search inputs were used (such as the one present on the newtab page), `urlbar-searchmode` if the user has selected a search engine, `urlbar-persisted` if the user has changed tabs or windows and come back to their search term in the URL bar, or `urlbar` if the user is doing a standard search by entering a term into the URL bar and pressing enter, or clicking on a search suggestion.
+
+The `isOneOff` boolean context variable is available in targeting, and will be true if one of the one-off search features (typically found at the bottom of the awesomebar's dropdown menu) is used.
+
+```js
+{
+  trigger: { id: "onSearch" },
+  targeting: "isSuggestion && searchSource == 'urlbar-handoff' && isOneOff"
+}
+```
+
+### `sidebarToolOpened`
+
+Happens when the user opens a tool or extension panel in the sidebar
+
+The `view` string context variable is available in targeting, and will correspond with which sidebar tool/extension has been opened (ex: "viewHistorySidebar", "viewBookmarksSidebar", etc).
+
+The `clickCounts` object context variable is also available in targeting, and information about how many time a specific tool or extensions has been opened. The `SIDEBAR_TOOL_SURVEY` callout will be targeted to show if any tool/extension (excluding GenAI chatbot) has been clicked 5 times per-window and per-session. The `SIDEBAR_GENAI_SURVEY` callout will be targeted to show if the GenAI chatbot panel has been opened 2 times per-window and per-session.
+
+```js
+{
+  trigger: { id: "sidebarToolOpened" },
+  targeting: `'sidebar.position_start'|preferenceValue && view != 'viewGenaiChatSidebar' && clickCounts.totalToolsMinusGenai == 5 && !'messaging-system-action.sidebar-tools-microsurvey-complete-or-dismissed'|preferenceValue`
+}
+```
+
+### `elementClicked`
+
+Happens when an element in the browser chrome is clicked. The trigger will only fire if the element that is clicked has an ID that is within the trigger's params array.
+
+The `elementId` string context variable is also available in targeting, and will correspond to the ID of the element that was clicked.
+
+```js
+{
+  trigger: {
+    id: "elementClicked",
+    params: ["element1-id", "element2-id"]
+  },
+  targeting: "elementId == 'element1-id'"
 }
 ```

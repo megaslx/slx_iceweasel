@@ -12,8 +12,9 @@ var ignoreIndirectCalls = {
     "aMallocSizeOf" : true,
     "__conv" : true,
     "__convf" : true,
-    "prerrortable.c:callback_newtable" : true,
-    "mozalloc_oom.cpp:void (* gAbortHandler)(size_t)" : true,
+    "callback_newtable": true,
+    "gLogAddRefFunc": true,
+    "gLogReleaseFunc": true,
 };
 
 // Types that when constructed with no arguments, are "safe" values (they do
@@ -127,6 +128,15 @@ function fieldCallCannotGC(csu, fullfield)
         return true;
     if (fullfield in ignoreCallees)
         return true;
+
+    // Example: fmt::v11::detail::buffer<char16_t>.grow_
+    if (/^fmt\b.*::buffer/.test(fullfield))
+        return true;
+    // Example: fmt::v11::detail::custom_value<fmt::v11::context>.format
+    // Example: fmt::v11::detail::custom_value<fmt::v11::generic_context<fmt::v11::basic_appender<wchar_t>, wchar_t> >.format
+    if (/^fmt\b.*::custom_value<.*>/.test(fullfield))
+       return true;
+
     return false;
 }
 

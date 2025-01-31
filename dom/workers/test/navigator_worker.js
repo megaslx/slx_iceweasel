@@ -8,6 +8,7 @@ var supportedProps = [
   "appCodeName",
   "appName",
   "appVersion",
+  "globalPrivacyControl",
   "platform",
   "product",
   "userAgent",
@@ -19,6 +20,8 @@ var supportedProps = [
   "hardwareConcurrency",
   { name: "storage", isSecureContext: true },
   "connection",
+  "permissions",
+  { name: "serviceWorker", isSecureContext: true },
 ];
 
 self.onmessage = function (event) {
@@ -41,9 +44,10 @@ function startTest(channelData) {
     }
 
     if (
-      prop.nightly === !channelData.isNightly ||
+      prop.isNightly === !channelData.isNightly ||
       prop.release === !channelData.isRelease ||
-      prop.isSecureContext === !isSecureContext
+      prop.isSecureContext === !isSecureContext ||
+      prop.isAndroid === !channelData.isAndroid
     ) {
       interfaceMap[prop.name] = false;
       continue;

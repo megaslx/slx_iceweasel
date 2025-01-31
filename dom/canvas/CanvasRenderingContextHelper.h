@@ -6,7 +6,9 @@
 #ifndef MOZILLA_DOM_CANVASRENDERINGCONTEXTHELPER_H_
 #define MOZILLA_DOM_CANVASRENDERINGCONTEXTHELPER_H_
 
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/gfx/Point.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "nsSize.h"
 
@@ -64,6 +66,9 @@ class CanvasRenderingContextHelper {
               const nsAString& aEncodeOptions, bool aUsingCustomOptions,
               bool aUsePlaceholder, ErrorResult& aRv);
 
+  virtual UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aOutFormat,
+                                              gfx::IntSize* aOutImageSize);
+
   already_AddRefed<nsISupports> GetOrCreateContext(
       JSContext* aCx, const nsAString& aContextId,
       JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv);
@@ -78,7 +83,7 @@ class CanvasRenderingContextHelper {
   already_AddRefed<nsICanvasRenderingContextInternal> CreateContextHelper(
       CanvasContextType aContextType, layers::LayersBackend aCompositorBackend);
 
-  virtual nsIntSize GetWidthHeight() = 0;
+  virtual CSSIntSize GetWidthHeight() = 0;
 
   CanvasContextType mCurrentContextType;
   nsCOMPtr<nsICanvasRenderingContextInternal> mCurrentContext;

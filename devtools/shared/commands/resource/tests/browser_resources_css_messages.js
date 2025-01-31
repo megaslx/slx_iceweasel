@@ -25,7 +25,6 @@ httpServer.registerPathHandler(`/test_css_messages.html`, (req, res) => {
 const TEST_URI = `http://localhost:${httpServer.identity.primaryPort}/test_css_messages.html`;
 
 add_task(async function () {
-  await pushPref("layout.css.nesting.enabled", true);
   await testWatchingCssMessages();
   await testWatchingCachedCssMessages();
 });
@@ -38,9 +37,8 @@ async function testWatchingCssMessages() {
   // Open a test tab
   const tab = await addTab(TEST_URI);
 
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   const receivedMessages = [];
   const { onAvailable, onAllMessagesReceived } = setupOnAvailableFunction(
@@ -98,9 +96,8 @@ async function testWatchingCachedCssMessages() {
 
   // At this point, all messages should be in the ConsoleService cache, and we can begin
   // to watch and check that we do retrieve those messages.
-  const { client, resourceCommand, targetCommand } = await initResourceCommand(
-    tab
-  );
+  const { client, resourceCommand, targetCommand } =
+    await initResourceCommand(tab);
 
   const receivedMessages = [];
   const { onAvailable } = setupOnAvailableFunction(

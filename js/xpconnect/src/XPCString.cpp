@@ -20,23 +20,29 @@
 
 #include "nscore.h"
 #include "nsString.h"
-#include "nsStringBuffer.h"
+#include "mozilla/StringBuffer.h"
 #include "jsapi.h"
 #include "xpcpublic.h"
 
 using namespace JS;
+using mozilla::StringBuffer;
 
 const XPCStringConvert::LiteralExternalString
     XPCStringConvert::sLiteralExternalString;
 
-const XPCStringConvert::DOMStringExternalString
-    XPCStringConvert::sDOMStringExternalString;
-
-const XPCStringConvert::DynamicAtomExternalString
-    XPCStringConvert::sDynamicAtomExternalString;
+void XPCStringConvert::LiteralExternalString::finalize(
+    JS::Latin1Char* aChars) const {
+  // Nothing to do.
+}
 
 void XPCStringConvert::LiteralExternalString::finalize(char16_t* aChars) const {
   // Nothing to do.
+}
+
+size_t XPCStringConvert::LiteralExternalString::sizeOfBuffer(
+    const JS::Latin1Char* aChars, mozilla::MallocSizeOf aMallocSizeOf) const {
+  // This string's buffer is not heap-allocated, so its malloc size is 0.
+  return 0;
 }
 
 size_t XPCStringConvert::LiteralExternalString::sizeOfBuffer(
@@ -45,64 +51,19 @@ size_t XPCStringConvert::LiteralExternalString::sizeOfBuffer(
   return 0;
 }
 
-void XPCStringConvert::DOMStringExternalString::finalize(
-    char16_t* aChars) const {
-  nsStringBuffer* buf = nsStringBuffer::FromData(aChars);
-  buf->Release();
-}
-
-size_t XPCStringConvert::DOMStringExternalString::sizeOfBuffer(
-    const char16_t* aChars, mozilla::MallocSizeOf aMallocSizeOf) const {
-  // We promised the JS engine we would not GC.  Enforce that:
-  JS::AutoCheckCannotGC autoCannotGC;
-
-  const nsStringBuffer* buf =
-      nsStringBuffer::FromData(const_cast<char16_t*>(aChars));
-  // We want sizeof including this, because the entire string buffer is owned by
-  // the external string.  But only report here if we're unshared; if we're
-  // shared then we don't know who really owns this data.
-  return buf->SizeOfIncludingThisIfUnshared(aMallocSizeOf);
-}
-
-void XPCStringConvert::DynamicAtomExternalString::finalize(
-    char16_t* aChars) const {
-  nsDynamicAtom* atom = nsDynamicAtom::FromChars(aChars);
-  // nsDynamicAtom::Release is always-inline and defined in a translation unit
-  // we can't get to here.  So we need to go through nsAtom::Release to call
-  // it.
-  static_cast<nsAtom*>(atom)->Release();
-}
-
-size_t XPCStringConvert::DynamicAtomExternalString::sizeOfBuffer(
-    const char16_t* aChars, mozilla::MallocSizeOf aMallocSizeOf) const {
-  // We return 0 here because NS_AddSizeOfAtoms reports all memory associated
-  // with atoms in the atom table.
-  return 0;
-}
-
-// convert a readable to a JSString, copying string data
+// convert a string to a JSString, either copying or sharing string data
 // static
-bool XPCStringConvert::ReadableToJSVal(JSContext* cx, const nsAString& readable,
-                                       nsStringBuffer** sharedBuffer,
-                                       MutableHandleValue vp) {
-  *sharedBuffer = nullptr;
-
+bool xpc::NonVoidStringToJsval(JSContext* cx, const nsAString& readable,
+                               MutableHandleValue vp) {
   uint32_t length = readable.Length();
 
   if (readable.IsLiteral()) {
-    return StringLiteralToJSVal(cx, readable.BeginReading(), length, vp);
+    return XPCStringConvert::StringLiteralToJSVal(cx, readable.BeginReading(),
+                                                  length, vp);
   }
 
-  nsStringBuffer* buf = nsStringBuffer::FromString(readable);
-  if (buf) {
-    bool shared;
-    if (!StringBufferToJSVal(cx, buf, length, vp, &shared)) {
-      return false;
-    }
-    if (shared) {
-      *sharedBuffer = buf;
-    }
-    return true;
+  if (StringBuffer* buf = readable.GetStringBuffer()) {
+    return XPCStringConvert::UCStringBufferToJSVal(cx, buf, length, vp);
   }
 
   // blech, have to copy.
@@ -114,21 +75,46 @@ bool XPCStringConvert::ReadableToJSVal(JSContext* cx, const nsAString& readable,
   return true;
 }
 
-namespace xpc {
+bool xpc::NonVoidLatin1StringToJsval(JSContext* cx, const nsACString& latin1,
+                                     MutableHandleValue vp) {
+  uint32_t length = latin1.Length();
 
-bool NonVoidStringToJsval(JSContext* cx, nsAString& str,
-                          MutableHandleValue rval) {
-  nsStringBuffer* sharedBuffer;
-  if (!XPCStringConvert::ReadableToJSVal(cx, str, &sharedBuffer, rval)) {
+  if (latin1.IsLiteral()) {
+    return XPCStringConvert::StringLiteralToJSVal(
+        cx, reinterpret_cast<const JS::Latin1Char*>(latin1.BeginReading()),
+        length, vp);
+  }
+
+  if (StringBuffer* buf = latin1.GetStringBuffer()) {
+    return XPCStringConvert::Latin1StringBufferToJSVal(cx, buf, length, vp);
+  }
+
+  JSString* str = JS_NewStringCopyN(cx, latin1.BeginReading(), length);
+  if (!str) {
     return false;
   }
-
-  if (sharedBuffer) {
-    // The string was shared but ReadableToJSVal didn't addref it.
-    // Move the ownership from str to jsstr.
-    str.ForgetSharedBuffer();
-  }
+  vp.setString(str);
   return true;
 }
 
-}  // namespace xpc
+bool xpc::NonVoidUTF8StringToJsval(JSContext* cx, const nsACString& utf8,
+                                   MutableHandleValue vp) {
+  uint32_t length = utf8.Length();
+
+  if (utf8.IsLiteral()) {
+    return XPCStringConvert::UTF8StringLiteralToJSVal(
+        cx, JS::UTF8Chars(utf8.BeginReading(), length), vp);
+  }
+
+  if (StringBuffer* buf = utf8.GetStringBuffer()) {
+    return XPCStringConvert::UTF8StringBufferToJSVal(cx, buf, length, vp);
+  }
+
+  JSString* str =
+      JS_NewStringCopyUTF8N(cx, JS::UTF8Chars(utf8.BeginReading(), length));
+  if (!str) {
+    return false;
+  }
+  vp.setString(str);
+  return true;
+}

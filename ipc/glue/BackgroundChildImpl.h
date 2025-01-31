@@ -57,20 +57,6 @@ class BackgroundChildImpl : public PBackgroundChild {
   virtual bool DeallocPBackgroundIndexedDBUtilsChild(
       PBackgroundIndexedDBUtilsChild* aActor) override;
 
-  virtual PBackgroundSDBConnectionChild* AllocPBackgroundSDBConnectionChild(
-      const PersistenceType& aPersistenceType,
-      const PrincipalInfo& aPrincipalInfo) override;
-
-  virtual bool DeallocPBackgroundSDBConnectionChild(
-      PBackgroundSDBConnectionChild* aActor) override;
-
-  virtual PBackgroundLSDatabaseChild* AllocPBackgroundLSDatabaseChild(
-      const PrincipalInfo& aPrincipalInfo, const uint32_t& aPrivateBrowsingId,
-      const uint64_t& aDatastoreId) override;
-
-  virtual bool DeallocPBackgroundLSDatabaseChild(
-      PBackgroundLSDatabaseChild* aActor) override;
-
   virtual PBackgroundLSObserverChild* AllocPBackgroundLSObserverChild(
       const uint64_t& aObserverId) override;
 
@@ -116,19 +102,6 @@ class BackgroundChildImpl : public PBackgroundChild {
 
   virtual bool DeallocPFileCreatorChild(PFileCreatorChild* aActor) override;
 
-  already_AddRefed<mozilla::dom::PRemoteWorkerChild> AllocPRemoteWorkerChild(
-      const RemoteWorkerData& aData) override;
-
-  virtual mozilla::ipc::IPCResult RecvPRemoteWorkerConstructor(
-      PRemoteWorkerChild* aActor, const RemoteWorkerData& aData) override;
-
-  virtual mozilla::dom::PRemoteWorkerControllerChild*
-  AllocPRemoteWorkerControllerChild(
-      const mozilla::dom::RemoteWorkerData& aRemoteWorkerData) override;
-
-  virtual bool DeallocPRemoteWorkerControllerChild(
-      mozilla::dom::PRemoteWorkerControllerChild* aActor) override;
-
   virtual mozilla::dom::PSharedWorkerChild* AllocPSharedWorkerChild(
       const mozilla::dom::RemoteWorkerData& aData, const uint64_t& aWindowID,
       const mozilla::dom::MessagePortIdentifier& aPortIdentifier) override;
@@ -152,6 +125,10 @@ class BackgroundChildImpl : public PBackgroundChild {
   virtual bool DeallocPBroadcastChannelChild(
       PBroadcastChannelChild* aActor) override;
 
+  virtual PCookieStoreChild* AllocPCookieStoreChild() override;
+
+  virtual bool DeallocPCookieStoreChild(PCookieStoreChild* aActor) override;
+
   virtual PServiceWorkerManagerChild* AllocPServiceWorkerManagerChild()
       override;
 
@@ -168,14 +145,6 @@ class BackgroundChildImpl : public PBackgroundChild {
       const uint32_t& aSequenceID) override;
 
   virtual bool DeallocPMessagePortChild(PMessagePortChild* aActor) override;
-
-  virtual PQuotaChild* AllocPQuotaChild() override;
-
-  virtual bool DeallocPQuotaChild(PQuotaChild* aActor) override;
-
-  virtual PClientManagerChild* AllocPClientManagerChild() override;
-
-  virtual bool DeallocPClientManagerChild(PClientManagerChild* aActor) override;
 
   virtual PWebAuthnTransactionChild* AllocPWebAuthnTransactionChild() override;
 
@@ -198,11 +167,6 @@ class BackgroundChildImpl : public PBackgroundChild {
 
   virtual bool DeallocPEndpointForReportChild(
       PEndpointForReportChild* aActor) override;
-
-  virtual dom::PMediaTransportChild* AllocPMediaTransportChild() override;
-
-  virtual bool DeallocPMediaTransportChild(
-      dom::PMediaTransportChild* aActor) override;
 };
 
 class BackgroundChildImpl::ThreadLocal final {

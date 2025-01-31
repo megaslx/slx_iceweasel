@@ -1,8 +1,6 @@
-# ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-# ***** END LICENSE BLOCK *****
 """Generic script objects.
 
 script.py, along with config.py and log.py, represents the core of
@@ -36,6 +34,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager
 from io import BytesIO
+from queue import Empty, Queue
 
 import mozinfo
 import six
@@ -201,7 +200,7 @@ class PlatformMixin(object):
         if self._is_darwin():
             # osx is a special snowflake and to ensure the arch, it is better to use the following
             return (
-                sys.maxsize > 2 ** 32
+                sys.maxsize > 2**32
             )  # context: https://docs.python.org/2/library/platform.html
         else:
             # Using machine() gives you the architecture of the host rather
@@ -578,7 +577,7 @@ class ScriptMixin(PlatformMixin):
             else:
                 local_file = open(file_name, "wb")
             while True:
-                block = f.read(1024 ** 2)
+                block = f.read(1024**2)
                 if not block:
                     if f_length is not None and got_length != f_length:
                         raise URLError(
@@ -718,7 +717,7 @@ class ScriptMixin(PlatformMixin):
                     self.warning("{} was not found in the zip file".format(entry))
 
     def deflate(self, compressed_file, mode, extract_to=".", *args, **kwargs):
-        """This method allows to extract a compressed file from a tar, tar.bz2 and tar.gz files.
+        """This method allows to extract a compressed file from a tar{,bz2,gz,xz} files.
 
         Args:
             compressed_file (object): File-like object with the contents of a compressed file.
@@ -746,11 +745,16 @@ class ScriptMixin(PlatformMixin):
         def _determine_extraction_method_and_kwargs(url):
             EXTENSION_TO_MIMETYPE = {
                 "bz2": "application/x-bzip2",
+                "xz": "application/x-xz",
                 "gz": "application/x-gzip",
                 "tar": "application/x-tar",
                 "zip": "application/zip",
             }
             MIMETYPES = {
+                "application/x-xz": {
+                    "function": self.deflate,
+                    "kwargs": {"mode": "r:xz"},
+                },
                 "application/x-bzip2": {
                     "function": self.deflate,
                     "kwargs": {"mode": "r:bz2"},
@@ -772,7 +776,7 @@ class ScriptMixin(PlatformMixin):
             }
 
             filename = url.split("/")[-1]
-            # XXX: bz2/gz instead of tar.{bz2/gz}
+            # XXX: bz2/gz/xz instead of tar.{bz2/gz/xz}
             extension = filename[filename.rfind(".") + 1 :]
             mimetype = EXTENSION_TO_MIMETYPE[extension]
             self.debug("Mimetype: {}".format(mimetype))
@@ -1593,21 +1597,6 @@ class ScriptMixin(PlatformMixin):
         else:
             parser = output_parser
 
-        def timer():
-            nonlocal t
-            seconds_since_last_output = time.time() - output_time
-            next_possible_timeout = output_timeout - seconds_since_last_output
-            if next_possible_timeout <= 0:
-                self.info(
-                    "Automation Error: mozharness timed out after "
-                    "%s seconds running %s" % (str(output_timeout), str(command))
-                )
-                p.kill()
-                t = None
-            else:
-                t = threading.Timer(next_possible_timeout, timer)
-                t.start()
-
         try:
             p = subprocess.Popen(
                 command,
@@ -1618,28 +1607,38 @@ class ScriptMixin(PlatformMixin):
                 env=env,
                 bufsize=0,
             )
-            loop = True
-            output_time = time.time()
-            t = None
             if output_timeout:
                 self.info(
                     "Calling %s with output_timeout %d" % (command, output_timeout)
                 )
-                t = threading.Timer(output_timeout, timer)
-                t.start()
-            while loop:
-                if p.poll() is not None:
-                    """Avoid losing the final lines of the log?"""
-                    loop = False
-                while True:
-                    line = p.stdout.readline()
-                    if not line:
-                        break
-                    output_time = time.time()
+
+                def reader(fh, queue):
+                    for line in iter(fh.readline, b""):
+                        queue.put(line)
+                    # Give a chance to the reading loop to exit without a timeout.
+                    queue.put(b"")
+
+                queue = Queue()
+                threading.Thread(
+                    target=reader, args=(p.stdout, queue), daemon=True
+                ).start()
+
+                try:
+                    for line in iter(
+                        functools.partial(queue.get, timeout=output_timeout), b""
+                    ):
+                        parser.add_lines(line)
+                except Empty:
+                    self.info(
+                        "Automation Error: mozharness timed out after "
+                        "%s seconds running %s" % (str(output_timeout), str(command))
+                    )
+                    p.kill()
+            else:
+                for line in iter(p.stdout.readline, b""):
                     parser.add_lines(line)
+            p.wait()
             returncode = p.returncode
-            if t:
-                t.cancel()
         except KeyboardInterrupt:
             level = error_level
             if halt_on_failure:
@@ -2038,7 +2037,7 @@ def PreScriptAction(action=None):
         func._pre_action_listener = None
         return func
 
-    if type(action) == type(_wrapped):
+    if type(action) is type(_wrapped):
         return _wrapped_none(action)
 
     return _wrapped
@@ -2069,7 +2068,7 @@ def PostScriptAction(action=None):
         func._post_action_listener = None
         return func
 
-    if type(action) == type(_wrapped):
+    if type(action) is type(_wrapped):
         return _wrapped_none(action)
 
     return _wrapped
@@ -2111,8 +2110,9 @@ class BaseScript(ScriptMixin, LogMixin, object):
         if here.replace("\\", "/").endswith(srcreldir):
             topsrcdir = os.path.normpath(os.path.join(here, "..", "..", "..", ".."))
             hg_dir = os.path.join(topsrcdir, ".hg")
-            git_dir = os.path.join(topsrcdir, ".git")
-            if os.path.isdir(hg_dir) or os.path.isdir(git_dir):
+            # .git might be a directory or a file for a git worktree
+            git_path = os.path.join(topsrcdir, ".git")
+            if os.path.isdir(hg_dir) or os.path.exists(git_path):
                 self.topsrcdir = topsrcdir
 
         # Set self.config to read-only.
@@ -2194,7 +2194,7 @@ class BaseScript(ScriptMixin, LogMixin, object):
                 item = getattr(self, name)
         else:
             item = inspect.getattr_static(self, name)
-            if type(item) == property:
+            if type(item) is property:
                 item = None
             else:
                 item = getattr(self, name)

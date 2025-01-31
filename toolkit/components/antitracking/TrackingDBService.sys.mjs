@@ -6,7 +6,6 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { Sqlite } from "resource://gre/modules/Sqlite.sys.mjs";
 
 const SCHEMA_VERSION = 1;
-const TRACKERS_BLOCKED_COUNT = "contentblocking.trackers_blocked_count";
 
 const lazy = {};
 
@@ -18,6 +17,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
   "social_enabled",
   "privacy.socialtracking.block_cookies.enabled",
+  false
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "fpp_enabled",
+  "privacy.fingerprintingProtection",
   false
 );
 
@@ -201,6 +207,21 @@ TrackingDBService.prototype = {
         ) {
           result = Ci.nsITrackingDBService.FINGERPRINTERS_ID;
         } else if (
+          lazy.fpp_enabled &&
+          state &
+            Ci.nsIWebProgressListener.STATE_BLOCKED_SUSPICIOUS_FINGERPRINTING
+        ) {
+          // The suspicious fingerprinting event gets filed in standard windows
+          // regardless of whether the fingerprinting protection is enabled. To
+          // avoid recording the case where our protection doesn't apply, we
+          // only record blocking suspicious fingerprinting if the
+          // fingerprinting protection is enabled in the normal windows.
+          //
+          // TODO(Bug 1864909): We don't need to check if fingerprinting
+          // protection is enabled once the event only gets filed when
+          // fingerprinting protection is enabled for the context.
+          result = Ci.nsITrackingDBService.SUSPICIOUS_FINGERPRINTERS_ID;
+        } else if (
           // If STP is enabled and either a social tracker or cookie is blocked.
           lazy.social_enabled &&
           (state &
@@ -233,6 +254,10 @@ TrackingDBService.prototype = {
           state & Ci.nsIWebProgressListener.STATE_BLOCKED_CRYPTOMINING_CONTENT
         ) {
           result = Ci.nsITrackingDBService.CRYPTOMINERS_ID;
+        } else if (
+          state & Ci.nsIWebProgressListener.STATE_PURGED_BOUNCETRACKER
+        ) {
+          result = Ci.nsITrackingDBService.BOUNCETRACKERS_ID;
         }
       }
     }
@@ -264,7 +289,7 @@ TrackingDBService.prototype = {
           let type = this.identifyType(log[thirdParty]);
           if (type) {
             // Send the blocked event to Telemetry
-            Services.telemetry.scalarAdd(TRACKERS_BLOCKED_COUNT, 1);
+            Glean.contentblocking.trackersBlockedCount.add(1);
 
             // today is a date "YYY-MM-DD" which can compare with what is
             // already saved in the database.

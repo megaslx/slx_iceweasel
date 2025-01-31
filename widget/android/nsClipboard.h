@@ -8,34 +8,31 @@
 
 #include "nsBaseClipboard.h"
 
-class nsClipboard final : public ClipboardSetDataHelper {
+class nsClipboard final : public nsBaseClipboard {
  private:
-  ~nsClipboard() = default;
+  ~nsClipboard();
 
  public:
-  nsClipboard() = default;
+  nsClipboard();
 
   NS_DECL_ISUPPORTS_INHERITED
 
-  // nsIClipboard
-  NS_IMETHOD GetData(nsITransferable* aTransferable,
-                     int32_t aWhichClipboard) override;
-  NS_IMETHOD EmptyClipboard(int32_t aWhichClipboard) override;
-  NS_IMETHOD HasDataMatchingFlavors(const nsTArray<nsCString>& aFlavorList,
-                                    int32_t aWhichClipboard,
-                                    bool* _retval) override;
-  NS_IMETHOD IsClipboardTypeSupported(int32_t aWhichClipboard,
-                                      bool* _retval) override;
-  RefPtr<mozilla::GenericPromise> AsyncGetData(
-      nsITransferable* aTransferable, int32_t aWhichClipboard) override;
-  RefPtr<DataFlavorsPromise> AsyncHasDataMatchingFlavors(
-      const nsTArray<nsCString>& aFlavorList, int32_t aWhichClipboard) override;
+  static nsresult GetTextFromTransferable(nsITransferable* aTransferable,
+                                          nsString& aText, nsString& aHTML);
+
+  mozilla::Result<int32_t, nsresult> GetNativeClipboardSequenceNumber(
+      ClipboardType aWhichClipboard) override;
 
  protected:
   // Implement the native clipboard behavior.
   NS_IMETHOD SetNativeClipboardData(nsITransferable* aTransferable,
-                                    nsIClipboardOwner* aOwner,
-                                    int32_t aWhichClipboard) override;
+                                    ClipboardType aWhichClipboard) override;
+  NS_IMETHOD GetNativeClipboardData(nsITransferable* aTransferable,
+                                    ClipboardType aWhichClipboard) override;
+  nsresult EmptyNativeClipboardData(ClipboardType aWhichClipboard) override;
+  mozilla::Result<bool, nsresult> HasNativeClipboardDataMatchingFlavors(
+      const nsTArray<nsCString>& aFlavorList,
+      ClipboardType aWhichClipboard) override;
 };
 
 #endif

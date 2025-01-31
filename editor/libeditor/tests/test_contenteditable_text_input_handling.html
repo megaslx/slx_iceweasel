@@ -24,7 +24,7 @@ SimpleTest.waitForFocus(runTests);
 const { AppConstants } = ChromeUtils.importESModule(
   "resource://gre/modules/AppConstants.sys.mjs"
 );
-const kLF = !navigator.platform.indexOf("Win") && !AppConstants.NIGHTLY_BUILD ? "\r\n" : "\n";
+const kLF = !navigator.platform.indexOf("Win") && false ? "\r\n" : "\n";
 
 function runTests() {
   var fm = Services.focus;
@@ -34,8 +34,7 @@ function runTests() {
       aEvent.preventDefault(); // prevent the browser default behavior
     },
   };
-  var els = Services.els;
-  els.addSystemEventListener(window, "keypress", listener, false);
+  SpecialPowers.wrap(window).addEventListener("keypress", listener, { mozSystemGroup: true });
 
   var staticContent = document.getElementById("static");
   staticContent._defaultValue = getTextValue(staticContent);
@@ -306,7 +305,7 @@ function runTests() {
   testTextInput(inputInEditor);
   testTextInput(textareaInEditor);
 
-  els.removeSystemEventListener(window, "keypress", listener, false);
+  SpecialPowers.wrap(window).removeEventListener("keypress", listener, { mozSystemGroup: true });
 
   SimpleTest.finish();
 }

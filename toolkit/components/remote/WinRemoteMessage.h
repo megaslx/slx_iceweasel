@@ -12,29 +12,41 @@
 #include "nsCOMPtr.h"
 #include "nsString.h"
 
-// This version defines the format of COPYDATASTRUCT::lpData in a message of
-// WM_COPYDATA.
-// Always use the latest version for production use because the older versions
-// have a bug that a non-ascii character in a utf-8 message cannot be parsed
-// correctly (bug 1650637).  We keep the older versions for backward
-// compatibility and the testing purpose only.
+// This version number, stored in COPYDATASTRUCT::dwData, defines the format of
+// COPYDATASTRUCT::lpData in a WM_COPYDATA message.
+//
+// Previous versions are documented here, but are no longer produced or
+// accepted.
+//   * Despite being documented as "UTF-8", older versions could not properly
+//     handle non-ASCII characters (bug 1650637).
+//   * Backwards-compatibly supporting v0 led to other issues: some ill-behaved
+//     applications may broadcast WM_COPYDATA messages to all and sundry, and a
+//     version-0 message whose payload happened to start with a NUL byte was
+//     treated as valid (bug 1847458).
+//
+// Whenever possible, we should retain backwards compatibility for currently-
+// supported ESR versions. Any future versions should contain a magic cookie of
+// some sort, as v3 does, to reduce the chances of variants of bug 1847458.
 enum class WinRemoteMessageVersion : uint32_t {
   // "<CommandLine>\0" in utf8
-  CommandLineOnly = 0,
+  /* CommandLineOnly = 0, */
+
   // "<CommandLine>\0<WorkingDir>\0" in utf8
-  CommandLineAndWorkingDir,
-  // L"<CommandLine>\0<WorkingDir>\0" in utf16
-  CommandLineAndWorkingDirInUtf16,
+  /* CommandLineAndWorkingDir = 1, */
+
+  // L"<CommandLine>\0<WorkingDir>\0" in utf16, used by ESR 128
+  CommandLineAndWorkingDirInUtf16 = 2,
+
+  // L"🔥🦊\0<WorkingDir>\0<Arg0>\0<Arg1>\0..." in utf8
+  NullSeparatedArguments = 3,
 };
 
 class WinRemoteMessageSender final {
   COPYDATASTRUCT mData;
-  nsAutoString mUtf16Buffer;
-  nsAutoCString mUtf8Buffer;
 
  public:
-  WinRemoteMessageSender(const wchar_t* aCommandLine,
-                         const wchar_t* aWorkingDir);
+  WinRemoteMessageSender(int32_t aArgc, const char** aArgv,
+                         const nsAString& aWorkingDir);
 
   WinRemoteMessageSender(const WinRemoteMessageSender&) = delete;
   WinRemoteMessageSender(WinRemoteMessageSender&&) = delete;
@@ -43,17 +55,15 @@ class WinRemoteMessageSender final {
 
   COPYDATASTRUCT* CopyData();
 
-  // Constructors for the old formats.  Testing purpose only.
-  explicit WinRemoteMessageSender(const char* aCommandLine);
-  WinRemoteMessageSender(const char* aCommandLine, const char* aWorkingDir);
+ private:
+  nsCString mCmdLineBuffer;
 };
 
 class WinRemoteMessageReceiver final {
   nsCOMPtr<nsICommandLineRunner> mCommandLine;
 
-  nsresult ParseV0(const nsACString& aBuffer);
-  nsresult ParseV1(const nsACString& aBuffer);
   nsresult ParseV2(const nsAString& aBuffer);
+  nsresult ParseV3(const nsACString& aBuffer);
 
  public:
   WinRemoteMessageReceiver() = default;

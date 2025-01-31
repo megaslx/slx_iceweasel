@@ -14,8 +14,10 @@
 #include "nscore.h"
 #include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
+#include "nsISupportsImpl.h"
 #include "nsString.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/InitializedOnce.h"
 #include "mozilla/NotNull.h"
@@ -55,7 +57,7 @@ class CachingDatabaseConnection {
     BorrowedStatement(NotNull<mozIStorageStatement*> aStatement,
                       const nsACString& aQuery)
         : mozStorageStatementScoper(aStatement),
-          mExtraInfo{ScopedLogExtraInfo::kTagQuery, aQuery} {}
+          mExtraInfo{ScopedLogExtraInfo::kTagQueryTainted, aQuery} {}
 
     ScopedLogExtraInfo mExtraInfo;
 #else
@@ -68,7 +70,8 @@ class CachingDatabaseConnection {
 
   void AssertIsOnConnectionThread() const {
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
-    mOwningThread->AssertOwnership("CachingDatabaseConnection not thread-safe");
+    mOwningEventTarget->AssertOwnership(
+        "CachingDatabaseConnection not thread-safe");
 #endif
   }
 
@@ -82,6 +85,8 @@ class CachingDatabaseConnection {
 
     return **mStorageConnection;
   }
+
+  bool Closed() const { return mClosed; }
 
   Result<CachedStatement, nsresult> GetCachedStatement(
       const nsACString& aQuery);
@@ -126,7 +131,7 @@ class CachingDatabaseConnection {
 
  private:
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
-  LazyInitializedOnce<const nsAutoOwningThread> mOwningThread;
+  LazyInitializedOnce<const nsAutoOwningEventTarget> mOwningEventTarget;
 #endif
 
   LazyInitializedOnceEarlyDestructible<
@@ -134,6 +139,7 @@ class CachingDatabaseConnection {
       mStorageConnection;
   nsInterfaceHashtable<nsCStringHashKey, mozIStorageStatement>
       mCachedStatements;
+  Atomic<bool> mClosed;
 };
 
 class CachingDatabaseConnection::CachedStatement final {

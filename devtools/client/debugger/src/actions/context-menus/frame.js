@@ -8,10 +8,10 @@ import {
   getShouldSelectOriginalLocation,
   getCurrentThreadFrames,
   getFrameworkGroupingState,
-} from "../../selectors";
+} from "../../selectors/index";
 import { toggleFrameworkGrouping } from "../../actions/ui";
-import { restart, toggleBlackBox } from "../../actions/pause";
-import { formatCopyName } from "../../utils/pause/frames";
+import { restart, toggleBlackBox } from "../../actions/pause/index";
+import { formatCopyName } from "../../utils/pause/frames/index";
 
 function formatMenuElement(labelString, click, disabled = false) {
   const label = L10N.getStr(labelString);
@@ -26,7 +26,7 @@ function formatMenuElement(labelString, click, disabled = false) {
   };
 }
 
-function isValidRestartFrame(frame, callbacks) {
+function isValidRestartFrame(frame) {
   // Any frame state than 'on-stack' is either dismissed by the server
   // or can potentially cause unexpected errors.
   // Global frame has frame.callee equal to null and can't be restarted.
@@ -34,11 +34,10 @@ function isValidRestartFrame(frame, callbacks) {
 }
 
 function copyStackTrace() {
-  return async ({ dispatch, getState }) => {
+  return async ({ getState }) => {
     const frames = getCurrentThreadFrames(getState());
-    const shouldDisplayOriginalLocation = getShouldSelectOriginalLocation(
-      getState()
-    );
+    const shouldDisplayOriginalLocation =
+      getShouldSelectOriginalLocation(getState());
 
     const framesToCopy = frames
       .map(frame => formatCopyName(frame, L10N, shouldDisplayOriginalLocation))

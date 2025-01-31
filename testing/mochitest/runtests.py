@@ -34,7 +34,9 @@ from collections import defaultdict
 from contextlib import closing
 from ctypes.util import find_library
 from datetime import datetime, timedelta
-from distutils import spawn
+from shutil import which
+from urllib.parse import quote_plus as encodeURIComponent
+from urllib.request import urlopen
 
 import bisection
 import mozcrash
@@ -53,16 +55,21 @@ from manifestparser.filters import (
     tags,
 )
 from manifestparser.util import normsep
-from mozgeckoprofiler import symbolicate_profile_json, view_gecko_profile
+from mozgeckoprofiler import (
+    symbolicate_profile_json,
+    view_gecko_profile,
+)
 from mozserve import DoHServer, Http2Server, Http3Server
 
 try:
     from marionette_driver.addons import Addons
     from marionette_driver.marionette import Marionette
 except ImportError as e:  # noqa
+    error = e
+
     # Defer ImportError until attempt to use Marionette
     def reraise(*args, **kwargs):
-        raise (e)  # noqa
+        raise error  # noqa
 
     Marionette = reraise
 
@@ -87,10 +94,6 @@ try:
     HAVE_PSUTIL = True
 except ImportError:
     pass
-
-import six
-from six.moves.urllib.parse import quote_plus as encodeURIComponent
-from six.moves.urllib_request import urlopen
 
 try:
     from mozbuild.base import MozbuildObject
@@ -140,7 +143,6 @@ TBPL_RETRY = 4  # Defined in mozharness
 
 
 class MessageLogger(object):
-
     """File-like object for logging messages (structured logs)"""
 
     BUFFERING_THRESHOLD = 100
@@ -151,6 +153,8 @@ class MessageLogger(object):
         [
             "suite_start",
             "suite_end",
+            "group_start",
+            "group_end",
             "test_start",
             "test_end",
             "test_status",
@@ -174,6 +178,7 @@ class MessageLogger(object):
         self.structured = structured
         self.gecko_id = "GECKO"
         self.is_test_running = False
+        self._manifest = None
 
         # Even if buffering is enabled, we only want to buffer messages between
         # TEST-START/TEST-END. So it is off to begin, but will be enabled after
@@ -187,6 +192,9 @@ class MessageLogger(object):
         # Message buffering
         self.buffered_messages = []
 
+    def setManifest(self, name):
+        self._manifest = name
+
     def validate(self, obj):
         """Tests whether the given object is a valid structured message
         (only does a superficial validation)"""
@@ -199,9 +207,7 @@ class MessageLogger(object):
 
     def _fix_subtest_name(self, message):
         """Make sure subtest name is a string"""
-        if "subtest" in message and not isinstance(
-            message["subtest"], six.string_types
-        ):
+        if "subtest" in message and not isinstance(message["subtest"], str):
             message["subtest"] = str(message["subtest"])
 
     def _fix_test_name(self, message):
@@ -218,13 +224,13 @@ class MessageLogger(object):
         if "message" in message:
             if isinstance(message["message"], bytes):
                 message["message"] = message["message"].decode("utf-8", "replace")
-            elif not isinstance(message["message"], six.text_type):
-                message["message"] = six.text_type(message["message"])
+            elif not isinstance(message["message"], str):
+                message["message"] = str(message["message"])
 
     def parse_line(self, line):
         """Takes a given line of input (structured or not) and
         returns a list of structured messages"""
-        if isinstance(line, six.binary_type):
+        if isinstance(line, bytes):
             # if line is a sequence of bytes, let's decode it
             line = line.rstrip().decode("UTF-8", "replace")
         else:
@@ -255,6 +261,7 @@ class MessageLogger(object):
             self._fix_subtest_name(message)
             self._fix_test_name(message)
             self._fix_message_format(message)
+            message["group"] = self._manifest
             messages.append(message)
 
         return messages
@@ -365,23 +372,19 @@ class MessageLogger(object):
 
 
 def call(*args, **kwargs):
-    """front-end function to mozprocess.ProcessHandler"""
-    # TODO: upstream -> mozprocess
-    # https://bugzilla.mozilla.org/show_bug.cgi?id=791383
+    """wraps mozprocess.run_and_wait with process output logging"""
     log = get_proxy_logger("mochitest")
 
-    def on_output(line):
+    def on_output(proc, line):
+        cmdline = subprocess.list2cmdline(proc.args)
         log.process_output(
-            process=process.pid,
-            data=line.decode("utf8", "replace"),
-            command=process.commandline,
+            process=proc.pid,
+            data=line,
+            command=cmdline,
         )
 
-    process = mozprocess.ProcessHandlerMixin(
-        *args, processOutputLine=on_output, **kwargs
-    )
-    process.run()
-    return process.wait()
+    process = mozprocess.run_and_wait(*args, output_line_handler=on_output, **kwargs)
+    return process.returncode
 
 
 def killPid(pid, log):
@@ -446,7 +449,6 @@ if mozinfo.isWin:
         finally:
             ctypes.windll.kernel32.CloseHandle(pHandle)
 
-
 else:
     import errno
 
@@ -477,7 +479,6 @@ else:
 
 
 class MochitestServer(object):
-
     "Web server used to serve Mochitests, for closer fidelity to the real web."
 
     instance_count = 0
@@ -568,16 +569,26 @@ class MochitestServer(object):
             self._utilityPath, "xpcshell" + mozinfo.info["bin_suffix"]
         )
         command = [xpcshell] + args
-        server_logfile = None
         if MOCHITEST_SERVER_LOGGING and "MOZ_UPLOAD_DIR" in os.environ:
-            server_logfile = os.path.join(
+            server_logfile_path = os.path.join(
                 os.environ["MOZ_UPLOAD_DIR"],
                 "mochitest-server-%d.txt" % MochitestServer.instance_count,
             )
-        self._process = mozprocess.ProcessHandler(
-            command, cwd=SCRIPT_DIR, env=env, logfile=server_logfile
-        )
-        self._process.run()
+            self.server_logfile = open(server_logfile_path, "w")
+            self._process = subprocess.Popen(
+                command,
+                cwd=SCRIPT_DIR,
+                env=env,
+                stdout=self.server_logfile,
+                stderr=subprocess.STDOUT,
+            )
+        else:
+            self.server_logfile = None
+            self._process = subprocess.Popen(
+                command,
+                cwd=SCRIPT_DIR,
+                env=env,
+            )
         self._log.info("%s : launching %s" % (self.__class__.__name__, command))
         pid = self._process.pid
         self._log.info("runtests.py | Server pid: %d" % pid)
@@ -587,7 +598,7 @@ class MochitestServer(object):
             while i < 5:
                 try:
                     with closing(urlopen(self.debugURL)) as c:
-                        self._log.info(six.ensure_text(c.read()))
+                        self._log.info(c.read().decode("utf-8"))
                     break
                 except Exception as e:
                     self._log.info("exception when enabling debugging: %s" % str(e))
@@ -614,11 +625,13 @@ class MochitestServer(object):
     def stop(self):
         try:
             with closing(urlopen(self.shutdownURL)) as c:
-                self._log.info(six.ensure_text(c.read()))
+                self._log.info(c.read().decode("utf-8"))
         except Exception:
             self._log.info("Failed to stop web server on %s" % self.shutdownURL)
             traceback.print_exc()
         finally:
+            if self.server_logfile is not None:
+                self.server_logfile.close()
             if self._process is not None:
                 # Kill the server immediately to avoid logging intermittent
                 # shutdown crashes, sometimes observed on Windows 10.
@@ -627,7 +640,6 @@ class MochitestServer(object):
 
 
 class WebSocketServer(object):
-
     "Class which encapsulates the mod_pywebsocket server"
 
     def __init__(self, options, scriptdir, logger, debuggerInfo=None):
@@ -651,9 +663,11 @@ class WebSocketServer(object):
         cmd = [sys.executable, script]
         if self.debuggerInfo and self.debuggerInfo.interactive:
             cmd += ["--interactive"]
+        # We need to use 0.0.0.0 to listen on all interfaces because
+        # Android tests connect from a different hosts
         cmd += [
             "-H",
-            "127.0.0.1",
+            "0.0.0.0",
             "-p",
             str(self.port),
             "-w",
@@ -667,13 +681,9 @@ class WebSocketServer(object):
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
         # Start the process. Ignore stderr so that exceptions from the server
         # are not treated as failures when parsing the test log.
-        self._process = mozprocess.ProcessHandler(
-            cmd,
-            cwd=SCRIPT_DIR,
-            env=env,
-            processStderrLine=lambda _: None,
+        self._process = subprocess.Popen(
+            cmd, cwd=SCRIPT_DIR, env=env, stderr=subprocess.DEVNULL
         )
-        self._process.run()
         pid = self._process.pid
         self._log.info("runtests.py | Websocket server pid: %d" % pid)
 
@@ -744,9 +754,12 @@ class SSLTunnel:
             config.write("httpproxy:1\n")
             config.write("certdbdir:%s\n" % self.certPath)
             config.write("forward:127.0.0.1:%s\n" % self.httpPort)
-            config.write(
-                "websocketserver:%s:%s\n" % (self.webServer, self.webSocketPort)
-            )
+
+            wsserver = self.webServer
+            if self.webServer == "10.0.2.2":
+                wsserver = "127.0.0.1"
+
+            config.write("websocketserver:%s:%s\n" % (wsserver, self.webSocketPort))
             # Use "*" to tell ssltunnel to listen on the public ip
             # address instead of the loopback address 127.0.0.1. This
             # may have the side-effect of causing firewall warnings on
@@ -774,12 +787,11 @@ class SSLTunnel:
             self.log.error(
                 "INFO | runtests.py | expected to find ssltunnel at %s" % ssltunnel
             )
-            exit(1)
+            sys.exit(1)
 
         env = test_environment(xrePath=self.xrePath, log=self.log)
         env["LD_LIBRARY_PATH"] = self.xrePath
-        self.process = mozprocess.ProcessHandler([ssltunnel, self.configFile], env=env)
-        self.process.run()
+        self.process = subprocess.Popen([ssltunnel, self.configFile], env=env)
         self.log.info("runtests.py | SSL tunnel pid: %d" % self.process.pid)
 
     def stop(self):
@@ -817,7 +829,7 @@ def checkAndConfigureV4l2loopback(device):
 
     VIDIOC_QUERYCAP = 0x80685600
 
-    fd = libc.open(six.ensure_binary(device), O_RDWR)
+    fd = libc.open(device.encode("ascii"), O_RDWR)
     if fd < 0:
         return False, ""
 
@@ -825,7 +837,7 @@ def checkAndConfigureV4l2loopback(device):
     if libc.ioctl(fd, VIDIOC_QUERYCAP, ctypes.byref(vcap)) != 0:
         return False, ""
 
-    if six.ensure_text(vcap.driver) != "v4l2 loopback":
+    if vcap.driver.decode("utf-8") != "v4l2 loopback":
         return False, ""
 
     class v4l2_control(ctypes.Structure):
@@ -847,7 +859,7 @@ def checkAndConfigureV4l2loopback(device):
     libc.ioctl(fd, VIDIOC_S_CTRL, ctypes.byref(control))
     libc.close(fd)
 
-    return True, six.ensure_text(vcap.card)
+    return True, vcap.card.decode("utf-8")
 
 
 def findTestMediaDevices(log):
@@ -879,16 +891,16 @@ def findTestMediaDevices(log):
         return None
 
     # Feed it a frame of output so it has something to display
-    gst01 = spawn.find_executable("gst-launch-0.1")
-    gst010 = spawn.find_executable("gst-launch-0.10")
-    gst10 = spawn.find_executable("gst-launch-1.0")
+    gst01 = which("gst-launch-0.1")
+    gst010 = which("gst-launch-0.10")
+    gst10 = which("gst-launch-1.0")
     if gst01:
         gst = gst01
     if gst010:
         gst = gst010
     else:
         gst = gst10
-    process = mozprocess.ProcessHandler(
+    process = subprocess.Popen(
         [
             gst,
             "--no-fault",
@@ -900,33 +912,9 @@ def findTestMediaDevices(log):
             "device=%s" % device,
         ]
     )
-    process.run()
     info["video"] = {"name": name, "process": process}
-
-    # check if PulseAudio module-null-sink is loaded
-    pactl = spawn.find_executable("pactl")
-
-    if not pactl:
-        log.error("Could not find pactl on system")
-        return None
-
-    try:
-        o = subprocess.check_output([pactl, "list", "short", "modules"])
-    except subprocess.CalledProcessError:
-        log.error("Could not list currently loaded modules")
-        return None
-
-    null_sink = [x for x in o.splitlines() if b"module-null-sink" in x]
-
-    if not null_sink:
-        try:
-            subprocess.check_call([pactl, "load-module", "module-null-sink"])
-        except subprocess.CalledProcessError:
-            log.error("Could not load module-null-sink")
-            return None
-
-    # Hardcode the name since it's always the same.
-    info["audio"] = {"name": "Monitor of Null Output"}
+    info["speaker"] = {"name": "44100Hz Null Output"}
+    info["audio"] = {"name": "Monitor of {}".format(info["speaker"]["name"])}
     return info
 
 
@@ -1150,7 +1138,7 @@ class MochitestDesktop(object):
                 self.urlOpts.append("dumpAboutMemoryAfterTest=true")
             if options.dumpDMDAfterTest:
                 self.urlOpts.append("dumpDMDAfterTest=true")
-            if options.debugger:
+            if options.debugger or options.jsdebugger:
                 self.urlOpts.append("interactiveDebugger=true")
             if options.jscov_dir_prefix:
                 self.urlOpts.append("jscovDirPrefix=%s" % options.jscov_dir_prefix)
@@ -1251,7 +1239,7 @@ class MochitestDesktop(object):
          - create it if it does
         Removal of those directories is handled in cleanup()
         """
-        if type(extraTestsDirs) != list:
+        if type(extraTestsDirs) is not list:
             return
 
         for d in extraTestsDirs:
@@ -1304,7 +1292,7 @@ class MochitestDesktop(object):
             paths.append(test)
 
         # Generate test by schemes
-        for (scheme, grouped_tests) in self.groupTestsByScheme(paths).items():
+        for scheme, grouped_tests in self.groupTestsByScheme(paths).items():
             # Bug 883865 - add this functionality into manifestparser
             with open(
                 os.path.join(SCRIPT_DIR, options.testRunManifestFile), "w"
@@ -1339,8 +1327,7 @@ class MochitestDesktop(object):
             "--port",
             options.websocket_process_bridge_port,
         ]
-        self.websocketProcessBridge = mozprocess.ProcessHandler(command, cwd=SCRIPT_DIR)
-        self.websocketProcessBridge.run()
+        self.websocketProcessBridge = subprocess.Popen(command, cwd=SCRIPT_DIR)
         self.log.info(
             "runtests.py | websocket/process bridge pid: %d"
             % self.websocketProcessBridge.pid
@@ -1348,7 +1335,7 @@ class MochitestDesktop(object):
 
         # ensure the server is up, wait for at most ten seconds
         for i in range(1, 100):
-            if self.websocketProcessBridge.proc.poll() is not None:
+            if self.websocketProcessBridge.poll() is not None:
                 self.log.error(
                     "runtests.py | websocket/process bridge failed "
                     "to launch. Are all the dependencies installed?"
@@ -1395,7 +1382,11 @@ class MochitestDesktop(object):
         serverOptions["isWin"] = mozinfo.isWin
         serverOptions["proxyPort"] = options.http3ServerPort
         env = test_environment(xrePath=options.xrePath, log=self.log)
-        self.http3Server = Http3Server(serverOptions, env, self.log)
+        serverEnv = env.copy()
+        serverLog = env.get("MOZHTTP3_SERVER_LOG")
+        if serverLog is not None:
+            serverEnv["RUST_LOG"] = serverLog
+        self.http3Server = Http3Server(serverOptions, serverEnv, self.log)
         self.http3Server.start()
 
         port = self.http3Server.ports().get("MOZHTTP3_PORT_PROXY")
@@ -1732,12 +1723,6 @@ toolbar#nav-bar {
                 subsuite(options.subsuite),
             ]
 
-            # Allow for only running tests/manifests which match this tag
-            if options.conditionedProfile:
-                if not options.test_tags:
-                    options.test_tags = []
-                options.test_tags.append("condprof")
-
             if options.test_tags:
                 filters.append(tags(options.test_tags))
 
@@ -1793,11 +1778,16 @@ toolbar#nav-bar {
                 filters.append(failures(options.runFailures))
                 noDefaultFilters = True
 
+            # TODO: remove this when crashreporter is fixed on mac via bug 1910777
+            if info["os"] == "mac" and info["os_version"].split(".")[0] == "14":
+                info["crashreporter"] = False
+
             tests = manifest.active_tests(
                 exists=False,
                 disabled=disabled,
                 filters=filters,
                 noDefaultFilters=noDefaultFilters,
+                strictExpressions=True,
                 **info
             )
 
@@ -1832,7 +1822,8 @@ toolbar#nav-bar {
             ):
                 manifest_key = "{}:{}".format(test["ancestor_manifest"], manifest_key)
 
-            self.tests_by_manifest[manifest_key.replace("\\", "/")].append(tp)
+            manifest_key = manifest_key.replace("\\", "/")
+            self.tests_by_manifest[manifest_key].append(tp)
             self.args_by_manifest[manifest_key].add(test.get("args"))
             self.prefs_by_manifest[manifest_key].add(test.get("prefs"))
             self.env_vars_by_manifest[manifest_key].add(test.get("environment"))
@@ -1872,9 +1863,7 @@ toolbar#nav-bar {
         # we can't tell what comes from DEFAULT or not. So to validate this, we
         # stash all args from tests in the same manifest into a set. If the
         # length of the set > 1, then we know 'args' didn't come from DEFAULT.
-        args_not_default = [
-            m for m, p in six.iteritems(self.args_by_manifest) if len(p) > 1
-        ]
+        args_not_default = [m for m, p in self.args_by_manifest.items() if len(p) > 1]
         if args_not_default:
             self.log.error(
                 "The 'args' key must be set in the DEFAULT section of a "
@@ -1885,9 +1874,7 @@ toolbar#nav-bar {
             sys.exit(1)
 
         # The 'prefs' key needs to be set in the DEFAULT section too.
-        pref_not_default = [
-            m for m, p in six.iteritems(self.prefs_by_manifest) if len(p) > 1
-        ]
+        pref_not_default = [m for m, p in self.prefs_by_manifest.items() if len(p) > 1]
         if pref_not_default:
             self.log.error(
                 "The 'prefs' key must be set in the DEFAULT section of a "
@@ -1898,7 +1885,7 @@ toolbar#nav-bar {
             sys.exit(1)
         # The 'environment' key needs to be set in the DEFAULT section too.
         env_not_default = [
-            m for m, p in six.iteritems(self.env_vars_by_manifest) if len(p) > 1
+            m for m, p in self.env_vars_by_manifest.items() if len(p) > 1
         ]
         if env_not_default:
             self.log.error(
@@ -1944,8 +1931,12 @@ toolbar#nav-bar {
             assert manifestFileAbs.startswith(SCRIPT_DIR)
             manifest = TestManifest([manifestFileAbs], strict=False)
         else:
-            masterName = self.normflavor(options.flavor) + ".ini"
+            masterName = self.normflavor(options.flavor) + ".toml"
             masterPath = os.path.join(SCRIPT_DIR, self.testRoot, masterName)
+
+            if not os.path.exists(masterPath):
+                masterName = self.normflavor(options.flavor) + ".ini"
+                masterPath = os.path.join(SCRIPT_DIR, self.testRoot, masterName)
 
             if os.path.exists(masterPath):
                 manifest = TestManifest([masterPath], strict=False)
@@ -1971,7 +1962,7 @@ toolbar#nav-bar {
         d = dict(
             (k, v)
             for k, v in options.__dict__.items()
-            if (v is None) or isinstance(v, (six.string_types, numbers.Number))
+            if (v is None) or isinstance(v, (str, numbers.Number))
         )
         d["testRoot"] = self.testRoot
         if options.jscov_dir_prefix:
@@ -1982,13 +1973,13 @@ toolbar#nav-bar {
         d["runFailures"] = False
         if options.runFailures:
             d["runFailures"] = True
-        content = json.dumps(d)
 
         shutil.copy(
             os.path.join(SCRIPT_DIR, "ignorePrefs.json"),
             os.path.join(options.profilePath, "ignorePrefs.json"),
         )
         d["ignorePrefsFile"] = "ignorePrefs.json"
+        content = json.dumps(d)
 
         with open(os.path.join(options.profilePath, "testConfig.js"), "w") as config:
             config.write(content)
@@ -2006,6 +1997,9 @@ toolbar#nav-bar {
 
         if options.headless:
             browserEnv["MOZ_HEADLESS"] = "1"
+
+        if not options.e10s:
+            browserEnv["MOZ_FORCE_DISABLE_E10S"] = "1"
 
         if options.dmd:
             browserEnv["DMD"] = os.environ.get("DMD", "1")
@@ -2060,7 +2054,7 @@ toolbar#nav-bar {
             # opening in profiler.firefox.com.
             self.profiler_tempdir = tempfile.mkdtemp()
             browserEnv["MOZ_PROFILER_SHUTDOWN"] = os.path.join(
-                self.profiler_tempdir, "mochitest-profile.json"
+                self.profiler_tempdir, "profile_mochitest.json"
             )
             browserEnv["MOZ_PROFILER_STARTUP"] = "1"
 
@@ -2070,7 +2064,7 @@ toolbar#nav-bar {
             browserEnv["MOZ_PROFILER_STARTUP"] = "1"
             if "MOZ_UPLOAD_DIR" in browserEnv:
                 browserEnv["MOZ_PROFILER_SHUTDOWN"] = os.path.join(
-                    browserEnv["MOZ_UPLOAD_DIR"], "mochitest-profile.json"
+                    browserEnv["MOZ_UPLOAD_DIR"], "profile_mochitest.json"
                 )
             else:
                 self.log.error(
@@ -2122,17 +2116,16 @@ toolbar#nav-bar {
                     continue
         else:
 
-            def _psInfo(line):
+            def _psInfo(_, line):
                 if pname in line:
                     self.log.info(line)
 
-            process = mozprocess.ProcessHandler(
-                ["ps", "-f"], processOutputLine=_psInfo, universal_newlines=True
+            mozprocess.run_and_wait(
+                ["ps", "-f"],
+                output_line_handler=_psInfo,
             )
-            process.run()
-            process.wait()
 
-            def _psKill(line):
+            def _psKill(_, line):
                 parts = line.split()
                 if len(parts) == 3 and parts[0].isdigit():
                     pid = int(parts[0])
@@ -2147,13 +2140,10 @@ toolbar#nav-bar {
                                 % (pname, pid)
                             )
 
-            process = mozprocess.ProcessHandler(
+            mozprocess.run_and_wait(
                 ["ps", "-o", "pid,ppid,comm"],
-                processOutputLine=_psKill,
-                universal_newlines=True,
+                output_line_handler=_psKill,
             )
-            process.run()
-            process.wait()
 
     def execute_start_script(self):
         if not self.start_script or not self.marionette:
@@ -2411,14 +2401,14 @@ toolbar#nav-bar {
 
         # Whitelist the _tests directory (../..) so that TESTING_JS_MODULES work
         tests_dir = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-        sandbox_whitelist_paths = [tests_dir] + options.sandboxReadWhitelist
+        sandbox_allowlist_paths = [tests_dir] + options.sandboxReadWhitelist
         if platform.system() == "Linux" or platform.system() in (
             "Windows",
             "Microsoft",
         ):
             # Trailing slashes are needed to indicate directories on Linux and Windows
-            sandbox_whitelist_paths = [
-                os.path.join(p, "") for p in sandbox_whitelist_paths
+            sandbox_allowlist_paths = [
+                os.path.join(p, "") for p in sandbox_allowlist_paths
             ]
 
         if options.conditionedProfile:
@@ -2441,7 +2431,7 @@ toolbar#nav-bar {
             addons=extensions,
             locations=self.locations,
             proxy=self.proxy(options),
-            whitelistpaths=sandbox_whitelist_paths,
+            allowlistpaths=sandbox_allowlist_paths,
         )
 
         # Fix options.profilePath for legacy consumers.
@@ -2469,7 +2459,6 @@ toolbar#nav-bar {
 
         # Hardcoded prefs (TODO move these into a base profile)
         prefs = {
-            "browser.tabs.remote.autostart": options.e10s,
             # Enable tracing output for detailed failures in case of
             # failing connection attempts, and hangs (bug 1397201)
             "remote.log.level": "Trace",
@@ -2529,7 +2518,7 @@ toolbar#nav-bar {
         if options.useTestMediaDevices:
             prefs["media.audio_loopback_dev"] = self.mediaDevices["audio"]["name"]
             prefs["media.video_loopback_dev"] = self.mediaDevices["video"]["name"]
-            prefs["media.cubeb.output_device"] = "Null Output"
+            prefs["media.cubeb.output_device"] = self.mediaDevices["speaker"]["name"]
             prefs["media.volume_scale"] = "1.0"
             self.gstForV4l2loopbackProcess = self.mediaDevices["video"]["process"]
 
@@ -2593,14 +2582,14 @@ toolbar#nav-bar {
                 )
         options.manifestFile = None
 
-        if hasattr(self, "virtualInputDeviceIdList"):
-            pactl = spawn.find_executable("pactl")
+        if hasattr(self, "virtualDeviceIdList"):
+            pactl = which("pactl")
 
             if not pactl:
                 self.log.error("Could not find pactl on system")
                 return None
 
-            for id in self.virtualInputDeviceIdList:
+            for id in self.virtualDeviceIdList:
                 try:
                     subprocess.check_call([pactl, "unload-module", str(id)])
                 except subprocess.CalledProcessError:
@@ -2609,7 +2598,12 @@ toolbar#nav-bar {
                     )
                     return None
 
-            self.virtualInputDeviceIdList = []
+            self.virtualDeviceIdList = []
+
+        if hasattr(self, "virtualAudioNodeIdList"):
+            for id in self.virtualAudioNodeIdList:
+                subprocess.check_output(["pw-cli", "destroy", str(id)])
+            self.virtualAudioNodeIdList = []
 
     def dumpScreen(self, utilityPath):
         if self.haveDumpedScreen:
@@ -2731,6 +2725,7 @@ toolbar#nav-bar {
         detectShutdownLeaks=False,
         screenshotOnFail=False,
         bisectChunk=None,
+        restartAfterFailure=False,
         marionette_args=None,
         e10s=True,
         runFailures=False,
@@ -2838,6 +2833,7 @@ toolbar#nav-bar {
                 shutdownLeaks=shutdownLeaks,
                 lsanLeaks=lsanLeaks,
                 bisectChunk=bisectChunk,
+                restartAfterFailure=restartAfterFailure,
             )
 
             def timeoutHandler():
@@ -2849,6 +2845,7 @@ toolbar#nav-bar {
                     debuggerInfo,
                     browserProcessId,
                     processLog,
+                    symbolsPath,
                 )
 
             kp_kwargs = {
@@ -2862,6 +2859,7 @@ toolbar#nav-bar {
 
             # create mozrunner instance and start the system under test process
             self.lastTestSeen = self.test_name
+            self.lastManifest = currentManifest
             startTime = datetime.now()
 
             runner_cls = mozrunner.runners.get(
@@ -2923,13 +2921,13 @@ toolbar#nav-bar {
                 self.marionette.delete_session()
                 del self.marionette
 
-            except IOError:
+            except IOError as e:
                 # Any IOError as thrown by Marionette means that something is
                 # wrong with the process, like a crash or the socket is no
                 # longer open. We defer raising this specific error so that
                 # post-test checks for leaks and crashes are performed and
                 # reported first.
-                marionette_exception = sys.exc_info()
+                marionette_exception = e
 
             # wait until app is finished
             # XXX copy functionality from
@@ -2970,6 +2968,14 @@ toolbar#nav-bar {
                         "test": self.lastTestSeen,
                         "message": msg,
                     }
+
+                    # for looping scenarios (like --restartAfterFailure), document the test
+                    key = message["test"].split(" ")[0].split("/")[-1].strip()
+                    if key not in self.expectedError:
+                        self.expectedError[key] = message.get(
+                            "message", message["message"]
+                        ).strip()
+
                     # need to send a test_end in order to have mozharness process messages properly
                     # this requires a custom message vs log.error/log.warning/etc.
                     self.message_logger.process_message(message)
@@ -3028,6 +3034,14 @@ toolbar#nav-bar {
                     "test": self.lastTestSeen,
                     "message": "application terminated with exit code %s" % status,
                 }
+
+                # for looping scenarios (like --restartAfterFailure), document the test
+                key = message["test"].split(" ")[0].split("/")[-1].strip()
+                if key not in self.expectedError:
+                    self.expectedError[key] = message.get(
+                        "message", message["message"]
+                    ).strip()
+
                 # need to send a test_end in order to have mozharness process messages properly
                 # this requires a custom message vs log.error/log.warning/etc.
                 self.message_logger.process_message(message)
@@ -3039,8 +3053,7 @@ toolbar#nav-bar {
                 os.remove(p)
 
         if marionette_exception is not None:
-            exc, value, tb = marionette_exception
-            six.reraise(exc, value, tb)
+            raise marionette_exception
 
         return status, self.lastTestSeen
 
@@ -3060,64 +3073,185 @@ toolbar#nav-bar {
         options.manifestFile = None
         options.profilePath = None
 
-    def initializeVirtualInputDevices(self):
+    def initializeVirtualAudioDevices(self):
         """
-        Configure the system to have a number of virtual audio input devices, that
-        each produce a tone at a particular frequency.
+        Configure the system to have a number of virtual audio devices:
+        2 output devices, and
+        4 input devices that each produce a tone at a particular frequency.
 
         This method is only currently implemented for Linux.
         """
         if not mozinfo.isLinux:
             return
 
-        pactl = spawn.find_executable("pactl")
+        INPUT_DEVICES_COUNT = 4
+        DEVICES_BASE_FREQUENCY = 110  # Hz
 
+        output_devices = [
+            {"name": "null-44100", "description": "44100Hz Null Output", "rate": 44100},
+            {"name": "null-48000", "description": "48000Hz Null Output", "rate": 48000},
+        ]
+        # We want quite a number of input devices, each with a different tone
+        # frequency and device name so that we can recognize them easily during
+        # testing.
+        input_devices = []
+        for i in range(1, INPUT_DEVICES_COUNT + 1):
+            freq = i * DEVICES_BASE_FREQUENCY
+            input_devices.append(
+                {
+                    "name": "sine-{}".format(freq),
+                    "description": "{}Hz Sine Source".format(freq),
+                    "frequency": freq,
+                }
+            )
+
+        # Determine if this is running PulseAudio or PipeWire
+        # `pactl info` works on both systems, but when running on PipeWire it says
+        # something like:
+        # Server Name: PulseAudio (on PipeWire 1.0.5)
+        pactl = which("pactl")
         if not pactl:
             self.log.error("Could not find pactl on system")
             return
 
-        DEVICES_COUNT = 4
-        DEVICES_BASE_FREQUENCY = 110  # Hz
-        self.virtualInputDeviceIdList = []
-        # If the device are already present, find their id and return early
-        o = subprocess.check_output([pactl, "list", "modules", "short"])
-        found_devices = 0
-        for input in o.splitlines():
-            device = input.decode().split("\t")
-            if device[1] == "module-sine-source":
-                self.virtualInputDeviceIdList.append(int(device[0]))
-                found_devices += 1
+        o = subprocess.check_output([pactl, "info"])
+        if b"PipeWire" in o:
+            self.initializeVirtualAudioDevicesPipeWire(input_devices, output_devices)
+        else:
+            self.initializeVirtualAudioDevicesPulseAudio(
+                pactl, input_devices, output_devices
+            )
 
-        if found_devices == DEVICES_COUNT:
+    def initializeVirtualAudioDevicesPipeWire(self, input_devices, output_devices):
+        required_commands = ["pw-cli", "pw-dump"]
+        for command in required_commands:
+            cmd = which(command)
+            if not cmd:
+                self.log.error(
+                    "Could not find required program {} on system".format(command)
+                )
+                return
+
+        # Create outputs
+        for device in output_devices:
+            cmd = ["pw-cli", "create-node", "adapter"]
+            device_spec = [
+                (
+                    "{{factory.name=support.null-audio-sink "
+                    'node.name="{}" '
+                    'node.description="{}" '
+                    "media.class=Audio/Sink "
+                    "object.linger=true "
+                    "audio.position=[FL FR] "
+                    "monitor.channel-volumes=true "
+                    "audio.rate={}}}".format(
+                        device["name"], device["description"], device["rate"]
+                    )
+                )
+            ]
+            subprocess.check_output(cmd + device_spec)
+
+        # Create inputs
+        for device in input_devices:
+            cmd = ["pw-cli", "create-node", "adapter"]
+            # The frequency setting doesn't work for now
+            device_spec = [
+                (
+                    "{{factory.name=audiotestsrc "
+                    'node.name="{}" '
+                    'node.description="{}" '
+                    "media.class=Audio/Source "
+                    "object.linger=true "
+                    "node.param.Props={{frequency: {}}} }}".format(
+                        device["name"], device["description"], device["frequency"]
+                    )
+                )
+            ]
+            subprocess.check_output(cmd + device_spec)
+
+        # Get the node ids for cleanup
+        virtual_node_ids = []
+        cmd = ["pw-dump", "Node"]
+        try:
+            nodes = json.loads(subprocess.check_output(cmd))
+        except json.JSONDecodeError as e:
+            # This can happen but I'm not sure why, leaving that in for now
+            print(e, str(cmd))
+            sys.exit(1)
+        for node in nodes:
+            name = node["info"]["props"]["node.name"]
+            if "null-" in name or "sine-" in name:
+                virtual_node_ids.append(node["info"]["props"]["object.id"])
+
+        self.virtualAudioNodeIdList = virtual_node_ids
+
+    def initializeVirtualAudioDevicesPulseAudio(
+        self, pactl, input_devices, output_devices
+    ):
+        def getModuleIds(moduleName):
+            o = subprocess.check_output([pactl, "list", "modules", "short"])
+            list = []
+            for input in o.splitlines():
+                device = input.decode().split("\t")
+                if device[1] == moduleName:
+                    list.append(int(device[0]))
+            return list
+
+        # If the device are already present, find their id and return early
+        outputDeviceIdList = getModuleIds("module-null-sink")
+        inputDeviceIdList = getModuleIds("module-sine-source")
+
+        if len(outputDeviceIdList) == len(output_devices) and len(
+            inputDeviceIdList
+        ) == len(input_devices):
+            self.virtualDeviceIdList = outputDeviceIdList + inputDeviceIdList
             return
-        elif found_devices != 0:
-            # Remove all devices and reinitialize them properly
-            for id in self.virtualInputDeviceIdList:
+        else:
+            # Remove any existing devices and reinitialize properly
+            for id in outputDeviceIdList + inputDeviceIdList:
                 try:
                     subprocess.check_call([pactl, "unload-module", str(id)])
                 except subprocess.CalledProcessError:
                     log.error("Could not remove pulse module with id {}".format(id))
                     return None
 
-        # We want quite a number of input devices, each with a different tone
-        # frequency and device name so that we can recognize them easily during
-        # testing.
+        idList = []
+        command = [pactl, "load-module", "module-null-sink"]
+        for device in output_devices:
+            try:
+                o = subprocess.check_output(
+                    command
+                    + [
+                        "rate={}".format(device["rate"]),
+                        "sink_name='\"{}\"'".format(device["name"]),
+                        "sink_properties='device.description=\"{}\"'".format(
+                            device["description"]
+                        ),
+                    ]
+                )
+                idList.append(int(o))
+            except subprocess.CalledProcessError:
+                self.log.error(
+                    "Could not load module-null-sink at rate={}".format(device["rate"])
+                )
+
         command = [pactl, "load-module", "module-sine-source", "rate=44100"]
-        for i in range(1, DEVICES_COUNT + 1):
-            freq = i * DEVICES_BASE_FREQUENCY
+        for device in input_devices:
             complete_command = command + [
-                "source_name=sine-{}".format(freq),
-                "frequency={}".format(freq),
+                'source_name="{}"'.format(device["name"]),
+                "frequency={}".format(device["frequency"]),
             ]
             try:
                 o = subprocess.check_output(complete_command)
-                self.virtualInputDeviceIdList.append(o)
+                idList.append(int(o))
 
             except subprocess.CalledProcessError:
                 self.log.error(
                     "Could not create device with module-sine-source"
-                    " (freq={})".format(freq)
+                    " (freq={})".format(device["frequency"])
                 )
+
+        self.virtualDeviceIdList = idList
 
     def normalize_paths(self, paths):
         # Normalize test paths so they are relative to test root
@@ -3156,6 +3290,20 @@ toolbar#nav-bar {
 
             if options.bisectChunk:
                 status = bisect.post_test(options, self.expectedError, self.result)
+            elif options.restartAfterFailure:
+                # NOTE: ideally browser will halt on first failure, then this will always be the last test
+                if not self.expectedError:
+                    status = -1
+                else:
+                    firstFail = len(testsToRun)
+                    for key in self.expectedError:
+                        full_key = [x for x in testsToRun if key in x]
+                        if full_key:
+                            if testsToRun.index(full_key[0]) < firstFail:
+                                firstFail = testsToRun.index(full_key[0])
+                    testsToRun = testsToRun[firstFail + 1 :]
+                    if testsToRun == []:
+                        status = -1
             else:
                 status = -1
 
@@ -3290,13 +3438,13 @@ toolbar#nav-bar {
             ]
 
         stepResults = {}
-        for (descr, step) in steps:
+        for descr, step in steps:
             stepResults[descr] = "not run / incomplete"
 
         startTime = datetime.now()
         maxTime = timedelta(seconds=options.verify_max_time)
         finalResult = "PASSED"
-        for (descr, step) in steps:
+        for descr, step in steps:
             if (datetime.now() - startTime) > maxTime:
                 self.log.info("::: Test verification is taking too long: Giving up!")
                 self.log.info(
@@ -3351,7 +3499,6 @@ toolbar#nav-bar {
                 #
                 # Currently for automation, the pref defaults to true (but can be
                 # overridden with --setpref).
-                "serviceworker_e10s": True,
                 "sessionHistoryInParent": not options.disable_fission
                 or not self.extraPrefs.get(
                     "fission.disableSessionHistoryInParent",
@@ -3366,6 +3513,7 @@ toolbar#nav-bar {
                 "swgl": self.extraPrefs.get("gfx.webrender.software", False),
                 "verify": options.verify,
                 "verify_fission": options.verify_fission,
+                "vertical_tab": self.extraPrefs.get("sidebar.verticalTabs", False),
                 "webgl_ipc": self.extraPrefs.get("webgl.out-of-process", False),
                 "wmfme": (
                     self.extraPrefs.get("media.wmf.media-engine.enabled", 0)
@@ -3373,9 +3521,17 @@ toolbar#nav-bar {
                         "media.wmf.media-engine.channel-decoder.enabled", False
                     )
                 ),
+                "mda_gpu": self.extraPrefs.get(
+                    "media.hardware-video-decoding.force-enabled", False
+                ),
                 "xorigin": options.xOriginTests,
                 "condprof": options.conditionedProfile,
                 "msix": "WindowsApps" in options.app,
+                "android_version": mozinfo.info.get("android_version", -1),
+                "android": mozinfo.info.get("android", False),
+                "is_emulator": mozinfo.info.get("is_emulator", False),
+                "cm6": mozinfo.info.get("cm6", False),
+                "coverage": mozinfo.info.get("coverage", False),
             }
         )
 
@@ -3418,12 +3574,14 @@ toolbar#nav-bar {
             return result
 
         # code for --run-by-manifest
-        manifests = set(t["manifest"] for t in tests)
+        manifests = set(t["manifest"].replace("\\", "/") for t in tests)
         result = 0
 
         origPrefs = self.extraPrefs.copy()
         for m in sorted(manifests):
+            self.log.group_start(name=m)
             self.log.info("Running manifest: {}".format(m))
+            self.message_logger.setManifest(m)
 
             args = list(self.args_by_manifest[m])[0]
             self.extraArgs = []
@@ -3473,6 +3631,7 @@ toolbar#nav-bar {
 
             # Dump the logging buffer
             self.message_logger.dump_buffered()
+            self.log.group_end(name=m)
 
             if res == -1:
                 break
@@ -3532,7 +3691,7 @@ toolbar#nav-bar {
                 # Only do the extra work of symbolicating and viewing the profile if
                 # officially requested through a command line flag. The MOZ_PROFILER_*
                 # flags can be set by a user.
-                symbolicate_profile_json(profile_path, options.topobjdir)
+                symbolicate_profile_json(profile_path, options.symbolsPath)
                 view_gecko_profile_from_mochitest(
                     profile_path, options, profiler_logger
                 )
@@ -3567,12 +3726,12 @@ toolbar#nav-bar {
             )
 
         if options.useTestMediaDevices:
+            self.initializeVirtualAudioDevices()
             devices = findTestMediaDevices(self.log)
             if not devices:
                 self.log.error("Could not find test media devices to use")
                 return 1
             self.mediaDevices = devices
-            self.initializeVirtualInputDevices()
 
         # See if we were asked to run on Valgrind
         valgrindPath = None
@@ -3642,7 +3801,7 @@ toolbar#nav-bar {
             # then again to actually run mochitest
             if options.timeout:
                 timeout = options.timeout + 30
-            elif options.debugger or not options.autorun:
+            elif options.debugger or options.jsdebugger or not options.autorun:
                 timeout = None
             else:
                 # We generally want the JS harness or marionette to handle
@@ -3681,7 +3840,7 @@ toolbar#nav-bar {
 
             # testsToFilter parameter is used to filter out the test list that
             # is sent to getTestsByScheme
-            for (scheme, tests) in self.getTestsByScheme(
+            for scheme, tests in self.getTestsByScheme(
                 options, testsToFilter, True, manifestToFilter
             ):
                 # read the number of tests here, if we are not going to run any,
@@ -3720,11 +3879,6 @@ toolbar#nav-bar {
                     )
                 )
                 self.log.info(
-                    "runtests.py | Running with serviceworker_e10s: {}".format(
-                        mozinfo.info.get("serviceworker_e10s", False)
-                    )
-                )
-                self.log.info(
                     "runtests.py | Running with socketprocess_e10s: {}".format(
                         mozinfo.info.get("socketprocess_e10s", False)
                     )
@@ -3746,6 +3900,7 @@ toolbar#nav-bar {
                     detectShutdownLeaks=detectShutdownLeaks,
                     screenshotOnFail=options.screenshotOnFail,
                     bisectChunk=options.bisectChunk,
+                    restartAfterFailure=options.restartAfterFailure,
                     marionette_args=marionette_args,
                     e10s=options.e10s,
                     runFailures=options.runFailures,
@@ -3797,6 +3952,7 @@ toolbar#nav-bar {
                 ignore_missing_leaks=ignoreMissingLeaks,
                 log=self.log,
                 stack_fixer=get_stack_fixer_function(utilityPath, options.symbolsPath),
+                scope=manifestToFilter,
             )
 
         self.log.info("runtests.py | Running tests: end.")
@@ -3807,7 +3963,14 @@ toolbar#nav-bar {
         return status
 
     def handleTimeout(
-        self, timeout, proc, utilityPath, debuggerInfo, browser_pid, processLog
+        self,
+        timeout,
+        proc,
+        utilityPath,
+        debuggerInfo,
+        browser_pid,
+        processLog,
+        symbolsPath,
     ):
         """handle process output timeout"""
         # TODO: bug 913975 : _processOutput should call self.processOutputLine
@@ -3824,6 +3987,12 @@ toolbar#nav-bar {
             "message": "application timed out after %d seconds with no output"
             % int(timeout),
         }
+
+        # for looping scenarios (like --restartAfterFailure), document the test
+        key = message["test"].split(" ")[0].split("/")[-1].strip()
+        if key not in self.expectedError:
+            self.expectedError[key] = message.get("message", message["message"]).strip()
+
         # need to send a test_end in order to have mozharness process messages properly
         # this requires a custom message vs log.error/log.warning/etc.
         self.message_logger.process_message(message)
@@ -3832,6 +4001,57 @@ toolbar#nav-bar {
         self.log.warning("Force-terminating active process(es).")
 
         browser_pid = browser_pid or proc.pid
+
+        # Send a signal to start the profiler - if we're running on Linux or MacOS
+        profiler_logger = get_proxy_logger("profiler")
+        if mozinfo.isLinux or mozinfo.isMac:
+            profiler_logger.warning(
+                "Attempting to start the profiler to help with diagnosing the hang."
+            )
+            profiler_logger.info(
+                "Sending SIGUSR1 to pid %d start the profiler." % browser_pid
+            )
+            os.kill(browser_pid, signal.SIGUSR1)
+            profiler_logger.info("Waiting 10s to capture a profile...")
+            time.sleep(10)
+            profiler_logger.info(
+                "Sending SIGUSR2 to pid %d stop the profiler." % browser_pid
+            )
+            os.kill(browser_pid, signal.SIGUSR2)
+            # We trigger `killPid` further down in this function, which will
+            # stop the profiler writing to disk. As we might still be writing a
+            # profile when we run `killPid`, we might end up with a truncated
+            # profile. Instead, we give the profiler ten seconds to write a
+            # profile (which should be plenty of time!) See Bug 1906151 for more
+            # details, and Bug 1905929 for an intermediate solution that would
+            # allow this test to watch for the profile file being completed.
+            profiler_logger.info("Wait 10s for Firefox to write the profile to disk.")
+            time.sleep(10)
+
+            # Symbolicate the profile generated above using signals. The profile
+            # file will be named something like:
+            #  `$MOZ_UPLOAD_DIR/profile_${tid}_${pid}.json
+            # where `tid` is /currently/ always 0 (we can only write our profile
+            # from the main thread). This may change if we end up writing from
+            # other threads in firefox. See `profiler_find_dump_path()` in
+            # `platform.cpp` for more details on how we name signal-generated
+            # profiles.
+            # Sanity check that we actually have a MOZ_UPLOAD_DIR
+            if "MOZ_UPLOAD_DIR" in os.environ:
+                profiler_logger.info(
+                    "Symbolicating profile in %s" % os.environ["MOZ_UPLOAD_DIR"]
+                )
+                profile_path = "{}/profile_0_{}.json".format(
+                    os.environ["MOZ_UPLOAD_DIR"], browser_pid
+                )
+                profiler_logger.info("Looking inside symbols dir: %s)" % symbolsPath)
+                profiler_logger.info("Symbolicating profile: %s" % profile_path)
+                symbolicate_profile_json(profile_path, symbolsPath)
+        else:
+            profiler_logger.info(
+                "Not sending a signal to start the profiler - not on MacOS or Linux. See Bug 1823370."
+            )
+
         child_pids = self.extract_child_pids(processLog, browser_pid)
         self.log.info("Found child pids: %s" % child_pids)
 
@@ -3895,7 +4115,6 @@ toolbar#nav-bar {
                 logzip.close()
 
     class OutputHandler(object):
-
         """line output handler for mozrunner"""
 
         def __init__(
@@ -3908,6 +4127,7 @@ toolbar#nav-bar {
             shutdownLeaks=None,
             lsanLeaks=None,
             bisectChunk=None,
+            restartAfterFailure=None,
         ):
             """
             harness -- harness instance
@@ -3921,6 +4141,7 @@ toolbar#nav-bar {
             self.shutdownLeaks = shutdownLeaks
             self.lsanLeaks = lsanLeaks
             self.bisectChunk = bisectChunk
+            self.restartAfterFailure = restartAfterFailure
             self.browserProcessId = None
             self.stackFixerFunction = self.stackFixer()
 
@@ -3931,11 +4152,12 @@ toolbar#nav-bar {
 
             for message in messages:
                 # Passing the message to the handlers
+                msg = message
                 for handler in self.outputHandlers():
-                    message = handler(message)
+                    msg = handler(msg)
 
                 # Processing the message by the logger
-                self.harness.message_logger.process_message(message)
+                self.harness.message_logger.process_message(msg)
 
         __call__ = processOutputLine
 
@@ -3950,7 +4172,7 @@ toolbar#nav-bar {
                 self.trackLSANLeaks,
                 self.countline,
             ]
-            if self.bisectChunk:
+            if self.bisectChunk or self.restartAfterFailure:
                 handlers.append(self.record_result)
                 handlers.append(self.first_error)
 
@@ -3964,7 +4186,21 @@ toolbar#nav-bar {
 
         def finish(self):
             if self.shutdownLeaks:
-                self.harness.countfail += self.shutdownLeaks.process()
+                numFailures, errorMessages = self.shutdownLeaks.process()
+                self.harness.countfail += numFailures
+                for message in errorMessages:
+                    msg = {
+                        "action": "test_end",
+                        "status": "FAIL",
+                        "expected": "PASS",
+                        "thread": None,
+                        "pid": None,
+                        "source": "mochitest",
+                        "time": int(time.time()) * 1000,
+                        "test": message["test"],
+                        "message": message["msg"],
+                    }
+                    self.harness.message_logger.process_message(msg)
 
             if self.lsanLeaks:
                 self.harness.countfail += self.lsanLeaks.process()
@@ -4063,7 +4299,10 @@ toolbar#nav-bar {
                     if message["action"] == "log"
                     else message["data"]
                 )
-                self.lsanLeaks.log(line)
+                if "(finished)" in self.harness.lastTestSeen:
+                    self.lsanLeaks.log(line, self.harness.lastManifest)
+                else:
+                    self.lsanLeaks.log(line, self.harness.lastTestSeen)
             return message
 
         def trackShutdownLeaks(self, message):
@@ -4106,7 +4345,7 @@ def run_test_harness(parser, options):
 
     logger_options = {
         key: value
-        for key, value in six.iteritems(vars(options))
+        for key, value in vars(options).items()
         if key.startswith("log") or key == "valgrind"
     }
 
@@ -4117,6 +4356,11 @@ def run_test_harness(parser, options):
     options.runByManifest = False
     if options.flavor in ("plain", "a11y", "browser", "chrome"):
         options.runByManifest = True
+
+    # run until failure, then loop until all tests have ran
+    # using looping similar to bisection code
+    if options.restartAfterFailure:
+        options.runUntilFailure = True
 
     if options.verify or options.verify_fission:
         result = runner.verifyTests(options)

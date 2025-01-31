@@ -207,6 +207,16 @@ namespace IOUtils {
   [NewObject]
   Promise<long long> setModificationTime(DOMString path, optional long long modification);
   /**
+   * Checks whether the directory at |path| has any immediate children.
+   *
+   * @param path An absolute file path.
+   *
+   * @return Resolves with a boolean indicating whether the directory at |path|
+   *         has any immediate children, otherwise rejects with a DOMException.
+   */
+  [NewObject]
+  Promise<boolean> hasChildren(DOMString path, optional HasChildrenOptions options = {});
+  /**
    * Retrieves a (possibly empty) list of immediate children of the directory at
    * |path|.
    *
@@ -417,7 +427,7 @@ partial namespace IOUtils {
    * but it would use u16-based strings, so it would basically be a separate
    * copy of the bindings.)
    *
-   * This interface was added for use by `Subprocess.sys.jsm`; other would-be
+   * This interface was added for use by `Subprocess.sys.mjs`; other would-be
    * callers may want to just use Subprocess instead of calling this directly.
    *
    * @param argv The command to run and its arguments.
@@ -626,6 +636,16 @@ dictionary CopyOptions {
 };
 
 /**
+ * Options to be passed to the |IOUtils.hasChildren| method.
+ */
+dictionary HasChildrenOptions {
+  /**
+   * If true, no error will be reported if the target file is missing.
+   */
+  boolean ignoreAbsent = false;
+};
+
+/**
  * Options to be passed to the |IOUtils.getChildren| method.
  */
 dictionary GetChildrenOptions {
@@ -695,7 +715,7 @@ dictionary FileInfo {
 /**
  * The supported hash algorithms for |IOUtils.hashFile|.
  */
-enum HashAlgorithm { "sha1", "sha256", "sha384", "sha512" };
+enum HashAlgorithm { "sha256", "sha384", "sha512" };
 
 #ifdef XP_WIN
 /**

@@ -33,7 +33,7 @@ pub enum MTLTextureCompressionType {
     Lossy = 1,
 }
 
-bitflags! {
+bitflags::bitflags! {
     /// See <https://developer.apple.com/documentation/metal/mtltextureusage>
     #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MTLTextureUsage: NSUInteger {
@@ -42,6 +42,7 @@ bitflags! {
         const ShaderWrite     = 0x0002;
         const RenderTarget    = 0x0004;
         const PixelFormatView = 0x0010;
+        const ShaderAtomic    = 0x0020;
     }
 }
 
@@ -255,13 +256,7 @@ impl TextureRef {
 
     /// [framebufferOnly Apple Docs](https://developer.apple.com/documentation/metal/mtltexture/1515749-framebufferonly?language=objc)
     pub fn framebuffer_only(&self) -> bool {
-        unsafe {
-            match msg_send![self, isFramebufferOnly] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isFramebufferOnly] }
     }
 
     pub fn get_bytes(

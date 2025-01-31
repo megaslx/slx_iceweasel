@@ -3,10 +3,14 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
 
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
+
 # Load sources/headers/tests lists.
 load(
     "jxl_lists.bzl",
     "libjxl_base_sources",
+    "libjxl_cms_sources",
     "libjxl_codec_apng_sources",
     "libjxl_codec_exr_sources",
     "libjxl_codec_gif_sources",
@@ -22,8 +26,8 @@ load(
     "libjxl_enc_sources",
     "libjxl_extras_for_tools_sources",
     "libjxl_extras_sources",
-    #'libjxl_gbench_sources',
-    "libjxl_jpegli_lib_version",
+    # "libjxl_gbench_sources",
+    # "libjxl_jpegli_lib_version",
     "libjxl_jpegli_libjpeg_helper_files",
     "libjxl_jpegli_sources",
     "libjxl_jpegli_testlib_files",
@@ -47,17 +51,15 @@ load(
     "libjxl_deps_hwy_nanobenchmark",
     "libjxl_deps_hwy_test_util",
     "libjxl_deps_jpeg",
-    "libjxl_deps_jxl_box",
     "libjxl_deps_png",
     "libjxl_deps_runfiles",
     "libjxl_deps_skcms",
-    "libjxl_deps_testdata",
+    # "libjxl_deps_testdata",
+    # "libjxl_deps_webp",
     "libjxl_root_package",
     "libjxl_test_shards",
     "libjxl_test_timeouts",
 )
-load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
-load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 
 DEFAULT_VISIBILITY = ["//:__subpackages__"]
 
@@ -66,7 +68,7 @@ DEFAULT_COMPATIBILITY = []
 INCLUDES_DIR = "include"
 
 package(
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = DEFAULT_VISIBILITY,
 )
 
 licenses(["notice"])
@@ -93,6 +95,15 @@ genrule(
     name = "create_jxl_export",
     outs = [JXL_EXPORT_H],
     cmd = "echo '" + EXPORT_TEMPLATE.replace("@", "JXL") + "' > $@",
+    compatible_with = DEFAULT_COMPATIBILITY,
+)
+
+JXL_CMS_EXPORT_H = INCLUDES_DIR + "/jxl/jxl_cms_export.h"
+
+genrule(
+    name = "create_jxl_cms_export",
+    outs = [JXL_CMS_EXPORT_H],
+    cmd = "echo '" + EXPORT_TEMPLATE.replace("@", "JXL_CMS") + "' > $@",
     compatible_with = DEFAULT_COMPATIBILITY,
 )
 
@@ -155,7 +166,10 @@ copy_file(
 
 cc_library(
     name = "includes",
-    hdrs = libjxl_public_headers + [JXL_EXPORT_H],
+    hdrs = libjxl_public_headers + [
+        JXL_EXPORT_H,
+        JXL_CMS_EXPORT_H,
+    ],
     compatible_with = DEFAULT_COMPATIBILITY,
     strip_include_prefix = INCLUDES_DIR,
     deps = [":jxl_version"],
@@ -184,9 +198,11 @@ cc_library(
 
 cc_library(
     name = "jpegxl",
-    srcs = libjxl_dec_sources + libjxl_dec_box_sources + libjxl_dec_jpeg_sources + libjxl_enc_sources,
+    srcs = libjxl_dec_sources + libjxl_dec_box_sources + libjxl_dec_jpeg_sources + libjxl_enc_sources + libjxl_cms_sources,
     compatible_with = DEFAULT_COMPATIBILITY,
-    defines = ["JPEGXL_ENABLE_SKCMS=1"],
+    defines = [
+        "JPEGXL_ENABLE_SKCMS=1",
+    ],
     deps = [
         ":base",
         ":includes",
@@ -197,7 +213,7 @@ cc_library(
     name = "jpegxl_private",
     hdrs = [
         path
-        for path in libjxl_dec_sources + libjxl_dec_box_sources + libjxl_dec_jpeg_sources + libjxl_enc_sources
+        for path in libjxl_dec_sources + libjxl_dec_box_sources + libjxl_dec_jpeg_sources + libjxl_enc_sources + libjxl_cms_sources
         if path.endswith(".h") and not path.endswith("-inl.h")
     ],
     compatible_with = DEFAULT_COMPATIBILITY,
@@ -292,7 +308,7 @@ TESTS = [path.partition(".")[0] for path in libjxl_tests + libjxl_jpegli_tests]
             ":jpegxl_private",
             ":jpegxl_threads",
             ":test_utils",
-        ] + libjxl_deps_gtest + libjxl_deps_hwy_test_util + libjxl_deps_hwy_nanobenchmark + libjxl_deps_jxl_box,
+        ] + libjxl_deps_gtest + libjxl_deps_hwy_test_util + libjxl_deps_hwy_nanobenchmark,
     )
     for test in TESTS
 ]

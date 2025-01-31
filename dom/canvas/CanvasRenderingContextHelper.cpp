@@ -98,7 +98,7 @@ void CanvasRenderingContextHelper::ToBlob(EncodeCompleteCallback* aCallback,
                                           bool aUsingCustomOptions,
                                           bool aUsePlaceholder,
                                           ErrorResult& aRv) {
-  const nsIntSize elementSize = GetWidthHeight();
+  const CSSIntSize elementSize = GetWidthHeight();
   if (mCurrentContext) {
     // We disallow canvases of width or height zero, and set them to 1, so
     // we will have a discrepancy with the sizes of the canvas and the context.
@@ -112,18 +112,23 @@ void CanvasRenderingContextHelper::ToBlob(EncodeCompleteCallback* aCallback,
     }
   }
 
-  UniquePtr<uint8_t[]> imageBuffer;
   int32_t format = 0;
   auto imageSize = gfx::IntSize{elementSize.width, elementSize.height};
-  if (mCurrentContext) {
-    imageBuffer = mCurrentContext->GetImageBuffer(&format, &imageSize);
-  }
-
+  UniquePtr<uint8_t[]> imageBuffer = GetImageBuffer(&format, &imageSize);
   RefPtr<EncodeCompleteCallback> callback = aCallback;
 
   aRv = ImageEncoder::ExtractDataAsync(
       aType, aEncodeOptions, aUsingCustomOptions, std::move(imageBuffer),
-      format, {imageSize.width, imageSize.height}, aUsePlaceholder, callback);
+      format, CSSIntSize::FromUnknownSize(imageSize), aUsePlaceholder,
+      callback);
+}
+
+UniquePtr<uint8_t[]> CanvasRenderingContextHelper::GetImageBuffer(
+    int32_t* aOutFormat, gfx::IntSize* aOutImageSize) {
+  if (mCurrentContext) {
+    return mCurrentContext->GetImageBuffer(aOutFormat, aOutImageSize);
+  }
+  return nullptr;
 }
 
 already_AddRefed<nsICanvasRenderingContextInternal>
@@ -180,7 +185,9 @@ CanvasRenderingContextHelper::CreateContextHelper(
   }
   MOZ_ASSERT(ret);
 
-  ret->Initialize();
+  if (NS_WARN_IF(NS_FAILED(ret->Initialize()))) {
+    return nullptr;
+  }
   return ret.forget();
 }
 
@@ -202,6 +209,7 @@ already_AddRefed<nsISupports> CanvasRenderingContextHelper::GetOrCreateContext(
     RefPtr<nsICanvasRenderingContextInternal> context;
     context = CreateContext(aContextType);
     if (!context) {
+      aRv.ThrowUnknownError("Failed to create context");
       return nullptr;
     }
 
@@ -259,7 +267,7 @@ nsresult CanvasRenderingContextHelper::UpdateContext(
     ErrorResult& aRvForDictionaryInit) {
   if (!mCurrentContext) return NS_OK;
 
-  nsIntSize sz = GetWidthHeight();
+  CSSIntSize sz = GetWidthHeight();
 
   nsCOMPtr<nsICanvasRenderingContextInternal> currentContext = mCurrentContext;
 

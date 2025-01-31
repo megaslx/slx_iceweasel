@@ -153,8 +153,8 @@ class DictionaryFetcher final : public nsIContentPrefCallback2 {
 
   nsCOMPtr<nsIEditorSpellCheckCallback> mCallback;
   uint32_t mGroup;
-  nsString mRootContentLang;
-  nsString mRootDocContentLang;
+  RefPtr<nsAtom> mRootContentLang;
+  RefPtr<nsAtom> mRootDocContentLang;
   nsTArray<nsCString> mDictionaries;
 
  private:
@@ -298,7 +298,6 @@ NS_IMPL_CYCLE_COLLECTION(EditorSpellCheck, mEditor, mSpellChecker)
 EditorSpellCheck::EditorSpellCheck()
     : mTxtSrvFilterType(0),
       mSuggestedWordIndex(0),
-      mDictionaryIndex(0),
       mDictionaryFetcherGroup(0),
       mUpdateDictionaryRunning(false) {}
 
@@ -432,7 +431,7 @@ EditorSpellCheck::InitSpellChecker(nsIEditor* aEditor,
     // discard the failure.  Do it asynchronously so that the caller is always
     // guaranteed async behavior.
     RefPtr<CallbackCaller> caller = new CallbackCaller(aCallback);
-    rv = doc->Dispatch(TaskCategory::Other, caller.forget());
+    rv = doc->Dispatch(caller.forget());
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -531,30 +530,6 @@ EditorSpellCheck::IgnoreWordAllOccurrences(const nsAString& aWord) {
   NS_ENSURE_TRUE(mSpellChecker, NS_ERROR_NOT_INITIALIZED);
 
   return mSpellChecker->IgnoreAll(aWord);
-}
-
-NS_IMETHODIMP
-EditorSpellCheck::GetPersonalDictionary() {
-  NS_ENSURE_TRUE(mSpellChecker, NS_ERROR_NOT_INITIALIZED);
-
-  // We can spell check with any editor type
-  mDictionaryList.Clear();
-  mDictionaryIndex = 0;
-  return mSpellChecker->GetPersonalDictionary(&mDictionaryList);
-}
-
-NS_IMETHODIMP
-EditorSpellCheck::GetPersonalDictionaryWord(nsAString& aDictionaryWord) {
-  // XXX This is buggy if mDictionaryList.Length() is over INT32_MAX.
-  if (mDictionaryIndex < static_cast<int32_t>(mDictionaryList.Length())) {
-    aDictionaryWord = mDictionaryList[mDictionaryIndex];
-    mDictionaryIndex++;
-  } else {
-    // A blank string signals that there are no more strings
-    aDictionaryWord.Truncate();
-  }
-
-  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -706,8 +681,6 @@ EditorSpellCheck::UninitSpellChecker() {
 
   // Cleanup - kill the spell checker
   DeleteSuggestedWordList();
-  mDictionaryList.Clear();
-  mDictionaryIndex = 0;
   mDictionaryFetcherGroup++;
   mSpellChecker = nullptr;
   return NS_OK;
@@ -769,10 +742,10 @@ EditorSpellCheck::UpdateCurrentDictionary(
 
   RefPtr<DictionaryFetcher> fetcher =
       new DictionaryFetcher(this, aCallback, mDictionaryFetcherGroup);
-  rootEditableElement->GetLang(fetcher->mRootContentLang);
+  fetcher->mRootContentLang = rootEditableElement->GetLang();
   RefPtr<Document> doc = rootEditableElement->GetComposedDoc();
   NS_ENSURE_STATE(doc);
-  doc->GetContentLanguage(fetcher->mRootDocContentLang);
+  fetcher->mRootDocContentLang = doc->GetContentLanguage();
 
   rv = fetcher->Fetch(mEditor);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -866,7 +839,9 @@ nsresult EditorSpellCheck::DictionaryFetched(DictionaryFetcher* aFetcher) {
   nsCString contentLangs;
   // Reset mPreferredLangs so we only get the current state.
   mPreferredLangs.Clear();
-  CopyUTF16toUTF8(aFetcher->mRootContentLang, contentLangs);
+  if (aFetcher->mRootContentLang) {
+    aFetcher->mRootContentLang->ToUTF8String(contentLangs);
+  }
 #ifdef DEBUG_DICT
   printf("***** mPreferredLangs (element) |%s|\n", contentLangs.get());
 #endif
@@ -874,7 +849,9 @@ nsresult EditorSpellCheck::DictionaryFetched(DictionaryFetcher* aFetcher) {
     mPreferredLangs.AppendElement(contentLangs);
   } else {
     // If no luck, try the "Content-Language" header.
-    CopyUTF16toUTF8(aFetcher->mRootDocContentLang, contentLangs);
+    if (aFetcher->mRootDocContentLang) {
+      aFetcher->mRootDocContentLang->ToUTF8String(contentLangs);
+    }
 #ifdef DEBUG_DICT
     printf("***** mPreferredLangs (content-language) |%s|\n",
            contentLangs.get());

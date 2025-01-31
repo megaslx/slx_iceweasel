@@ -12,7 +12,7 @@
 
 #import "RTCCertificate.h"
 #import "RTCCryptoOptions.h"
-#import "RTCMacros.h"
+#import "sdk/objc/base/RTCMacros.h"
 
 @class RTC_OBJC_TYPE(RTCIceServer);
 
@@ -183,12 +183,6 @@ RTC_OBJC_EXPORT
  *  workaround for crbug.com/835958
  */
 @property(nonatomic, assign) BOOL activeResetSrtpParams;
-
-/** If the remote side support mid-stream codec switches then allow encoder
- *  switching to be performed.
- */
-
-@property(nonatomic, assign) BOOL allowCodecSwitching;
 
 /**
  * Defines advanced optional cryptographic settings related to SRTP and

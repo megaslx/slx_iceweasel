@@ -52,7 +52,7 @@ bool StateUpdatingCommandBase::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-  if (!htmlEditor->IsSelectionEditable()) {
+  if (!htmlEditor->IsModifiable() || !htmlEditor->IsSelectionEditable()) {
     return false;
   }
   if (aCommand == Command::FormatAbsolutePosition) {
@@ -127,10 +127,11 @@ nsresult PasteNoFormattingCommand::DoCommand(Command aCommand,
     return NS_ERROR_FAILURE;
   }
   // Known live because we hold a ref above in "editor"
-  nsresult rv = MOZ_KnownLive(htmlEditor)
-                    ->PasteNoFormattingAsAction(
-                        nsIClipboard::kGlobalClipboard,
-                        EditorBase::DispatchPasteEvent::Yes, aPrincipal);
+  nsresult rv =
+      MOZ_KnownLive(htmlEditor)
+          ->PasteNoFormattingAsAction(nsIClipboard::kGlobalClipboard,
+                                      EditorBase::DispatchPasteEvent::Yes,
+                                      nullptr, aPrincipal);
   NS_WARNING_ASSERTION(
       NS_SUCCEEDED(rv),
       "HTMLEditor::PasteNoFormattingAsAction(DispatchPasteEvent::Yes) failed");
@@ -336,7 +337,7 @@ nsresult ListItemCommand::ToggleState(nsStaticAtom& aTagName,
   // XXX Note: This actually doesn't work for "LI",
   //    but we currently don't use this for non DL lists anyway.
   // Problem: won't this replace any current block paragraph style?
-  nsresult rv = aHTMLEditor.SetParagraphFormatAsAction(
+  nsresult rv = aHTMLEditor.SetParagraphStateAsAction(
       nsDependentAtomString(&aTagName), aPrincipal);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "HTMLEditor::SetParagraphFormatAsAction() failed");
@@ -355,8 +356,7 @@ bool RemoveListCommand::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-
-  if (!htmlEditor->IsSelectionEditable()) {
+  if (!htmlEditor->IsModifiable() || !htmlEditor->IsSelectionEditable()) {
     return false;
   }
 
@@ -401,7 +401,7 @@ bool IndentCommand::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult IndentCommand::DoCommand(Command aCommand, EditorBase& aEditorBase,
@@ -434,7 +434,7 @@ bool OutdentCommand::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult OutdentCommand::DoCommand(Command aCommand, EditorBase& aEditorBase,
@@ -467,7 +467,7 @@ bool MultiStateCommandBase::IsCommandEnabled(Command aCommand,
     return false;
   }
   // should be disabled sometimes, like if the current selection is an image
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult MultiStateCommandBase::DoCommand(Command aCommand,
@@ -512,6 +512,50 @@ nsresult MultiStateCommandBase::GetCommandStateParams(
 }
 
 /*****************************************************************************
+ * mozilla::FormatBlockStateCommand
+ *****************************************************************************/
+
+StaticRefPtr<FormatBlockStateCommand> FormatBlockStateCommand::sInstance;
+
+nsresult FormatBlockStateCommand::GetCurrentState(
+    HTMLEditor* aHTMLEditor, nsCommandParams& aParams) const {
+  if (NS_WARN_IF(!aHTMLEditor)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  ErrorResult error;
+  ParagraphStateAtSelection state(
+      *aHTMLEditor,
+      ParagraphStateAtSelection::FormatBlockMode::HTMLFormatBlockCommand,
+      error);
+  if (error.Failed()) {
+    NS_WARNING("ParagraphStateAtSelection failed");
+    return error.StealNSResult();
+  }
+  aParams.SetBool(STATE_MIXED, state.IsMixed());
+  if (NS_WARN_IF(!state.GetFirstParagraphStateAtSelection())) {
+    aParams.SetCString(STATE_ATTRIBUTE, ""_ns);
+  } else {
+    nsCString paragraphState;  // Don't use `nsAutoCString` for avoiding copy.
+    state.GetFirstParagraphStateAtSelection()->ToUTF8String(paragraphState);
+    aParams.SetCString(STATE_ATTRIBUTE, paragraphState);
+  }
+  return NS_OK;
+}
+
+nsresult FormatBlockStateCommand::SetState(HTMLEditor* aHTMLEditor,
+                                           const nsAString& aNewState,
+                                           nsIPrincipal* aPrincipal) const {
+  if (NS_WARN_IF(!aHTMLEditor) || NS_WARN_IF(aNewState.IsEmpty())) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  nsresult rv = aHTMLEditor->FormatBlockAsAction(aNewState, aPrincipal);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "HTMLEditor::FormatBlockAsAction() failed");
+  return rv;
+}
+
+/*****************************************************************************
  * mozilla::ParagraphStateCommand
  *****************************************************************************/
 
@@ -524,7 +568,10 @@ nsresult ParagraphStateCommand::GetCurrentState(
   }
 
   ErrorResult error;
-  ParagraphStateAtSelection state(*aHTMLEditor, error);
+  ParagraphStateAtSelection state(
+      *aHTMLEditor,
+      ParagraphStateAtSelection::FormatBlockMode::XULParagraphStateCommand,
+      error);
   if (error.Failed()) {
     NS_WARNING("ParagraphStateAtSelection failed");
     return error.StealNSResult();
@@ -547,9 +594,9 @@ nsresult ParagraphStateCommand::SetState(HTMLEditor* aHTMLEditor,
   if (NS_WARN_IF(!aHTMLEditor)) {
     return NS_ERROR_INVALID_ARG;
   }
-  nsresult rv = aHTMLEditor->SetParagraphFormatAsAction(aNewState, aPrincipal);
+  nsresult rv = aHTMLEditor->SetParagraphStateAsAction(aNewState, aPrincipal);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "HTMLEditor::SetParagraphFormatAsAction() failed");
+                       "HTMLEditor::SetParagraphStateAsAction() failed");
   return rv;
 }
 
@@ -1000,7 +1047,7 @@ bool RemoveStylesCommand::IsCommandEnabled(Command aCommand,
     return false;
   }
   // test if we have any styles?
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult RemoveStylesCommand::DoCommand(Command aCommand,
@@ -1038,7 +1085,7 @@ bool IncreaseFontSizeCommand::IsCommandEnabled(Command aCommand,
     return false;
   }
   // test if we are at max size?
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult IncreaseFontSizeCommand::DoCommand(Command aCommand,
@@ -1074,7 +1121,7 @@ bool DecreaseFontSizeCommand::IsCommandEnabled(Command aCommand,
     return false;
   }
   // test if we are at min size?
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult DecreaseFontSizeCommand::DoCommand(Command aCommand,
@@ -1109,7 +1156,7 @@ bool InsertHTMLCommand::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 nsresult InsertHTMLCommand::DoCommand(Command aCommand, EditorBase& aEditorBase,
@@ -1166,7 +1213,7 @@ bool InsertTagCommand::IsCommandEnabled(Command aCommand,
   if (!htmlEditor) {
     return false;
   }
-  return htmlEditor->IsSelectionEditable();
+  return htmlEditor->IsModifiable() && htmlEditor->IsSelectionEditable();
 }
 
 // corresponding STATE_ATTRIBUTE is: src (img) and href (a)
@@ -1188,9 +1235,18 @@ nsresult InsertTagCommand::DoCommand(Command aCommand, EditorBase& aEditorBase,
   if (NS_WARN_IF(!newElement)) {
     return NS_ERROR_FAILURE;
   }
+  HTMLEditor::InsertElementOptions options{
+      HTMLEditor::InsertElementOption::DeleteSelection};
+  // We did insert <img> without splitting ancestor inline elements, but the
+  // other browsers split them.  Therefore, let's do it only when the document
+  // is content.
+  if (tagName == nsGkAtoms::img &&
+      htmlEditor->GetDocument()->IsContentDocument()) {
+    options += HTMLEditor::InsertElementOption::SplitAncestorInlineElements;
+  }
   nsresult rv =
       MOZ_KnownLive(htmlEditor)
-          ->InsertElementAtSelectionAsAction(newElement, true, aPrincipal);
+          ->InsertElementAtSelectionAsAction(newElement, options, aPrincipal);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "HTMLEditor::InsertElementAtSelectionAsAction() failed");
   return rv;
@@ -1251,9 +1307,17 @@ nsresult InsertTagCommand::DoCommandParam(Command aCommand,
     return rv;
   }
 
+  HTMLEditor::InsertElementOptions options{
+      HTMLEditor::InsertElementOption::DeleteSelection};
+  // We did insert <img> without splitting ancestor inline elements, but the
+  // other browsers split them.  Therefore, let's do it only when the document
+  // is content.
+  if (htmlEditor->GetDocument()->IsContentDocument()) {
+    options += HTMLEditor::InsertElementOption::SplitAncestorInlineElements;
+  }
   nsresult rv =
       MOZ_KnownLive(htmlEditor)
-          ->InsertElementAtSelectionAsAction(newElement, true, aPrincipal);
+          ->InsertElementAtSelectionAsAction(newElement, options, aPrincipal);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "HTMLEditor::InsertElementAtSelectionAsAction() failed");
   return rv;

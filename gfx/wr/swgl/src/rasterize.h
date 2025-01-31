@@ -806,7 +806,7 @@ static inline void draw_quad_spans(int nump, Point2D p[4], uint32_t z,
     // Helper to find the previous index in the points array, walking backward.
 #define PREV_POINT(idx)        \
   ({                           \
-    int cur = (idx)-1;         \
+    int cur = (idx) - 1;       \
     cur >= 0 ? cur : nump - 1; \
   })
     // Start looking for "left"-side and "right"-side descending edges starting
@@ -1536,11 +1536,11 @@ static void draw_perspective(int nump, Interpolants interp_outs[4],
     for (int i = 0; i < nump; i++) {
       float w = 1.0f / p_clip[i].w;
       // If the W coord is essentially zero, small enough that division would
-      // result in Inf/NaN, then just set the reciprocal itself to zero so that
-      // the coordinates becomes zeroed out, as the only valid point that
-      // satisfies -W <= X/Y/Z <= W is all zeroes.
-      if (!isfinite(w)) w = 0.0f;
-      p_clip[i] = Point3D(p_clip[i].sel(X, Y, Z) * w * scale + offset, w);
+      // result in Inf/NaN, then just set the point to all zeroes, as the only
+      // point that satisfies -W <= X/Y/Z <= W is all zeroes.
+      p_clip[i] = isfinite(w)
+                      ? Point3D(p_clip[i].sel(X, Y, Z) * w * scale + offset, w)
+                      : Point3D(0.0f);
     }
     draw_perspective_clipped(nump, p_clip, interp_clip, colortex, depthtex);
   }

@@ -4,11 +4,11 @@
 
 #include "MFContentProtectionManager.h"
 
-#include <hstring.h>
 #include <winnt.h>
 
 #include "MFMediaEngineUtils.h"
 #include "WMF.h"
+#include "WMFUtils.h"
 
 namespace mozilla {
 
@@ -17,18 +17,6 @@ using Microsoft::WRL::ComPtr;
 #define LOG(msg, ...)                         \
   MOZ_LOG(gMFMediaEngineLog, LogLevel::Debug, \
           ("MFContentProtectionManager=%p, " msg, this, ##__VA_ARGS__))
-
-class ScopedHString final {
- public:
-  explicit ScopedHString(const WCHAR aCharArray[]) {
-    WindowsCreateString(aCharArray, wcslen(aCharArray), &mString);
-  }
-  ~ScopedHString() { WindowsDeleteString(mString); }
-  const HSTRING& Get() { return mString; }
-
- private:
-  HSTRING mString;
-};
 
 MFContentProtectionManager::MFContentProtectionManager() {
   MOZ_COUNT_CTOR(MFContentProtectionManager);
@@ -80,7 +68,9 @@ HRESULT MFContentProtectionManager::BeginEnableContent(
     return HRESULT_FROM_WIN32(ERROR_INVALID_IMAGE_HASH);
   }
 
-  MOZ_ASSERT(mCDMProxy);
+  if (!mCDMProxy) {
+    return MF_E_SHUTDOWN;
+  }
   RETURN_IF_FAILED(
       mCDMProxy->SetContentEnabler(unknownObject.Get(), asyncResult.Get()));
 
@@ -167,6 +157,13 @@ HRESULT MFContentProtectionManager::SetPMPServer(
   ScopedHString serverKey{L"Windows.Media.Protection.MediaProtectionPMPServer"};
   RETURN_IF_FAILED(serverMap->Insert(serverKey.Get(), aPMPServer, &replaced));
   return S_OK;
+}
+
+void MFContentProtectionManager::Shutdown() {
+  if (mCDMProxy) {
+    mCDMProxy->Shutdown();
+    mCDMProxy = nullptr;
+  }
 }
 
 #undef LOG

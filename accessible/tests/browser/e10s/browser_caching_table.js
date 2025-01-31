@@ -252,9 +252,8 @@ addAccessibleTask(
     info("mutate: Adding new table");
     let shown = waitForEvent(EVENT_SHOW, "newTable");
     await invokeContentTask(browser, [], () => {
-      content.document.getElementById(
-        "newTableContainer"
-      ).innerHTML = `<table id="newTable"><tr><th>a</th></tr></table>`;
+      content.document.getElementById("newTableContainer").innerHTML =
+        `<table id="newTable"><tr><th>a</th></tr></table>`;
     });
     let newTable = (await shown).accessible;
     testAbsentAttrs(newTable, { "layout-guess": "true" });
@@ -482,7 +481,7 @@ addAccessibleTask(
  */
 addAccessibleTask(
   `<table><tr id="tr"></tr></table>`,
-  async function (browser, docAcc) {
+  async function (browser) {
     let reordered = waitForEvent(EVENT_REORDER, "tr");
     await invokeContentTask(browser, [], () => {
       const iframe = content.document.createElement("iframe");
@@ -636,4 +635,30 @@ addAccessibleTask(
     ]);
   },
   { chrome: true, topLevel: true, remoteIframe: true }
+);
+
+/**
+ * Verify that we don't crash for authoring error like <tr role="grid">.
+ */
+addAccessibleTask(
+  `
+<table id="table">
+  <tr><th>a</th></tr>
+  <tr role="grid"><td id="b">b</td></tr>
+</table>
+  `,
+  async function (browser, docAcc) {
+    const table = findAccessibleChildByID(docAcc, "table", [
+      nsIAccessibleTable,
+    ]);
+    is(table.rowCount, 1, "table rowCount correct");
+    is(table.columnCount, 1, "table columnCount correct");
+    const b = findAccessibleChildByID(docAcc, "b");
+    let queryOk = false;
+    try {
+      b.QueryInterface(nsIAccessibleTableCell);
+      queryOk = true;
+    } catch (e) {}
+    ok(!queryOk, "No nsIAccessibleTableCell on invalid cell b");
+  }
 );

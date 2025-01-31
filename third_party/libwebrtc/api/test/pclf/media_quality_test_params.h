@@ -11,23 +11,33 @@
 #define API_TEST_PCLF_MEDIA_QUALITY_TEST_PARAMS_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "api/async_resolver_factory.h"
+#include "api/async_dns_resolver.h"
 #include "api/audio/audio_mixer.h"
-#include "api/call/call_factory_interface.h"
+#include "api/audio/audio_processing.h"
+#include "api/audio_codecs/audio_decoder_factory.h"
+#include "api/audio_codecs/audio_encoder_factory.h"
 #include "api/fec_controller.h"
 #include "api/field_trials_view.h"
+#include "api/ice_transport_interface.h"
+#include "api/neteq/neteq_factory.h"
+#include "api/packet_socket_factory.h"
+#include "api/peer_connection_interface.h"
 #include "api/rtc_event_log/rtc_event_log_factory_interface.h"
-#include "api/task_queue/task_queue_factory.h"
+#include "api/scoped_refptr.h"
 #include "api/test/pclf/media_configuration.h"
+#include "api/transport/bitrate_settings.h"
 #include "api/transport/network_control.h"
+#include "api/units/time_delta.h"
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
-#include "modules/audio_processing/include/audio_processing.h"
 #include "p2p/base/port_allocator.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/network.h"
 #include "rtc_base/rtc_certificate_generator.h"
 #include "rtc_base/ssl_certificate.h"
@@ -46,15 +56,11 @@ namespace webrtc_pc_e2e {
 // can override only some parts of media engine like video encoder/decoder
 // factories.
 struct PeerConnectionFactoryComponents {
-  std::unique_ptr<TaskQueueFactory> task_queue_factory;
-  std::unique_ptr<CallFactoryInterface> call_factory;
   std::unique_ptr<RtcEventLogFactoryInterface> event_log_factory;
   std::unique_ptr<FecControllerFactoryInterface> fec_controller_factory;
   std::unique_ptr<NetworkControllerFactoryInterface> network_controller_factory;
   std::unique_ptr<NetEqFactory> neteq_factory;
 
-  // Will be passed to MediaEngineInterface, that will be used in
-  // PeerConnectionFactory.
   std::unique_ptr<VideoEncoderFactory> video_encoder_factory;
   std::unique_ptr<VideoDecoderFactory> video_decoder_factory;
   rtc::scoped_refptr<webrtc::AudioEncoderFactory> audio_encoder_factory;
@@ -85,7 +91,8 @@ struct PeerConnectionComponents {
 
   rtc::NetworkManager* const network_manager;
   rtc::PacketSocketFactory* const packet_socket_factory;
-  std::unique_ptr<webrtc::AsyncResolverFactory> async_resolver_factory;
+  std::unique_ptr<webrtc::AsyncDnsResolverFactoryInterface>
+      async_dns_resolver_factory;
   std::unique_ptr<rtc::RTCCertificateGeneratorInterface> cert_generator;
   std::unique_ptr<rtc::SSLCertificateVerifier> tls_cert_verifier;
   std::unique_ptr<IceTransportFactory> ice_transport_factory;
@@ -118,18 +125,18 @@ struct InjectableComponents {
 // to set up peer connection.
 struct Params {
   // Peer name. If empty - default one will be set by the fixture.
-  absl::optional<std::string> name;
+  std::optional<std::string> name;
   // If `audio_config` is set audio stream will be configured
-  absl::optional<AudioConfig> audio_config;
+  std::optional<AudioConfig> audio_config;
   // Flags to set on `cricket::PortAllocator`. These flags will be added
   // to the default ones that are presented on the port allocator.
   uint32_t port_allocator_extra_flags = cricket::kDefaultPortAllocatorFlags;
   // If `rtc_event_log_path` is set, an RTCEventLog will be saved in that
   // location and it will be available for further analysis.
-  absl::optional<std::string> rtc_event_log_path;
+  std::optional<std::string> rtc_event_log_path;
   // If `aec_dump_path` is set, an AEC dump will be saved in that location and
   // it will be available for further analysis.
-  absl::optional<std::string> aec_dump_path;
+  std::optional<std::string> aec_dump_path;
 
   bool use_ulp_fec = false;
   bool use_flex_fec = false;
@@ -141,6 +148,7 @@ struct Params {
   // provided into VideoEncoder::SetRates(...).
   double video_encoder_bitrate_multiplier = 1.0;
 
+  PeerConnectionFactoryInterface::Options peer_connection_factory_options;
   PeerConnectionInterface::RTCConfiguration rtc_configuration;
   PeerConnectionInterface::RTCOfferAnswerOptions rtc_offer_answer_options;
   BitrateSettings bitrate_settings;
@@ -182,7 +190,7 @@ struct RunParams {
   // If specified echo emulation will be done, by mixing the render audio into
   // the capture signal. In such case input signal will be reduced by half to
   // avoid saturation or compression in the echo path simulation.
-  absl::optional<EchoEmulationConfig> echo_emulation_config;
+  std::optional<EchoEmulationConfig> echo_emulation_config;
 };
 
 }  // namespace webrtc_pc_e2e

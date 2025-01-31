@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug, Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
     pub struct ShaderFeatureFlags: u32 {
         const GL = 1 << 0;
         const GLES = 1 << 1;
@@ -15,7 +15,8 @@ bitflags! {
         const DITHERING = 1 << 10;
         const TEXTURE_EXTERNAL = 1 << 11;
         const TEXTURE_EXTERNAL_ESSL1 = 1 << 12;
-        const DEBUG = 1 << 13;
+        const TEXTURE_EXTERNAL_BT709 = 1 << 13;
+        const DEBUG = 1 << 14;
     }
 }
 
@@ -65,7 +66,6 @@ pub fn get_shader_features(flags: ShaderFeatureFlags) -> ShaderFeatures {
 
     // Clip shaders
     shaders.insert("cs_clip_rectangle", vec![String::new(), "FAST_PATH".to_string()]);
-    shaders.insert("cs_clip_image", vec!["TEXTURE_2D".to_string()]);
     shaders.insert("cs_clip_box_shadow", vec!["TEXTURE_2D".to_string()]);
 
     // Cache shaders
@@ -79,6 +79,7 @@ pub fn get_shader_features(flags: ShaderFeatureFlags) -> ShaderFeatures {
         "cs_border_segment",
         "cs_border_solid",
         "cs_svg_filter",
+        "cs_svg_filter_node",
     ] {
         shaders.insert(name, vec![String::new()]);
     }
@@ -101,32 +102,37 @@ pub fn get_shader_features(flags: ShaderFeatureFlags) -> ShaderFeatures {
     // Brush shaders
     let mut brush_alpha_features = base_prim_features.with("ALPHA_PASS");
     for name in &["brush_solid", "brush_blend", "brush_mix_blend"] {
-        let mut features: Vec<String> = Vec::new();
-        features.push(base_prim_features.finish());
-        features.push(brush_alpha_features.finish());
-        features.push("DEBUG_OVERDRAW".to_string());
+        let features: Vec<String> = vec![
+            base_prim_features.finish(),
+            brush_alpha_features.finish(),
+            "DEBUG_OVERDRAW".to_string(),
+        ];
         shaders.insert(name, features);
     }
+
+    #[allow(clippy::single_element_loop)]
     for name in &["brush_linear_gradient"] {
-        let mut features: Vec<String> = Vec::new();
         let mut list = FeatureList::new();
         if flags.contains(ShaderFeatureFlags::DITHERING) {
             list.add("DITHERING");
         }
-        features.push(list.concat(&base_prim_features).finish());
-        features.push(list.concat(&brush_alpha_features).finish());
-        features.push(list.with("DEBUG_OVERDRAW").finish());
+        let features: Vec<String> = vec![
+            list.concat(&base_prim_features).finish(),
+            list.concat(&brush_alpha_features).finish(),
+            list.with("DEBUG_OVERDRAW").finish(),
+        ];
         shaders.insert(name, features);
     }
 
     {
-        let mut features: Vec<String> = Vec::new();
-        features.push(base_prim_features.finish());
-        features.push(brush_alpha_features.finish());
-        features.push(base_prim_features.with("ANTIALIASING").finish());
-        features.push(brush_alpha_features.with("ANTIALIASING").finish());
-        features.push("ANTIALIASING,DEBUG_OVERDRAW".to_string());
-        features.push("DEBUG_OVERDRAW".to_string());
+        let features: Vec<String> = vec![
+            base_prim_features.finish(),
+            brush_alpha_features.finish(),
+            base_prim_features.with("ANTIALIASING").finish(),
+            brush_alpha_features.with("ANTIALIASING").finish(),
+            "ANTIALIASING,DEBUG_OVERDRAW".to_string(),
+            "DEBUG_OVERDRAW".to_string(),
+        ];
         shaders.insert("brush_opacity", features);
     }
 
@@ -137,6 +143,9 @@ pub fn get_shader_features(flags: ShaderFeatureFlags) -> ShaderFeatures {
     }
     if flags.contains(ShaderFeatureFlags::TEXTURE_EXTERNAL) {
         texture_types.push("TEXTURE_EXTERNAL");
+    }
+    if flags.contains(ShaderFeatureFlags::TEXTURE_EXTERNAL_BT709) {
+        texture_types.push("TEXTURE_EXTERNAL_BT709");
     }
     let mut image_features: Vec<String> = Vec::new();
     for texture_type in &texture_types {
@@ -224,6 +233,10 @@ pub fn get_shader_features(flags: ShaderFeatureFlags) -> ShaderFeatures {
     shaders.insert("ps_split_composite", vec![base_prim_features.finish()]);
 
     shaders.insert("ps_quad_textured", vec![base_prim_features.finish()]);
+
+    shaders.insert("ps_quad_radial_gradient", vec![base_prim_features.finish()]);
+
+    shaders.insert("ps_quad_conic_gradient", vec![base_prim_features.finish()]);
 
     shaders.insert("ps_clear", vec![base_prim_features.finish()]);
 

@@ -47,7 +47,7 @@ add_task(async function start_trr_server() {
     await trrServer.stop();
   });
   await trrServer.start();
-  dump(`port = ${trrServer.port}\n`);
+  dump(`port = ${trrServer.port()}\n`);
 
   await trrServer.registerDoHAnswers(`faily.com`, "NS", {
     answers: [
@@ -151,7 +151,7 @@ add_task(async function confirm_ok() {
   });
   Services.prefs.setCharPref(
     "network.trr.uri",
-    `https://foo.example.com:${trrServer.port}/dns-query`
+    `https://foo.example.com:${trrServer.port()}/dns-query`
   );
   Services.prefs.setIntPref("network.trr.mode", Ci.nsIDNSService.MODE_TRRFIRST);
   equal(
@@ -225,6 +225,7 @@ add_task(async function multiple_failures() {
     "network.trr.mode",
     Ci.nsIDNSService.MODE_NATIVEONLY
   );
+  Services.prefs.setIntPref("network.trr.max-retry-timeout-ms", 8000);
   equal(Services.dns.currentTrrConfirmationState, CONFIRM_OFF);
 
   await registerNS(100);
@@ -246,7 +247,7 @@ add_task(async function multiple_failures() {
     CONFIRM_TRYING_OK,
     "Should be CONFIRM_TRYING_OK"
   );
-  await waitForConfirmationState(CONFIRM_OK, 4500);
+  await waitForConfirmationState(CONFIRM_OK, 8500);
 });
 
 add_task(async function test_connectivity_change() {
@@ -360,7 +361,7 @@ add_task(async function test_uri_pref_change() {
   equal(Services.dns.currentTrrConfirmationState, CONFIRM_OK);
   Services.prefs.setCharPref(
     "network.trr.uri",
-    `https://foo.example.com:${trrServer.port}/dns-query?changed`
+    `https://foo.example.com:${trrServer.port()}/dns-query?changed`
   );
   equal(Services.dns.currentTrrConfirmationState, CONFIRM_TRYING_OK);
   await waitForConfirmationState(CONFIRM_OK, 1000);
@@ -377,7 +378,7 @@ add_task(async function test_autodetected_uri() {
   );
   defaultPrefBranch.setCharPref(
     "network.trr.default_provider_uri",
-    `https://foo.example.com:${trrServer.port}/dns-query?changed`
+    `https://foo.example.com:${trrServer.port()}/dns-query?changed`
   );
   // For setDetectedTrrURI to work we must pretend we are using the default.
   Services.prefs.clearUserPref("network.trr.uri");
@@ -387,7 +388,7 @@ add_task(async function test_autodetected_uri() {
     "NS"
   );
   Services.dns.setDetectedTrrURI(
-    `https://foo.example.com:${trrServer.port}/dns-query?changed2`
+    `https://foo.example.com:${trrServer.port()}/dns-query?changed2`
   );
   equal(Services.dns.currentTrrConfirmationState, CONFIRM_TRYING_OK);
   await waitForConfirmationState(CONFIRM_OK, 1000);

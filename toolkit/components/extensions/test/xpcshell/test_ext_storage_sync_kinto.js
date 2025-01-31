@@ -254,7 +254,7 @@ class KintoServer {
   }
 
   installCatchAll() {
-    this.httpServer.registerPathHandler("/", (request, response) => {
+    this.httpServer.registerPathHandler("/", request => {
       dump(
         `got request: ${request.method}:${request.path}?${request.queryString}\n`
       );
@@ -483,7 +483,7 @@ async function withServer(f) {
 // KintoServer. This is meant as a workaround for eslint's refusal to
 // let me have 5 nested callbacks.
 async function withContextAndServer(f) {
-  await withSyncContext(async function (context) {
+  await withContext(async function (context) {
     await withServer(async function (server) {
       await f(context, server);
     });
@@ -517,31 +517,7 @@ async function withSignedInUser(user, f) {
     },
   };
 
-  let telemetryMock = {
-    _calls: [],
-    _histograms: {},
-    scalarSet(name, value) {
-      this._calls.push({ method: "scalarSet", name, value });
-    },
-    keyedScalarSet(name, key, value) {
-      this._calls.push({ method: "keyedScalarSet", name, key, value });
-    },
-    getKeyedHistogramById(name) {
-      let self = this;
-      return {
-        add(key, value) {
-          if (!self._histograms[name]) {
-            self._histograms[name] = [];
-          }
-          self._histograms[name].push(value);
-        },
-      };
-    },
-  };
-  let extensionStorageSync = new ExtensionStorageSync(
-    fxaServiceMock,
-    telemetryMock
-  );
+  let extensionStorageSync = new ExtensionStorageSync(fxaServiceMock);
   await f(extensionStorageSync, fxaServiceMock);
 }
 
@@ -615,9 +591,8 @@ const assertExtensionRecord = async function (
   const hashedId =
     "id-" +
     (await cryptoCollection.hashWithExtensionSalt(keyToId(key), extensionId));
-  const collectionId = await cryptoCollection.extensionIdToCollectionId(
-    extensionId
-  );
+  const collectionId =
+    await cryptoCollection.extensionIdToCollectionId(extensionId);
   const transformer = new CollectionKeyEncryptionRemoteTransformer(
     cryptoCollection,
     await cryptoCollection.getKeyRing(),
@@ -664,6 +639,11 @@ function uuid() {
 
 add_task(async function test_setup() {
   await promiseStartupManager();
+
+  // FOG needs a profile directory to put its data in.
+  do_get_profile();
+  // FOG needs to be initialized in order for data to flow.
+  Services.fog.initializeFOG();
 });
 
 add_task(async function test_single_initialization() {
@@ -774,76 +754,65 @@ add_task(async function ensureCanSync_clearAll() {
   const extension2 = { id: extensionId2 };
 
   await withContextAndServer(async function (context, server) {
-    await withSignedInUser(
-      loggedInUser,
-      async function (extensionStorageSync, fxaService) {
-        async function assertSetAndGetData(extension, data) {
-          await extensionStorageSync.set(extension, data, context);
-          let storedData = await extensionStorageSync.get(
-            extension,
-            Object.keys(data),
-            context
-          );
-          const extId = extensionId;
-          deepEqual(
-            storedData,
-            data,
-            `${extId} should get back the data we set`
-          );
-        }
-
-        async function assertDataCleared(extension, keys) {
-          const storedData = await extensionStorageSync.get(
-            extension,
-            keys,
-            context
-          );
-          deepEqual(
-            storedData,
-            {},
-            `${extension.id} should have lost the data`
-          );
-        }
-
-        server.installCollection("storage-sync-crypto");
-        server.etag = 1000;
-
-        let newKeys = await extensionStorageSync.ensureCanSync([
-          extensionId,
-          extensionId2,
-        ]);
-        ok(
-          newKeys.hasKeysFor([extensionId]),
-          `key isn't present for ${extensionId}`
+    await withSignedInUser(loggedInUser, async function (extensionStorageSync) {
+      async function assertSetAndGetData(extension, data) {
+        await extensionStorageSync.set(extension, data, context);
+        let storedData = await extensionStorageSync.get(
+          extension,
+          Object.keys(data),
+          context
         );
-        ok(
-          newKeys.hasKeysFor([extensionId2]),
-          `key isn't present for ${extensionId2}`
-        );
-
-        let posts = server.getPosts();
-        equal(posts.length, 1);
-        assertPostedNewRecord(posts[0]);
-
-        await assertSetAndGetData(extension, { "my-key": 1 });
-        await assertSetAndGetData(extension2, { "my-key": 2 });
-
-        // Call cleanup for the first extension, to double check it has
-        // been wiped out even without an active extension context.
-        cleanUpForContext(extension, context);
-
-        // clear everything.
-        await extensionStorageSync.clearAll();
-
-        // Assert that the data is gone for both the extensions.
-        await assertDataCleared(extension, ["my-key"]);
-        await assertDataCleared(extension2, ["my-key"]);
-
-        // should have been no posts caused by the clear.
-        posts = server.getPosts();
-        equal(posts.length, 1);
+        const extId = extensionId;
+        deepEqual(storedData, data, `${extId} should get back the data we set`);
       }
-    );
+
+      async function assertDataCleared(extension, keys) {
+        const storedData = await extensionStorageSync.get(
+          extension,
+          keys,
+          context
+        );
+        deepEqual(storedData, {}, `${extension.id} should have lost the data`);
+      }
+
+      server.installCollection("storage-sync-crypto");
+      server.etag = 1000;
+
+      let newKeys = await extensionStorageSync.ensureCanSync([
+        extensionId,
+        extensionId2,
+      ]);
+      ok(
+        newKeys.hasKeysFor([extensionId]),
+        `key isn't present for ${extensionId}`
+      );
+      ok(
+        newKeys.hasKeysFor([extensionId2]),
+        `key isn't present for ${extensionId2}`
+      );
+
+      let posts = server.getPosts();
+      equal(posts.length, 1);
+      assertPostedNewRecord(posts[0]);
+
+      await assertSetAndGetData(extension, { "my-key": 1 });
+      await assertSetAndGetData(extension2, { "my-key": 2 });
+
+      // Call cleanup for the first extension, to double check it has
+      // been wiped out even without an active extension context.
+      cleanUpForContext(extension, context);
+
+      // clear everything.
+      await extensionStorageSync.clearAll();
+
+      // Assert that the data is gone for both the extensions.
+      await assertDataCleared(extension, ["my-key"]);
+      await assertDataCleared(extension2, ["my-key"]);
+
+      // should have been no posts caused by the clear.
+      posts = server.getPosts();
+      equal(posts.length, 1);
+    });
   });
 
   await testExtension.unload();
@@ -1407,7 +1376,7 @@ add_task(async function checkSyncKeyRing_overwrites_on_conflict() {
   // overwrite it with our keys.
   const extensionId = uuid();
   let extensionKey;
-  await withSyncContext(async function (context) {
+  await withContext(async function () {
     await withServer(async function (server) {
       // The old device has this kbHash, which is very similar to the
       // current kbHash but with the last character changed.
@@ -1511,7 +1480,7 @@ add_task(async function checkSyncKeyRing_flushes_on_uuid_change() {
   // keyring, so reset sync state and reupload everything.
   const extensionId = uuid();
   const extension = { id: extensionId };
-  await withSyncContext(async function (context) {
+  await withContext(async function (context) {
     await withServer(async function (server) {
       server.installCollection("storage-sync-crypto");
       server.installDeleteBucket();
@@ -1528,9 +1497,8 @@ add_task(async function checkSyncKeyRing_flushes_on_uuid_change() {
           let collectionKeys = await extensionStorageSync.ensureCanSync([
             extensionId,
           ]);
-          const collectionId = await cryptoCollection.extensionIdToCollectionId(
-            extensionId
-          );
+          const collectionId =
+            await cryptoCollection.extensionIdToCollectionId(extensionId);
           server.installCollection(collectionId);
 
           ok(
@@ -1675,9 +1643,8 @@ add_task(async function test_storage_sync_pulls_changes() {
         );
 
         await extensionStorageSync.ensureCanSync([extensionId]);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
         let transformer = new CollectionKeyEncryptionRemoteTransformer(
           cryptoCollection,
           await cryptoCollection.getKeyRing(),
@@ -1789,9 +1756,8 @@ add_task(async function test_storage_sync_on_no_active_context() {
         server.installCollection("storage-sync-crypto");
 
         await extensionStorageSync.ensureCanSync([extensionId]);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
         let transformer = new CollectionKeyEncryptionRemoteTransformer(
           cryptoCollection,
           await cryptoCollection.getKeyRing(),
@@ -1837,9 +1803,8 @@ add_task(async function test_storage_sync_pushes_changes() {
       loggedInUser,
       async function (extensionStorageSync, fxaService) {
         const cryptoCollection = new CryptoCollection(fxaService);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
         server.installCollection(collectionId);
         server.installCollection("storage-sync-crypto");
         server.etag = 1000;
@@ -1970,9 +1935,8 @@ add_task(async function test_storage_sync_retries_failed_auth() {
 
         await extensionStorageSync.ensureCanSync([extensionId]);
         await extensionStorageSync.set(extension, { "my-key": 5 }, context);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
         let transformer = new CollectionKeyEncryptionRemoteTransformer(
           cryptoCollection,
           await cryptoCollection.getKeyRing(),
@@ -2053,9 +2017,8 @@ add_task(async function test_storage_sync_pulls_conflicts() {
         server.installCollection("storage-sync-crypto");
 
         await extensionStorageSync.ensureCanSync([extensionId]);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
         let transformer = new CollectionKeyEncryptionRemoteTransformer(
           cryptoCollection,
           await cryptoCollection.getKeyRing(),
@@ -2138,9 +2101,8 @@ add_task(async function test_storage_sync_pulls_deletes() {
       loggedInUser,
       async function (extensionStorageSync, fxaService) {
         const cryptoCollection = new CryptoCollection(fxaService);
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          defaultExtensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(defaultExtensionId);
         server.installCollection(collectionId);
         server.installCollection("storage-sync-crypto");
 
@@ -2218,9 +2180,8 @@ add_task(async function test_storage_sync_pushes_deletes() {
           extensionId,
           cryptoCollection.getNewSalt()
         );
-        const collectionId = await cryptoCollection.extensionIdToCollectionId(
-          extensionId
-        );
+        const collectionId =
+          await cryptoCollection.extensionIdToCollectionId(extensionId);
 
         server.installCollection(collectionId);
         server.installCollection("storage-sync-crypto");
@@ -2295,26 +2256,23 @@ add_task(async function test_storage_sync_pushes_deletes() {
 });
 
 // Some sync tests shared between implementations.
-add_task(test_config_flag_needed);
 
 add_task(test_sync_reloading_extensions_works);
 
-add_task(function test_storage_sync() {
-  return runWithPrefs([[STORAGE_SYNC_PREF, true]], () =>
-    test_background_page_storage("sync")
-  );
+add_task(async function test_storage_sync() {
+  await test_background_page_storage("sync");
 });
 
 add_task(test_storage_sync_requires_real_id);
 
-add_task(function test_storage_sync_with_bytes_in_use() {
-  return runWithPrefs([[STORAGE_SYNC_PREF, true]], () =>
-    test_background_storage_area_with_bytes_in_use("sync", false)
-  );
+add_task(async function test_storage_sync_with_bytes_in_use() {
+  await test_background_storage_area_with_bytes_in_use("sync", false);
 });
 
-add_task(function test_storage_onChanged_event_page() {
-  return runWithPrefs([[STORAGE_SYNC_PREF, true]], () =>
-    test_storage_change_event_page("sync")
-  );
+add_task(async function test_storage_onChanged_event_page() {
+  await test_storage_change_event_page("sync");
+});
+
+add_task(async function test_storage_sync_telemetry() {
+  await test_storage_sync_telemetry_quota("kinto", false);
 });

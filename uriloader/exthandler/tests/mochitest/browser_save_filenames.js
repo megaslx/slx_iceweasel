@@ -55,7 +55,7 @@ const DEFAULT_FILENAME =
 const PROMISE_FILENAME_TYPE = "application/x-moz-file-promise-dest-filename";
 
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window);
+MockFilePicker.init(window.browsingContext);
 
 let expectedItems;
 let sendAsAttachment = false;
@@ -179,8 +179,8 @@ add_setup(async function () {
   expectedItems = await getItems("items");
 });
 
-function getItems(parentid) {
-  return SpecialPowers.spawn(
+async function getItems(parentid) {
+  let items = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [parentid, AppConstants.platform],
     (id, platform) => {
@@ -210,6 +210,8 @@ function getItems(parentid) {
       return elements;
     }
   );
+  Assert.greater(items.length, 0, "Some elements were found to test");
+  return items;
 }
 
 function getDirectoryEntries(dir) {
@@ -240,7 +242,7 @@ add_task(async function save_document() {
   tmpDir.append(baseFilename + "_document_files");
 
   MockFilePicker.displayDirectory = tmpDir;
-  MockFilePicker.showCallback = function (fp) {
+  MockFilePicker.showCallback = function () {
     MockFilePicker.setFiles([tmpFile]);
     MockFilePicker.filterIndex = 0; // kSaveAsType_Complete
   };
@@ -280,8 +282,9 @@ add_task(async function save_document() {
       fileIdx = filesSaved.indexOf(filename);
     }
 
-    ok(
-      fileIdx >= 0,
+    Assert.greaterOrEqual(
+      fileIdx,
+      0,
       "file i" +
         idx +
         " " +
@@ -372,7 +375,11 @@ if (AppConstants.platform != "macosx") {
 
 // This test checks that copying an image provides the right filename
 // for pasting to the local file system. This is only implemented on Windows.
-if (AppConstants.platform == "win") {
+const imageAsFileEnabled = SpecialPowers.getBoolPref(
+  "clipboard.imageAsFile.enabled",
+  false
+);
+if (AppConstants.platform == "win" && imageAsFileEnabled) {
   add_task(async function copy_image() {
     for (let idx = 0; idx < expectedItems.length; idx++) {
       if (!expectedItems[idx].draggable) {
@@ -558,7 +565,7 @@ add_task(async function saveas_files_modified_in_filepicker() {
     await new Promise(resolve => {
       MockFilePicker.displayDirectory = savedFile;
 
-      MockFilePicker.showCallback = function (fp) {
+      MockFilePicker.showCallback = function () {
         MockFilePicker.filterIndex = 0; // kSaveAsType_Complete
         savedFile.append(items[idx].pickedfilename);
         MockFilePicker.setFiles([savedFile]);

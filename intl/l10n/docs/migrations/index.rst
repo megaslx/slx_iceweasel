@@ -46,8 +46,9 @@ require extensive l10n knowledge to avoid localizability issues.
 Don’t hesitate to reach out to the l10n-drivers for feedback, help to test or
 write the migration recipes:
 
+ - Bryan Olsson (:bolsson)
  - Francesco Lodolo (:flod)
  - Eemeli Aro (:eemeli)
 
 .. _Fluent: http://projectfluent.org/
-.. _Fluent Migration: https://hg.mozilla.org/l10n/fluent-migration/
+.. _Fluent Migration: https://github.com/mozilla/fluent-migrate

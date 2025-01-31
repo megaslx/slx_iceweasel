@@ -198,24 +198,6 @@ Required for all new histograms. This is an array of integers and should at leas
 ---------------
 Required. A description of the data tracked by the histogram, e.g. _"Resident memory size"_
 
-``cpp_guard`` (obsolete, use ``operating_systems``)
----------------------------------------------------
-Optional. This field inserts an #ifdef directive around the histogram's C++ declaration. This is typically used for platform-specific histograms, e.g. ``"cpp_guard": "ANDROID"``
-
-``operating_systems``
----------------------
-Optional. This field restricts recording to certain operating systems only. Use that in-place of previous ``cpp_guards`` to avoid inclusion on not-specified operating systems.
-Currently supported values are:
-
-- ``mac``
-- ``linux``
-- ``windows``
-- ``android``
-- ``unix``
-- ``all`` (record on all operating systems)
-
-If this field is left out it defaults to ``all``.
-
 ``releaseChannelCollection``
 ----------------------------
 Optional. This is one of:
@@ -237,7 +219,6 @@ Optional. This is one of:
 Required. This field is a list of products this histogram can be recorded on. Currently-supported values are:
 
 - ``firefox`` - Collected in Firefox Desktop for submission via Firefox Telemetry.
-- ``geckoview_streaming`` - See :doc:`this guide <../start/report-gecko-telemetry-in-glean>` for how to stream data through geckoview to the Glean SDK.
 - ``thunderbird`` - Collected in Thunderbird for submission via Thunderbird Telemetry.
 
 ``record_into_store``
@@ -296,8 +277,8 @@ For histograms measuring time, TelemetryStopwatch can be used to avoid working w
 
 .. code-block:: js
 
-  TelemetryStopwatch.start("SEARCH_SERVICE_INIT_MS");
-  TelemetryStopwatch.finish("SEARCH_SERVICE_INIT_MS");
+  TelemetryStopwatch.start("SEARCH_SERVICE_INIT2_MS");
+  TelemetryStopwatch.finish("SEARCH_SERVICE_INIT2_MS");
 
   TelemetryStopwatch.start("FX_TAB_SWITCH_TOTAL_MS");
   TelemetryStopwatch.cancel("FX_TAB_SWITCH_TOTAL_MS");
@@ -363,12 +344,6 @@ Probes in native code can also use the `nsITelemetry <https://searchfox.org/mozi
    * @param end - (optional) end time, defaults to TimeStamp::Now().
    */
   void AccumulateTimeDelta(HistogramID id, const nsCString& key, TimeStamp start, TimeStamp end = TimeStamp::Now());
-
-The histogram names declared in ``Histograms.json`` are translated into constants in the ``mozilla::Telemetry`` namespace:
-
-.. code-block:: cpp
-
-  mozilla::Telemetry::Accumulate(mozilla::Telemetry::STARTUP_CRASH_DETECTED, true);
 
 .. warning::
 

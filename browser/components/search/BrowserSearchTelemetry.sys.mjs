@@ -5,10 +5,20 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  PartnerLinkAttribution: "resource:///modules/PartnerLinkAttribution.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.sys.mjs",
   UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
+});
+
+// `contextId` is a unique identifier used by Contextual Services
+const CONTEXT_ID_PREF = "browser.contextual-services.contextId";
+ChromeUtils.defineLazyGetter(lazy, "contextId", () => {
+  let _contextId = Services.prefs.getStringPref(CONTEXT_ID_PREF, null);
+  if (!_contextId) {
+    _contextId = Services.uuid.generateUUID().toString();
+    Services.prefs.setStringPref(CONTEXT_ID_PREF, _contextId);
+  }
+  return _contextId;
 });
 
 // A map of known search origins.
@@ -89,11 +99,13 @@ class BrowserSearchTelemetryHandler {
         : "FX_SEARCHBAR_SELECTED_RESULT_METHOD"
     );
     // command events are from the one-off context menu.  Treat them as clicks.
-    // Note that we don't care about MouseEvent subclasses here, since
-    // those are not clicks.
+    // Note that we only care about MouseEvent subclasses here when the
+    // event type is "click", or else the subclasses are associated with
+    // non-click interactions.
     let isClick =
       event &&
       (ChromeUtils.getClassName(event) == "MouseEvent" ||
+        event.type == "click" ||
         event.type == "command");
     let category;
     if (isClick) {
@@ -136,12 +148,9 @@ class BrowserSearchTelemetryHandler {
       return;
     }
 
-    let scalarKey = lazy.UrlbarSearchUtils.getSearchModeScalarKey(searchMode);
-    Services.telemetry.keyedScalarAdd(
-      "urlbar.searchmode." + searchMode.entry,
-      scalarKey,
-      1
-    );
+    let label = lazy.UrlbarSearchUtils.getSearchModeScalarKey(searchMode);
+    let name = searchMode.entry.replace(/_([a-z])/g, (m, p) => p.toUpperCase());
+    Glean.urlbarSearchmode[name]?.[label].add(1);
   }
 
   /**
@@ -172,6 +181,10 @@ class BrowserSearchTelemetryHandler {
    * @throws if source is not in the known sources list.
    */
   recordSearch(browser, engine, source, details = {}) {
+    if (engine.clickUrl) {
+      this.#reportSearchInGlean(engine.clickUrl);
+    }
+
     try {
       if (!this.shouldRecordSearchCount(browser)) {
         return;
@@ -208,10 +221,10 @@ class BrowserSearchTelemetryHandler {
           break;
         case "abouthome":
         case "newtab":
-          this._recordSearch(browser, engine, details.url, source, "enter");
+          this._recordSearch(browser, engine, source, "enter");
           break;
         default:
-          this._recordSearch(browser, engine, details.url, source);
+          this._recordSearch(browser, engine, source);
           break;
       }
       if (["urlbar-handoff", "abouthome", "newtab"].includes(source)) {
@@ -258,35 +271,43 @@ class BrowserSearchTelemetryHandler {
       action = "alias";
     }
 
-    this._recordSearch(browser, engine, details.url, source, action);
+    this._recordSearch(browser, engine, source, action);
   }
 
-  _recordSearch(browser, engine, url, source, action = null) {
-    if (url) {
-      lazy.PartnerLinkAttribution.makeSearchEngineRequest(engine, url).catch(
-        console.error
-      );
-    }
-
+  _recordSearch(browser, engine, source, action = null) {
     let scalarSource = KNOWN_SEARCH_SOURCES.get(source);
-
     lazy.SearchSERPTelemetry.recordBrowserSource(browser, scalarSource);
 
-    let scalarKey = action ? "search_" + action : "search";
-    Services.telemetry.keyedScalarAdd(
-      "browser.engagement.navigation." + scalarSource,
-      scalarKey,
-      1
-    );
-    Services.telemetry.recordEvent(
-      "navigation",
-      "search",
-      scalarSource,
-      action,
-      {
-        engine: engine.telemetryId,
+    let label = action ? "search_" + action : "search";
+    let name = scalarSource.replace(/_([a-z])/g, (m, p) => p.toUpperCase());
+    Glean.browserEngagementNavigation[name][label].add(1);
+  }
+
+  /**
+   * Records the search in Glean for contextual services.
+   *
+   * @param {string} reportingUrl
+   *   The url to be sent to contextual services.
+   */
+  #reportSearchInGlean(reportingUrl) {
+    let defaultValuesByGleanKey = {
+      contextId: lazy.contextId,
+    };
+
+    let sendGleanPing = valuesByGleanKey => {
+      valuesByGleanKey = { ...defaultValuesByGleanKey, ...valuesByGleanKey };
+      for (let [gleanKey, value] of Object.entries(valuesByGleanKey)) {
+        let glean = Glean.searchWith[gleanKey];
+        if (value !== undefined && value !== "") {
+          glean.set(value);
+        }
       }
-    );
+      GleanPings.searchWith.submit();
+    };
+
+    sendGleanPing({
+      reportingUrl,
+    });
   }
 }
 

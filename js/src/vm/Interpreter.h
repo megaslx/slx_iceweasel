@@ -15,6 +15,10 @@
 
 #include "vm/BuiltinObjectKind.h"
 #include "vm/CheckIsObjectKind.h"  // CheckIsObjectKind
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+#  include "vm/ErrorObject.h"
+#  include "vm/UsingHint.h"
+#endif
 #include "vm/Stack.h"
 
 namespace js {
@@ -138,6 +142,17 @@ inline bool Call(JSContext* cx, HandleValue fval, JSObject* thisObj,
   FixedInvokeArgs<2> args(cx);
   args[0].set(arg0);
   args[1].set(arg1);
+  return Call(cx, fval, thisv, args, rval);
+}
+
+inline bool Call(JSContext* cx, HandleValue fval, JSObject* thisObj,
+                 HandleValue arg0, HandleValue arg1, HandleValue arg2,
+                 MutableHandleValue rval) {
+  RootedValue thisv(cx, ObjectOrNullValue(thisObj));
+  FixedInvokeArgs<3> args(cx);
+  args[0].set(arg0);
+  args[1].set(arg1);
+  args[2].set(arg2);
   return Call(cx, fval, thisv, args, rval);
 }
 
@@ -364,7 +379,8 @@ class MOZ_STACK_CLASS BaseTryNoteIter {
        *  until we see the matching for-of.
        *
        *  Breaking out of multiple levels of for-of at once is handled
-       *  using nested FOR_OF_ITERCLOSE try-notes. Consider this code:
+       *  using nested TryNoteKind::ForOfIterClose try-notes. Consider this
+       * code:
        *
        *  try {
        *    loop: for (i of first) {
@@ -389,12 +405,12 @@ class MOZ_STACK_CLASS BaseTryNoteIter {
        *
        *  - At A, we find the outer for-of.
        *  - At B, we find the inner for-of.
-       *  - At C1, we find one FOR_OF_ITERCLOSE, skip past one FOR_OF, and find
-       *    the outer for-of. (This occurs if an exception is thrown while
-       *    closing the inner iterator.)
-       *  - At C2, we find two FOR_OF_ITERCLOSE, skip past two FOR_OF, and reach
-       *    the outer try-catch. (This occurs if an exception is thrown while
-       *    closing the outer iterator.)
+       *  - At C1, we find one TryNoteKind::ForOfIterClose, skip past one
+       *    TryNoteKind::ForOf, and find the outer for-of. (This occurs if an
+       *    exception is thrown while closing the inner iterator.)
+       *  - At C2, we find two TryNoteKind::ForOfIterClose, skip past two
+       *    TryNoteKind::ForOf, and reach the outer try-catch. (This occurs if
+       *    an exception is thrown while closing the outer iterator.)
        */
       if (tn_->kind() == TryNoteKind::ForOfIterClose) {
         uint32_t iterCloseDepth = 1;
@@ -511,6 +527,10 @@ bool HandleClosingGeneratorReturn(JSContext* cx, AbstractFramePtr frame,
 
 bool ThrowOperation(JSContext* cx, HandleValue v);
 
+bool ThrowWithStackOperation(JSContext* cx, HandleValue v, HandleValue stack);
+
+bool GetPendingExceptionStack(JSContext* cx, MutableHandleValue vp);
+
 bool GetProperty(JSContext* cx, HandleValue value, Handle<PropertyName*> name,
                  MutableHandleValue vp);
 
@@ -573,8 +593,6 @@ bool GreaterThan(JSContext* cx, MutableHandleValue lhs, MutableHandleValue rhs,
 bool GreaterThanOrEqual(JSContext* cx, MutableHandleValue lhs,
                         MutableHandleValue rhs, bool* res);
 
-bool AtomicIsLockFree(JSContext* cx, HandleValue in, int* out);
-
 template <bool strict>
 bool DelPropOperation(JSContext* cx, HandleValue val,
                       Handle<PropertyName*> name, bool* res);
@@ -597,10 +615,10 @@ bool GetAndClearExceptionAndStack(JSContext* cx, MutableHandleValue res,
                                   MutableHandle<SavedFrame*> stack);
 
 bool DeleteNameOperation(JSContext* cx, Handle<PropertyName*> name,
-                         HandleObject scopeObj, MutableHandleValue res);
+                         HandleObject envChain, MutableHandleValue res);
 
-bool ImplicitThisOperation(JSContext* cx, HandleObject scopeObj,
-                           Handle<PropertyName*> name, MutableHandleValue res);
+void ImplicitThisOperation(JSContext* cx, HandleObject env,
+                           MutableHandleValue res);
 
 bool InitPropGetterSetterOperation(JSContext* cx, jsbytecode* pc,
                                    HandleObject obj, Handle<PropertyName*> name,
@@ -621,6 +639,23 @@ bool SpreadCallOperation(JSContext* cx, HandleScript script, jsbytecode* pc,
 
 bool OptimizeSpreadCall(JSContext* cx, HandleValue arg,
                         MutableHandleValue result);
+
+bool OptimizeGetIterator(JSContext* cx, HandleValue arg, bool* result);
+
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+enum class SyncDisposalClosureSlots : uint8_t {
+  Method,
+};
+bool SyncDisposalClosure(JSContext* cx, unsigned argc, JS::Value* vp);
+
+ErrorObject* CreateSuppressedError(JSContext* cx, JS::Handle<JS::Value> error,
+                                   JS::Handle<JS::Value> suppressed);
+
+bool AddDisposableResourceToCapability(JSContext* cx, JS::Handle<JSObject*> env,
+                                       JS::Handle<JS::Value> val,
+                                       JS::Handle<JS::Value> method,
+                                       bool needsClosure, UsingHint hint);
+#endif
 
 ArrayObject* ArrayFromArgumentsObject(JSContext* cx,
                                       Handle<ArgumentsObject*> args);
@@ -664,12 +699,6 @@ void ReportRuntimeLexicalError(JSContext* cx, unsigned errorNumber,
 
 void ReportInNotObjectError(JSContext* cx, HandleValue lref, HandleValue rref);
 
-// The parser only reports redeclarations that occurs within a single
-// script. Due to the extensibility of the global lexical scope, we also check
-// for redeclarations during runtime in JSOp::GlobalOrEvalDeclInstantation.
-void ReportRuntimeRedeclaration(JSContext* cx, Handle<PropertyName*> name,
-                                const char* redeclKind);
-
 bool ThrowCheckIsObject(JSContext* cx, CheckIsObjectKind kind);
 
 bool ThrowUninitializedThis(JSContext* cx);
@@ -677,8 +706,6 @@ bool ThrowUninitializedThis(JSContext* cx);
 bool ThrowInitializedThis(JSContext* cx);
 
 bool ThrowObjectCoercible(JSContext* cx, HandleValue value);
-
-bool DefaultClassConstructor(JSContext* cx, unsigned argc, Value* vp);
 
 bool Debug_CheckSelfHosted(JSContext* cx, HandleValue funVal);
 

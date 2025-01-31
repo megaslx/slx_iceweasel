@@ -14,7 +14,7 @@ const TEST_PROVIDER_INFO = [
     telemetryId: "example",
     searchPageRegexp:
       /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd_/,
-    queryParamName: "s",
+    queryParamNames: ["s"],
     codeParamName: "abc",
     taggedCodes: ["ff"],
     adServerAttributes: ["mozAttr"],
@@ -22,6 +22,7 @@ const TEST_PROVIDER_INFO = [
       /^https:\/\/example.org\/browser\/browser\/components\/search\/test\/browser\/telemetry\/searchTelemetryAd_nonAdsLink_redirect.html/,
     ],
     extraAdServersRegexps: [/^https:\/\/example\.com\/ad/],
+    ignoreLinkRegexps: [/^https:\/\/example\.org\/consent\?data=/],
     components: [
       {
         type: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
@@ -90,6 +91,44 @@ const TEST_PROVIDER_INFO = [
         type: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
         default: true,
       },
+      {
+        type: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+        topDown: true,
+        included: {
+          parent: {
+            selector: "#banner",
+          },
+          children: [
+            {
+              selector: "#cookie_accept",
+              eventListeners: [
+                {
+                  eventType: "click",
+                  action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_ACCEPT,
+                },
+              ],
+            },
+            {
+              selector: "#cookie_reject",
+              eventListeners: [
+                {
+                  eventType: "click",
+                  action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_REJECT,
+                },
+              ],
+            },
+            {
+              selector: "#cookie_more_options",
+              eventListeners: [
+                {
+                  eventType: "click",
+                  action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_MORE_OPTIONS,
+                },
+              ],
+            },
+          ],
+        },
+      },
     ],
   },
 ];
@@ -109,12 +148,6 @@ add_setup(async function () {
   // Enable local telemetry recording for the duration of the tests.
   let oldCanRecord = Services.telemetry.canRecordExtended;
   Services.telemetry.canRecordExtended = true;
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.search.log", true],
-      ["browser.search.serpEventTelemetry.enabled", true],
-    ],
-  });
 
   registerCleanupFunction(async () => {
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
@@ -143,7 +176,7 @@ add_task(async function test_click_second_ad_in_component() {
   );
   await pageLoadPromise;
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -151,12 +184,28 @@ add_task(async function test_click_second_ad_in_component() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
           target: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "5",
+          ads_visible: "5",
+          ads_hidden: "0",
         },
       ],
     },
@@ -184,7 +233,7 @@ add_task(async function test_click_ads_link_modified() {
   });
   await browserLoadedPromise;
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -192,12 +241,28 @@ add_task(async function test_click_ads_link_modified() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
           target: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "5",
+          ads_visible: "5",
+          ads_hidden: "0",
         },
       ],
     },
@@ -222,12 +287,9 @@ add_task(async function test_click_and_submit_incontent_searchbox() {
   );
   EventUtils.synthesizeKey("KEY_Enter");
   await pageLoadPromise;
+  await waitForPageWithAdImpressions();
 
-  await TestUtils.waitForCondition(() => {
-    return Glean.serp.impression?.testGetValue()?.length == 2;
-  }, "Should have two impressions.");
-
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -235,7 +297,9 @@ add_task(async function test_click_and_submit_incontent_searchbox() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
@@ -255,7 +319,9 @@ add_task(async function test_click_and_submit_incontent_searchbox() {
         partner_code: "ff",
         source: "follow_on_from_refine_on_incontent_search",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
     },
   ]);
@@ -281,12 +347,9 @@ add_task(async function test_click_autosuggest() {
     tab.linkedBrowser
   );
   await pageLoadPromise;
+  await waitForPageWithAdImpressions();
 
-  await TestUtils.waitForCondition(() => {
-    return Glean.serp.impression?.testGetValue()?.length == 2;
-  }, "Should have two impressions.");
-
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -294,7 +357,9 @@ add_task(async function test_click_autosuggest() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
@@ -310,7 +375,9 @@ add_task(async function test_click_autosuggest() {
         partner_code: "ff",
         source: "follow_on_from_refine_on_incontent_search",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
     },
   ]);
@@ -330,7 +397,7 @@ add_task(async function test_click_carousel_expand() {
     content.document.querySelector("button").click();
   });
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -338,12 +405,22 @@ add_task(async function test_click_carousel_expand() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.EXPANDED,
           target: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_CAROUSEL,
+          ads_loaded: "4",
+          ads_visible: "3",
+          ads_hidden: "0",
         },
       ],
     },
@@ -381,7 +458,7 @@ add_task(async function test_click_link_with_special_characters_in_path() {
   );
   await pageLoadPromise;
 
-  assertImpressionEvents([
+  assertSERPTelemetry([
     {
       impression: {
         provider: "example",
@@ -389,12 +466,28 @@ add_task(async function test_click_link_with_special_characters_in_path() {
         partner_code: "ff",
         source: "unknown",
         is_shopping_page: "false",
+        is_private: "false",
         shopping_tab_displayed: "false",
+        is_signed_in: "false",
       },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
           target: SearchSERPTelemetryUtils.COMPONENTS.NON_ADS_LINK,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_SITELINK,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "5",
+          ads_visible: "5",
+          ads_hidden: "0",
         },
       ],
     },
@@ -405,4 +498,142 @@ add_task(async function test_click_link_with_special_characters_in_path() {
   // Reset state for other tests.
   SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
   await waitForIdle();
+});
+
+// Test that clicking the accept button on the cookie banner is correctly
+// tracked as an engagement event.
+add_task(async function test_click_cookie_banner_accept() {
+  resetTelemetry();
+  let url = getSERPUrl("searchTelemetryAd_components_cookie_banner.html");
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+  await waitForPageWithAdImpressions();
+
+  await BrowserTestUtils.synthesizeMouseAtCenter(
+    "#cookie_accept",
+    {},
+    tab.linkedBrowser
+  );
+
+  assertSERPTelemetry([
+    {
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      engagements: [
+        {
+          action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_ACCEPT,
+          target: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  BrowserTestUtils.removeTab(tab);
+});
+
+// Test that clicking the reject button on the cookie banner is accurately
+// recorded as an engagement event.
+add_task(async function test_click_cookie_banner_reject() {
+  resetTelemetry();
+  let url = getSERPUrl("searchTelemetryAd_components_cookie_banner.html");
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+  await waitForPageWithAdImpressions();
+
+  await BrowserTestUtils.synthesizeMouseAtCenter(
+    "#cookie_reject",
+    {},
+    tab.linkedBrowser
+  );
+
+  assertSERPTelemetry([
+    {
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      engagements: [
+        {
+          action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_REJECT,
+          target: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  BrowserTestUtils.removeTab(tab);
+});
+
+// Test that clicking the more options button on the cookie banner is accurately
+// recorded as an engagement event.
+add_task(async function test_click_cookie_banner_more_options() {
+  resetTelemetry();
+  let url = getSERPUrl("searchTelemetryAd_components_cookie_banner.html");
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+  await waitForPageWithAdImpressions();
+
+  await BrowserTestUtils.synthesizeMouseAtCenter(
+    "#cookie_more_options",
+    {},
+    tab.linkedBrowser
+  );
+
+  assertSERPTelemetry([
+    {
+      impression: {
+        provider: "example",
+        tagged: "true",
+        partner_code: "ff",
+        source: "unknown",
+        is_shopping_page: "false",
+        is_private: "false",
+        shopping_tab_displayed: "false",
+        is_signed_in: "false",
+      },
+      engagements: [
+        {
+          action: SearchSERPTelemetryUtils.ACTIONS.CLICKED_MORE_OPTIONS,
+          target: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.COOKIE_BANNER,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  BrowserTestUtils.removeTab(tab);
 });

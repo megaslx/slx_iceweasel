@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2018, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -22,9 +22,9 @@ typedef struct {
                 // optional OBU extension header) in the bitstream.
   OBU_TYPE type;
   int has_size_field;
-  int has_extension;
-  // The following fields come from the OBU extension header and therefore are
-  // only used if has_extension is true.
+  int has_extension;  // Whether the optional OBU extension header is present.
+  // The following fields come from the OBU extension header. They are set to 0
+  // if has_extension is false.
   int temporal_layer_id;
   int spatial_layer_id;
 } ObuHeader;

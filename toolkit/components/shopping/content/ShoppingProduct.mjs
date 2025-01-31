@@ -3,63 +3,38 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import {
-  ANALYSIS_API,
   ANALYSIS_RESPONSE_SCHEMA,
   ANALYSIS_REQUEST_SCHEMA,
-  RECOMMENDATIONS_API,
+  ANALYZE_RESPONSE_SCHEMA,
+  ANALYZE_REQUEST_SCHEMA,
+  ANALYSIS_STATUS_RESPONSE_SCHEMA,
+  ANALYSIS_STATUS_REQUEST_SCHEMA,
   RECOMMENDATIONS_RESPONSE_SCHEMA,
   RECOMMENDATIONS_REQUEST_SCHEMA,
+  ATTRIBUTION_RESPONSE_SCHEMA,
+  ATTRIBUTION_REQUEST_SCHEMA,
+  REPORTING_RESPONSE_SCHEMA,
+  REPORTING_REQUEST_SCHEMA,
   ProductConfig,
+  ShoppingEnvironment,
 } from "chrome://global/content/shopping/ProductConfig.mjs";
 
-let { XPCOMUtils } = ChromeUtils.importESModule(
-  "resource://gre/modules/XPCOMUtils.sys.mjs"
+let { EventEmitter } = ChromeUtils.importESModule(
+  "resource://gre/modules/EventEmitter.sys.mjs"
 );
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
-  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
-  OHTTPConfigManager: "resource://gre/modules/OHTTPConfigManager.sys.mjs",
+  ObliviousHTTP: "resource://gre/modules/ObliviousHTTP.sys.mjs",
   ProductValidator: "chrome://global/content/shopping/ProductValidator.sys.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
 const API_RETRIES = 3;
 const API_RETRY_TIMEOUT = 100;
-
-XPCOMUtils.defineLazyServiceGetters(lazy, {
-  ohttpService: [
-    "@mozilla.org/network/oblivious-http-service;1",
-    Ci.nsIObliviousHttpService,
-  ],
-});
-
-XPCOMUtils.defineLazyGetter(lazy, "decoder", () => new TextDecoder());
-
-const StringInputStream = Components.Constructor(
-  "@mozilla.org/io/string-input-stream;1",
-  "nsIStringInputStream",
-  "setData"
-);
-
-const BinaryInputStream = Components.Constructor(
-  "@mozilla.org/binaryinputstream;1",
-  "nsIBinaryInputStream",
-  "setInputStream"
-);
-
-function readFromStream(stream, count) {
-  let binaryStream = new BinaryInputStream(stream);
-  let arrayBuffer = new ArrayBuffer(count);
-  while (count > 0) {
-    let actuallyRead = binaryStream.readArrayBuffer(count, arrayBuffer);
-    if (!actuallyRead) {
-      throw new Error("Nothing read from input stream!");
-    }
-    count -= actuallyRead;
-  }
-  return lazy.decoder.decode(arrayBuffer);
-}
+const API_POLL_ATTEMPTS = 260;
+const API_POLL_INITIAL_WAIT = 1000;
+const API_POLL_WAIT = 1000;
 
 /**
  * @typedef {object} Product
@@ -95,20 +70,20 @@ function readFromStream(stream, count) {
  * let analysis = await product.requestAnalysis();
  * let recommendations = await product.requestRecommendations();
  */
-export class ShoppingProduct {
+export class ShoppingProduct extends EventEmitter {
   /**
    * Creates a product.
    *
    * @param {URL} url
    *  URL to get the product info from.
    * @param {object} [options]
-   * @param {object} [options.allowValidationFailure=true]
+   * @param {boolean} [options.allowValidationFailure=true]
    *  Should validation failures be allowed or return null
    */
   constructor(url, options = { allowValidationFailure: true }) {
+    super();
+
     this.allowValidationFailure = !!options.allowValidationFailure;
-    this.analysis = undefined;
-    this.recommendations = undefined;
 
     this._abortController = new AbortController();
 
@@ -119,6 +94,33 @@ export class ShoppingProduct {
     if (url && URL.isInstance(url)) {
       let product = this.constructor.fromURL(url);
       this.assignProduct(product);
+    }
+  }
+
+  /**
+   * Gets an object of website names and urls supported by Review Checker.
+   * This function uses the ProductConfig for validation.
+   * The object made is a simplified version of ProductConfig and is meant to be used
+   * for content updates.
+   *
+   * @param {object} [productConfig=ProductConfig]
+   *  The ProductConfig to use to determine which sites we can use for reviews.
+   * @returns {object | null}
+   *  An object mapping website names to arrays of valid url strings, or null if an error occurs.
+   */
+  static getSupportedDomains(productConfig = ProductConfig) {
+    let supportedSites = {};
+    try {
+      Object.keys(productConfig).forEach(sitename => {
+        let tldsMap = productConfig[sitename].validTLDs.map(tld => {
+          return `https://${sitename}.${tld}`;
+        });
+        supportedSites[sitename] = tldsMap;
+      });
+      return supportedSites;
+    } catch {
+      console.error("Failed to get supported sites from config.");
+      return null;
     }
   }
 
@@ -204,6 +206,23 @@ export class ShoppingProduct {
   }
 
   /**
+   * Check if an invalid Product is a supported site.
+   *
+   * @param {Product} product
+   *  Product to check.
+   * @returns {boolean}
+   */
+  static isSupportedSite(product) {
+    return !!(
+      product &&
+      !product.valid &&
+      product.host &&
+      product.sitename &&
+      product.tld
+    );
+  }
+
+  /**
    * Check if a the instances product is a valid product.
    *
    * @returns {boolean}
@@ -224,8 +243,6 @@ export class ShoppingProduct {
   /**
    * Request analysis for a product from the API.
    *
-   * @param {boolean} force
-   *  Force always requesting from API.
    * @param {Product} product
    *  Product to request for (defaults to the instances product).
    * @param {object} options
@@ -234,10 +251,9 @@ export class ShoppingProduct {
    *  Parsed JSON API result or null.
    */
   async requestAnalysis(
-    force = false,
     product = this.product,
     options = {
-      url: ANALYSIS_API,
+      url: ShoppingEnvironment.ANALYSIS_API,
       requestSchema: ANALYSIS_REQUEST_SCHEMA,
       responseSchema: ANALYSIS_RESPONSE_SCHEMA,
     }
@@ -246,23 +262,19 @@ export class ShoppingProduct {
       return null;
     }
 
-    if (!force && this.analysis) {
-      return this.analysis;
-    }
-
     let requestOptions = {
       product_id: product.id,
       website: product.host,
     };
 
     let { url, requestSchema, responseSchema } = options;
+    let { allowValidationFailure } = this;
 
-    let result = await this.request(url, requestOptions, {
+    let result = await ShoppingProduct.request(url, requestOptions, {
       requestSchema,
       responseSchema,
+      allowValidationFailure,
     });
-
-    this.analysis = result;
 
     return result;
   }
@@ -272,8 +284,6 @@ export class ShoppingProduct {
    * Currently only provides recommendations for Amazon products,
    * which may be paid ads.
    *
-   * @param {boolean} force
-   *  Force always requesting from API.
    * @param {Product} product
    *  Product to request for (defaults to the instances product).
    * @param {object} options
@@ -282,10 +292,9 @@ export class ShoppingProduct {
    *  Parsed JSON API result or null.
    */
   async requestRecommendations(
-    force = false,
     product = this.product,
     options = {
-      url: RECOMMENDATIONS_API,
+      url: ShoppingEnvironment.RECOMMENDATIONS_API,
       requestSchema: RECOMMENDATIONS_REQUEST_SCHEMA,
       responseSchema: RECOMMENDATIONS_RESPONSE_SCHEMA,
     }
@@ -294,21 +303,23 @@ export class ShoppingProduct {
       return null;
     }
 
-    if (!force && this.recommendations) {
-      return this.recommendations;
-    }
-
     let requestOptions = {
       product_id: product.id,
       website: product.host,
     };
     let { url, requestSchema, responseSchema } = options;
-    let result = await this.request(url, requestOptions, {
+    let { allowValidationFailure } = this;
+    let result = await ShoppingProduct.request(url, requestOptions, {
       requestSchema,
       responseSchema,
+      allowValidationFailure,
     });
 
-    this.recommendations = result;
+    for (let ad of result) {
+      ad.image_blob = await ShoppingProduct.requestImageBlob(ad.image_url, {
+        signal: this._abortController.signal,
+      });
+    }
 
     return result;
   }
@@ -332,19 +343,25 @@ export class ShoppingProduct {
    *  Max number of allowed failures.
    * @param {int} [options.retryTimeout=API_RETRY_TIMEOUT]
    *  Minimum time to wait.
+   * @param {AbortSignal} [options.signal]
+   *  Signal to check if the request needs to be aborted.
+   * @param {boolean} [options.allowValidationFailure=true]
+   *  Should validation failures be allowed.
    * @returns {object} result
    *  Parsed JSON API result or null.
    */
-  async request(apiURL, bodyObj = {}, options = {}) {
+  static async request(apiURL, bodyObj = {}, options = {}) {
     let {
       requestSchema,
       responseSchema,
       failCount = 0,
       maxRetries = API_RETRIES,
       retryTimeout = API_RETRY_TIMEOUT,
+      signal = new AbortController().signal,
+      allowValidationFailure = true,
     } = options;
 
-    if (this._abortController.signal.aborted) {
+    if (signal.aborted) {
       return null;
     }
 
@@ -352,10 +369,13 @@ export class ShoppingProduct {
       let validRequest = await lazy.ProductValidator.validate(
         bodyObj,
         requestSchema,
-        this.allowValidationFailure
+        allowValidationFailure
       );
-      if (!validRequest && !this.allowValidationFailure) {
-        return null;
+      if (!validRequest) {
+        Glean?.shoppingProduct?.invalidRequest.record();
+        if (!allowValidationFailure) {
+          return null;
+        }
       }
     }
 
@@ -366,20 +386,31 @@ export class ShoppingProduct {
         Accept: "application/json",
       },
       body: JSON.stringify(bodyObj),
-      signal: this._abortController.signal,
+      signal,
+      abortCallback() {
+        Glean?.shoppingProduct?.requestAborted.record();
+      },
     };
 
     let requestPromise;
-    let { useOHTTP, ohttpRelayURL, ohttpConfigURL } =
-      lazy.NimbusFeatures.shopping2023.getAllVariables();
-    if (useOHTTP && ohttpRelayURL && ohttpConfigURL) {
-      let config = await this.getOHTTPConfig(ohttpConfigURL);
+    let ohttpRelayURL = Services.prefs.getStringPref(
+      "toolkit.shopping.ohttpRelayURL",
+      ""
+    );
+    let ohttpConfigURL = Services.prefs.getStringPref(
+      "toolkit.shopping.ohttpConfigURL",
+      ""
+    );
+    if (ohttpRelayURL && ohttpConfigURL) {
+      let config = await lazy.ObliviousHTTP.getOHTTPConfig(ohttpConfigURL);
       // In the time it took to fetch the OHTTP config, we might have been
       // aborted...
-      if (requestOptions.signal.aborted) {
+      if (signal.aborted) {
+        Glean?.shoppingProduct?.requestAborted.record();
         return null;
       }
       if (!config) {
+        Glean?.shoppingProduct?.invalidOhttpConfig.record();
         console.error(
           new Error(
             "OHTTP was configured for shopping but we couldn't get a valid config."
@@ -387,7 +418,7 @@ export class ShoppingProduct {
         );
         return null;
       }
-      requestPromise = this.ohttpRequest(
+      requestPromise = lazy.ObliviousHTTP.ohttpRequest(
         ohttpRelayURL,
         config,
         apiURL,
@@ -410,23 +441,39 @@ export class ShoppingProduct {
         let validResponse = await lazy.ProductValidator.validate(
           result,
           responseSchema,
-          this.allowValidationFailure
+          allowValidationFailure
         );
-        if (!validResponse && !this.allowValidationFailure) {
-          return null;
+        if (!validResponse) {
+          Glean?.shoppingProduct?.invalidResponse.record();
+          if (!allowValidationFailure) {
+            return null;
+          }
         }
       }
     } catch (error) {
-      console.error(error);
+      if (error.name !== "AbortError") {
+        Glean?.shoppingProduct?.requestError.record();
+        console.error(error);
+      }
     }
 
-    // Retry failed results and 500 errors.
-    if (!result || (!responseOk && responseStatus >= 500)) {
+    if (!responseOk && responseStatus < 500) {
+      Glean?.shoppingProduct?.requestFailure.record();
+    }
+
+    // Retry 500 errors.
+    if (!responseOk && responseStatus >= 500) {
       failCount++;
+
+      Glean?.shoppingProduct?.serverFailure.record();
+
       // Make sure we still want to retry
       if (failCount > maxRetries) {
+        Glean?.shoppingProduct?.requestRetriesFailed.record();
         return null;
       }
+
+      Glean?.shoppingProduct?.requestRetried.record();
       // Wait for a back off timeout base on the number of failures.
       let backOff = retryTimeout * Math.pow(2, failCount - 1);
 
@@ -434,133 +481,333 @@ export class ShoppingProduct {
 
       // Try the request again.
       options.failCount = failCount;
-      result = await this.request(apiURL, bodyObj, options);
+      result = await ShoppingProduct.request(apiURL, bodyObj, options);
     }
 
     return result;
   }
 
   /**
-   * Get a cached, or fetch a copy of, an OHTTP config from a given URL.
+   * Requests an image for a recommended product.
    *
-   *
-   * @param {string} gatewayConfigURL
-   *   The URL for the config that needs to be fetched.
-   *   The URL should be complete (i.e. include the full path to the config).
-   * @returns {Uint8Array}
-   *   The config bytes.
+   * @param {string} imageUrl
+   * @returns {blob} A blob of the image
    */
-  async getOHTTPConfig(gatewayConfigURL) {
-    return lazy.OHTTPConfigManager.get(gatewayConfigURL);
+  static async requestImageBlob(imageUrl, options = {}) {
+    let { signal = new AbortController().signal } = options;
+    let ohttpRelayURL = Services.prefs.getStringPref(
+      "toolkit.shopping.ohttpRelayURL",
+      ""
+    );
+    let ohttpConfigURL = Services.prefs.getStringPref(
+      "toolkit.shopping.ohttpConfigURL",
+      ""
+    );
+
+    let imgRequestPromise;
+    if (ohttpRelayURL && ohttpConfigURL) {
+      let config = await lazy.ObliviousHTTP.getOHTTPConfig(ohttpConfigURL);
+      if (!config) {
+        Glean?.shoppingProduct?.invalidOhttpConfig.record();
+        console.error(
+          new Error(
+            "OHTTP was configured for shopping but we couldn't get a valid config."
+          )
+        );
+        return null;
+      }
+
+      let imgRequestOptions = {
+        signal,
+        headers: {
+          Accept: "image/jpeg",
+          "Content-Type": "image/jpeg",
+        },
+        abortCallback() {
+          Glean?.shoppingProduct?.requestAborted.record();
+        },
+      };
+
+      imgRequestPromise = lazy.ObliviousHTTP.ohttpRequest(
+        ohttpRelayURL,
+        config,
+        imageUrl,
+        imgRequestOptions
+      );
+    } else {
+      imgRequestPromise = fetch(imageUrl);
+    }
+
+    let imgResult;
+    try {
+      let response = await imgRequestPromise;
+      imgResult = await response.blob();
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        Glean?.shoppingProduct?.requestError.record();
+        console.error(error);
+      }
+    }
+
+    return imgResult;
   }
 
   /**
-   * Make a request over OHTTP.
+   * Poll Analysis Status API until an analysis has finished.
    *
-   * @param {string} obliviousHTTPRelay
-   *   The URL of the OHTTP relay to use.
-   * @param {Uint8Array} config
-   *   A byte array representing the OHTTP config.
-   * @param {string} requestURL
-   *   The URL of the request we want to make over the relay.
+   * After an initial wait keep checking the api for results,
+   * until we have reached a maximum of tries.
+   *
+   * Passes all arguments to requestAnalysisCreationStatus().
+   *
+   * @example
+   *  let analysis;
+   *  let { status } = await product.pollForAnalysisCompleted();
+   *  // Check if analysis has finished
+   *  if(status != "pending" && status != "in_progress") {
+   *    // Get the new analysis
+   *    analysis = await product.requestAnalysis();
+   *  }
+   *
+   * @example
+   * // Check the current status
+   * let { status } = await product.requestAnalysisCreationStatus();
+   * if(status == "pending" && status == "in_progress") {
+   *    // Start polling without the initial timeout if the analysis
+   *    // is already in progress.
+   *    await product.pollForAnalysisCompleted({
+   *      pollInitialWait: analysisStatus == "in_progress" ? 0 : undefined,
+   *    });
+   * }
    * @param {object} options
-   * @param {string} options.method
-   *   The HTTP method to use for the inner request. Only GET and POST
-   *   are supported right now.
-   * @param {string} options.body
-   *   The body content to send over the request.
-   * @param {object} options.headers
-   *   The request headers to set. Each property of the object represents
-   *   a header, with the key the header name and the value the header value.
-   * @param {AbortSignal} options.signal
-   *   If the consumer passes an AbortSignal object, aborting the signal
-   *   will abort the request.
-   *
-   * @returns {object}
-   *   Returns an object with properties mimicking that of a normal fetch():
-   *   .ok = boolean indicating whether the request was successful.
-   *   .status = integer representation of the HTTP status code
-   *   .headers = object representing the response headers.
-   *   .json() = method that returns the parsed JSON response body.
+   *  Override default API url and schema.
+   * @returns {object} result
+   *  Parsed JSON API result or null.
    */
-  async ohttpRequest(
-    obliviousHTTPRelay,
-    config,
-    requestURL,
-    { method, body, headers, signal } = {}
-  ) {
-    let relayURI = Services.io.newURI(obliviousHTTPRelay);
-    let requestURI = Services.io.newURI(requestURL);
-    let obliviousHttpChannel = lazy.ohttpService
-      .newChannel(relayURI, requestURI, config)
-      .QueryInterface(Ci.nsIHttpChannel);
+  async pollForAnalysisCompleted(options) {
+    let pollCount = 0;
+    let initialWait = options?.pollInitialWait || API_POLL_INITIAL_WAIT;
+    let pollTimeout = options?.pollTimeout || API_POLL_WAIT;
+    let pollAttempts = options?.pollAttempts || API_POLL_ATTEMPTS;
+    let isFinished = false;
+    let result;
 
-    if (method == "POST") {
-      let uploadChannel = obliviousHttpChannel.QueryInterface(
-        Ci.nsIUploadChannel2
-      );
-      let bodyStream = new StringInputStream(body, body.length);
-      uploadChannel.explicitSetUploadStream(
-        bodyStream,
-        null,
-        -1,
-        "POST",
-        false
-      );
+    while (!isFinished && pollCount < pollAttempts) {
+      if (this._abortController.signal.aborted) {
+        Glean?.shoppingProduct?.requestAborted.record();
+        return null;
+      }
+      let backOff = pollCount == 0 ? initialWait : pollTimeout;
+      if (backOff) {
+        await new Promise(resolve => lazy.setTimeout(resolve, backOff));
+      }
+      try {
+        result = await this.requestAnalysisCreationStatus(undefined, options);
+        if (result?.progress) {
+          this.emit("analysis-progress", result.progress);
+        }
+        isFinished =
+          result &&
+          result.status != "pending" &&
+          result.status != "in_progress";
+      } catch (error) {
+        console.error(error);
+        return null;
+      }
+      pollCount++;
+    }
+    return result;
+  }
+
+  /**
+   * Request that the API creates an analysis for a product.
+   *
+   * Once the processing status indicates that analyzing is complete,
+   * the new analysis data that can be requested with `requestAnalysis`.
+   *
+   * If the product is currently being analyzed, this will return a
+   * status of "in_progress" and not trigger a reanalyzing the product.
+   *
+   * @param {Product} product
+   *  Product to request for (defaults to the instances product).
+   * @param {object} options
+   *  Override default API url and schema.
+   * @returns {object} result
+   *  Parsed JSON API result or null.
+   */
+  async requestCreateAnalysis(product = this.product, options = {}) {
+    let url = options?.url || ShoppingEnvironment.ANALYZE_API;
+    let requestSchema = options?.requestSchema || ANALYZE_REQUEST_SCHEMA;
+    let responseSchema = options?.responseSchema || ANALYZE_RESPONSE_SCHEMA;
+    let signal = options?.signal || this._abortController.signal;
+    let allowValidationFailure = this.allowValidationFailure;
+
+    if (!product) {
+      return null;
     }
 
-    for (let headerName of Object.keys(headers)) {
-      obliviousHttpChannel.setRequestHeader(
-        headerName,
-        headers[headerName],
-        false
-      );
-    }
-    let abortHandler = e => {
-      obliviousHttpChannel.cancel(Cr.NS_BINDING_ABORTED);
+    let requestOptions = {
+      product_id: product.id,
+      website: product.host,
     };
-    signal.addEventListener("abort", abortHandler);
-    return new Promise((resolve, reject) => {
-      let listener = {
-        _buffer: "",
-        _headers: null,
-        QueryInterface: ChromeUtils.generateQI([
-          "nsIStreamListener",
-          "nsIRequestObserver",
-        ]),
-        onStartRequest(request) {
-          this._headers = {};
-          request
-            .QueryInterface(Ci.nsIHttpChannel)
-            .visitResponseHeaders((header, value) => {
-              this._headers[header.toLowerCase()] = value;
-            });
-        },
-        onDataAvailable(request, stream, offset, count) {
-          this._buffer += readFromStream(stream, count);
-        },
-        onStopRequest(request, requestStatus) {
-          signal.removeEventListener("abort", abortHandler);
-          let result = this._buffer;
-          let httpStatus = request.QueryInterface(
-            Ci.nsIHttpChannel
-          ).responseStatus;
-          resolve({
-            ok: requestStatus == Cr.NS_OK && httpStatus == 200,
-            status: httpStatus,
-            headers: this._headers,
-            json() {
-              return JSON.parse(result);
-            },
-          });
-        },
-      };
-      obliviousHttpChannel.asyncOpen(listener);
+
+    let result = await ShoppingProduct.request(url, requestOptions, {
+      requestSchema,
+      responseSchema,
+      signal,
+      allowValidationFailure,
     });
+
+    return result;
+  }
+
+  /**
+   * Check the status of creating an analysis for a product.
+   *
+   * API returns a progress of 0-100 complete and the processing status.
+   *
+   * @param {Product} product
+   *  Product to request for (defaults to the instances product).
+   * @param {object} options
+   *  Override default API url and schema.
+   * @returns {object} result
+   *  Parsed JSON API result or null.
+   */
+  async requestAnalysisCreationStatus(product = this.product, options = {}) {
+    let url = options?.url || ShoppingEnvironment.ANALYSIS_STATUS_API;
+    let requestSchema =
+      options?.requestSchema || ANALYSIS_STATUS_REQUEST_SCHEMA;
+    let responseSchema =
+      options?.responseSchema || ANALYSIS_STATUS_RESPONSE_SCHEMA;
+    let signal = options?.signal || this._abortController.signal;
+    let allowValidationFailure = this.allowValidationFailure;
+
+    if (!product) {
+      return null;
+    }
+
+    let requestOptions = {
+      product_id: product.id,
+      website: product.host,
+    };
+
+    let result = await ShoppingProduct.request(url, requestOptions, {
+      requestSchema,
+      responseSchema,
+      signal,
+      allowValidationFailure,
+    });
+
+    return result;
+  }
+
+  /**
+   * Send an event to the Ad Attribution API
+   *
+   * @param {string} eventName
+   *  Event name options are:
+   *  - "impression"
+   *  - "click"
+   * @param {string} aid
+   *  The aid (Ad ID) from the recommendation.
+   * @param {string} [source]
+   *  Source of the event
+   * @param {object} [options]
+   *  Override default API url and schema.
+   * @returns {object} result
+   *  Parsed JSON API result or null.
+   */
+  static async sendAttributionEvent(
+    eventName,
+    aid,
+    source = "firefox_sidebar",
+    options = {}
+  ) {
+    let {
+      url = ShoppingEnvironment.ATTRIBUTION_API,
+      requestSchema = ATTRIBUTION_REQUEST_SCHEMA,
+      responseSchema = ATTRIBUTION_RESPONSE_SCHEMA,
+      signal = new AbortController().signal,
+      allowValidationFailure = true,
+    } = options;
+
+    if (!eventName) {
+      throw new Error("An event name is required.");
+    }
+    if (!aid) {
+      throw new Error("An Ad ID is required.");
+    }
+
+    let requestBody = {
+      event_source: source,
+    };
+
+    switch (eventName) {
+      case "impression":
+        requestBody.event_name = "trusted_deals_impression";
+        requestBody.aidvs = [aid];
+        break;
+      case "click":
+        requestBody.event_name = "trusted_deals_link_clicked";
+        requestBody.aid = aid;
+        break;
+      case "placement":
+        requestBody.event_name = "trusted_deals_placement";
+        requestBody.aidvs = [aid];
+        break;
+      default:
+        throw new Error(`"${eventName}" is not a valid event name`);
+    }
+
+    let result = await ShoppingProduct.request(url, requestBody, {
+      requestSchema,
+      responseSchema,
+      signal,
+      allowValidationFailure,
+    });
+
+    return result;
+  }
+
+  /**
+   * Send a report that a product is back in stock.
+   *
+   * @param {Product} product
+   *  Product to request for (defaults to the instances product).
+   * @param {object} options
+   *  Override default API url and schema.
+   * @returns {object} result
+   *  Parsed JSON API result or null.
+   */
+  async sendReport(product = this.product, options = {}) {
+    if (!product) {
+      return null;
+    }
+
+    let url = options?.url || ShoppingEnvironment.REPORTING_API;
+    let requestSchema = options?.requestSchema || REPORTING_REQUEST_SCHEMA;
+    let responseSchema = options?.responseSchema || REPORTING_RESPONSE_SCHEMA;
+    let signal = options?.signal || this._abortController.signal;
+    let allowValidationFailure = this.allowValidationFailure;
+
+    let requestOptions = {
+      product_id: product.id,
+      website: product.host,
+    };
+
+    let result = await ShoppingProduct.request(url, requestOptions, {
+      requestSchema,
+      responseSchema,
+      signal,
+      allowValidationFailure,
+    });
+
+    return result;
   }
 
   uninit() {
     this._abortController.abort();
+    this.product = null;
   }
 }
 
@@ -580,4 +827,22 @@ export function isProductURL(url) {
   }
   let productInfo = ShoppingProduct.fromURL(url);
   return ShoppingProduct.isProduct(productInfo);
+}
+
+/**
+ * Check if a URL is a valid product site.
+ *
+ * @param {URL | nsIURI } url
+ *  URL to check.
+ * @returns {boolean}
+ */
+export function isSupportedSiteURL(url) {
+  if (url instanceof Ci.nsIURI) {
+    url = URL.fromURI(url);
+  }
+  if (!URL.isInstance(url)) {
+    return false;
+  }
+  let productInfo = ShoppingProduct.fromURL(url);
+  return ShoppingProduct.isSupportedSite(productInfo);
 }

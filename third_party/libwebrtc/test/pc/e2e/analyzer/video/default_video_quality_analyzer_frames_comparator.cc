@@ -12,11 +12,11 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/types/optional.h"
 #include "api/array_view.h"
 #include "api/scoped_refptr.h"
 #include "api/video/i420_buffer.h"
@@ -317,8 +317,8 @@ void DefaultVideoQualityAnalyzerFramesComparator::RegisterParticipantInCall(
 
 void DefaultVideoQualityAnalyzerFramesComparator::AddComparison(
     InternalStatsKey stats_key,
-    absl::optional<VideoFrame> captured,
-    absl::optional<VideoFrame> rendered,
+    std::optional<VideoFrame> captured,
+    std::optional<VideoFrame> rendered,
     FrameComparisonType type,
     FrameStats frame_stats) {
   MutexLock lock(&mutex_);
@@ -331,8 +331,8 @@ void DefaultVideoQualityAnalyzerFramesComparator::AddComparison(
 void DefaultVideoQualityAnalyzerFramesComparator::AddComparison(
     InternalStatsKey stats_key,
     int skipped_between_rendered,
-    absl::optional<VideoFrame> captured,
-    absl::optional<VideoFrame> rendered,
+    std::optional<VideoFrame> captured,
+    std::optional<VideoFrame> rendered,
     FrameComparisonType type,
     FrameStats frame_stats) {
   MutexLock lock(&mutex_);
@@ -349,8 +349,8 @@ void DefaultVideoQualityAnalyzerFramesComparator::AddComparison(
 
 void DefaultVideoQualityAnalyzerFramesComparator::AddComparisonInternal(
     InternalStatsKey stats_key,
-    absl::optional<VideoFrame> captured,
-    absl::optional<VideoFrame> rendered,
+    std::optional<VideoFrame> captured,
+    std::optional<VideoFrame> rendered,
     FrameComparisonType type,
     FrameStats frame_stats) {
   cpu_measurer_.StartExcludingCpuThreadTime();
@@ -360,9 +360,9 @@ void DefaultVideoQualityAnalyzerFramesComparator::AddComparisonInternal(
   // frames itself to make future computations lighter.
   if (comparisons_.size() >= kMaxActiveComparisons) {
     comparisons_.emplace_back(ValidateFrameComparison(
-        FrameComparison(std::move(stats_key), /*captured=*/absl::nullopt,
-                        /*rendered=*/absl::nullopt, type,
-                        std::move(frame_stats), OverloadReason::kCpu)));
+        FrameComparison(std::move(stats_key), /*captured=*/std::nullopt,
+                        /*rendered=*/std::nullopt, type, std::move(frame_stats),
+                        OverloadReason::kCpu)));
   } else {
     OverloadReason overload_reason = OverloadReason::kNone;
     if (!captured && type == FrameComparisonType::kRegular) {
@@ -379,7 +379,7 @@ void DefaultVideoQualityAnalyzerFramesComparator::AddComparisonInternal(
 void DefaultVideoQualityAnalyzerFramesComparator::ProcessComparisons() {
   while (true) {
     // Try to pick next comparison to perform from the queue.
-    absl::optional<FrameComparison> comparison = absl::nullopt;
+    std::optional<FrameComparison> comparison = std::nullopt;
     bool more_new_comparisons_expected;
     {
       MutexLock lock(&mutex_);
@@ -464,6 +464,11 @@ void DefaultVideoQualityAnalyzerFramesComparator::ProcessComparison(
         StatsSample(ssim, frame_stats.received_time, metadata));
   }
   stats->capture_frame_rate.AddEvent(frame_stats.captured_time);
+  if (frame_stats.time_between_captured_frames.has_value()) {
+    stats->time_between_captured_frames_ms.AddSample(
+        StatsSample(*frame_stats.time_between_captured_frames,
+                    frame_stats.captured_time, metadata));
+  }
 
   // Compute dropped phase for dropped frame
   if (comparison.type == FrameComparisonType::kDroppedFrame) {
@@ -487,6 +492,11 @@ void DefaultVideoQualityAnalyzerFramesComparator::ProcessComparison(
         StatsSample(frame_stats.encoded_time - frame_stats.pre_encode_time,
                     frame_stats.encoded_time, metadata));
     stats->encode_frame_rate.AddEvent(frame_stats.encoded_time);
+    if (frame_stats.time_between_encoded_frames.has_value()) {
+      stats->time_between_encoded_frames_ms.AddSample(
+          StatsSample(*frame_stats.time_between_encoded_frames,
+                      frame_stats.encoded_time, metadata));
+    }
     stats->total_encoded_images_payload +=
         frame_stats.encoded_image_size.bytes();
     stats->target_encode_bitrate.AddSample(StatsSample(
@@ -542,27 +552,36 @@ void DefaultVideoQualityAnalyzerFramesComparator::ProcessComparison(
           StatsSample(*comparison.frame_stats.decoded_frame_width *
                           *comparison.frame_stats.decoded_frame_height,
                       frame_stats.decode_end_time, metadata));
+      // TODO(webrtc:357636606): Add a check that the rendered QP is among the
+      // encoded spatial layer's QP. Can only do that if there are 1 and only 1
+      // QP value per spatial layer.
+      if (frame_stats.decoded_frame_qp.has_value()) {
+        stats->rendered_frame_qp.AddSample(
+            StatsSample(static_cast<double>(*frame_stats.decoded_frame_qp),
+                        frame_stats.decode_end_time, metadata));
+      }
     }
 
-    if (frame_stats.prev_frame_rendered_time.IsFinite() &&
+    if (frame_stats.prev_frame_rendered_time.has_value() &&
         frame_stats.rendered_time.IsFinite()) {
+      RTC_DCHECK(frame_stats.time_between_rendered_frames.has_value());
       stats->time_between_rendered_frames_ms.AddSample(
-          StatsSample(frame_stats.time_between_rendered_frames,
+          StatsSample(*frame_stats.time_between_rendered_frames,
                       frame_stats.rendered_time, metadata));
       TimeDelta average_time_between_rendered_frames = TimeDelta::Millis(
           stats->time_between_rendered_frames_ms.GetAverage());
-      if (frame_stats.time_between_rendered_frames >
+      if (*frame_stats.time_between_rendered_frames >
           std::max(kFreezeThreshold + average_time_between_rendered_frames,
                    3 * average_time_between_rendered_frames)) {
         stats->freeze_time_ms.AddSample(
-            StatsSample(frame_stats.time_between_rendered_frames,
+            StatsSample(*frame_stats.time_between_rendered_frames,
                         frame_stats.rendered_time, metadata));
         auto freeze_end_it =
             stream_last_freeze_end_time_.find(comparison.stats_key);
         RTC_DCHECK(freeze_end_it != stream_last_freeze_end_time_.end());
         // TODO(bugs.webrtc.org/14995): rethink this metric for paused stream.
         stats->time_between_freezes_ms.AddSample(StatsSample(
-            frame_stats.prev_frame_rendered_time - freeze_end_it->second,
+            *frame_stats.prev_frame_rendered_time - freeze_end_it->second,
             frame_stats.rendered_time, metadata));
         freeze_end_it->second = frame_stats.rendered_time;
       }

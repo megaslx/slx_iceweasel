@@ -12,197 +12,184 @@
 #include "gc/Heap.h"
 #include "gc/Zone.h"
 
-void js::gc::SortedArenaListSegment::append(Arena* arena) {
-  MOZ_ASSERT(arena);
-  MOZ_ASSERT_IF(head, head->getAllocKind() == arena->getAllocKind());
-  *tailp = arena;
-  tailp = &arena->next;
+bool js::gc::ArenaList::hasNonFullArenas() const {
+  // Non-full arenas are kept at the start so we can check the first one.
+  return !isEmpty() && !first()->isFull();
 }
 
-inline js::gc::ArenaList::ArenaList() { clear(); }
+js::gc::Arena* js::gc::ArenaList::takeInitialNonFullArena() {
+  Arena* arena = first();
+  if (!arena || arena->isFull()) {
+    return nullptr;
+  }
 
-inline js::gc::ArenaList::ArenaList(ArenaList&& other) { moveFrom(other); }
+  moveFrontToBack();
 
-inline js::gc::ArenaList::~ArenaList() { MOZ_ASSERT(isEmpty()); }
-
-void js::gc::ArenaList::moveFrom(ArenaList& other) {
-  other.check();
-
-  head_ = other.head_;
-  cursorp_ = other.isCursorAtHead() ? &head_ : other.cursorp_;
-  other.clear();
-
-  check();
+  return arena;
 }
 
-js::gc::ArenaList& js::gc::ArenaList::operator=(ArenaList&& other) {
-  MOZ_ASSERT(isEmpty());
-  moveFrom(other);
-  return *this;
-}
-
-inline js::gc::ArenaList::ArenaList(const SortedArenaListSegment& segment) {
-  head_ = segment.head;
-  cursorp_ = segment.isEmpty() ? &head_ : segment.tailp;
-  check();
-}
-
-// This does checking just of |head_| and |cursorp_|.
-void js::gc::ArenaList::check() const {
+js::gc::SortedArenaList::SortedArenaList(js::gc::AllocKind allocKind)
+    : thingsPerArena_(Arena::thingsPerArena(allocKind)) {
 #ifdef DEBUG
-  // If the list is empty, it must have this form.
-  MOZ_ASSERT_IF(!head_, cursorp_ == &head_);
-
-  // If there's an arena following the cursor, it must not be full.
-  Arena* cursor = *cursorp_;
-  MOZ_ASSERT_IF(cursor, cursor->hasFreeThings());
+  MOZ_ASSERT(thingsPerArena_ <= MaxThingsPerArena);
+  MOZ_ASSERT(emptyIndex() < BucketCount);
+  allocKind_ = allocKind;
 #endif
 }
 
-void js::gc::ArenaList::clear() {
-  head_ = nullptr;
-  cursorp_ = &head_;
-  check();
-}
+size_t js::gc::SortedArenaList::index(size_t nfree, bool* frontOut) const {
+  // Get the bucket index to use for arenas with |nfree| free things and set
+  // |frontOut| to indicate whether to prepend or append to the bucket.
 
-bool js::gc::ArenaList::isEmpty() const {
-  check();
-  return !head_;
-}
+  MOZ_ASSERT(nfree <= thingsPerArena_);
 
-js::gc::Arena* js::gc::ArenaList::head() const {
-  check();
-  return head_;
-}
-
-bool js::gc::ArenaList::isCursorAtHead() const {
-  check();
-  return cursorp_ == &head_;
-}
-
-bool js::gc::ArenaList::isCursorAtEnd() const {
-  check();
-  return !*cursorp_;
-}
-
-js::gc::Arena* js::gc::ArenaList::arenaAfterCursor() const {
-  check();
-  return *cursorp_;
-}
-
-js::gc::Arena* js::gc::ArenaList::takeNextArena() {
-  check();
-  Arena* arena = *cursorp_;
-  if (!arena) {
-    return nullptr;
-  }
-  cursorp_ = &arena->next;
-  check();
-  return arena;
-}
-
-void js::gc::ArenaList::insertAtCursor(Arena* a) {
-  check();
-  a->next = *cursorp_;
-  *cursorp_ = a;
-  // At this point, the cursor is sitting before |a|. Move it after |a|
-  // if necessary.
-  if (!a->hasFreeThings()) {
-    cursorp_ = &a->next;
-  }
-  check();
-}
-
-void js::gc::ArenaList::insertBeforeCursor(Arena* a) {
-  check();
-  a->next = *cursorp_;
-  *cursorp_ = a;
-  cursorp_ = &a->next;
-  check();
-}
-
-js::gc::ArenaList& js::gc::ArenaList::insertListWithCursorAtEnd(
-    ArenaList& other) {
-  check();
-  other.check();
-  MOZ_ASSERT(other.isCursorAtEnd());
-
-  if (other.isEmpty()) {
-    return *this;
+  // Full arenas go in the first bucket on their own.
+  if (nfree == 0) {
+    *frontOut = false;
+    return 0;
   }
 
-  // Insert the full arenas of |other| after those of |this|.
-  *other.cursorp_ = *cursorp_;
-  *cursorp_ = other.head_;
-  cursorp_ = other.cursorp_;
-  check();
-
-  other.clear();
-  return *this;
-}
-
-js::gc::Arena* js::gc::ArenaList::takeFirstArena() {
-  check();
-  Arena* arena = head_;
-  if (!arena) {
-    return nullptr;
+  // Empty arenas go in the last bucket on their own.
+  if (nfree == thingsPerArena_) {
+    *frontOut = false;
+    return emptyIndex();
   }
 
-  head_ = arena->next;
-  if (cursorp_ == &arena->next) {
-    cursorp_ = &head_;
-  }
-
-  check();
-  return arena;
+  // All other arenas are alternately added to the front and back of successive
+  // buckets as |nfree| increases.
+  *frontOut = (nfree % 2) != 0;
+  size_t index = (nfree + 1) / 2;
+  MOZ_ASSERT(index != 0);
+  MOZ_ASSERT(index != emptyIndex());
+  return index;
 }
 
-js::gc::SortedArenaList::SortedArenaList(size_t thingsPerArena) {
-  reset(thingsPerArena);
+size_t js::gc::SortedArenaList::emptyIndex() const {
+  // Get the bucket index to use for empty arenas. This must have its own
+  // bucket so they can be removed with extractEmptyTo.
+  return bucketsUsed() - 1;
 }
 
-void js::gc::SortedArenaList::setThingsPerArena(size_t thingsPerArena) {
-  MOZ_ASSERT(thingsPerArena && thingsPerArena <= MaxThingsPerArena);
-  thingsPerArena_ = thingsPerArena;
-}
-
-void js::gc::SortedArenaList::reset(size_t thingsPerArena) {
-  setThingsPerArena(thingsPerArena);
-  // Initialize the segments.
-  for (size_t i = 0; i <= thingsPerArena; ++i) {
-    segments[i].clear();
-  }
+size_t js::gc::SortedArenaList::bucketsUsed() const {
+  // Get the total number of buckets used for the current alloc kind.
+  return HowMany(thingsPerArena_ - 1, 2) + 2;
 }
 
 void js::gc::SortedArenaList::insertAt(Arena* arena, size_t nfree) {
+  MOZ_ASSERT(!isConvertedToArenaList);
   MOZ_ASSERT(nfree <= thingsPerArena_);
-  segments[nfree].append(arena);
-}
 
-void js::gc::SortedArenaList::extractEmpty(Arena** empty) {
-  SortedArenaListSegment& segment = segments[thingsPerArena_];
-  if (segment.head) {
-    *segment.tailp = *empty;
-    *empty = segment.head;
-    segment.clear();
+  bool front;
+  size_t i = index(nfree, &front);
+  MOZ_ASSERT(i < BucketCount);
+  if (front) {
+    buckets[i].pushFront(arena);
+  } else {
+    buckets[i].pushBack(arena);
   }
 }
 
-js::gc::ArenaList js::gc::SortedArenaList::toArenaList() {
-  // Link the non-empty segment tails up to the non-empty segment heads.
-  size_t tailIndex = 0;
-  for (size_t headIndex = 1; headIndex <= thingsPerArena_; ++headIndex) {
-    if (headAt(headIndex)) {
-      segments[tailIndex].linkTo(headAt(headIndex));
-      tailIndex = headIndex;
+void js::gc::SortedArenaList::extractEmptyTo(Arena** destListHeadPtr) {
+  MOZ_ASSERT(!isConvertedToArenaList);
+  MOZ_ASSERT(destListHeadPtr);
+  check();
+
+  Bucket& bucket = buckets[emptyIndex()];
+  if (!bucket.isEmpty()) {
+    Arena* tail = *destListHeadPtr;
+    Arena* bucketLast = bucket.last();
+    *destListHeadPtr = bucket.release();
+    bucketLast->next = tail;
+  }
+
+  MOZ_ASSERT(bucket.isEmpty());
+}
+
+js::gc::ArenaList js::gc::SortedArenaList::convertToArenaList(
+    Arena* maybeBucketLastOut[BucketCount]) {
+#ifdef DEBUG
+  MOZ_ASSERT(!isConvertedToArenaList);
+  isConvertedToArenaList = true;
+  check();
+#endif
+
+  if (maybeBucketLastOut) {
+    for (size_t i = 0; i < BucketCount; i++) {
+      maybeBucketLastOut[i] = buckets[i].last();
     }
   }
-  // Point the tail of the final non-empty segment at null. Note that if
-  // the list is empty, this will just set segments[0].head to null.
-  segments[tailIndex].linkTo(nullptr);
-  // Create an ArenaList with head and cursor set to the head and tail of
-  // the first segment (if that segment is empty, only the head is used).
-  return ArenaList(segments[0]);
+
+  // The returned ArenaList needs to contain all non-full arenas in order
+  // of increasing free space, followed by all full arenas.
+  ArenaList result;
+  size_t used = bucketsUsed();
+  for (size_t i = 1; i <= used; ++i) {
+    size_t bucket = i % used;  // [1, used) then 0.
+    result.append(std::move(buckets[bucket]));
+  }
+  return result;
+}
+
+void js::gc::SortedArenaList::restoreFromArenaList(
+    ArenaList& list, Arena* bucketLast[BucketCount]) {
+#ifdef DEBUG
+  MOZ_ASSERT(isConvertedToArenaList);
+  isConvertedToArenaList = false;
+#endif
+
+  // Group the ArenaList elements into SinglyLinkedList buckets, where the
+  // boundaries between buckets are retrieved from |bucketLast|.
+
+  Arena* remaining = list.release();
+
+  size_t used = bucketsUsed();
+  for (size_t i = 1; i <= used; ++i) {
+    size_t bucket = i % used;  // [1, used) then 0.
+    MOZ_ASSERT(buckets[bucket].isEmpty());
+    if (bucketLast[bucket]) {
+      MOZ_ASSERT(remaining);
+      Arena* first = remaining;
+      Arena* last = bucketLast[bucket];
+      remaining = last->next;
+      last->next = nullptr;
+      new (&buckets[bucket]) Bucket(first, last);
+    }
+  }
+
+  MOZ_ASSERT(!remaining);
+  check();
+}
+
+void js::gc::SortedArenaList::check() const {
+#ifdef DEBUG
+  const auto& fullBucket = buckets[0];
+  for (auto arena = fullBucket.iter(); !arena.done(); arena.next()) {
+    MOZ_ASSERT(arena->getAllocKind() == allocKind());
+    MOZ_ASSERT(!arena->hasFreeThings());
+  }
+
+  for (size_t i = 1; i < emptyIndex(); i++) {
+    const auto& bucket = buckets[i];
+    size_t lastFree = 0;
+    for (auto arena = bucket.iter(); !arena.done(); arena.next()) {
+      MOZ_ASSERT(arena->getAllocKind() == allocKind());
+      size_t nfree = arena->countFreeCells();
+      MOZ_ASSERT(nfree == i * 2 - 1 || nfree == i * 2);
+      MOZ_ASSERT(nfree >= lastFree);
+      lastFree = nfree;
+    }
+  }
+
+  const auto& emptyBucket = buckets[emptyIndex()];
+  for (auto arena = emptyBucket.iter(); !arena.done(); arena.next()) {
+    MOZ_ASSERT(arena->getAllocKind() == allocKind());
+    MOZ_ASSERT(arena->isEmpty());
+  }
+
+  for (size_t i = emptyIndex() + 1; i < BucketCount; i++) {
+    MOZ_ASSERT(buckets[i].isEmpty());
+  }
+#endif
 }
 
 #ifdef DEBUG
@@ -254,25 +241,12 @@ JSRuntime* js::gc::ArenaLists::runtimeFromAnyThread() {
 }
 
 js::gc::Arena* js::gc::ArenaLists::getFirstArena(AllocKind thingKind) const {
-  return arenaList(thingKind).head();
+  return arenaList(thingKind).first();
 }
 
 js::gc::Arena* js::gc::ArenaLists::getFirstCollectingArena(
     AllocKind thingKind) const {
-  return collectingArenaList(thingKind).head();
-}
-
-js::gc::Arena* js::gc::ArenaLists::getFirstSweptArena(
-    AllocKind thingKind) const {
-  if (thingKind != incrementalSweptArenaKind.ref()) {
-    return nullptr;
-  }
-  return incrementalSweptArenas.ref().head();
-}
-
-js::gc::Arena* js::gc::ArenaLists::getArenaAfterCursor(
-    AllocKind thingKind) const {
-  return arenaList(thingKind).arenaAfterCursor();
+  return collectingArenaList(thingKind).first();
 }
 
 bool js::gc::ArenaLists::arenaListsAreEmpty() const {

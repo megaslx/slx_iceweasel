@@ -161,7 +161,7 @@ var openColorPickerAndSelectColor = async function (
 ) {
   const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
   const propEditor = ruleEditor.rule.textProps[propIndex].editor;
-  const swatch = propEditor.valueSpan.querySelector(".ruleview-colorswatch");
+  const swatch = propEditor.valueSpan.querySelector(".inspector-colorswatch");
   const cPicker = view.tooltips.getTooltip("colorPicker");
 
   info("Opening the colorpicker by clicking the color swatch");
@@ -204,7 +204,7 @@ var openCubicBezierAndChangeCoords = async function (
 ) {
   const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
   const propEditor = ruleEditor.rule.textProps[propIndex].editor;
-  const swatch = propEditor.valueSpan.querySelector(".ruleview-bezierswatch");
+  const swatch = propEditor.valueSpan.querySelector(".inspector-bezierswatch");
   const bezierTooltip = view.tooltips.getTooltip("cubicBezier");
 
   info("Opening the cubicBezier by clicking the swatch");
@@ -241,9 +241,11 @@ var openCubicBezierAndChangeCoords = async function (
  *        The value for the new property
  * @param {Object=} options
  * @param {String=} options.commitValueWith
- *        Which key should be used to commit the new value. VK_RETURN is used by
+ *        Which key should be used to commit the new value. VK_TAB is used by
  *        default, but tests might want to use another key to test cancelling
  *        for exemple.
+ *        If set to null, no keys will be hit, so the input will still be focused
+ *        at the end of this function
  * @param {Boolean=} options.blurNewProperty
  *        After the new value has been added, a new property would have been
  *        focused. This parameter is true by default, and that causes the new
@@ -255,7 +257,7 @@ var addProperty = async function (
   ruleIndex,
   name,
   value,
-  { commitValueWith = "VK_RETURN", blurNewProperty = true } = {}
+  { commitValueWith = "VK_TAB", blurNewProperty = true } = {}
 ) {
   info("Adding new property " + name + ":" + value + " to rule " + ruleIndex);
 
@@ -299,8 +301,14 @@ var addProperty = async function (
 
   info("Adding name " + name);
   editor.input.value = name;
+  is(
+    editor.input.getAttribute("aria-label"),
+    "New property name",
+    "New property name input has expected aria-label"
+  );
+
   const onNameAdded = view.once("ruleview-changed");
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
+  EventUtils.synthesizeKey("VK_TAB", {}, view.styleWindow);
   await onNameAdded;
 
   // Focus has moved to the value inplace-editor automatically.
@@ -324,12 +332,27 @@ var addProperty = async function (
   // triggers a ruleview-changed event (see bug 1209295).
   const onPreview = view.once("ruleview-changed");
   editor.input.value = value;
+
+  ok(
+    !!editor.input.getAttribute("aria-labelledby"),
+    "The value input has an aria-labelledby attribute…"
+  );
+  is(
+    editor.input.getAttribute("aria-labelledby"),
+    textProp.editor.nameSpan.id,
+    "…which references the property name input"
+  );
+
   view.debounce.flush();
   await onPreview;
 
-  const onValueAdded = view.once("ruleview-changed");
+  if (commitValueWith === null) {
+    return textProp;
+  }
+
+  const onRuleViewChanged = view.once("ruleview-changed");
   EventUtils.synthesizeKey(commitValueWith, {}, view.styleWindow);
-  await onValueAdded;
+  await onRuleViewChanged;
 
   info(
     "Waiting for DOM mutations in case the property was added to the element style"
@@ -341,89 +364,6 @@ var addProperty = async function (
   }
 
   return textProp;
-};
-
-/**
- * Simulate changing the value of a property in a rule in the rule-view.
- *
- * @param {CssRuleView} view
- *        The instance of the rule-view panel
- * @param {TextProperty} textProp
- *        The instance of the TextProperty to be changed
- * @param {String} value
- *        The new value to be used. If null is passed, then the value will be
- *        deleted
- * @param {Object} options
- * @param {Boolean} options.blurNewProperty
- *        After the value has been changed, a new property would have been
- *        focused. This parameter is true by default, and that causes the new
- *        property to be blurred. Set to false if you don't want this.
- * @param {number} options.flushCount
- *        The ruleview uses a manual flush for tests only, and some properties are
- *        only updated after several flush. Allow tests to trigger several flushes
- *        if necessary. Defaults to 1.
- */
-var setProperty = async function (
-  view,
-  textProp,
-  value,
-  { blurNewProperty = true, flushCount = 1 } = {}
-) {
-  info("Set property to: " + value);
-  await focusEditableField(view, textProp.editor.valueSpan);
-
-  // Because of the manual flush approach used for tests, we might have an
-  // unknown number of debounced "preview" requests . Each preview should
-  // synchronously emit "start-preview-property-value".
-  // Listen to both this event and "ruleview-changed" which is emitted at the
-  // end of a preview and make sure each preview completes successfully.
-  let previewStartedCounter = 0;
-  const onStartPreview = () => previewStartedCounter++;
-  view.on("start-preview-property-value", onStartPreview);
-
-  let previewCounter = 0;
-  const onPreviewApplied = () => previewCounter++;
-  view.on("ruleview-changed", onPreviewApplied);
-
-  if (value === null) {
-    const onPopupOpened = once(view.popup, "popup-opened");
-    EventUtils.synthesizeKey("VK_DELETE", {}, view.styleWindow);
-    await onPopupOpened;
-  } else {
-    EventUtils.sendString(value, view.styleWindow);
-  }
-
-  info(`Flush debounced ruleview methods (remaining: ${flushCount})`);
-  view.debounce.flush();
-  await waitFor(() => previewCounter >= previewStartedCounter);
-
-  flushCount--;
-
-  while (flushCount > 0) {
-    // Wait for some time before triggering a new flush to let new debounced
-    // functions queue in-between.
-    await wait(100);
-
-    info(`Flush debounced ruleview methods (remaining: ${flushCount})`);
-    view.debounce.flush();
-    await waitFor(() => previewCounter >= previewStartedCounter);
-
-    flushCount--;
-  }
-
-  view.off("start-preview-property-value", onStartPreview);
-  view.off("ruleview-changed", onPreviewApplied);
-
-  const onValueDone = view.once("ruleview-changed");
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
-
-  info("Waiting for another ruleview-changed after setting property");
-  await onValueDone;
-
-  if (blurNewProperty) {
-    info("Force blur on the active element");
-    view.styleDocument.activeElement.blur();
-  }
 };
 
 /**
@@ -445,6 +385,13 @@ var renameProperty = async function (view, textProp, name) {
   EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
   info("Wait for property name.");
   await onNameDone;
+
+  if (
+    !Services.prefs.getBoolPref("devtools.inspector.rule-view.focusNextOnEnter")
+  ) {
+    return;
+  }
+
   // Renaming the property auto-advances the focus to the value input. Exiting without
   // committing will still fire a change event. @see TextPropertyEditor._onValueDone().
   // Wait for that event too before proceeding.
@@ -472,7 +419,7 @@ var removeProperty = async function (view, textProp, blurNewProperty = true) {
   const onModifications = view.once("ruleview-changed");
   info("Deleting the property name now");
   EventUtils.synthesizeKey("VK_DELETE", {}, view.styleWindow);
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
+  EventUtils.synthesizeKey("VK_TAB", {}, view.styleWindow);
   await onModifications;
 
   if (blurNewProperty) {
@@ -502,14 +449,19 @@ var togglePropStatus = async function (view, textProp) {
  *        The instance of InspectorPanel currently loaded in the toolbox
  * @param {CssRuleView} view
  *        The instance of the rule-view panel
- * @return a promise that resolves after the rule has been added
+ * @returns {Rule} a promise that resolves the new model Rule after the rule has
+ *          been added
  */
 async function addNewRule(inspector, view) {
+  const onNewRuleAdded = view.once("new-rule-added");
   info("Adding the new rule using the button");
   view.addRuleButton.click();
 
-  info("Waiting for rule view to change");
-  await view.once("ruleview-changed");
+  info("Waiting for new-rule-added event…");
+  const rule = await onNewRuleAdded;
+  info("…received new-rule-added");
+
+  return rule;
 }
 
 /**
@@ -524,7 +476,8 @@ async function addNewRule(inspector, view) {
  *        The value we expect the selector to have
  * @param {Number} expectedIndex
  *        The index we expect the rule to have in the rule-view
- * @return a promise that resolves after the rule has been added
+ * @returns {Rule} a promise that resolves the new model Rule after the rule has
+ *          been added
  */
 async function addNewRuleAndDismissEditor(
   inspector,
@@ -532,7 +485,7 @@ async function addNewRuleAndDismissEditor(
   expectedSelector,
   expectedIndex
 ) {
-  await addNewRule(inspector, view);
+  const rule = await addNewRule(inspector, view);
 
   info("Getting the new rule at index " + expectedIndex);
   const ruleEditor = getRuleViewRuleEditor(view, expectedIndex);
@@ -551,6 +504,8 @@ async function addNewRuleAndDismissEditor(
     expectedSelector,
     "The new selector has the correct text: " + expectedSelector
   );
+
+  return rule;
 }
 
 /**
@@ -731,7 +686,10 @@ async function openEyedropper(view, swatch) {
  * @param {ruleView} view
  *        The rule-view instance.
  * @param {Number} ruleIndex
- *        The index we expect the rule to have in the rule-view.
+ *        The index we expect the rule to have in the rule-view. If an array, the first
+ *        item is the children index in the rule view, and the second item is the child
+ *        node index in the retrieved rule view element. This is helpful to select rules
+ *        inside the pseudo element section.
  * @param {boolean} addCompatibilityData
  *        Optional argument to add compatibility dat with the property data
  *
@@ -758,8 +716,13 @@ async function getPropertiesForRuleIndex(
   addCompatibilityData = false
 ) {
   const declaration = new Map();
-  const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
-  for (const currProp of ruleEditor.rule.textProps) {
+  let nodeIndex;
+  if (Array.isArray(ruleIndex)) {
+    [ruleIndex, nodeIndex] = ruleIndex;
+  }
+  const ruleEditor = getRuleViewRuleEditor(view, ruleIndex, nodeIndex);
+
+  for (const currProp of ruleEditor?.rule?.textProps || []) {
     const icon = currProp.editor.unusedState;
     const unused = currProp.editor.element.classList.contains("unused");
 
@@ -851,35 +814,6 @@ async function updateDeclaration(
     );
     await setProperty(view, textProp, newValue);
   }
-}
-
-/**
- * Get the TextProperty instance corresponding to a CSS declaration
- * from a CSS rule in the Rules view.
- *
- * @param  {RuleView} view
- *         Instance of RuleView.
- * @param  {Number} ruleIndex
- *         The index of the CSS rule where to find the declaration.
- * @param  {Object} declaration
- *         An object representing the target declaration e.g. { color: red }.
- *         The first TextProperty instance which matches will be returned.
- * @return {TextProperty}
- */
-function getTextProperty(view, ruleIndex, declaration) {
-  const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
-  const [[name, value]] = Object.entries(declaration);
-  const textProp = ruleEditor.rule.textProps.find(prop => {
-    return prop.name === name && prop.value === value;
-  });
-
-  if (!textProp) {
-    throw Error(
-      `Declaration ${name}:${value} not found on rule at index ${ruleIndex}`
-    );
-  }
-
-  return textProp;
 }
 
 /**
@@ -990,8 +924,11 @@ async function checkDeclarationIsInactive(view, ruleIndex, declaration) {
  *
  * @param {ruleView} view
  *        The rule-view instance.
- * @param {Number} ruleIndex
- *        The index we expect the rule to have in the rule-view.
+ * @param {Number|Array} ruleIndex
+ *        The index we expect the rule to have in the rule-view. If an array, the first
+ *        item is the children index in the rule view, and the second item is the child
+ *        node index in the retrieved rule view element. This is helpful to select rules
+ *        inside the pseudo element section.
  * @param {Object} declaration
  *        An object representing the declaration e.g. { color: "red" }.
  */
@@ -1147,6 +1084,8 @@ async function runCSSCompatibilityTests(view, inspector, tests) {
  *          [
  *            {
  *              selector: "#flex-item",
+ *              // or
+ *              selectNode: (inspector) => { // custom select logic }
  *              activeDeclarations: [
  *                {
  *                  declarations: {
@@ -1168,7 +1107,7 @@ async function runCSSCompatibilityTests(view, inspector, tests) {
  *                  declaration: {
  *                    "flex-direction": "row",
  *                  },
- *                  ruleIndex: 1,
+ *                  ruleIndex: [1, 0],
  *                },
  *              ],
  *            },
@@ -1179,6 +1118,8 @@ async function runInactiveCSSTests(view, inspector, tests) {
   for (const test of tests) {
     if (test.selector) {
       await selectNode(test.selector, inspector);
+    } else if (typeof test.selectNode === "function") {
+      await test.selectNode(inspector);
     }
 
     if (test.activeDeclarations) {
@@ -1282,4 +1223,141 @@ function getRuleViewAncestorRulesDataElementByIndex(view, ruleIndex) {
  */
 function getRuleViewAncestorRulesDataTextByIndex(view, ruleIndex) {
   return getRuleViewAncestorRulesDataElementByIndex(view, ruleIndex)?.innerText;
+}
+
+/**
+ * Runs a sequence of tests against the provided property editor.
+ *
+ * @param {TextPropertyEditor} propertyEditor
+ *     The TextPropertyEditor instance to test.
+ * @param {RuleView} view
+ *     The RuleView which owns the propertyEditor.
+ * @param {Array<object>} test
+ *     The array of tests to run.
+ */
+async function runIncrementTest(propertyEditor, view, tests) {
+  propertyEditor.valueSpan.scrollIntoView();
+  const editor = await focusEditableField(view, propertyEditor.valueSpan);
+
+  for (const testIndex in tests) {
+    await testIncrement(editor, view, tests[testIndex], testIndex);
+  }
+
+  // Blur the field to put back the UI in its initial state (and avoid pending
+  // requests when the test ends).
+  const onRuleViewChanged = view.once("ruleview-changed");
+  EventUtils.synthesizeKey("VK_ESCAPE", {}, view.styleWindow);
+  view.debounce.flush();
+  await onRuleViewChanged;
+}
+
+/**
+ * Individual test runner for increment tests used via runIncrementTest in
+ * browser_rules_edit-property-increments.js and similar tests.
+ *
+ * Will attempt to increment the value of the provided inplace editor based on
+ * the test options provided.
+ *
+ * @param {InplaceEditor} editor
+ *     The InplaceEditor instance to test.
+ * @param {RuleView} view
+ *     The RuleView which owns the editor.
+ * @param {object} test
+ * @param {boolean=} test.alt
+ *     Whether alt should be depressed.
+ * @param {boolean=} test.ctrl
+ *     Whether ctrl should be depressed.
+ * @param {number=} test.deltaX
+ *     Only relevant if test.wheel=true, value of the wheel delta on the horizontal axis.
+ * @param {number=} test.deltaY
+ *     Only relevant if test.wheel=true, value of the wheel delta on the vertical axis.
+ * @param {boolean=} test.down
+ *     For key increment tests, whether this should simulate pressing the down
+ *     arrow, or the up arrow. down, pagedown and pageup are mutually exclusive.
+ * @param {string} test.end
+ *     The expected value at the end of the test.
+ * @param {boolean=} test.pagedown
+ *     For key increment tests, whether this should simulate pressing the
+ *     pagedown key. down, pagedown and pageup are mutually exclusive.
+ * @param {boolean=} test.pageup
+ *     For key increment tests, whether this should simulate pressing the
+ *     pageup key. down, pagedown and pageup are mutually exclusive.
+ * @param {boolean=} test.selectAll
+ *     Whether all the input text should be selected. You can also specify a
+ *     range with test.selection.
+ * @param {Array<number>=} test.selection
+ *     An array of two numbers which corresponds to the initial selection range.
+ * @param {boolean=} test.shift
+ *     Whether shift should be depressed.
+ * @param {string} test.start
+ *     The input value at the beginning of the test.
+ * @param {boolean=} test.wheel
+ *     True if the test should use wheel events to increment the value.
+ * @param {number} testIndex
+ *     The test index, used for logging.
+ */
+async function testIncrement(editor, view, test, testIndex) {
+  editor.input.value = test.start;
+  const input = editor.input;
+
+  if (test.selectAll) {
+    input.select();
+  } else if (test.selection) {
+    input.setSelectionRange(test.selection[0], test.selection[1]);
+  }
+
+  is(input.value, test.start, "Value initialized at " + test.start);
+
+  const onRuleViewChanged = view.once("ruleview-changed");
+
+  let smallIncrementKey = { ctrlKey: test.ctrl };
+  if (AppConstants.platform === "macosx") {
+    smallIncrementKey = { altKey: test.alt };
+  }
+
+  const options = {
+    shiftKey: test.shift,
+    ...smallIncrementKey,
+  };
+
+  if (test.wheel) {
+    // If test.wheel is true, we should increment the value using the wheel.
+    const onWheel = once(input, "wheel");
+    input.dispatchEvent(
+      new view.styleWindow.WheelEvent("wheel", {
+        deltaX: test.deltaX,
+        deltaY: test.deltaY,
+        deltaMode: 0,
+        ...options,
+      })
+    );
+    await onWheel;
+  } else {
+    let key;
+    key = test.down ? "VK_DOWN" : "VK_UP";
+    if (test.pageDown) {
+      key = "VK_PAGE_DOWN";
+    } else if (test.pageUp) {
+      key = "VK_PAGE_UP";
+    }
+    const onKeyUp = once(input, "keyup");
+    EventUtils.synthesizeKey(key, options, view.styleWindow);
+
+    await onKeyUp;
+  }
+
+  // Only expect a change if the value actually changed!
+  if (test.start !== test.end) {
+    view.debounce.flush();
+    await onRuleViewChanged;
+  }
+
+  is(input.value, test.end, `[Test ${testIndex}] Value changed to ${test.end}`);
+}
+
+function getSmallIncrementKey() {
+  if (AppConstants.platform === "macosx") {
+    return { alt: true };
+  }
+  return { ctrl: true };
 }

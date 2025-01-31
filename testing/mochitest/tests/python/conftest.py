@@ -2,13 +2,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import io
 import json
 import os
 from argparse import Namespace
 
 import mozinfo
 import pytest
-import six
 from manifestparser import TestManifest, expression
 from moztest.selftest.fixtures import binary_fixture, setup_test_harness  # noqa
 
@@ -21,8 +21,7 @@ def create_manifest(tmpdir, build_obj):
     def inner(string, name="manifest.ini"):
         manifest = tmpdir.join(name)
         manifest.write(string, ensure=True)
-        # pylint --py3k: W1612
-        path = six.text_type(manifest)
+        path = str(manifest)
         return TestManifest(manifests=(path,), strict=False, rootdir=tmpdir.strpath)
 
     return inner
@@ -52,6 +51,10 @@ def runtests(setup_test_harness, binary, parser, request):
     if "runFailures" in request.fixturenames:
         runFailures = request.getfixturevalue("runFailures")
 
+    restartAfterFailure = False
+    if "restartAfterFailure" in request.fixturenames:
+        restartAfterFailure = request.getfixturevalue("restartAfterFailure")
+
     setup_test_harness(*setup_args, flavor=flavor)
 
     runtests = pytest.importorskip("runtests")
@@ -66,14 +69,14 @@ def runtests(setup_test_harness, binary, parser, request):
     else:
         raise Exception(f"Invalid flavor {flavor}!")
 
-    # pylint --py3k: W1648
-    buf = six.StringIO()
+    buf = io.StringIO()
     options = vars(parser.parse_args([]))
     options.update(
         {
             "app": binary,
             "flavor": flavor,
             "runFailures": runFailures,
+            "restartAfterFailure": restartAfterFailure,
             "keep_open": False,
             "log_raw": [buf],
         }
@@ -99,15 +102,20 @@ def runtests(setup_test_harness, binary, parser, request):
     options.update(getattr(request.module, "OPTIONS", {}))
 
     def normalize(test):
-        return {
-            "name": test,
-            "relpath": test,
-            "path": os.path.join(test_root, test),
-            # add a dummy manifest file because mochitest expects it
-            "manifest": os.path.join(test_root, manifest_name),
-            "manifest_relpath": manifest_name,
-            "skip-if": runFailures,
-        }
+        if isinstance(test, str):
+            test = [test]
+        return [
+            {
+                "name": t,
+                "relpath": t,
+                "path": os.path.join(test_root, t),
+                # add a dummy manifest file because mochitest expects it
+                "manifest": os.path.join(test_root, manifest_name),
+                "manifest_relpath": manifest_name,
+                "skip-if": runFailures,
+            }
+            for t in test
+        ]
 
     def inner(*tests, **opts):
         assert len(tests) > 0
@@ -118,7 +126,7 @@ def runtests(setup_test_harness, binary, parser, request):
             manifest = TestManifest()
             options["manifestFile"] = manifest
             # pylint --py3k: W1636
-            manifest.tests.extend(list(map(normalize, tests)))
+            manifest.tests.extend(list(map(normalize, tests))[0])
             options.update(opts)
 
         result = runtests.run_test_harness(parser, Namespace(**options))

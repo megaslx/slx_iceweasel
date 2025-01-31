@@ -4,8 +4,7 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
-  QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
+  MerinoClient: "resource:///modules/MerinoClient.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
 });
@@ -55,12 +54,6 @@ const RESPONSE_HISTOGRAM_VALUES = {
   no_suggestion: 4,
 };
 
-const WEATHER_KEYWORD = "weather";
-
-const WEATHER_RS_DATA = {
-  keywords: [WEATHER_KEYWORD],
-};
-
 const WEATHER_SUGGESTION = {
   title: "Weather for San Francisco",
   url: "https://example.com/weather",
@@ -69,6 +62,7 @@ const WEATHER_SUGGESTION = {
   score: 0.2,
   icon: null,
   city_name: "San Francisco",
+  region_code: "CA",
   current_conditions: {
     url: "https://example.com/weather-current-conditions",
     summary: "Mostly cloudy",
@@ -83,16 +77,13 @@ const WEATHER_SUGGESTION = {
   },
 };
 
-// We set the weather suggestion fetch interval to an absurdly large value so it
-// absolutely will not fire during tests.
-const WEATHER_FETCH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
 /**
  * Test utils for Merino.
  */
 class _MerinoTestUtils {
   /**
-   * Initializes the utils.
+   * Initializes the utils. Also disables caching in `MerinoClient` since
+   * caching typically makes it harder to write tests.
    *
    * @param {object} scope
    *   The global JS scope where tests are being run. This allows the instance
@@ -113,6 +104,7 @@ class _MerinoTestUtils {
 
     if (!this.#server) {
       this.#server = new MockMerinoServer(scope);
+      this.enableClientCache(false);
     }
     lazy.UrlbarPrefs.set("merino.timeoutMs", CLIENT_TIMEOUT_MS);
     scope.registerCleanupFunction?.(() => {
@@ -154,21 +146,41 @@ class _MerinoTestUtils {
   }
 
   /**
-   * @returns {string}
-   *   The weather keyword in `WEATHER_RS_DATA`. Can be used as a search string
-   *   to match the weather suggestion.
+   * @returns {object}
+   *   The inner `geolocation` object inside the mock geolocation suggestion.
+   *   This returns a new object so callers are free to modify it.
    */
-  get WEATHER_KEYWORD() {
-    return WEATHER_KEYWORD;
+  get GEOLOCATION() {
+    return this.GEOLOCATION_SUGGESTION.custom_details.geolocation;
   }
 
   /**
    * @returns {object}
-   *   Default remote settings data that sets up `WEATHER_KEYWORD` as the
-   *   keyword for the weather suggestion.
+   *   Mock geolocation suggestion as returned by Merino. This returns a new
+   *   object so callers are free to modify it.
    */
-  get WEATHER_RS_DATA() {
-    return { ...WEATHER_RS_DATA };
+  get GEOLOCATION_SUGGESTION() {
+    return {
+      provider: "geolocation",
+      title: "",
+      url: "https://merino.services.mozilla.com/",
+      is_sponsored: false,
+      score: 0,
+      custom_details: {
+        geolocation: {
+          country: "Japan",
+          country_code: "JP",
+          region: "Kanagawa",
+          region_code: "Kanagawa",
+          city: "Yokohama",
+          location: {
+            latitude: 35.444167,
+            longitude: 139.638056,
+            radius: 5,
+          },
+        },
+      },
+    };
   }
 
   /**
@@ -296,14 +308,21 @@ class _MerinoTestUtils {
     }
 
     // Check the latency stopwatch.
-    this.Assert.equal(
-      TelemetryStopwatch.running(
-        HISTOGRAM_LATENCY,
-        client._test_latencyStopwatchInstance
-      ),
-      latencyStopwatchRunning,
-      "Latency stopwatch running as expected"
-    );
+    if (!client) {
+      this.Assert.ok(
+        !latencyStopwatchRunning,
+        "Client is null, latency stopwatch should not be expected to be running"
+      );
+    } else {
+      this.Assert.equal(
+        TelemetryStopwatch.running(
+          HISTOGRAM_LATENCY,
+          client._test_latencyStopwatchInstance
+        ),
+        latencyStopwatchRunning,
+        "Latency stopwatch running as expected"
+      );
+    }
 
     // Clear histograms.
     for (let histogramArray of Object.values(histograms)) {
@@ -317,29 +336,41 @@ class _MerinoTestUtils {
    * Initializes the quick suggest weather feature and mock Merino server.
    */
   async initWeather() {
+    this.info("MockMerinoServer initializing weather, starting server");
     await this.server.start();
+    this.info("MockMerinoServer initializing weather, server now started");
     this.server.response.body.suggestions = [WEATHER_SUGGESTION];
 
-    lazy.QuickSuggest.weather._test_fetchIntervalMs = WEATHER_FETCH_INTERVAL_MS;
-
-    // Enabling weather will trigger a fetch. Wait for it to finish so the
-    // suggestion is ready when this function returns.
-    let fetchPromise = lazy.QuickSuggest.weather.waitForFetches();
+    // Enabling weather will trigger a fetch. Queue another fetch and await it
+    // so no fetches are ongoing when this function returns.
+    this.info("MockMerinoServer initializing weather, setting prefs");
     lazy.UrlbarPrefs.set("weather.featureGate", true);
     lazy.UrlbarPrefs.set("suggest.weather", true);
-    await fetchPromise;
-
-    this.Assert.equal(
-      lazy.QuickSuggest.weather._test_pendingFetchCount,
-      0,
-      "No pending fetches after awaiting initial fetch"
-    );
+    this.info("MockMerinoServer initializing weather, done setting prefs");
 
     this.registerCleanupFunction?.(async () => {
       lazy.UrlbarPrefs.clear("weather.featureGate");
       lazy.UrlbarPrefs.clear("suggest.weather");
-      lazy.QuickSuggest.weather._test_fetchIntervalMs = -1;
     });
+  }
+
+  /**
+   * Initializes the mock Merino geolocation server.
+   */
+  async initGeolocation() {
+    await this.server.start();
+    this.server.response = this.server.makeDefaultResponse();
+    this.server.response.body.suggestions = [this.GEOLOCATION_SUGGESTION];
+  }
+
+  /**
+   * Enables or disables caching in `MerinoClient`.
+   *
+   * @param {boolean} enable
+   *   Whether caching should be enabled.
+   */
+  enableClientCache(enable) {
+    lazy.MerinoClient._test_disableCache = !enable;
   }
 
   #initDepth = 0;
@@ -432,6 +463,22 @@ class MockMerinoServer {
   }
   set response(value) {
     this.#response = value;
+    this.#requestHandler = null;
+  }
+
+  /**
+   * If you need more control over responses than is allowed by setting
+   * `server.response`, you can use this to register a callback that will be
+   * called on each request. To unregister the callback, pass null or set
+   * `server.response`.
+   *
+   * @param {Function | null} callback
+   *   This function will be called on each request and passed the
+   *   `nsIHttpRequest`. It should return a response object as described by the
+   *   `server.response` jsdoc.
+   */
+  set requestHandler(callback) {
+    this.#requestHandler = callback;
   }
 
   /**
@@ -510,14 +557,15 @@ class MockMerinoServer {
         suggestions: [
           {
             provider: "adm",
-            full_keyword: "full_keyword",
-            title: "title",
-            url: "url",
+            full_keyword: "amp",
+            title: "Amp Suggestion",
+            url: "https://example.com/amp",
             icon: null,
-            impression_url: "impression_url",
-            click_url: "click_url",
+            impression_url: "https://example.com/amp-impression",
+            click_url: "https://example.com/amp-click",
             block_id: 1,
-            advertiser: "advertiser",
+            advertiser: "Amp",
+            iab_category: "22 - Shopping",
             is_sponsored: true,
             score: 1,
           },
@@ -644,7 +692,7 @@ class MockMerinoServer {
    */
   waitForNextRequest() {
     if (!this.#nextRequestDeferred) {
-      this.#nextRequestDeferred = lazy.PromiseUtils.defer();
+      this.#nextRequestDeferred = Promise.withResolvers();
     }
     return this.#nextRequestDeferred.promise;
   }
@@ -677,7 +725,7 @@ class MockMerinoServer {
     // Now set up and finish the response.
     httpResponse.processAsync();
 
-    let { response } = this;
+    let response = this.#requestHandler?.(httpRequest) || this.response;
 
     let finishResponse = () => {
       let status = response.status || 200;
@@ -715,7 +763,7 @@ class MockMerinoServer {
         JSON.stringify({ delayedResponseID, delay: response.delay })
     );
 
-    let deferred = lazy.PromiseUtils.defer();
+    let deferred = Promise.withResolvers();
     let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
     let record = { timer, resolve: deferred.resolve };
     this.#delayedResponseRecords.add(record);
@@ -756,6 +804,7 @@ class MockMerinoServer {
   #url = null;
   #baseURL = null;
   #response = null;
+  #requestHandler = null;
   #requests = [];
   #nextRequestDeferred = null;
   #nextDelayedResponseID = 0;

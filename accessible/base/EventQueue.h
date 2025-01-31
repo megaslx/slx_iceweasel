@@ -7,6 +7,7 @@
 #define mozilla_a11y_EventQueue_h_
 
 #include "AccEvent.h"
+#include "mozilla/Assertions.h"
 
 namespace mozilla {
 namespace a11y {
@@ -18,12 +19,18 @@ class DocAccessible;
  */
 class EventQueue {
  protected:
-  explicit EventQueue(DocAccessible* aDocument) : mDocument(aDocument) {}
+  explicit EventQueue(DocAccessible* aDocument) : mDocument(aDocument) {
+    MOZ_ASSERT(mDocument,
+               "There's no point creating an event queue for a null document");
+  }
 
   /**
    * Put an accessible event into the queue to process it later.
    */
   bool PushEvent(AccEvent* aEvent);
+
+  bool PushNameOrDescriptionChangeToRelations(LocalAccessible* aAccessible,
+                                              RelationType aType);
 
   /**
    * Puts name and/or description change events into the queue, if needed.

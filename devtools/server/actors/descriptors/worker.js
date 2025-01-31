@@ -23,7 +23,8 @@ const {
   DevToolsServer,
 } = require("resource://devtools/server/devtools-server.js");
 const { XPCOMUtils } = ChromeUtils.importESModule(
-  "resource://gre/modules/XPCOMUtils.sys.mjs"
+  "resource://gre/modules/XPCOMUtils.sys.mjs",
+  { global: "contextual" }
 );
 const {
   createWorkerSessionContext,
@@ -70,6 +71,7 @@ class WorkerDescriptorActor extends Actor {
 
       id: this._dbg.id,
       url: this._dbg.url,
+      origin: this._dbg.principal.origin,
       traits: {},
       type: this._dbg.type,
     };

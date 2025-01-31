@@ -5,35 +5,30 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-<?xml-stylesheet href="chrome://global/skin/global.css"?>
-
 <window
   type="child"
   xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
   xmlns:html="http://www.w3.org/1999/xhtml"
   onload="gSyncChooseWhatToSync.init();"
-  data-l10n-id="sync-choose-what-to-sync-dialog3"
+  data-l10n-id="sync-choose-what-to-sync-dialog4"
   data-l10n-attrs="title, style"
 >
   <dialog
     id="syncChooseOptions"
     buttons="accept,cancel,extra2"
-    data-l10n-id="sync-choose-what-to-sync-dialog3"
+    data-l10n-id="sync-choose-what-to-sync-dialog4"
     data-l10n-attrs="buttonlabelaccept, buttonlabelextra2"
   >
     <linkset>
+      <html:link rel="stylesheet" href="chrome://global/skin/global.css" />
+
       <html:link
         rel="localization"
         href="browser/preferences/preferences.ftl"
       />
-      <html:link rel="localization" href="toolkit/branding/accounts.ftl" />
     </linkset>
     <script src="chrome://global/content/preferencesBindings.js" />
     <script src="chrome://browser/content/preferences/dialogs/syncChooseWhatToSync.js" />
-    <description
-      class="sync-choose-dialog-description"
-      data-l10n-id="sync-choose-dialog-subtitle"
-    />
     <html:div class="sync-engines-list">
       <html:div class="sync-engine-bookmarks">
         <checkbox
@@ -55,7 +50,7 @@
       </html:div>
       <html:div class="sync-engine-passwords">
         <checkbox
-          data-l10n-id="sync-engine-logins-passwords"
+          data-l10n-id="sync-engine-passwords"
           preference="services.sync.engine.passwords"
         />
       </html:div>
@@ -67,7 +62,7 @@
       </html:div>
       <html:div class="sync-engine-creditcards">
         <checkbox
-          data-l10n-id="sync-engine-creditcards"
+          data-l10n-id="sync-engine-payment-methods2"
           preference="services.sync.engine.creditcards"
         />
       </html:div>

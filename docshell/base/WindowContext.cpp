@@ -10,9 +10,11 @@
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/SyncedContextInlines.h"
 #include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CloseWatcherManager.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/UserActivationIPCUtils.h"
 #include "mozilla/PermissionDelegateIPCUtils.h"
+#include "mozilla/RFPTargetIPCUtils.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ClearOnShutdown.h"
@@ -123,8 +125,7 @@ void WindowContext::AppendChildBrowsingContext(
   MOZ_DIAGNOSTIC_ASSERT(!mChildren.Contains(aBrowsingContext));
 
   mChildren.AppendElement(aBrowsingContext);
-  if (!nsContentUtils::ShouldHideObjectOrEmbedImageDocument() ||
-      !aBrowsingContext->IsEmbedderTypeObjectOrEmbed()) {
+  if (!aBrowsingContext->IsEmbedderTypeObjectOrEmbed()) {
     mNonSyntheticChildren.AppendElement(aBrowsingContext);
   }
 
@@ -152,7 +153,6 @@ void WindowContext::RemoveChildBrowsingContext(
 
 void WindowContext::UpdateChildSynthetic(BrowsingContext* aBrowsingContext,
                                          bool aIsSynthetic) {
-  MOZ_ASSERT(nsContentUtils::ShouldHideObjectOrEmbedImageDocument());
   if (aIsSynthetic) {
     mNonSyntheticChildren.RemoveElement(aBrowsingContext);
   } else {
@@ -228,8 +228,20 @@ bool WindowContext::CanSet(FieldIndex<IDX_IsThirdPartyTrackingResourceWindow>,
   return CheckOnlyOwningProcessCanSet(aSource);
 }
 
+bool WindowContext::CanSet(FieldIndex<IDX_UsingStorageAccess>,
+                           const bool& aUsingStorageAccess,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
 bool WindowContext::CanSet(FieldIndex<IDX_ShouldResistFingerprinting>,
                            const bool& aShouldResistFingerprinting,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_OverriddenFingerprintingSettings>,
+                           const Maybe<RFPTarget>& aValue,
                            ContentParent* aSource) {
   return CheckOnlyOwningProcessCanSet(aSource);
 }
@@ -351,11 +363,11 @@ void WindowContext::DidSet(FieldIndex<IDX_SHEntryHasUserInteraction>,
   }
 }
 
-void WindowContext::DidSet(FieldIndex<IDX_UserActivationState>) {
+void WindowContext::DidSet(FieldIndex<IDX_UserActivationStateAndModifiers>) {
   MOZ_ASSERT_IF(!IsInProcess(), mUserGestureStart.IsNull());
-  USER_ACTIVATION_LOG("Set user gesture activation %" PRIu8
+  USER_ACTIVATION_LOG("Set user gesture activation 0x%02" PRIu8
                       " for %s browsing context 0x%08" PRIx64,
-                      static_cast<uint8_t>(GetUserActivationState()),
+                      GetUserActivationStateAndModifiers(),
                       XRE_IsParentProcess() ? "Parent" : "Child", Id());
   if (IsInProcess()) {
     USER_ACTIVATION_LOG(
@@ -470,12 +482,22 @@ void WindowContext::AddSecurityState(uint32_t aStateFlags) {
   }
 }
 
-void WindowContext::NotifyUserGestureActivation() {
-  Unused << SetUserActivationState(UserActivation::State::FullActivated);
+void WindowContext::NotifyUserGestureActivation(
+    UserActivation::Modifiers
+        aModifiers /* = UserActivation::Modifiers::None() */) {
+  UserActivation::StateAndModifiers stateAndModifiers;
+  stateAndModifiers.SetState(UserActivation::State::FullActivated);
+  stateAndModifiers.SetModifiers(aModifiers);
+  if (auto* innerWindow = GetInnerWindow()) {
+    innerWindow->EnsureCloseWatcherManager()->NotifyUserInteraction();
+  }
+  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
 }
 
 void WindowContext::NotifyResetUserGestureActivation() {
-  Unused << SetUserActivationState(UserActivation::State::None);
+  UserActivation::StateAndModifiers stateAndModifiers;
+  stateAndModifiers.SetState(UserActivation::State::None);
+  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
 }
 
 bool WindowContext::HasBeenUserGestureActivated() {
@@ -521,11 +543,44 @@ bool WindowContext::ConsumeTransientUserGestureActivation() {
     WindowContext* windowContext = aBrowsingContext->GetCurrentWindowContext();
     if (windowContext && windowContext->GetUserActivationState() ==
                              UserActivation::State::FullActivated) {
-      Unused << windowContext->SetUserActivationState(
-          UserActivation::State::HasBeenActivated);
+      auto stateAndModifiers = UserActivation::StateAndModifiers(
+          GetUserActivationStateAndModifiers());
+      stateAndModifiers.SetState(UserActivation::State::HasBeenActivated);
+      Unused << windowContext->SetUserActivationStateAndModifiers(
+          stateAndModifiers.GetRawData());
     }
   });
 
+  return true;
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#history-action-activation
+bool WindowContext::HasValidHistoryActivation() const {
+  MOZ_ASSERT(IsInProcess());
+  return mHistoryActivation != mUserGestureStart;
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#consume-history-action-user-activation
+bool WindowContext::ConsumeHistoryActivation() {
+  MOZ_ASSERT(IsInProcess());
+
+  if (!HasValidHistoryActivation()) {
+    return false;
+  }
+
+  mHistoryActivation = mUserGestureStart;
+  return true;
+}
+
+bool WindowContext::GetTransientUserGestureActivationModifiers(
+    UserActivation::Modifiers* aModifiers) {
+  if (!HasValidTransientUserGestureActivation()) {
+    return false;
+  }
+
+  auto stateAndModifiers =
+      UserActivation::StateAndModifiers(GetUserActivationStateAndModifiers());
+  *aModifiers = stateAndModifiers.GetModifiers();
   return true;
 }
 

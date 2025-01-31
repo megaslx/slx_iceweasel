@@ -125,9 +125,9 @@ function testScroll(target, stepSize, opt_reportFunc, opt_numSteps) {
     });
   }
 
-  function P_MozAfterPaint() {
+  function P_scrollend() {
     return new Promise(function (resolve) {
-      win.addEventListener("MozAfterPaint", () => resolve(), { once: true });
+      target.addEventListener("scrollend", () => resolve(), { once: true });
     });
   }
 
@@ -202,6 +202,8 @@ function testScroll(target, stepSize, opt_reportFunc, opt_numSteps) {
         lastScrollTime = now;
 
         durations.push(duration);
+        let scrollendPromise = P_scrollend();
+
         doScrollTick();
 
         /* stop scrolling if we can't scroll more, or if we've reached requested number of steps */
@@ -211,7 +213,10 @@ function testScroll(target, stepSize, opt_reportFunc, opt_numSteps) {
         ) {
           let profilerPaused = Promise.resolve();
           if (typeof TalosContentProfiler !== "undefined") {
-            profilerPaused = TalosContentProfiler.pause(testBaseName, true);
+            profilerPaused = TalosContentProfiler.subtestEnd(
+              testBaseName,
+              true
+            );
           }
 
           profilerPaused.then(() => {
@@ -242,11 +247,11 @@ function testScroll(target, stepSize, opt_reportFunc, opt_numSteps) {
         }
 
         lastScrollPos = getPos();
-        P_MozAfterPaint().then(tick);
+        scrollendPromise.then(tick);
       }
 
       if (typeof TalosContentProfiler !== "undefined") {
-        TalosContentProfiler.resume(testBaseName, true).then(() => {
+        TalosContentProfiler.subtestStart(testBaseName, true).then(() => {
           rAF(tick);
         });
       }
@@ -264,7 +269,7 @@ function testScroll(target, stepSize, opt_reportFunc, opt_numSteps) {
       TalosPowersParent.exec("stopFrameTimeRecording", handle, cb, win);
     }
 
-    return new Promise(function (resolve, reject) {
+    return new Promise(function (resolve) {
       setSmooth();
 
       var handle = -1;

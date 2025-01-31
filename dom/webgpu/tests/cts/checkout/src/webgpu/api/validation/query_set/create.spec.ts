@@ -25,10 +25,10 @@ Tests that create query set with the count for all query types:
   .beforeAllSubcases(t => {
     t.selectDeviceForQueryTypeOrSkipTestCase(t.params.type);
   })
-  .fn(async t => {
+  .fn(t => {
     const { type, count } = t.params;
 
     t.expectValidationError(() => {
-      t.device.createQuerySet({ type, count });
+      t.createQuerySetTracked({ type, count });
     }, count > kMaxQueryCount);
   });

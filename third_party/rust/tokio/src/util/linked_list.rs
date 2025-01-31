@@ -78,26 +78,19 @@ pub(crate) struct Pointers<T> {
 /// Additionally, we never access the `prev` or `next` fields directly, as any
 /// such access would implicitly involve the creation of a reference to the
 /// field, which we want to avoid since the fields are not `!Unpin`, and would
-/// hence be given the `noalias` attribute if we were to do such an access.
-/// As an alternative to accessing the fields directly, the `Pointers` type
+/// hence be given the `noalias` attribute if we were to do such an access. As
+/// an alternative to accessing the fields directly, the `Pointers` type
 /// provides getters and setters for the two fields, and those are implemented
-/// using raw pointer casts and offsets, which is valid since the struct is
-/// #[repr(C)].
+/// using `ptr`-specific methods which avoids the creation of intermediate
+/// references.
 ///
 /// See this link for more information:
 /// <https://github.com/rust-lang/rust/pull/82834>
-#[repr(C)]
 struct PointersInner<T> {
     /// The previous node in the list. null if there is no previous node.
-    ///
-    /// This field is accessed through pointer manipulation, so it is not dead code.
-    #[allow(dead_code)]
     prev: Option<NonNull<T>>,
 
     /// The next node in the list. null if there is no previous node.
-    ///
-    /// This field is accessed through pointer manipulation, so it is not dead code.
-    #[allow(dead_code)]
     next: Option<NonNull<T>>,
 
     /// This type is !Unpin due to the heuristic from:
@@ -126,7 +119,7 @@ impl<L: Link> LinkedList<L, L::Target> {
     pub(crate) fn push_front(&mut self, val: L::Handle) {
         // The value should not be dropped, it is being inserted into the list
         let val = ManuallyDrop::new(val);
-        let ptr = L::as_raw(&*val);
+        let ptr = L::as_raw(&val);
         assert_ne!(self.head, Some(ptr));
         unsafe {
             L::pointers(ptr).as_mut().set_next(self.head);
@@ -144,6 +137,26 @@ impl<L: Link> LinkedList<L, L::Target> {
         }
     }
 
+    /// Removes the first element from a list and returns it, or None if it is
+    /// empty.
+    pub(crate) fn pop_front(&mut self) -> Option<L::Handle> {
+        unsafe {
+            let head = self.head?;
+            self.head = L::pointers(head).as_ref().get_next();
+
+            if let Some(new_head) = L::pointers(head).as_ref().get_next() {
+                L::pointers(new_head).as_mut().set_prev(None);
+            } else {
+                self.tail = None;
+            }
+
+            L::pointers(head).as_mut().set_prev(None);
+            L::pointers(head).as_mut().set_next(None);
+
+            Some(L::from_raw(head))
+        }
+    }
+
     /// Removes the last element from a list and returns it, or None if it is
     /// empty.
     pub(crate) fn pop_back(&mut self) -> Option<L::Handle> {
@@ -154,7 +167,7 @@ impl<L: Link> LinkedList<L, L::Target> {
             if let Some(prev) = L::pointers(last).as_ref().get_prev() {
                 L::pointers(prev).as_mut().set_next(None);
             } else {
-                self.head = None
+                self.head = None;
             }
 
             L::pointers(last).as_mut().set_prev(None);
@@ -178,8 +191,12 @@ impl<L: Link> LinkedList<L, L::Target> {
     ///
     /// # Safety
     ///
-    /// The caller **must** ensure that `node` is currently contained by
-    /// `self` or not contained by any other list.
+    /// The caller **must** ensure that exactly one of the following is true:
+    /// - `node` is currently contained by `self`,
+    /// - `node` is not contained by any list,
+    /// - `node` is currently contained by some other `GuardedLinkedList` **and**
+    ///   the caller has an exclusive access to that list. This condition is
+    ///   used by the linked list in `sync::Notify`.
     pub(crate) unsafe fn remove(&mut self, node: NonNull<L::Target>) -> Option<L::Handle> {
         if let Some(prev) = L::pointers(node).as_ref().get_prev() {
             debug_assert_eq!(L::pointers(prev).as_ref().get_next(), Some(node));
@@ -246,7 +263,7 @@ impl<L: Link> Default for LinkedList<L, L::Target> {
 
 // ===== impl DrainFilter =====
 
-cfg_io_readiness! {
+cfg_io_driver_impl! {
     pub(crate) struct DrainFilter<'a, T: Link, F> {
         list: &'a mut LinkedList<T, T::Target>,
         filter: F,
@@ -256,7 +273,7 @@ cfg_io_readiness! {
     impl<T: Link> LinkedList<T, T::Target> {
         pub(crate) fn drain_filter<F>(&mut self, filter: F) -> DrainFilter<'_, T, F>
         where
-            F: FnMut(&mut T::Target) -> bool,
+            F: FnMut(&T::Target) -> bool,
         {
             let curr = self.head;
             DrainFilter {
@@ -270,7 +287,7 @@ cfg_io_readiness! {
     impl<'a, T, F> Iterator for DrainFilter<'a, T, F>
     where
         T: Link,
-        F: FnMut(&mut T::Target) -> bool,
+        F: FnMut(&T::Target) -> bool,
     {
         type Item = T::Handle;
 
@@ -290,6 +307,115 @@ cfg_io_readiness! {
     }
 }
 
+cfg_taskdump! {
+    impl<T: Link> LinkedList<T, T::Target> {
+        pub(crate) fn for_each<F>(&mut self, mut f: F)
+        where
+            F: FnMut(&T::Handle),
+        {
+            let mut next = self.head;
+
+            while let Some(curr) = next {
+                unsafe {
+                    let handle = ManuallyDrop::new(T::from_raw(curr));
+                    f(&handle);
+                    next = T::pointers(curr).as_ref().get_next();
+                }
+            }
+        }
+    }
+}
+
+// ===== impl GuardedLinkedList =====
+
+feature! {
+    #![any(
+        feature = "process",
+        feature = "sync",
+        feature = "rt",
+        feature = "signal",
+    )]
+
+    /// An intrusive linked list, but instead of keeping pointers to the head
+    /// and tail nodes, it uses a special guard node linked with those nodes.
+    /// It means that the list is circular and every pointer of a node from
+    /// the list is not `None`, including pointers from the guard node.
+    ///
+    /// If a list is empty, then both pointers of the guard node are pointing
+    /// at the guard node itself.
+    pub(crate) struct GuardedLinkedList<L, T> {
+        /// Pointer to the guard node.
+        guard: NonNull<T>,
+
+        /// Node type marker.
+        _marker: PhantomData<*const L>,
+    }
+
+    impl<L: Link> LinkedList<L, L::Target> {
+        /// Turns a linked list into the guarded version by linking the guard node
+        /// with the head and tail nodes. Like with other nodes, you should guarantee
+        /// that the guard node is pinned in memory.
+        pub(crate) fn into_guarded(self, guard_handle: L::Handle) -> GuardedLinkedList<L, L::Target> {
+            // `guard_handle` is a NonNull pointer, we don't have to care about dropping it.
+            let guard = L::as_raw(&guard_handle);
+
+            unsafe {
+                if let Some(head) = self.head {
+                    debug_assert!(L::pointers(head).as_ref().get_prev().is_none());
+                    L::pointers(head).as_mut().set_prev(Some(guard));
+                    L::pointers(guard).as_mut().set_next(Some(head));
+
+                    // The list is not empty, so the tail cannot be `None`.
+                    let tail = self.tail.unwrap();
+                    debug_assert!(L::pointers(tail).as_ref().get_next().is_none());
+                    L::pointers(tail).as_mut().set_next(Some(guard));
+                    L::pointers(guard).as_mut().set_prev(Some(tail));
+                } else {
+                    // The list is empty.
+                    L::pointers(guard).as_mut().set_prev(Some(guard));
+                    L::pointers(guard).as_mut().set_next(Some(guard));
+                }
+            }
+
+            GuardedLinkedList { guard, _marker: PhantomData }
+        }
+    }
+
+    impl<L: Link> GuardedLinkedList<L, L::Target> {
+        fn tail(&self) -> Option<NonNull<L::Target>> {
+            let tail_ptr = unsafe {
+                L::pointers(self.guard).as_ref().get_prev().unwrap()
+            };
+
+            // Compare the tail pointer with the address of the guard node itself.
+            // If the guard points at itself, then there are no other nodes and
+            // the list is considered empty.
+            if tail_ptr != self.guard {
+                Some(tail_ptr)
+            } else {
+                None
+            }
+        }
+
+        /// Removes the last element from a list and returns it, or None if it is
+        /// empty.
+        pub(crate) fn pop_back(&mut self) -> Option<L::Handle> {
+            unsafe {
+                let last = self.tail()?;
+                let before_last = L::pointers(last).as_ref().get_prev().unwrap();
+
+                L::pointers(self.guard).as_mut().set_prev(Some(before_last));
+                L::pointers(before_last).as_mut().set_next(Some(self.guard));
+
+                L::pointers(last).as_mut().set_prev(None);
+                L::pointers(last).as_mut().set_next(None);
+
+                Some(L::from_raw(last))
+            }
+        }
+    }
+}
+
 // ===== impl Pointers =====
 
 impl<T> Pointers<T> {
@@ -305,38 +431,24 @@ impl<T> Pointers<T> {
     }
 
     pub(crate) fn get_prev(&self) -> Option<NonNull<T>> {
-        // SAFETY: prev is the first field in PointersInner, which is #[repr(C)].
-        unsafe {
-            let inner = self.inner.get();
-            let prev = inner as *const Option<NonNull<T>>;
-            ptr::read(prev)
-        }
+        // SAFETY: Field is accessed immutably through a reference.
+        unsafe { ptr::addr_of!((*self.inner.get()).prev).read() }
     }
     pub(crate) fn get_next(&self) -> Option<NonNull<T>> {
-        // SAFETY: next is the second field in PointersInner, which is #[repr(C)].
-        unsafe {
-            let inner = self.inner.get();
-            let prev = inner as *const Option<NonNull<T>>;
-            let next = prev.add(1);
-            ptr::read(next)
-        }
+        // SAFETY: Field is accessed immutably through a reference.
+        unsafe { ptr::addr_of!((*self.inner.get()).next).read() }
     }
 
     fn set_prev(&mut self, value: Option<NonNull<T>>) {
-        // SAFETY: prev is the first field in PointersInner, which is #[repr(C)].
+        // SAFETY: Field is accessed mutably through a mutable reference.
         unsafe {
-            let inner = self.inner.get();
-            let prev = inner as *mut Option<NonNull<T>>;
-            ptr::write(prev, value);
+            ptr::addr_of_mut!((*self.inner.get()).prev).write(value);
         }
     }
     fn set_next(&mut self, value: Option<NonNull<T>>) {
-        // SAFETY: next is the second field in PointersInner, which is #[repr(C)].
+        // SAFETY: Field is accessed mutably through a mutable reference.
         unsafe {
-            let inner = self.inner.get();
-            let prev = inner as *mut Option<NonNull<T>>;
-            let next = prev.add(1);
-            ptr::write(next, value);
+            ptr::addr_of_mut!((*self.inner.get()).next).write(value);
         }
     }
 }
@@ -352,9 +464,9 @@ impl<T> fmt::Debug for Pointers<T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 #[cfg(not(loom))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::pin::Pin;
@@ -413,6 +525,7 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
     macro_rules! assert_clean {
         ($e:ident) => {{
             assert!($e.pointers.get_next().is_none());
@@ -420,6 +533,7 @@ mod tests {
         }};
     }
 
+    #[cfg(test)]
     macro_rules! assert_ptr_eq {
         ($a:expr, $b:expr) => {{
             // Deal with mapping a Pin<&mut T> -> Option<NonNull<T>>
@@ -623,30 +737,22 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    proptest::proptest! {
-        #[test]
-        fn fuzz_linked_list(ops: Vec<usize>) {
-            run_fuzz(ops);
-        }
-    }
-
-    fn run_fuzz(ops: Vec<usize>) {
-        use std::collections::VecDeque;
-
-        #[derive(Debug)]
+    /// This is a fuzz test. You run it by entering `cargo fuzz run fuzz_linked_list` in CLI in `/tokio/` module.
+    #[cfg(fuzzing)]
+    pub fn fuzz_linked_list(ops: &[u8]) {
         enum Op {
             Push,
             Pop,
             Remove(usize),
         }
+        use std::collections::VecDeque;
 
         let ops = ops
             .iter()
-            .map(|i| match i % 3 {
+            .map(|i| match i % 3u8 {
                 0 => Op::Push,
                 1 => Op::Pop,
-                2 => Op::Remove(i / 3),
+                2 => Op::Remove((i / 3u8) as usize),
                 _ => unreachable!(),
             })
             .collect::<Vec<_>>();

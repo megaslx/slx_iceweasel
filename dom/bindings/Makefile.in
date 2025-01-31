@@ -43,7 +43,7 @@ export:: webidl.stub
 -include codegen.pp
 
 webidl.stub: $(codegen_dependencies)
-	$(call py_action,webidl,$(srcdir))
+	$(call py_action,webidl $(relativesrcdir),$(srcdir))
 	@$(TOUCH) $@
 
 .PHONY: compiletests
@@ -51,20 +51,3 @@ compiletests:
 	$(call SUBMAKE,libs,test)
 
 endif
-
-GARBAGE += \
-  webidl.stub \
-  codegen.pp \
-  codegen.json \
-  parser.out \
-  WebIDLGrammar.pkl \
-  $(wildcard *.h) \
-  $(wildcard *Binding.cpp) \
-  $(wildcard *Event.cpp) \
-  $(wildcard *-event.cpp) \
-  $(wildcard *.webidl) \
-  $(NULL)
-
-DIST_GARBAGE += \
-  file-lists.json \
-  $(NULL)

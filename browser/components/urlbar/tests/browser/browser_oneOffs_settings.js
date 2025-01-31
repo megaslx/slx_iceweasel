@@ -11,6 +11,9 @@
 let gMaxResults;
 
 add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
+  });
   gMaxResults = Services.prefs.getIntPref("browser.urlbar.maxRichResults");
 
   registerCleanupFunction(async function () {
@@ -36,7 +39,7 @@ add_setup(async function () {
 async function selectSettings(win, activateFn) {
   await BrowserTestUtils.withNewTab(
     { gBrowser: win.gBrowser, url: "about:blank" },
-    async browser => {
+    async () => {
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window: win,
         value: "example.com",

@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsAttrValue.h"
+#include "nsAttrValueOrString.h"
+#include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
 #include "mozilla/dom/Document.h"
@@ -18,8 +21,13 @@
 #include "nsDOMJSUtils.h"
 #include "nsIScriptError.h"
 #include "nsISupportsImpl.h"
+#include "nsDOMTokenList.h"
+#include "mozilla/dom/FetchPriority.h"
 #include "mozilla/dom/HTMLScriptElement.h"
 #include "mozilla/dom/HTMLScriptElementBinding.h"
+#include "mozilla/dom/TrustedTypeUtils.h"
+#include "mozilla/dom/TrustedTypesConstants.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/StaticPrefs_dom.h"
 
 NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Script)
@@ -42,9 +50,14 @@ HTMLScriptElement::HTMLScriptElement(
 
 HTMLScriptElement::~HTMLScriptElement() = default;
 
-NS_IMPL_ISUPPORTS_INHERITED(HTMLScriptElement, nsGenericHTMLElement,
-                            nsIScriptLoaderObserver, nsIScriptElement,
-                            nsIMutationObserver)
+NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(HTMLScriptElement,
+                                             nsGenericHTMLElement,
+                                             nsIScriptLoaderObserver,
+                                             nsIScriptElement,
+                                             nsIMutationObserver)
+
+NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLScriptElement, nsGenericHTMLElement,
+                                   mBlocking)
 
 nsresult HTMLScriptElement::BindToTree(BindContext& aContext,
                                        nsINode& aParent) {
@@ -70,6 +83,17 @@ bool HTMLScriptElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
 
     if (aAttribute == nsGkAtoms::integrity) {
       aResult.ParseStringOrAtom(aValue);
+      return true;
+    }
+
+    if (aAttribute == nsGkAtoms::fetchpriority) {
+      ParseFetchPriority(aValue, aResult);
+      return true;
+    }
+
+    if (aAttribute == nsGkAtoms::blocking &&
+        StaticPrefs::dom_element_blocking_enabled()) {
+      aResult.ParseAtomArray(aValue);
       return true;
     }
   }
@@ -123,9 +147,9 @@ void HTMLScriptElement::GetInnerHTML(nsAString& aInnerHTML,
   }
 }
 
-void HTMLScriptElement::SetInnerHTML(const nsAString& aInnerHTML,
-                                     nsIPrincipal* aScriptedPrincipal,
-                                     ErrorResult& aError) {
+void HTMLScriptElement::SetInnerHTMLTrusted(const nsAString& aInnerHTML,
+                                            nsIPrincipal* aSubjectPrincipal,
+                                            ErrorResult& aError) {
   aError = nsContentUtils::SetNodeTextContent(this, aInnerHTML, true);
 }
 
@@ -135,8 +159,105 @@ void HTMLScriptElement::GetText(nsAString& aValue, ErrorResult& aRv) const {
   }
 }
 
-void HTMLScriptElement::SetText(const nsAString& aValue, ErrorResult& aRv) {
-  aRv = nsContentUtils::SetNodeTextContent(this, aValue, true);
+void HTMLScriptElement::GetText(OwningTrustedScriptOrString& aValue,
+                                ErrorResult& aRv) const {
+  GetText(aValue.SetAsString(), aRv);
+}
+
+void HTMLScriptElement::SetText(const TrustedScriptOrString& aValue,
+                                ErrorResult& aRv) {
+  constexpr nsLiteralString sink = u"HTMLScriptElement text"_ns;
+
+  Maybe<nsAutoString> compliantStringHolder;
+  const nsAString* compliantString =
+      TrustedTypeUtils::GetTrustedTypesCompliantString(
+          aValue, sink, kTrustedTypesOnlySinkGroup, *this,
+          compliantStringHolder, aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  aRv = nsContentUtils::SetNodeTextContent(this, *compliantString, true);
+}
+
+void HTMLScriptElement::GetInnerText(
+    OwningTrustedScriptOrNullIsEmptyString& aValue, ErrorResult& aError) {
+  DOMString innerText;
+  nsGenericHTMLElement::GetInnerText(innerText, aError);
+  if (aError.Failed()) {
+    return;
+  }
+  aValue.SetAsNullIsEmptyString() = innerText.AsAString();
+}
+
+void HTMLScriptElement::SetInnerText(
+    const TrustedScriptOrNullIsEmptyString& aValue, ErrorResult& aError) {
+  constexpr nsLiteralString sink = u"HTMLScriptElement innerText"_ns;
+
+  Maybe<nsAutoString> compliantStringHolder;
+  const nsAString* compliantString =
+      TrustedTypeUtils::GetTrustedTypesCompliantString(
+          aValue, sink, kTrustedTypesOnlySinkGroup, *this,
+          compliantStringHolder, aError);
+  if (aError.Failed()) {
+    return;
+  }
+  nsGenericHTMLElement::SetInnerText(*compliantString);
+}
+
+void HTMLScriptElement::GetTextContent(
+    Nullable<OwningTrustedScriptOrString>& aTextContent,
+    mozilla::OOMReporter& aError) {
+  FragmentOrElement::GetTextContentInternal(
+      aTextContent.SetValue().SetAsString(), aError);
+}
+
+void HTMLScriptElement::SetTextContent(
+    const Nullable<TrustedScriptOrString>& aTextContent,
+    nsIPrincipal* aSubjectPrincipal, mozilla::ErrorResult& aError) {
+  constexpr nsLiteralString sink = u"HTMLScriptElement textContent"_ns;
+  Maybe<nsAutoString> compliantStringHolder;
+  if (aTextContent.IsNull()) {
+    Nullable<TrustedScriptOrString> emptyString;
+    emptyString.SetValue().SetStringLiteral(u"");
+    SetTextContent(emptyString, aSubjectPrincipal, aError);
+    return;
+  }
+  const nsAString* compliantString =
+      TrustedTypeUtils::GetTrustedTypesCompliantString(
+          aTextContent.Value(), sink, kTrustedTypesOnlySinkGroup, *this,
+          compliantStringHolder, aError);
+  if (aError.Failed()) {
+    return;
+  }
+  SetTextContentInternal(*compliantString, aSubjectPrincipal, aError);
+}
+
+void HTMLScriptElement::SetTextContent(
+    const Nullable<TrustedScriptOrString>& aTextContent,
+    mozilla::ErrorResult& aError) {
+  SetTextContent(aTextContent, nullptr, aError);
+}
+
+void HTMLScriptElement::GetSrc(OwningTrustedScriptURLOrString& aSrc) {
+  GetURIAttr(nsGkAtoms::src, nullptr, aSrc.SetAsString());
+}
+
+void HTMLScriptElement::SetSrc(const TrustedScriptURLOrString& aSrc,
+                               nsIPrincipal* aTriggeringPrincipal,
+                               ErrorResult& aRv) {
+  constexpr nsLiteralString sink = u"HTMLScriptElement src"_ns;
+
+  Maybe<nsAutoString> compliantStringHolder;
+  const nsAString* compliantString =
+      TrustedTypeUtils::GetTrustedTypesCompliantString(
+          aSrc, sink, kTrustedTypesOnlySinkGroup, *this, compliantStringHolder,
+          aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  SetHTMLAttr(nsGkAtoms::src, *compliantString, aTriggeringPrincipal, aRv);
 }
 
 // variation of this code in SVGScriptElement - check if changes
@@ -163,6 +284,8 @@ void HTMLScriptElement::FreezeExecutionAttrs(const Document* aOwnerDoc) {
   // because it will return the base URL when the attr value is "".
   nsAutoString src;
   if (GetAttr(nsGkAtoms::src, src)) {
+    SourceLocation loc{OwnerDoc()->GetDocumentURI(), GetScriptLineNumber(),
+                       GetScriptColumnNumber().oneOriginValue()};
     // Empty src should be treated as invalid URL.
     if (!src.IsEmpty()) {
       nsContentUtils::NewURIWithDocumentCharset(getter_AddRefs(mUri), src,
@@ -171,18 +294,16 @@ void HTMLScriptElement::FreezeExecutionAttrs(const Document* aOwnerDoc) {
       if (!mUri) {
         AutoTArray<nsString, 2> params = {u"src"_ns, src};
 
-        nsContentUtils::ReportToConsole(
-            nsIScriptError::warningFlag, "HTML"_ns, OwnerDoc(),
-            nsContentUtils::eDOM_PROPERTIES, "ScriptSourceInvalidUri", params,
-            nullptr, u""_ns, GetScriptLineNumber(), GetScriptColumnNumber());
+        nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "HTML"_ns,
+                                        OwnerDoc(),
+                                        nsContentUtils::eDOM_PROPERTIES,
+                                        "ScriptSourceInvalidUri", params, loc);
       }
     } else {
       AutoTArray<nsString, 1> params = {u"src"_ns};
-
       nsContentUtils::ReportToConsole(
           nsIScriptError::warningFlag, "HTML"_ns, OwnerDoc(),
-          nsContentUtils::eDOM_PROPERTIES, "ScriptSourceEmpty", params, nullptr,
-          u""_ns, GetScriptLineNumber(), GetScriptColumnNumber());
+          nsContentUtils::eDOM_PROPERTIES, "ScriptSourceEmpty", params, loc);
     }
 
     // At this point mUri will be null for invalid URLs.
@@ -202,6 +323,10 @@ CORSMode HTMLScriptElement::GetCORSMode() const {
   return AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin));
 }
 
+FetchPriority HTMLScriptElement::GetFetchPriority() const {
+  return nsGenericHTMLElement::GetFetchPriority();
+}
+
 mozilla::dom::ReferrerPolicy HTMLScriptElement::GetReferrerPolicy() {
   return GetReferrerPolicyAsEnum();
 }
@@ -217,8 +342,26 @@ bool HTMLScriptElement::Supports(const GlobalObject& aGlobal,
                                  const nsAString& aType) {
   nsAutoString type(aType);
   return aType.EqualsLiteral("classic") || aType.EqualsLiteral("module") ||
-         (StaticPrefs::dom_importMaps_enabled() &&
-          aType.EqualsLiteral("importmap"));
+
+         aType.EqualsLiteral("importmap");
+}
+
+nsDOMTokenList* HTMLScriptElement::Blocking() {
+  if (!mBlocking) {
+    mBlocking =
+        new nsDOMTokenList(this, nsGkAtoms::blocking, sSupportedBlockingValues);
+  }
+  return mBlocking;
+}
+
+bool HTMLScriptElement::IsPotentiallyRenderBlocking() {
+  return BlockingContainsRender();
+
+  // TODO: handle implicitly potentially render blocking
+  // https://html.spec.whatwg.org/#implicitly-potentially-render-blocking
+  // A script element el is implicitly potentially render-blocking if el's type
+  // is "classic", el is parser-inserted, and el does not have an async or defer
+  // attribute.
 }
 
 }  // namespace mozilla::dom

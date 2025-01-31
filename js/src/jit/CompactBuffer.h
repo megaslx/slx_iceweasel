@@ -83,6 +83,11 @@ class CompactBufferReader {
     uint32_t b1 = readByte();
     return b0 | (b1 << 8);
   }
+  uint16_t peekFixedUint16_t() {
+    uint32_t b0 = buffer_[0];
+    uint32_t b1 = buffer_[1];
+    return b0 | (b1 << 8);
+  }
   uint32_t readNativeEndianUint32_t() {
     // Must be at 4-byte boundary
     MOZ_ASSERT(uintptr_t(buffer_) % sizeof(uint32_t) == 0);
@@ -102,15 +107,6 @@ class CompactBufferReader {
       return -result;
     }
     return result;
-  }
-  // Reads a value written by writeUnsigned15Bit.
-  uint32_t readUnsigned15Bit() {
-    uint8_t byte = readByte();
-    uint32_t val = byte >> 1;
-    if (byte & 1) {
-      val |= uint32_t(readByte()) << 7;
-    }
-    return val;
   }
   void* readRawPointer() {
     uintptr_t ptrWord = 0;
@@ -155,18 +151,6 @@ class CompactBufferWriter {
     MOZ_ASSERT(byte <= 0xFF);
     if (!oom()) {
       buffer_[pos] = byte;
-    }
-  }
-  // Writes a variable-length value similar to writeUnsigned, but optimized for
-  // small 15-bit values that fit in one or two variable-length-encoded bytes.
-  // Must be read using readUnsigned15Bit.
-  void writeUnsigned15Bit(uint32_t value) {
-    uint8_t byte1 = ((value & 0x7F) << 1) | (value > 0x7F);
-    writeByte(byte1);
-    value >>= 7;
-    if (value) {
-      MOZ_ASSERT(value <= 0xFF);
-      writeByte(value);
     }
   }
   void writeUnsigned(uint32_t value) {
@@ -230,6 +214,11 @@ class CompactBufferWriter {
     uintptr_t ptrWord = reinterpret_cast<uintptr_t>(ptr);
     for (unsigned i = 0; i < sizeof(uintptr_t); i++) {
       writeByte((ptrWord >> (i * 8)) & 0xFF);
+    }
+  }
+  void writeBytes(const uint8_t* data, size_t len) {
+    if (!buffer_.append(data, len)) {
+      enoughMemory_ = false;
     }
   }
   size_t length() const { return buffer_.length(); }

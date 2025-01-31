@@ -28,6 +28,9 @@
 #include "nsCOMPtr.h"
 #include "nsStringFwd.h"
 #include "nsXULAppAPI.h"
+#ifdef MOZ_HAS_REMOTE
+#  include "nsIRemoteService.h"
+#endif
 
 class nsINativeAppSupport;
 class nsXREDirProvider;
@@ -54,6 +57,10 @@ extern nsString gAbsoluteArgv0Path;
 
 extern bool gIsGtest;
 
+extern bool gKioskMode;
+extern int gKioskMonitor;
+extern bool gAllowContentAnalysisArgPresent;
+
 namespace mozilla {
 nsresult AppInfoConstructor(const nsID& aIID, void** aResult);
 }  // namespace mozilla
@@ -78,6 +85,10 @@ int32_t CompareCompatVersions(const nsACString& aOldCompatVersion,
 nsresult NS_CreateNativeAppSupport(nsINativeAppSupport** aResult);
 already_AddRefed<nsINativeAppSupport> NS_GetNativeAppSupport();
 
+#ifdef MOZ_HAS_REMOTE
+already_AddRefed<nsIRemoteService> GetRemoteService();
+#endif
+
 /**
  * Try to acquire exclusive access to the specified profile directory.
  *
@@ -101,8 +112,6 @@ nsresult NS_LockProfilePath(nsIFile* aPath, nsIFile* aTempPath,
 
 void WriteConsoleLog();
 
-void OverrideDefaultLocaleIfNeeded();
-
 /**
  * Allow exit() calls to complete. This should be done from a proper Gecko
  * shutdown path. Otherwise we aim to catch improper shutdowns.
@@ -123,6 +132,9 @@ void UnlockProfile();
 #ifdef XP_WIN
 
 BOOL WinLaunchChild(const wchar_t* exePath, int argc, char** argv,
+                    HANDLE userToken = nullptr, HANDLE* hProcess = nullptr);
+
+BOOL WinLaunchChild(const wchar_t* exePath, int argc, wchar_t** argv,
                     HANDLE userToken = nullptr, HANDLE* hProcess = nullptr);
 
 #  define PREF_WIN_REGISTER_APPLICATION_RESTART \

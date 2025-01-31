@@ -18,7 +18,6 @@ ChromeUtils.defineESModuleGetters(this, {
   PlacesTransactions: "resource://gre/modules/PlacesTransactions.sys.mjs",
   PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.sys.mjs",
 });
 
 var gEditItemOverlay = {
@@ -65,12 +64,23 @@ var gEditItemOverlay = {
           ? node.query.tags[0]
           : node.title;
     }
+
     let isURI = node && PlacesUtils.nodeIsURI(node);
     let uri = isURI || isTag ? Services.io.newURI(node.uri) : null;
     let title = node ? node.title : null;
     let isBookmark = isItem && isURI;
-    let bulkTagging = !node;
-    let uris = bulkTagging ? aInitInfo.uris : null;
+
+    let addedMultipleBookmarks = aInitInfo.addedMultipleBookmarks;
+    let bulkTagging = false;
+    let uris = null;
+    if (!node) {
+      bulkTagging = true;
+      uris = aInitInfo.uris;
+    } else if (addedMultipleBookmarks) {
+      bulkTagging = true;
+      uris = node.children.map(c => c.url);
+    }
+
     let visibleRows = new Set();
     let isParentReadOnly = false;
     let postData = aInitInfo.postData;
@@ -83,7 +93,7 @@ var gEditItemOverlay = {
         );
       }
       let parent = node.parent;
-      isParentReadOnly = !PlacesUtils.nodeIsFolder(parent);
+      isParentReadOnly = !PlacesUtils.nodeIsFolderOrShortcut(parent);
       // Note this may be an empty string, that'd the case for the root node
       // of a search, or a virtual root node, like the Library left pane.
       parentGuid = parent.bookmarkGuid;
@@ -101,6 +111,7 @@ var gEditItemOverlay = {
       title,
       isBookmark,
       isFolderShortcut,
+      addedMultipleBookmarks,
       isParentReadOnly,
       bulkTagging,
       uris,
@@ -178,7 +189,7 @@ var gEditItemOverlay = {
   _firstEditedField: "",
 
   _initNamePicker() {
-    if (this._paneInfo.bulkTagging) {
+    if (this._paneInfo.bulkTagging && !this._paneInfo.addedMultipleBookmarks) {
       throw new Error("_initNamePicker called unexpectedly");
     }
 
@@ -257,7 +268,7 @@ var gEditItemOverlay = {
    *   "title", "location", "keyword", "folderPicker".
    */
   async initPanel(aInfo) {
-    const deferred = (this._initPanelDeferred = PromiseUtils.defer());
+    const deferred = (this._initPanelDeferred = Promise.withResolvers());
     try {
       if (typeof aInfo != "object" || aInfo === null) {
         throw new Error("aInfo must be an object.");
@@ -289,6 +300,7 @@ var gEditItemOverlay = {
         isItem,
         isURI,
         isBookmark,
+        addedMultipleBookmarks,
         bulkTagging,
         uris,
         visibleRows,
@@ -310,6 +322,22 @@ var gEditItemOverlay = {
         this._autoshowBookmarksToolbar();
       }
 
+      // Observe changes.
+      if (!this._observersAdded) {
+        this.handlePlacesEvents = this.handlePlacesEvents.bind(this);
+        PlacesUtils.observers.addListener(
+          ["bookmark-title-changed"],
+          this.handlePlacesEvents
+        );
+        window.addEventListener("unload", this);
+
+        let panel = document.getElementById("editBookmarkPanelContent");
+        panel.addEventListener("change", this);
+        panel.addEventListener("command", this);
+
+        this._observersAdded = true;
+      }
+
       let showOrCollapse = (
         rowId,
         isAppropriateForInput,
@@ -329,7 +357,13 @@ var gEditItemOverlay = {
         return visible;
       };
 
-      if (showOrCollapse("nameRow", !bulkTagging, "name")) {
+      if (
+        showOrCollapse(
+          "nameRow",
+          !bulkTagging || addedMultipleBookmarks,
+          "name"
+        )
+      ) {
         this._initNamePicker();
         this._namePicker.readOnly = this.readOnly;
       }
@@ -379,17 +413,6 @@ var gEditItemOverlay = {
         );
       }
 
-      // Observe changes.
-      if (!this._observersAdded) {
-        this.handlePlacesEvents = this.handlePlacesEvents.bind(this);
-        PlacesUtils.observers.addListener(
-          ["bookmark-title-changed"],
-          this.handlePlacesEvents
-        );
-        window.addEventListener("unload", this);
-        this._observersAdded = true;
-      }
-
       let focusElement = () => {
         // The focusedElement possible values are:
         //  * preferred: focus the field that the user touched first the last
@@ -435,7 +458,8 @@ var gEditItemOverlay = {
       this._bookmarkState = this.makeNewStateObject({
         children: aInfo.node?.children,
         index: aInfo.node?.index,
-        isFolder: aInfo.node != null && PlacesUtils.nodeIsFolder(aInfo.node),
+        isFolder:
+          aInfo.node != null && PlacesUtils.nodeIsFolderOrShortcut(aInfo.node),
       });
       if (isBookmark || bulkTagging) {
         await this._initAllTags();
@@ -580,6 +604,7 @@ var gEditItemOverlay = {
     this._onFolderListSelected();
 
     this._folderMenuList.addEventListener("select", this);
+    this._folderMenuList.addEventListener("command", this);
     this._folderMenuListListenerAdded = true;
 
     // Hide the folders-separator if no folder is annotated as recently-used
@@ -622,11 +647,15 @@ var gEditItemOverlay = {
         this.handlePlacesEvents
       );
       window.removeEventListener("unload", this);
+      let panel = document.getElementById("editBookmarkPanelContent");
+      panel.removeEventListener("change", this);
+      panel.removeEventListener("command", this);
       this._observersAdded = false;
     }
 
     if (this._folderMenuListListenerAdded) {
       this._folderMenuList.removeEventListener("select", this);
+      this._folderMenuList.removeEventListener("command", this);
       this._folderMenuListListenerAdded = false;
     }
 
@@ -697,7 +726,7 @@ var gEditItemOverlay = {
    * Handle tag list updates from the input field or selector box.
    */
   async _updateTags() {
-    const deferred = (this._updateTagsDeferred = PromiseUtils.defer());
+    const deferred = (this._updateTagsDeferred = Promise.withResolvers());
     try {
       const inputTags = this._getTagsArrayFromTagsInputField();
       const isLibraryWindow =
@@ -850,7 +879,7 @@ var gEditItemOverlay = {
       this._element("chooseFolderSeparator").hidden = this._element(
         "chooseFolderMenuItem"
       ).hidden = true;
-      this._folderTree.selectItems([this._paneInfo.parentGuid]);
+      this._folderTree.selectItems([this._bookmarkState.parentGuid]);
       this._folderTree.focus();
     }
   },
@@ -910,10 +939,7 @@ var gEditItemOverlay = {
 
     // Move the item
     let containerGuid = this._folderMenuList.selectedItem.folderGuid;
-    if (
-      this._bookmarkState._originalState.parentGuid != containerGuid &&
-      this._bookmarkState._originalState.title != containerGuid
-    ) {
+    if (this._bookmarkState.parentGuid != containerGuid) {
       this._bookmarkState._parentGuidChanged(containerGuid);
 
       // Auto-show the bookmarks toolbar when adding / moving an item there.
@@ -1132,6 +1158,43 @@ var gEditItemOverlay = {
       case "select":
         this._onFolderListSelected();
         break;
+      case "change":
+        switch (event.target.id) {
+          case "editBMPanel_namePicker":
+            this.onNamePickerChange().catch(console.error);
+            break;
+
+          case "editBMPanel_locationField":
+            this.onLocationFieldChange();
+            break;
+
+          case "editBMPanel_tagsField":
+            this.onTagsFieldChange();
+            break;
+
+          case "editBMPanel_keywordField":
+            this.onKeywordFieldChange();
+            break;
+        }
+        break;
+      case "command":
+        if (event.currentTarget.id === "editBMPanel_folderMenuList") {
+          this.onFolderMenuListCommand(event).catch(console.error);
+          return;
+        }
+
+        switch (event.target.id) {
+          case "editBMPanel_foldersExpander":
+            this.toggleFolderTreeVisibility();
+            break;
+          case "editBMPanel_newFolderButton":
+            this.newFolder().catch(console.error);
+            break;
+          case "editBMPanel_tagsSelectorExpander":
+            this.toggleTagsSelector().catch(console.error);
+            break;
+        }
+        break;
     }
   },
 
@@ -1218,7 +1281,7 @@ var gEditItemOverlay = {
   },
 };
 
-XPCOMUtils.defineLazyGetter(gEditItemOverlay, "_folderTree", () => {
+ChromeUtils.defineLazyGetter(gEditItemOverlay, "_folderTree", () => {
   if (!customElements.get("places-tree")) {
     Services.scriptloader.loadSubScript(
       "chrome://browser/content/places/places-tree.js",
@@ -1230,8 +1293,8 @@ XPCOMUtils.defineLazyGetter(gEditItemOverlay, "_folderTree", () => {
     <tree id="editBMPanel_folderTree"
           class="placesTree"
           is="places-tree"
+          data-l10n-id="bookmark-overlay-folders-tree"
           editable="true"
-          onselect="gEditItemOverlay.onFolderTreeSelect();"
           disableUserActions="true"
           hidecolumnpicker="true">
       <treecols>
@@ -1241,7 +1304,11 @@ XPCOMUtils.defineLazyGetter(gEditItemOverlay, "_folderTree", () => {
     </tree>
   `)
   );
-  return gEditItemOverlay._element("folderTree");
+  const folderTree = gEditItemOverlay._element("folderTree");
+  folderTree.addEventListener("select", () =>
+    gEditItemOverlay.onFolderTreeSelect()
+  );
+  return folderTree;
 });
 
 for (let elt of [
@@ -1252,7 +1319,7 @@ for (let elt of [
   "tagsField",
 ]) {
   let eltScoped = elt;
-  XPCOMUtils.defineLazyGetter(gEditItemOverlay, `_${eltScoped}`, () =>
+  ChromeUtils.defineLazyGetter(gEditItemOverlay, `_${eltScoped}`, () =>
     gEditItemOverlay._element(eltScoped)
   );
 }

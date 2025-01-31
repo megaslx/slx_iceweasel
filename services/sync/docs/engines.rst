@@ -80,7 +80,7 @@ are open on other devices. There's no database - if we haven't synced yet we
 don't know what other tabs are open, and when we do know, the list is just
 stored in memory.
 
-The `SyncedTabs module <https://searchfox.org/mozilla-central/source/services/sync/modules/SyncedTabs.jsm>`_
+The `SyncedTabs module <https://searchfox.org/mozilla-central/source/services/sync/modules/SyncedTabs.sys.mjs>`_
 is the main interface the browser uses to get the list of tabs from other
 devices.
 
@@ -111,7 +111,7 @@ treat them as a single engine in practice.
 
 As a result, only a shim is in the `services/sync/modules/engines/` directory,
 while the actual logic is
-`next to the storage implementation <https://searchfox.org/mozilla-central/source/toolkit/components/formautofill/FormAutofillSync.jsm>`_.
+`next to the storage implementation <https://searchfox.org/mozilla-central/source/toolkit/components/formautofill/FormAutofillSync.sys.mjs>`_.
 
 This engine has a unique twist on the "mirror" concept described above -
 whenever a change is made to a fields, the original value of the field is
@@ -125,9 +125,8 @@ WebExt-Storage
 
 webext-storage is implemented in Rust and lives in
 `application services <https://github.com/mozilla/application-services/tree/main/components/webext-storage>`_
-and is vendored into the `addons code <https://searchfox.org/mozilla-central/source/toolkit/components/extensions/storage/webext_storage_bridge>`_ -
-note that this includes the storage *and* Sync code. The Sync engine itself
-is a shim in the sync directory.
+and is vendored into the addons code - note that this includes the storage
+*and* Sync code. The Sync engine itself is a shim in the sync directory.
 
 See the :doc:`rust-engines` document for more about how rust engines are
 integrated.

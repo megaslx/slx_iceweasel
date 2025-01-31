@@ -28,7 +28,13 @@ interface URI;
 
 // https://html.spec.whatwg.org/#the-navigator-object
 [HeaderFile="Navigator.h",
- Exposed=Window]
+ Exposed=Window,
+ InstrumentedProps=(canShare,
+                    clearAppBadge,
+                    setAppBadge,
+                    share,
+                    userActivation,
+                    wakeLock)]
 interface Navigator {
   // objects implementing this interface also implement the interfaces given below
 };
@@ -92,7 +98,6 @@ interface mixin NavigatorContentUtils {
 
 [SecureContext]
 interface mixin NavigatorStorage {
-  [Pref="dom.storageManager.enabled"]
   readonly attribute StorageManager storage;
 };
 
@@ -101,8 +106,9 @@ interface mixin NavigatorStorageUtils {
   //undefined yieldForStorageUpdates();
 };
 
+// https://w3c.github.io/permissions/#webidl-2112232240
 partial interface Navigator {
-  [Throws]
+  [Throws, SameObject]
   readonly attribute Permissions permissions;
 };
 
@@ -143,7 +149,9 @@ partial interface Navigator {
 partial interface Navigator {
     // We don't support sequences in unions yet
     //boolean vibrate ((unsigned long or sequence<unsigned long>) pattern);
+    [Pref="dom.vibrator.enabled"]
     boolean vibrate(unsigned long duration);
+    [Pref="dom.vibrator.enabled"]
     boolean vibrate(sequence<unsigned long> pattern);
 };
 
@@ -156,7 +164,7 @@ partial interface Navigator {
 // https://wicg.github.io/media-capabilities/#idl-index
 [Exposed=Window]
 partial interface Navigator {
-  [SameObject, Func="mozilla::dom::MediaCapabilities::Enabled"]
+  [SameObject]
   readonly attribute MediaCapabilities mediaCapabilities;
 };
 
@@ -206,12 +214,21 @@ partial interface Navigator {
 
 // https://dvcs.w3.org/hg/gamepad/raw-file/default/gamepad.html#navigator-interface-extension
 partial interface Navigator {
-  [Throws, Pref="dom.gamepad.enabled", SecureContext]
+  [Throws, Pref="dom.gamepad.enabled"]
   sequence<Gamepad?> getGamepads();
 };
 partial interface Navigator {
   [Throws, Pref="dom.gamepad.test.enabled"]
   GamepadServiceTest requestGamepadServiceTest();
+};
+
+// Chrome-only interface for acquiring all gamepads. Normally, a gamepad can
+// only become visible if it gets interacted by the user. This function bypasses
+// this restriction; it allow requesting all gamepad info without user
+// interacting with the gamepads.
+partial interface Navigator {
+  [Throws, ChromeOnly]
+  Promise<sequence<Gamepad>> requestAllGamepads();
 };
 
 // https://immersive-web.github.io/webvr/spec/1.1/#interface-navigator
@@ -263,6 +280,7 @@ partial interface Navigator {
 };
 
 // Service Workers/Navigation Controllers
+// https://w3c.github.io/ServiceWorker/#navigator-serviceworker
 partial interface Navigator {
   [Func="ServiceWorkersEnabled", SameObject, BinaryName="serviceWorkerJS"]
   readonly attribute ServiceWorkerContainer serviceWorker;
@@ -334,14 +352,13 @@ dictionary ShareData {
 // https://w3c.github.io/mediasession/#idl-index
 [Exposed=Window]
 partial interface Navigator {
-  [Pref="dom.media.mediasession.enabled", SameObject]
+  [SameObject]
   readonly attribute MediaSession mediaSession;
 };
 
 // https://w3c.github.io/web-locks/#navigator-mixins
 [SecureContext]
 interface mixin NavigatorLocks {
-  [Pref="dom.weblocks.enabled"]
   readonly attribute LockManager locks;
 };
 Navigator includes NavigatorLocks;
@@ -368,4 +385,22 @@ partial interface Navigator {
 
   [Pref="dom.media.autoplay-policy-detection.enabled"]
   AutoplayPolicy getAutoplayPolicy(AudioContext context);
+};
+
+// https://html.spec.whatwg.org/multipage/interaction.html#the-useractivation-interface
+partial interface Navigator {
+  [SameObject] readonly attribute UserActivation userActivation;
+};
+
+// https://w3c.github.io/screen-wake-lock/#extensions-to-the-navigator-interface
+[SecureContext]
+partial interface Navigator {
+  [SameObject, Pref="dom.screenwakelock.enabled"]
+  readonly attribute WakeLock wakeLock;
+};
+
+[SecureContext]
+partial interface Navigator {
+  [SameObject, Trial="PrivateAttributionV2"]
+  readonly attribute PrivateAttribution privateAttribution;
 };

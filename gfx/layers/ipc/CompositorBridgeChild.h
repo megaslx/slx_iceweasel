@@ -45,8 +45,8 @@ class CompositorManagerChild;
 class CompositorOptions;
 class WebRenderLayerManager;
 class TextureClient;
-class TextureClientPool;
 struct FrameMetrics;
+struct FwdTransactionCounter;
 
 class CompositorBridgeChild final : public PCompositorBridgeChild,
                                     public TextureForwarder {
@@ -97,12 +97,18 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
       nsTArray<AsyncParentMessageData>&& aMessages);
   PTextureChild* CreateTexture(
       const SurfaceDescriptor& aSharedData, ReadLockDescriptor&& aReadLock,
-      LayersBackend aLayersBackend, TextureFlags aFlags, uint64_t aSerial,
+      LayersBackend aLayersBackend, TextureFlags aFlags,
+      const dom::ContentParentId& aContentId, uint64_t aSerial,
       wr::MaybeExternalImageId& aExternalImageId) override;
 
   already_AddRefed<CanvasChild> GetCanvasChild() final;
 
   void EndCanvasTransaction();
+
+  /**
+   * Release resources until they are next required.
+   */
+  void ClearCachedResources();
 
   // Beware that these methods don't override their super-class equivalent
   // (which are not virtual), they just overload them. All of these Send*
@@ -116,6 +122,18 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
   bool SendResumeAsync();
   bool SendAdoptChild(const LayersId& id);
   bool SendFlushRendering(const wr::RenderReasons& aReasons);
+  bool SendFlushRenderingAsync(const wr::RenderReasons& aReasons);
+
+  /**
+   * This can be used, sparingly, to force all flush rendering to be
+   * synchronous. This should only be done temporarily, as we want almost
+   * all flushes to be async. It is intended to be used for animations
+   * that rely on repeated small changes to scene rebuilds. These look
+   * better with a consistent frame rate and sync flushes will help
+   * generate a stable frame rate.
+   */
+  void SetForceSyncFlushRendering(bool aForceSyncFlushRendering);
+
   bool SendStartFrameTimeRecording(const int32_t& bufferSize,
                                    uint32_t* startIndex);
   bool SendStopFrameTimeRecording(const uint32_t& startIndex,
@@ -128,8 +146,7 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
 
   static void ShutDown();
 
-  void UpdateFwdTransactionId() { ++mFwdTransactionId; }
-  uint64_t GetFwdTransactionId() { return mFwdTransactionId; }
+  FwdTransactionCounter& GetFwdTransactionCounter();
 
   /**
    * Hold TextureClient ref until end of usage on host side if
@@ -189,9 +206,8 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
-  mozilla::ipc::IPCResult RecvObserveLayersUpdate(
-      const LayersId& aLayersId, const LayersObserverEpoch& aEpoch,
-      const bool& aActive);
+  mozilla::ipc::IPCResult RecvObserveLayersUpdate(const LayersId& aLayersId,
+                                                  const bool& aActive);
 
   mozilla::ipc::IPCResult RecvCompositorOptionsChanged(
       const LayersId& aLayersId, const CompositorOptions& aNewOptions);
@@ -219,12 +235,7 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
 
   bool mPaused;
 
-  /**
-   * Transaction id of ShadowLayerForwarder.
-   * It is incremented by UpdateFwdTransactionId() in each BeginTransaction()
-   * call.
-   */
-  uint64_t mFwdTransactionId;
+  bool mForceSyncFlushRendering;
 
   /**
    * Hold TextureClients refs until end of their usages on host side.
@@ -234,8 +245,6 @@ class CompositorBridgeChild final : public PCompositorBridgeChild,
       mTexturesWaitingNotifyNotUsed;
 
   nsCOMPtr<nsISerialEventTarget> mThread;
-
-  AutoTArray<RefPtr<TextureClientPool>, 2> mTexturePools;
 
   uint64_t mProcessToken;
 

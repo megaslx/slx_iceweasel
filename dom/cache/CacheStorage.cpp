@@ -22,7 +22,7 @@
 #include "mozilla/dom/cache/PCacheChild.h"
 #include "mozilla/dom/cache/ReadStream.h"
 #include "mozilla/dom/cache/TypeUtils.h"
-#include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/dom/quota/PrincipalUtils.h"
 #include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/ipc/BackgroundChild.h"
@@ -42,7 +42,6 @@
 namespace mozilla::dom::cache {
 
 using mozilla::ErrorResult;
-using mozilla::dom::quota::QuotaManager;
 using mozilla::ipc::BackgroundChild;
 using mozilla::ipc::PBackgroundChild;
 using mozilla::ipc::PrincipalInfo;
@@ -145,7 +144,7 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnMainThread(
   QM_TRY(MOZ_TO_RESULT(PrincipalToPrincipalInfo(aPrincipal, &principalInfo)),
          nullptr, [&aRv](const nsresult rv) { aRv.Throw(rv); });
 
-  QM_TRY(OkIf(QuotaManager::IsPrincipalInfoValid(principalInfo)),
+  QM_TRY(OkIf(quota::IsPrincipalInfoValid(principalInfo)),
          RefPtr{new CacheStorage(NS_ERROR_DOM_SECURITY_ERR)}.forget(),
          [](const auto) {
            NS_WARNING("CacheStorage not supported on invalid origins.");
@@ -175,7 +174,8 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnWorker(
   MOZ_DIAGNOSTIC_ASSERT(aWorkerPrivate);
   aWorkerPrivate->AssertIsOnWorkerThread();
 
-  if (aWorkerPrivate->GetOriginAttributes().mPrivateBrowsingId > 0) {
+  if (aWorkerPrivate->GetOriginAttributes().IsPrivateBrowsing() &&
+      !StaticPrefs::dom_cache_privateBrowsing_enabled()) {
     NS_WARNING("CacheStorage not supported during private browsing.");
     RefPtr<CacheStorage> ref = new CacheStorage(NS_ERROR_DOM_SECURITY_ERR);
     return ref.forget();
@@ -192,7 +192,7 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnWorker(
   const PrincipalInfo& principalInfo =
       aWorkerPrivate->GetEffectiveStoragePrincipalInfo();
 
-  QM_TRY(OkIf(QuotaManager::IsPrincipalInfoValid(principalInfo)), nullptr,
+  QM_TRY(OkIf(quota::IsPrincipalInfoValid(principalInfo)), nullptr,
          [&aRv](const auto) { aRv.Throw(NS_ERROR_FAILURE); });
 
   // We have a number of cases where we want to skip the https scheme
@@ -225,14 +225,15 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnWorker(
 }
 
 // static
-bool CacheStorage::DefineCaches(JSContext* aCx, JS::Handle<JSObject*> aGlobal) {
+bool CacheStorage::DefineCachesForSandbox(JSContext* aCx,
+                                          JS::Handle<JSObject*> aGlobal) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_DIAGNOSTIC_ASSERT(JS::GetClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL,
                         "Passed object is not a global object!");
   js::AssertSameCompartment(aCx, aGlobal);
 
-  if (NS_WARN_IF(!CacheStorage_Binding::GetConstructorObject(aCx) ||
-                 !Cache_Binding::GetConstructorObject(aCx))) {
+  if (NS_WARN_IF(!CacheStorage_Binding::CreateAndDefineOnGlobal(aCx) ||
+                 !Cache_Binding::CreateAndDefineOnGlobal(aCx))) {
     return false;
   }
 
@@ -297,7 +298,7 @@ CacheStorage::CacheStorage(nsresult aFailureResult)
 }
 
 already_AddRefed<Promise> CacheStorage::Match(
-    JSContext* aCx, const RequestOrUSVString& aRequest,
+    JSContext* aCx, const RequestOrUTF8String& aRequest,
     const MultiCacheQueryOptions& aOptions, ErrorResult& aRv) {
   NS_ASSERT_OWNINGTHREAD(CacheStorage);
 
@@ -466,8 +467,9 @@ already_AddRefed<CacheStorage> CacheStorage::Constructor(
   static_assert(
       CHROME_ONLY_NAMESPACE == (uint32_t)CacheStorageNamespace::Chrome,
       "Chrome namespace should match webidl Chrome enum");
-  static_assert(NUMBER_OF_NAMESPACES == CacheStorageNamespaceValues::Count,
-                "Number of namespace should match webidl count");
+  static_assert(
+      NUMBER_OF_NAMESPACES == ContiguousEnumSize<CacheStorageNamespace>::value,
+      "Number of namespace should match webidl count");
 
   Namespace ns = static_cast<Namespace>(aNamespace);
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
@@ -481,7 +483,7 @@ already_AddRefed<CacheStorage> CacheStorage::Constructor(
     }
   }
 
-  if (privateBrowsing) {
+  if (privateBrowsing && !StaticPrefs::dom_cache_privateBrowsing_enabled()) {
     RefPtr<CacheStorage> ref = new CacheStorage(NS_ERROR_DOM_SECURITY_ERR);
     return ref.forget();
   }
@@ -574,16 +576,17 @@ bool CacheStorage::HasStorageAccess(UseCounter aLabel,
     }
   }
 
-  // Deny storage access for private browsing.
+  // Deny storage access for private browsing unless pref is toggled on.
   if (nsIPrincipal* principal = mGlobal->PrincipalOrNull()) {
     if (!principal->IsSystemPrincipal() &&
         principal->GetPrivateBrowsingId() !=
-            nsIScriptSecurityManager::DEFAULT_PRIVATE_BROWSING_ID) {
+            nsIScriptSecurityManager::DEFAULT_PRIVATE_BROWSING_ID &&
+        !StaticPrefs::dom_cache_privateBrowsing_enabled()) {
       return false;
     }
   }
 
-  return access > StorageAccess::ePrivateBrowsing ||
+  return access > StorageAccess::eDeny ||
          (StaticPrefs::
               privacy_partition_always_partition_third_party_non_cookie_storage() &&
           ShouldPartitionStorage(access));

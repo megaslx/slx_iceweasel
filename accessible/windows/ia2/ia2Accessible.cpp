@@ -8,17 +8,19 @@
 
 #include "Accessible2_i.c"
 #include "Accessible2_2_i.c"
-#include "Accessible2_3_i.c"
 #include "AccessibleRole.h"
 #include "AccessibleStates.h"
 
 #include "AccAttributes.h"
+#include "ApplicationAccessible.h"
 #include "Compatibility.h"
 #include "ia2AccessibleRelation.h"
 #include "IUnknownImpl.h"
+#include "nsAccUtils.h"
 #include "nsCoreUtils.h"
 #include "nsIAccessibleTypes.h"
 #include "mozilla/a11y/PDocAccessible.h"
+#include "mozilla/StaticPrefs_accessibility.h"
 #include "Relation.h"
 #include "TextRange-inl.h"
 #include "nsAccessibilityService.h"
@@ -43,12 +45,11 @@ ia2Accessible::QueryInterface(REFIID iid, void** ppv) {
   // also be added to the IA2 Handler in
   // /accessible/ipc/win/handler/AccessibleHandler.cpp
 
-  if (IID_IAccessible2_3 == iid)
-    *ppv = static_cast<IAccessible2_3*>(this);
-  else if (IID_IAccessible2_2 == iid)
+  if (IID_IAccessible2_2 == iid) {
     *ppv = static_cast<IAccessible2_2*>(this);
-  else if (IID_IAccessible2 == iid)
+  } else if (IID_IAccessible2 == iid) {
     *ppv = static_cast<IAccessible2*>(this);
+  }
 
   if (*ppv) {
     (reinterpret_cast<IUnknown*>(*ppv))->AddRef();
@@ -79,7 +80,7 @@ ia2Accessible::get_nRelations(long* aNRelations) {
     return CO_E_OBJNOTCONNECTED;
   }
 
-  for (uint32_t idx = 0; idx < ArrayLength(sRelationTypePairs); idx++) {
+  for (uint32_t idx = 0; idx < std::size(sRelationTypePairs); idx++) {
     if (sRelationTypePairs[idx].second == IA2_RELATION_NULL) continue;
 
     Relation rel = acc->RelationByType(sRelationTypePairs[idx].first);
@@ -100,7 +101,7 @@ ia2Accessible::get_relation(long aRelationIndex,
   }
 
   long relIdx = 0;
-  for (uint32_t idx = 0; idx < ArrayLength(sRelationTypePairs); idx++) {
+  for (uint32_t idx = 0; idx < std::size(sRelationTypePairs); idx++) {
     if (sRelationTypePairs[idx].second == IA2_RELATION_NULL) continue;
 
     RelationType relationType = sRelationTypePairs[idx].first;
@@ -133,7 +134,7 @@ ia2Accessible::get_relations(long aMaxRelations,
   }
 
   for (uint32_t idx = 0;
-       idx < ArrayLength(sRelationTypePairs) && *aNRelations < aMaxRelations;
+       idx < std::size(sRelationTypePairs) && *aNRelations < aMaxRelations;
        idx++) {
     if (sRelationTypePairs[idx].second == IA2_RELATION_NULL) continue;
 
@@ -158,7 +159,8 @@ ia2Accessible::role(long* aRole) {
   if (!acc) return CO_E_OBJNOTCONNECTED;
 
 #define ROLE(_geckoRole, stringRole, ariaRole, atkRole, macRole, macSubrole, \
-             msaaRole, ia2Role, androidClass, nameRule)                      \
+             msaaRole, ia2Role, androidClass, iosIsElement, uiaControlType,  \
+             nameRule)                                                       \
   case roles::_geckoRole:                                                    \
     *aRole = ia2Role;                                                        \
     break;
@@ -353,6 +355,22 @@ ia2Accessible::get_windowHandle(HWND* aWindowHandle) {
   if (!acc) return CO_E_OBJNOTCONNECTED;
 
   *aWindowHandle = MsaaAccessible::GetHWNDFor(acc);
+  if (!*aWindowHandle && !StaticPrefs::accessibility_uia_enable()) {
+    // Bug 1890155: This can happen if a document is detached from its embedder.
+    // The document might be about to die or it might be moving to a different
+    // embedder; e.g. a tab in a different window. The IA2 -> UIA proxy may
+    // crash if we return a null HWND. For now, pick an arbitrary top level
+    // Gecko HWND. This might be wrong, but only briefly, since the document
+    // will either die or move very soon, at which point this method will
+    // return the correct answer.
+    // TODO This hack should be removed once we only use our native UIA
+    // implementation.
+    if (ApplicationAccessible* app = ApplicationAcc()) {
+      if (LocalAccessible* firstRoot = app->LocalFirstChild()) {
+        *aWindowHandle = MsaaAccessible::GetHWNDFor(firstRoot);
+      }
+    }
+  }
   return S_OK;
 }
 
@@ -430,6 +448,11 @@ ia2Accessible::get_attributes(BSTR* aAttributes) {
   // The format is name:value;name:value; with \ for escaping these
   // characters ":;=,\".
   RefPtr<AccAttributes> attributes = acc->Attributes();
+  if (acc->Role() == roles::HEADING) {
+    // IAccessible2 expects heading level to be exposed as an object attribute.
+    // However, all other group position info is exposed via groupPosition.
+    nsAccUtils::SetAccGroupAttrs(attributes, acc);
+  }
   return ConvertToIA2Attributes(attributes, aAttributes);
 }
 
@@ -485,7 +508,7 @@ ia2Accessible::get_relationTargetsOfType(BSTR aType, long aMaxTargets,
   *aNTargets = 0;
 
   Maybe<RelationType> relationType;
-  for (uint32_t idx = 0; idx < ArrayLength(sRelationTypePairs); idx++) {
+  for (uint32_t idx = 0; idx < std::size(sRelationTypePairs); idx++) {
     if (wcscmp(aType, sRelationTypePairs[idx].second) == 0) {
       relationType.emplace(sRelationTypePairs[idx].first);
       break;
@@ -514,46 +537,6 @@ ia2Accessible::get_relationTargetsOfType(BSTR aType, long aMaxTargets,
 
   for (int32_t i = 0; i < *aNTargets; i++) {
     (*aTargets)[i] = MsaaAccessible::NativeAccessible(targets[i]);
-  }
-
-  return S_OK;
-}
-
-STDMETHODIMP
-ia2Accessible::get_selectionRanges(IA2Range** aRanges, long* aNRanges) {
-  if (!aRanges || !aNRanges) return E_INVALIDARG;
-
-  *aNRanges = 0;
-
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
-  if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
-
-  AutoTArray<TextRange, 1> ranges;
-  acc->Document()->SelectionRanges(&ranges);
-  ranges.RemoveElementsBy([acc](auto& range) { return !range.Crop(acc); });
-
-  *aNRanges = ranges.Length();
-  *aRanges =
-      static_cast<IA2Range*>(::CoTaskMemAlloc(sizeof(IA2Range) * *aNRanges));
-  if (!*aRanges) return E_OUTOFMEMORY;
-
-  for (uint32_t idx = 0; idx < static_cast<uint32_t>(*aNRanges); idx++) {
-    RefPtr<IAccessible2> anchor =
-        MsaaAccessible::GetFrom(ranges[idx].StartContainer());
-    anchor.forget(&(*aRanges)[idx].anchor);
-
-    (*aRanges)[idx].anchorOffset = ranges[idx].StartOffset();
-
-    RefPtr<IAccessible2> active =
-        MsaaAccessible::GetFrom(ranges[idx].EndContainer());
-    active.forget(&(*aRanges)[idx].active);
-
-    (*aRanges)[idx].activeOffset = ranges[idx].EndOffset();
   }
 
   return S_OK;

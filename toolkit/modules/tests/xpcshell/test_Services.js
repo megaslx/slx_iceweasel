@@ -28,7 +28,6 @@ function run_test() {
   checkService("cookies", Ci.nsICookieManager);
   checkService("dirsvc", Ci.nsIDirectoryService);
   checkService("dirsvc", Ci.nsIProperties);
-  checkService("DOMRequest", Ci.nsIDOMRequestService);
   checkService("domStorageManager", Ci.nsIDOMStorageManager);
   checkService("droppedLinkHandler", Ci.nsIDroppedLinkHandler);
   checkService("eTLD", Ci.nsIEffectiveTLDService);
@@ -57,8 +56,8 @@ function run_test() {
   if ("nsISearchService" in Ci) {
     checkService("search", Ci.nsISearchService);
   }
-  if ("nsIAndroidBridge" in Ci) {
-    checkService("androidBridge", Ci.nsIAndroidBridge);
+  if ("nsIGeckoViewBridge" in Ci) {
+    checkService("androidBridge", Ci.nsIGeckoViewBridge);
   }
   if ("@mozilla.org/enterprisepolicies;1" in Cc) {
     checkService("policies", Ci.nsIEnterprisePolicies);

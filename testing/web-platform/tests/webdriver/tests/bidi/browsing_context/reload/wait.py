@@ -3,6 +3,8 @@
 import asyncio
 import pytest
 
+from ... import any_string
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -24,13 +26,22 @@ async def wait_for_reload(bidi_session, context, wait, expect_timeout):
 @pytest.mark.parametrize("wait", ["none", "interactive", "complete"])
 async def test_expected_url(bidi_session, inline, new_tab, wait):
     url = inline("<div>foo</div>")
-    await bidi_session.browsing_context.navigate(context=new_tab["context"],
-                                                 url=url,
-                                                 wait="complete")
-    result = await bidi_session.browsing_context.reload(
-        context=new_tab["context"], wait=wait)
-    assert result == {}
+
+    navigate_result = await bidi_session.browsing_context.navigate(
+        context=new_tab["context"],
+        url=url,
+        wait="complete"
+    )
+
+    reload_result = await bidi_session.browsing_context.reload(
+        context=new_tab["context"],
+        wait=wait
+    )
+
     if wait != "none":
+        assert reload_result["navigation"] != navigate_result["navigation"]
+        assert reload_result["url"] == url
+
         contexts = await bidi_session.browsing_context.get_tree(
             root=new_tab["context"], max_depth=0)
         assert contexts[0]["url"] == url
@@ -90,7 +101,7 @@ async def test_slow_page(bidi_session, new_tab, url, wait, expect_timeout,
 
     events = []
 
-    async def on_event(_, data):
+    async def on_event(method, data):
         events.append(data)
 
     remove_listener_1 = bidi_session.add_event_listener(
@@ -141,7 +152,7 @@ async def test_slow_script_blocks_domContentLoaded(bidi_session, inline,
 
     events = []
 
-    async def on_event(_, data):
+    async def on_event(method, data):
         events.append(data)
 
     remove_listener_1 = bidi_session.add_event_listener(
@@ -162,3 +173,18 @@ async def test_slow_script_blocks_domContentLoaded(bidi_session, inline,
 
     remove_listener_2()
     remove_listener_1()
+
+
+@pytest.mark.capabilities({"unhandledPromptBehavior": {"beforeUnload": "ignore"}})
+async def test_wait_none_with_beforeunload_prompt(
+    bidi_session, new_tab, setup_beforeunload_page, url
+):
+    page_url = url("/webdriver/tests/support/html/beforeunload.html")
+    await setup_beforeunload_page(new_tab)
+
+    result = await bidi_session.browsing_context.reload(
+        context=new_tab["context"], wait="none"
+    )
+
+    assert result["url"] == page_url
+    any_string(result["navigation"])

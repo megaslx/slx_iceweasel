@@ -12,7 +12,6 @@ from conftest import setup_args
 from mozbuild.base import MozbuildObject
 from mozprofile import Profile
 from mozprofile.prefs import Preferences
-from six import string_types
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -43,10 +42,7 @@ def profile_data_dir():
 
 
 def test_common_prefs_are_all_set(build_profile, profile_data_dir):
-    # We set e10s=False here because MochitestDesktop.buildProfile overwrites
-    # the value defined in the base profile.
-    # TODO stop setting browser.tabs.remote.autostart in the base profile
-    md, result = build_profile(e10s=False)
+    md, result = build_profile()
 
     with open(os.path.join(profile_data_dir, "profiles.json"), "r") as fh:
         base_profiles = json.load(fh)["mochitest"]
@@ -71,7 +67,7 @@ def test_common_prefs_are_all_set(build_profile, profile_data_dir):
         "server": "127.0.0.1:8888",
     }
     for k, v in expected_prefs.items():
-        if isinstance(v, string_types):
+        if isinstance(v, str):
             v = v.format(**interpolation)
 
         assert k in actual_prefs

@@ -20,17 +20,6 @@ namespace mozilla {
 class LocalMediaDevice;
 class MediaDevice;
 
-template <class EnumValuesStrings, class Enum>
-static Enum StringToEnum(const EnumValuesStrings& aStrings,
-                         const nsAString& aValue, Enum aDefaultValue) {
-  for (size_t i = 0; aStrings[i].value; i++) {
-    if (aValue.EqualsASCII(aStrings[i].value)) {
-      return Enum(i);
-    }
-  }
-  return aDefaultValue;
-}
-
 // Helper classes for orthogonal constraints without interdependencies.
 // Instead of constraining values, constrain the constraints themselves.
 class NormalizedConstraintSet {
@@ -74,6 +63,8 @@ class NormalizedConstraintSet {
 
     template <class ConstrainRange>
     void SetFrom(const ConstrainRange& aOther);
+
+    /// Clamp n based on Range. If the Range is empty, mMin is returned.
     ValueType Clamp(ValueType n) const {
       return std::max(mMin, std::min(n, mMax));
     }

@@ -23,7 +23,29 @@ struct GPURequestAdapterOptions;
 namespace webgpu {
 class Adapter;
 class GPUAdapter;
+class Instance;
 class WebGPUChild;
+
+class WGSLLanguageFeatures final : public nsWrapperCache,
+                                   public ChildOf<Instance> {
+ public:
+  GPU_DECL_CYCLE_COLLECTION(WGSLLanguageFeatures)
+
+ public:
+  explicit WGSLLanguageFeatures(Instance* const aParent) : ChildOf(aParent) {}
+
+ private:
+  void Cleanup() {}
+
+ protected:
+  ~WGSLLanguageFeatures() { Cleanup(); };
+
+ public:
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override {
+    return dom::WGSLLanguageFeatures_Binding::Wrap(aCx, this, aGivenProto);
+  }
+};
 
 class Instance final : public nsWrapperCache {
  public:
@@ -31,6 +53,8 @@ class Instance final : public nsWrapperCache {
   GPU_DECL_JS_WRAP(Instance)
 
   nsIGlobalObject* GetParentObject() const { return mOwner; }
+
+  static bool PrefEnabled(JSContext* aCx, JSObject* aObj);
 
   static already_AddRefed<Instance> Create(nsIGlobalObject* aOwner);
 
@@ -50,8 +74,13 @@ class Instance final : public nsWrapperCache {
   void Cleanup();
 
   nsCOMPtr<nsIGlobalObject> mOwner;
+  RefPtr<WGSLLanguageFeatures> mWgslLanguageFeatures;
 
  public:
+  already_AddRefed<WGSLLanguageFeatures> WgslLanguageFeatures() const {
+    RefPtr<WGSLLanguageFeatures> features = mWgslLanguageFeatures;
+    return features.forget();
+  }
 };
 
 }  // namespace webgpu

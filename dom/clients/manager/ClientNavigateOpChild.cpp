@@ -182,7 +182,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
 
   MOZ_ASSERT(NS_IsMainThread());
 
-  mSerialEventTarget = window->EventTargetFor(TaskCategory::Other);
+  mSerialEventTarget = GetMainThreadSerialEventTarget();
 
   // In theory we could do the URL work before paying the IPC overhead
   // cost, but in practice its easier to do it here.  The ClientHandle
@@ -224,7 +224,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
     return ClientOpPromise::CreateAndReject(result, __func__);
   }
 
-  if (url->GetSpecOrDefault().EqualsLiteral("about:blank")) {
+  if (NS_IsAboutBlankAllowQueryAndFragment(url)) {
     CopyableErrorResult result;
     result.ThrowTypeError("Navigation to \"about:blank\" is not allowed");
     return ClientOpPromise::CreateAndReject(result, __func__);

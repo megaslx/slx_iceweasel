@@ -8,8 +8,11 @@
 #define mozilla_dom_HTMLVideoElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/dom/VideoFrameProvider.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "ImageTypes.h"
 #include "Units.h"
 
 namespace mozilla {
@@ -36,6 +39,8 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   using HTMLMediaElement::GetPaused;
 
+  HTMLVideoElement* AsHTMLVideoElement() override { return this; };
+
   void Invalidate(ImageSizeChanged aImageSizeChanged,
                   const Maybe<nsIntSize>& aNewIntrinsicSize,
                   ForceInvalidate aForceInvalidate) override;
@@ -52,7 +57,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   nsresult Clone(NodeInfo*, nsINode** aResult) const override;
 
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
   mozilla::Maybe<mozilla::CSSIntSize> GetVideoSize() const;
 
@@ -85,9 +90,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   uint32_t VideoHeight();
 
-  VideoInfo::Rotation RotationDegrees() const {
-    return mMediaInfo.mVideo.mRotation;
-  }
+  VideoRotation RotationDegrees() const { return mMediaInfo.mVideo.mRotation; }
 
   bool HasAlpha() const { return mMediaInfo.mVideo.HasAlpha(); }
 
@@ -112,14 +115,6 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
 
-  bool MozOrientationLockEnabled() const {
-    return StaticPrefs::media_videocontrols_lock_video_orientation();
-  }
-
-  bool MozIsOrientationLocked() const { return mIsOrientationLocked; }
-
-  void SetMozIsOrientationLocked(bool aLock) { mIsOrientationLocked = aLock; }
-
   already_AddRefed<Promise> CloneElementVisually(HTMLVideoElement& aTarget,
                                                  ErrorResult& rv);
 
@@ -133,6 +128,14 @@ class HTMLVideoElement final : public HTMLMediaElement {
   void OnSecondaryVideoOutputFirstFrameRendered();
 
   void OnVisibilityChange(Visibility aNewVisibility) override;
+
+  bool DisablePictureInPicture() const {
+    return GetBoolAttr(nsGkAtoms::disablepictureinpicture);
+  }
+
+  void SetDisablePictureInPicture(bool aValue, ErrorResult& aError) {
+    SetHTMLBoolAttr(nsGkAtoms::disablepictureinpicture, aValue, aError);
+  }
 
  protected:
   virtual ~HTMLVideoElement();
@@ -156,8 +159,6 @@ class HTMLVideoElement final : public HTMLMediaElement {
   gfx::IntSize GetVideoIntrinsicDimensions();
 
   RefPtr<WakeLock> mScreenWakeLock;
-
-  bool mIsOrientationLocked;
 
   WatchManager<HTMLVideoElement> mVideoWatchManager;
 
@@ -191,6 +192,29 @@ class HTMLVideoElement final : public HTMLMediaElement {
   // SetVisualCloneTarget() instead.
   RefPtr<HTMLVideoElement> mVisualCloneSource;
 
+ private:
+  void ResetState() override;
+
+  bool HasPendingCallbacks() const final {
+    return !mVideoFrameRequestManager.IsEmpty();
+  }
+
+  VideoFrameRequestManager mVideoFrameRequestManager;
+  layers::ContainerFrameID mLastPresentedFrameID =
+      layers::kContainerFrameID_Invalid;
+
+ public:
+  uint32_t RequestVideoFrameCallback(VideoFrameRequestCallback& aCallback,
+                                     ErrorResult& aRv);
+  void CancelVideoFrameCallback(uint32_t aHandle);
+  void TakeVideoFrameRequestCallbacks(const TimeStamp& aNowTime,
+                                      const Maybe<TimeStamp>& aNextTickTime,
+                                      VideoFrameCallbackMetadata& aMd,
+                                      nsTArray<VideoFrameRequest>& aCallbacks);
+  bool IsVideoFrameCallbackCancelled(uint32_t aHandle);
+  void FinishedVideoFrameRequestCallbacks();
+
+ private:
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
 
   static bool IsVideoStatsEnabled();

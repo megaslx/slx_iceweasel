@@ -64,3 +64,55 @@ function classPreview() {
   const foo = new Foo();
   foo.breakFn();
 }
+
+function invalidTargets() {
+  "a";
+  false;
+  undefined;
+  null;
+  42;
+  const myVar = "foo";
+  debugger;
+  return myVar;
+}
+
+function multipleTokens() {
+  var foo = {bar: { baz: "bloop"}}, blip = {boom: 0};
+  foo || blip
+  foo.bar;
+  foo.bar.baz;
+  foo || blip.boom;
+  debugger;
+}
+
+function thisProperties() {
+  new(class {
+    constructor() {
+      this.myProperty = {
+        x: "this-myProperty-x",
+        y: "this-myProperty-y",
+        z: "this-myProperty-z",
+      };
+      this.myProperty.x;
+      const propertyName = "myProperty";
+      this[propertyName].y;
+      this?.[propertyName].z;
+      debugger;
+    }
+  });
+}
+
+function valueOfExpression() {
+  function a(value) {
+    b(value).catch(console.error);
+    debugger;
+  };
+
+  function b() {
+    return new Promise(() => {});
+  }
+
+  a("foo")
+}
+
+

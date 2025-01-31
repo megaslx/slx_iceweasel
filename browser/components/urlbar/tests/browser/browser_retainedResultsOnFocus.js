@@ -71,7 +71,10 @@ async function checkDoesNotOpenOnFocus(win) {
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.autoFill", true]],
+    set: [
+      ["browser.urlbar.autoFill", true],
+      ["browser.urlbar.scotchBonnet.enableOverride", false],
+    ],
   });
   // Add some history for the empty panel and autofill.
   await PlacesTestUtils.addVisits([
@@ -95,7 +98,7 @@ async function test_window(win) {
     // we just wait for the expected currentURI value.
     await BrowserTestUtils.withNewTab(
       { gBrowser: win.gBrowser, url, waitForLoad: false },
-      async browser => {
+      async () => {
         await TestUtils.waitForCondition(
           () => win.gBrowser.currentURI.spec == url,
           "Ensure we're on the expected page"
@@ -268,7 +271,10 @@ add_task(async function test_tabSwitch_pageproxystate() {
   registerCleanupFunction(PlacesUtils.history.clear);
 
   let win = await BrowserTestUtils.openNewBrowserWindow();
-  BrowserTestUtils.loadURIString(win.gBrowser.selectedBrowser, "about:robots");
+  BrowserTestUtils.startLoadingURIString(
+    win.gBrowser.selectedBrowser,
+    "about:robots"
+  );
   let tab1 = win.gBrowser.selectedTab;
 
   info("Open a new tab and the empty search");

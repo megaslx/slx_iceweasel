@@ -16,7 +16,7 @@ SimpleTest.requestFlakyTimeout("Need to test setTimeout");
 function startTest(aTestAsyncFun, aAllowPopup = true) {
   return new Promise(aResolve => {
     let target = document.getElementById("target");
-    target.addEventListener("click", (e) => {
+    target.addEventListener("click", () => {
       aTestAsyncFun(() => {
         let w = window.open("about:blank");
         is(!!w, aAllowPopup, `Should ${aAllowPopup ? "allow" : "block"} popup`);
@@ -50,7 +50,15 @@ add_setup(async function() {
   },
   // requestStorageAccess
   function testRequestStorageAccess(aCallback) {
-    document.requestStorageAccess().then(aCallback);
+    SpecialPowers.pushPermissions([
+      {
+        type: "storageAccessAPI",
+        allow: true,
+        context: window.document,
+      },
+    ]).then(
+      () => document.requestStorageAccess().then(aCallback)
+    );
   },
   // serviceWorker.getRegistration
   function testGetServiceWorkerRegistration(aCallback) {

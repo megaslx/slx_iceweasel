@@ -2,7 +2,7 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this file,
    - You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
     <title data-l10n-id="addons-page-title"></title>
@@ -13,9 +13,6 @@
       content="default-src chrome:; style-src chrome: 'unsafe-inline'; img-src chrome: file: jar: https: http:; connect-src chrome: data: https: http:; object-src 'none'"
     />
     <meta name="color-scheme" content="light dark" />
-    <link rel="stylesheet" href="chrome://global/content/tabprompts.css" />
-    <link rel="stylesheet" href="chrome://global/skin/tabprompts.css" />
-
     <link rel="stylesheet" href="chrome://global/skin/in-content/common.css" />
     <link
       rel="stylesheet"
@@ -33,7 +30,7 @@
 
     <link rel="localization" href="branding/brand.ftl" />
     <link rel="localization" href="toolkit/about/aboutAddons.ftl" />
-    <link rel="localization" href="toolkit/about/abuseReports.ftl" />
+    <link rel="localization" href="toolkit/global/extensionPermissions.ftl" />
 
     <!-- Defer scripts so all the templates are loaded by the time they run. -->
     <script
@@ -59,6 +56,10 @@
     <script
       defer
       src="chrome://mozapps/content/extensions/aboutaddons.js"
+    ></script>
+    <script
+      type="module"
+      src="chrome://global/content/elements/moz-message-bar.mjs"
     ></script>
     <script
       type="module"
@@ -162,13 +163,6 @@
         ></addon-page-header>
         <addon-page-options id="page-options"></addon-page-options>
 
-        <message-bar-stack
-          id="abuse-reports-messages"
-          reverse
-          max-message-bar-count="3"
-        >
-        </message-bar-stack>
-
         <div id="main"></div>
       </div>
     </div>
@@ -240,6 +234,7 @@
           action="set-update-automatically"
           data-l10n-id="addon-updates-update-addons-automatically"
           data-l10n-attrs="accesskey"
+          type="checkbox"
         ></panel-item>
         <panel-item
           action="reset-update-states"
@@ -287,10 +282,12 @@
         <panel-item
           data-l10n-id="always-activate-button"
           action="always-activate"
+          type="checkbox"
         ></panel-item>
         <panel-item
           data-l10n-id="never-activate-button"
           action="never-activate"
+          type="checkbox"
         ></panel-item>
         <hr />
         <panel-item
@@ -322,7 +319,7 @@
       </div>
       <div
         class="addon-detail-row addon-permissions-empty"
-        data-l10n-id="addon-permissions-empty"
+        data-l10n-id="addon-permissions-empty2"
         hidden
       ></div>
       <div class="addon-detail-row">
@@ -415,20 +412,25 @@
             <span class="addon-description" tabindex="-1"></span>
           </div>
         </div>
-        <message-bar class="update-postponed-bar" align="center" hidden>
-          <span
-            class="description"
-            data-l10n-id="install-postponed-message"
-          ></span>
+        <moz-message-bar
+          class="update-postponed-bar"
+          data-l10n-id="install-postponed-message2"
+          align="center"
+          hidden
+        >
           <button
+            slot="actions"
             action="install-postponed"
             data-l10n-id="install-postponed-button"
           ></button>
-        </message-bar>
-        <message-bar class="addon-card-message" align="center" hidden>
-          <span></span>
-          <button action="link"></button>
-        </message-bar>
+        </moz-message-bar>
+        <moz-message-bar class="addon-card-message" align="center" hidden>
+          <!-- A button or a SUMO page link are going to be slotted into this messagebar
+               (e.g. a button is used for non-SUMO links, like blocklist urls).
+               See addon-card custom element's updateMessage method and
+               getAddonMessageInfo helper defined in aboutaddons.js.
+           -->
+        </moz-message-bar>
       </div>
     </template>
 
@@ -669,17 +671,19 @@
     </template>
 
     <template name="taar-notice">
-      <message-bar class="discopane-notice" dismissable>
-        <div class="discopane-notice-content">
-          <span data-l10n-id="discopane-notice-recommendations"></span>
-          <a
-            is="moz-support-link"
-            support-page="personalized-addons"
-            data-l10n-id="discopane-notice-learn-more"
-            action="notice-learn-more"
-          ></a>
-        </div>
-      </message-bar>
+      <moz-message-bar
+        class="discopane-notice"
+        data-l10n-id="discopane-notice-recommendations2"
+        dismissable
+      >
+        <a
+          is="moz-support-link"
+          support-page="personalized-addons"
+          data-l10n-id="discopane-notice-learn-more"
+          action="notice-learn-more"
+          slot="support-link"
+        ></a>
+      </moz-message-bar>
     </template>
 
     <template name="recommended-footer">
@@ -702,7 +706,7 @@
     <template name="discopane">
       <header>
         <p>
-          <span data-l10n-id="discopane-intro">
+          <span data-l10n-id="discopane-intro2">
             <a
               class="discopane-intro-learn-more-link"
               is="moz-support-link"
@@ -773,7 +777,7 @@
     </template>
 
     <template id="shortcut-card-template">
-      <div class="card shortcut">
+      <div class="card card-no-hover shortcut">
         <div class="card-heading">
           <img class="card-heading-icon addon-icon" />
           <h2 class="addon-name"></h2>
@@ -790,7 +794,11 @@
           type="text"
           readonly
         />
-        <button class="shortcut-remove-button ghost-button"></button>
+        <button
+          class="shortcut-remove-button ghost-button"
+          data-l10n-id="shortcuts-remove-button"
+          data-l10n-attrs="aria-label"
+        ></button>
       </div>
     </template>
 

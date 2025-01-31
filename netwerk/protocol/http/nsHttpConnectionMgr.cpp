@@ -20,6 +20,7 @@
 #include "NullHttpTransaction.h"
 #include "SpeculativeTransaction.h"
 #include "mozilla/Components.h"
+#include "mozilla/PerfStats.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/StaticPrefs_network.h"
@@ -61,16 +62,23 @@ struct UrlMarker {
   }
   static void StreamJSONMarkerData(
       mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
-      const mozilla::ProfilerString8View& aURL) {
+      const mozilla::ProfilerString8View& aURL, const TimeDuration& aDuration,
+      uint64_t aChannelId) {
     if (aURL.Length() != 0) {
       aWriter.StringProperty("url", aURL);
     }
+    if (!aDuration.IsZero()) {
+      aWriter.DoubleProperty("duration", aDuration.ToMilliseconds());
+    }
+    aWriter.IntProperty("channelId", static_cast<int64_t>(aChannelId));
   }
   static MarkerSchema MarkerTypeDisplay() {
     using MS = MarkerSchema;
     MS schema(MS::Location::MarkerChart, MS::Location::MarkerTable);
     schema.SetTableLabel("{marker.name} - {marker.data.url}");
-    schema.AddKeyFormat("url", MS::Format::Url);
+    schema.AddKeyFormatSearchable("url", MS::Format::Url,
+                                  MS::Searchable::Searchable);
+    schema.AddKeyLabelFormat("duration", "Duration", MS::Format::Duration);
     return schema;
   }
 };
@@ -117,11 +125,9 @@ nsresult nsHttpConnectionMgr::EnsureSocketThreadTarget() {
 nsresult nsHttpConnectionMgr::Init(
     uint16_t maxUrgentExcessiveConns, uint16_t maxConns,
     uint16_t maxPersistConnsPerHost, uint16_t maxPersistConnsPerProxy,
-    uint16_t maxRequestDelay, bool throttleEnabled, uint32_t throttleVersion,
-    uint32_t throttleSuspendFor, uint32_t throttleResumeFor,
-    uint32_t throttleReadLimit, uint32_t throttleReadInterval,
-    uint32_t throttleHoldTime, uint32_t throttleMaxTime,
-    bool beConservativeForProxy) {
+    uint16_t maxRequestDelay, bool throttleEnabled, uint32_t throttleSuspendFor,
+    uint32_t throttleResumeFor, uint32_t throttleHoldTime,
+    uint32_t throttleMaxTime, bool beConservativeForProxy) {
   LOG(("nsHttpConnectionMgr::Init\n"));
 
   {
@@ -134,11 +140,8 @@ nsresult nsHttpConnectionMgr::Init(
     mMaxRequestDelay = maxRequestDelay;
 
     mThrottleEnabled = throttleEnabled;
-    mThrottleVersion = throttleVersion;
     mThrottleSuspendFor = throttleSuspendFor;
     mThrottleResumeFor = throttleResumeFor;
-    mThrottleReadLimit = throttleReadLimit;
-    mThrottleReadInterval = throttleReadInterval;
     mThrottleHoldTime = throttleHoldTime;
     mThrottleMaxTime = TimeDuration::FromMilliseconds(throttleMaxTime);
 
@@ -504,9 +507,10 @@ nsresult nsHttpConnectionMgr::SpeculativeConnect(
     return NS_OK;
   }
 
-  nsCString url = ci->EndToEndSSL() ? "https://"_ns : "http://"_ns;
+  nsAutoCString url(ci->EndToEndSSL() ? "https://"_ns : "http://"_ns);
   url += ci->GetOrigin();
-  PROFILER_MARKER("SpeculativeConnect", NETWORK, {}, UrlMarker, url);
+  PROFILER_MARKER("SpeculativeConnect", NETWORK, {}, UrlMarker, url,
+                  TimeDuration::Zero(), 0);
 
   RefPtr<SpeculativeConnectArgs> args = new SpeculativeConnectArgs();
 
@@ -799,6 +803,11 @@ HttpConnectionBase* nsHttpConnectionMgr::FindCoalescableConnection(
   MOZ_ASSERT(ent->mConnInfo);
   nsHttpConnectionInfo* ci = ent->mConnInfo;
   LOG(("FindCoalescableConnection %s\n", ci->HashKey().get()));
+
+  if (ci->GetWebTransport()) {
+    LOG(("Don't coalesce a WebTransport conn "));
+    return nullptr;
+  }
   // First try and look it up by origin frame
   nsCString newKey;
   BuildOriginFrameHashKey(newKey, ci, ci->GetOrigin(), ci->OriginPort());
@@ -816,10 +825,35 @@ HttpConnectionBase* nsHttpConnectionMgr::FindCoalescableConnection(
   for (uint32_t i = 0; i < keyLen; ++i) {
     conn = FindCoalescableConnectionByHashKey(ent, ent->mCoalescingKeys[i],
                                               justKidding, aNoHttp2, aNoHttp3);
+
+    auto usableEntry = [&](HttpConnectionBase* conn) {
+      // This is allowed by the spec, but other browsers don't coalesce
+      // so agressively, which surprises developers. See bug 1420777.
+      if (StaticPrefs::network_http_http2_aggressive_coalescing()) {
+        return true;
+      }
+
+      // Make sure that the connection's IP address is one that is in
+      // the set of IP addresses in the entry's DNS response.
+      NetAddr addr;
+      nsresult rv = conn->GetPeerAddr(&addr);
+      if (NS_FAILED(rv)) {
+        // Err on the side of not coalescing
+        return false;
+      }
+      // We don't care about remote port when matching entries.
+      addr.inet.port = 0;
+      return ent->mAddresses.Contains(addr);
+    };
+
     if (conn) {
-      LOG(("FindCoalescableConnection(%s) match conn %p on dns key %s\n",
-           ci->HashKey().get(), conn, ent->mCoalescingKeys[i].get()));
-      return conn;
+      LOG(("Found connection with matching hash"));
+      if (usableEntry(conn)) {
+        LOG(("> coalescing"));
+        return conn;
+      } else {
+        LOG(("> not coalescing as remote address not present in DNS records"));
+      }
     }
   }
 
@@ -836,6 +870,12 @@ void nsHttpConnectionMgr::UpdateCoalescingForNewConn(
   MOZ_ASSERT(ent);
   MOZ_ASSERT(mCT.GetWeak(newConn->ConnectionInfo()->HashKey()) == ent);
   LOG(("UpdateCoalescingForNewConn newConn=%p aNoHttp3=%d", newConn, aNoHttp3));
+  if (newConn->ConnectionInfo()->GetWebTransport()) {
+    LOG(("Don't coalesce a WebTransport conn %p", newConn));
+    // TODO: implement this properly in bug 1815735.
+    return;
+  }
+
   HttpConnectionBase* existingConn =
       FindCoalescableConnection(ent, true, false, false);
   if (existingConn) {
@@ -848,6 +888,8 @@ void nsHttpConnectionMgr::UpdateCoalescingForNewConn(
             ("UpdateCoalescingForNewConn() found existing active H2 conn that "
              "could have served newConn, but new connection is H3, therefore "
              "close the H2 conncetion"));
+        existingConn->SetCloseReason(
+            ConnectionCloseReason::CLOSE_EXISTING_CONN_FOR_COALESCING);
         existingConn->DontReuse();
       }
     } else if (existingConn->UsingHttp3() && newConn->UsingSpdy()) {
@@ -858,6 +900,8 @@ void nsHttpConnectionMgr::UpdateCoalescingForNewConn(
              "could have served H2 newConn graceful close of newConn=%p to "
              "migrate to existingConn %p\n",
              newConn, existingConn));
+        newConn->SetCloseReason(
+            ConnectionCloseReason::CLOSE_NEW_CONN_FOR_COALESCING);
         newConn->DontReuse();
         return;
       }
@@ -867,6 +911,8 @@ void nsHttpConnectionMgr::UpdateCoalescingForNewConn(
            "have served newConn "
            "graceful close of newConn=%p to migrate to existingConn %p\n",
            newConn, existingConn));
+      newConn->SetCloseReason(
+          ConnectionCloseReason::CLOSE_NEW_CONN_FOR_COALESCING);
       newConn->DontReuse();
       return;
     }
@@ -1610,17 +1656,27 @@ nsresult nsHttpConnectionMgr::DispatchTransaction(ConnectionEntry* ent,
   // when a muxed connection (e.g. h2) becomes available.
   trans->CancelPacing(NS_OK);
 
+  TimeStamp now = TimeStamp::Now();
+  TimeDuration elapsed = now - trans->GetPendingTime();
   auto recordPendingTimeForHTTPSRR = [&](nsCString& aKey) {
     uint32_t stage = trans->HTTPSSVCReceivedStage();
     if (HTTPS_RR_IS_USED(stage)) {
-      aKey.Append("_with_https_rr");
-    } else {
-      aKey.Append("_no_https_rr");
-    }
+      glean::networking::transaction_wait_time_https_rr.AccumulateRawDuration(
+          elapsed);
 
-    AccumulateTimeDelta(Telemetry::TRANSACTION_WAIT_TIME_HTTPS_RR, aKey,
-                        trans->GetPendingTime(), TimeStamp::Now());
+    } else {
+      glean::networking::transaction_wait_time.AccumulateRawDuration(elapsed);
+    }
   };
+
+  PerfStats::RecordMeasurement(PerfStats::Metric::HttpTransactionWaitTime,
+                               elapsed);
+
+  PROFILER_MARKER(
+      "DispatchTransaction", NETWORK,
+      MarkerOptions(MarkerThreadId::MainThread(),
+                    MarkerTiming::Interval(trans->GetPendingTime(), now)),
+      UrlMarker, trans->GetUrl(), elapsed, trans->ChannelId());
 
   nsAutoCString httpVersionkey("h1"_ns);
   if (conn->UsingSpdy() || conn->UsingHttp3()) {
@@ -1633,11 +1689,11 @@ nsresult nsHttpConnectionMgr::DispatchTransaction(ConnectionEntry* ent,
       if (conn->UsingSpdy()) {
         httpVersionkey = "h2"_ns;
         AccumulateTimeDelta(Telemetry::TRANSACTION_WAIT_TIME_SPDY,
-                            trans->GetPendingTime(), TimeStamp::Now());
+                            trans->GetPendingTime(), now);
       } else {
         httpVersionkey = "h3"_ns;
         AccumulateTimeDelta(Telemetry::TRANSACTION_WAIT_TIME_HTTP3,
-                            trans->GetPendingTime(), TimeStamp::Now());
+                            trans->GetPendingTime(), now);
       }
       recordPendingTimeForHTTPSRR(httpVersionkey);
       trans->SetPendingTime(false);
@@ -1652,7 +1708,7 @@ nsresult nsHttpConnectionMgr::DispatchTransaction(ConnectionEntry* ent,
 
   if (NS_SUCCEEDED(rv) && !trans->GetPendingTime().IsNull()) {
     AccumulateTimeDelta(Telemetry::TRANSACTION_WAIT_TIME_HTTP,
-                        trans->GetPendingTime(), TimeStamp::Now());
+                        trans->GetPendingTime(), now);
     recordPendingTimeForHTTPSRR(httpVersionkey);
     trans->SetPendingTime(false);
   }
@@ -1728,6 +1784,10 @@ nsresult nsHttpConnectionMgr::ProcessNewTransaction(nsHttpTransaction* trans) {
   CheckTransInPendingQueue(trans);
 
   trans->SetPendingTime();
+
+  PROFILER_MARKER("ProcessNewTransaction", NETWORK,
+                  MarkerThreadId::MainThread(), UrlMarker, trans->GetUrl(),
+                  TimeDuration::Zero(), trans->ChannelId());
 
   RefPtr<Http2PushedStreamWrapper> pushedStreamWrapper =
       trans->GetPushedStream();
@@ -2051,6 +2111,8 @@ void nsHttpConnectionMgr::AbortAndCloseAllConnections(int32_t, ARefBase*) {
     // Close websocket "fake" connections
     ent->CloseH2WebsocketConnections();
 
+    ent->ClosePendingConnections();
+
     // Close all pending transactions.
     ent->CancelAllTransactions(NS_ERROR_ABORT);
 
@@ -2362,8 +2424,11 @@ void nsHttpConnectionMgr::OnMsgVerifyTraffic(int32_t, ARefBase*) {
     return;
   }
 
+  mCoalescingHash.Clear();
+
   // Mark connections for traffic verification
   for (const auto& entry : mCT.Values()) {
+    entry->ResetIPFamilyPreference();
     entry->VerifyTraffic();
   }
 
@@ -2477,7 +2542,8 @@ void nsHttpConnectionMgr::OnMsgReclaimConnection(HttpConnectionBase* conn) {
     conn->DontReuse();
   }
 
-  if (NS_SUCCEEDED(ent->RemoveActiveConnection(conn))) {
+  if (NS_SUCCEEDED(ent->RemoveActiveConnection(conn)) ||
+      NS_SUCCEEDED(ent->RemovePendingConnection(conn))) {
   } else if (!connTCP || connTCP->EverUsedSpdy()) {
     LOG(("HttpConnectionBase %p not found in its connection entry, try ^anon",
          conn));
@@ -2513,6 +2579,7 @@ void nsHttpConnectionMgr::OnMsgReclaimConnection(HttpConnectionBase* conn) {
       ent->RemoveH2WebsocketConns(conn);
     }
     LOG(("  connection cannot be reused; closing connection\n"));
+    conn->SetCloseReason(ConnectionCloseReason::CANT_REUSED);
     conn->Close(NS_ERROR_ABORT);
   }
 
@@ -2625,7 +2692,7 @@ void nsHttpConnectionMgr::OnMsgCompleteUpgrade(int32_t, ARefBase* param) {
 void nsHttpConnectionMgr::OnMsgUpdateParam(int32_t inParam, ARefBase*) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   uint32_t param = static_cast<uint32_t>(inParam);
-  uint16_t name = ((param)&0xFFFF0000) >> 16;
+  uint16_t name = ((param) & 0xFFFF0000) >> 16;
   uint16_t value = param & 0x0000FFFF;
 
   switch (name) {
@@ -2652,12 +2719,6 @@ void nsHttpConnectionMgr::OnMsgUpdateParam(int32_t inParam, ARefBase*) {
       break;
     case THROTTLING_RESUME_FOR:
       mThrottleResumeFor = value;
-      break;
-    case THROTTLING_READ_LIMIT:
-      mThrottleReadLimit = value;
-      break;
-    case THROTTLING_READ_INTERVAL:
-      mThrottleReadInterval = value;
       break;
     case THROTTLING_HOLD_TIME:
       mThrottleHoldTime = value;
@@ -2906,13 +2967,11 @@ void nsHttpConnectionMgr::RemoveActiveTransaction(
     return;
   }
 
-  if (mThrottleVersion == 1) {
-    if (!mThrottlingInhibitsReading) {
-      // There is then nothing to wake up.  Affected transactions will not be
-      // put to sleep automatically on next tick.
-      LOG(("  reading not currently inhibited"));
-      return;
-    }
+  if (!mThrottlingInhibitsReading) {
+    // There is then nothing to wake up.  Affected transactions will not be
+    // put to sleep automatically on next tick.
+    LOG(("  reading not currently inhibited"));
+    return;
   }
 
   if (mActiveTabUnthrottledTransactionsExist) {
@@ -2975,14 +3034,8 @@ bool nsHttpConnectionMgr::ShouldThrottle(nsHttpTransaction* aTrans) {
 
   LOG(("nsHttpConnectionMgr::ShouldThrottle trans=%p", aTrans));
 
-  if (mThrottleVersion == 1) {
-    if (!mThrottlingInhibitsReading || !mThrottleEnabled) {
-      return false;
-    }
-  } else {
-    if (!mThrottleEnabled) {
-      return false;
-    }
+  if (!mThrottlingInhibitsReading || !mThrottleEnabled) {
+    return false;
   }
 
   uint64_t tabId = aTrans->BrowserId();
@@ -3112,15 +3165,10 @@ void nsHttpConnectionMgr::EnsureThrottleTickerIfNeeded() {
 
   mThrottleTicker = NS_NewTimer();
   if (mThrottleTicker) {
-    if (mThrottleVersion == 1) {
-      MOZ_ASSERT(!mThrottlingInhibitsReading);
+    MOZ_ASSERT(!mThrottlingInhibitsReading);
 
-      mThrottleTicker->Init(this, mThrottleSuspendFor, nsITimer::TYPE_ONE_SHOT);
-      mThrottlingInhibitsReading = true;
-    } else {
-      mThrottleTicker->Init(this, mThrottleReadInterval,
-                            nsITimer::TYPE_ONE_SHOT);
-    }
+    mThrottleTicker->Init(this, mThrottleSuspendFor, nsITimer::TYPE_ONE_SHOT);
+    mThrottlingInhibitsReading = true;
   }
 
   LogActiveTransactions('^');
@@ -3143,9 +3191,7 @@ void nsHttpConnectionMgr::DestroyThrottleTicker() {
   mThrottleTicker->Cancel();
   mThrottleTicker = nullptr;
 
-  if (mThrottleVersion == 1) {
-    mThrottlingInhibitsReading = false;
-  }
+  mThrottlingInhibitsReading = false;
 
   LogActiveTransactions('v');
 }
@@ -3153,49 +3199,27 @@ void nsHttpConnectionMgr::DestroyThrottleTicker() {
 void nsHttpConnectionMgr::ThrottlerTick() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  if (mThrottleVersion == 1) {
-    mThrottlingInhibitsReading = !mThrottlingInhibitsReading;
+  mThrottlingInhibitsReading = !mThrottlingInhibitsReading;
 
-    LOG(("nsHttpConnectionMgr::ThrottlerTick inhibit=%d",
-         mThrottlingInhibitsReading));
+  LOG(("nsHttpConnectionMgr::ThrottlerTick inhibit=%d",
+       mThrottlingInhibitsReading));
 
-    // If there are only background transactions to be woken after a delay, keep
-    // the ticker so that we woke them only for the resume-for interval and then
-    // throttle them again until the background-resume delay passes.
-    if (!mThrottlingInhibitsReading && !mDelayedResumeReadTimer &&
-        (!IsThrottleTickerNeeded() || !InThrottlingTimeWindow())) {
-      LOG(("  last tick"));
-      mThrottleTicker = nullptr;
-    }
+  // If there are only background transactions to be woken after a delay, keep
+  // the ticker so that we woke them only for the resume-for interval and then
+  // throttle them again until the background-resume delay passes.
+  if (!mThrottlingInhibitsReading && !mDelayedResumeReadTimer &&
+      (!IsThrottleTickerNeeded() || !InThrottlingTimeWindow())) {
+    LOG(("  last tick"));
+    mThrottleTicker = nullptr;
+  }
 
-    if (mThrottlingInhibitsReading) {
-      if (mThrottleTicker) {
-        mThrottleTicker->Init(this, mThrottleSuspendFor,
-                              nsITimer::TYPE_ONE_SHOT);
-      }
-    } else {
-      if (mThrottleTicker) {
-        mThrottleTicker->Init(this, mThrottleResumeFor,
-                              nsITimer::TYPE_ONE_SHOT);
-      }
-
-      ResumeReadOf(mActiveTransactions[false], true);
-      ResumeReadOf(mActiveTransactions[true]);
+  if (mThrottlingInhibitsReading) {
+    if (mThrottleTicker) {
+      mThrottleTicker->Init(this, mThrottleSuspendFor, nsITimer::TYPE_ONE_SHOT);
     }
   } else {
-    LOG(("nsHttpConnectionMgr::ThrottlerTick"));
-
-    // If there are only background transactions to be woken after a delay, keep
-    // the ticker so that we still keep the low read limit for that time.
-    if (!mDelayedResumeReadTimer &&
-        (!IsThrottleTickerNeeded() || !InThrottlingTimeWindow())) {
-      LOG(("  last tick"));
-      mThrottleTicker = nullptr;
-    }
-
     if (mThrottleTicker) {
-      mThrottleTicker->Init(this, mThrottleReadInterval,
-                            nsITimer::TYPE_ONE_SHOT);
+      mThrottleTicker->Init(this, mThrottleResumeFor, nsITimer::TYPE_ONE_SHOT);
     }
 
     ResumeReadOf(mActiveTransactions[false], true);
@@ -3206,18 +3230,8 @@ void nsHttpConnectionMgr::ThrottlerTick() {
 void nsHttpConnectionMgr::DelayedResumeBackgroundThrottledTransactions() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  if (mThrottleVersion == 1) {
-    if (mDelayedResumeReadTimer) {
-      return;
-    }
-  } else {
-    // If the mThrottleTicker doesn't exist, there is nothing currently
-    // being throttled.  Hence, don't invoke the hold time interval.
-    // This is called also when a single download transaction becomes
-    // marked as throttleable.  We would otherwise block it unnecessarily.
-    if (mDelayedResumeReadTimer || !mThrottleTicker) {
-      return;
-    }
+  if (mDelayedResumeReadTimer) {
+    return;
   }
 
   LOG(("nsHttpConnectionMgr::DelayedResumeBackgroundThrottledTransactions"));
@@ -3504,9 +3518,15 @@ void nsHttpConnectionMgr::DoSpeculativeConnectionInternal(
     return;
   }
 
-  if (aFetchHTTPSRR && NS_SUCCEEDED(aTrans->FetchHTTPSRR())) {
-    // nsHttpConnectionMgr::DoSpeculativeConnection will be called again when
-    // HTTPS RR is available.
+  ProxyDNSStrategy strategy = GetProxyDNSStrategyHelper(
+      aEnt->mConnInfo->ProxyType(), aEnt->mConnInfo->ProxyFlag());
+  // Speculative connections can be triggered by non-Necko consumers,
+  // so add an extra check to ensure HTTPS RR isn't fetched when a proxy is
+  // used.
+  if (aFetchHTTPSRR && strategy == ProxyDNSStrategy::ORIGIN &&
+      NS_SUCCEEDED(aTrans->FetchHTTPSRR())) {
+    // nsHttpConnectionMgr::DoSpeculativeConnection will be called again
+    // when HTTPS RR is available.
     return;
   }
 
@@ -3797,6 +3817,62 @@ void nsHttpConnectionMgr::DecrementNumIdleConns() {
   MOZ_ASSERT(mNumIdleConns);
   mNumIdleConns--;
   ConditionallyStopPruneDeadConnectionsTimer();
+}
+
+// A structure used to marshall objects necessary for ServerCertificateHashaes
+class nsStoreServerCertHashesData : public ARefBase {
+ public:
+  nsStoreServerCertHashesData(
+      nsHttpConnectionInfo* aConnInfo, bool aNoSpdy, bool aNoHttp3,
+      nsTArray<RefPtr<nsIWebTransportHash>>&& aServerCertHashes)
+      : mConnInfo(aConnInfo),
+        mNoSpdy(aNoSpdy),
+        mNoHttp3(aNoHttp3),
+        mServerCertHashes(std::move(aServerCertHashes)) {}
+
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(nsStoreServerCertHashesData, override)
+
+  RefPtr<nsHttpConnectionInfo> mConnInfo;
+  bool mNoSpdy;
+  bool mNoHttp3;
+  nsTArray<RefPtr<nsIWebTransportHash>> mServerCertHashes;
+
+ private:
+  virtual ~nsStoreServerCertHashesData() = default;
+};
+
+// The connection manager needs to know the hashes used for a WebTransport
+// connection authenticated with serverCertHashes
+nsresult nsHttpConnectionMgr::StoreServerCertHashes(
+    nsHttpConnectionInfo* aConnInfo, bool aNoSpdy, bool aNoHttp3,
+    nsTArray<RefPtr<nsIWebTransportHash>>&& aServerCertHashes) {
+  RefPtr<nsHttpConnectionInfo> ci = aConnInfo->Clone();
+  RefPtr<nsStoreServerCertHashesData> data = new nsStoreServerCertHashesData(
+      ci, aNoSpdy, aNoHttp3, std::move(aServerCertHashes));
+  return PostEvent(&nsHttpConnectionMgr::OnMsgStoreServerCertHashes, 0, data);
+}
+
+void nsHttpConnectionMgr::OnMsgStoreServerCertHashes(int32_t, ARefBase* param) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+
+  nsStoreServerCertHashesData* data =
+      static_cast<nsStoreServerCertHashesData*>(param);
+
+  bool isWildcard;
+  ConnectionEntry* connEnt = GetOrCreateConnectionEntry(
+      data->mConnInfo, true, data->mNoSpdy, data->mNoHttp3, &isWildcard);
+  MOZ_ASSERT(!isWildcard, "No webtransport with wildcard");
+  connEnt->SetServerCertHashes(std::move(data->mServerCertHashes));
+}
+
+const nsTArray<RefPtr<nsIWebTransportHash>>*
+nsHttpConnectionMgr::GetServerCertHashes(nsHttpConnectionInfo* aConnInfo) {
+  ConnectionEntry* connEnt = mCT.GetWeak(aConnInfo->HashKey());
+  if (!connEnt) {
+    MOZ_ASSERT(0);
+    return nullptr;
+  }
+  return &connEnt->GetServerCertHashes();
 }
 
 void nsHttpConnectionMgr::CheckTransInPendingQueue(nsHttpTransaction* aTrans) {

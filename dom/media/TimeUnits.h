@@ -82,6 +82,8 @@ class TimeUnit final {
   constexpr TimeUnit(CheckedInt64 aTicks, int64_t aBase)
       : mTicks(aTicks), mBase(aBase) {
     MOZ_RELEASE_ASSERT(mBase > 0);
+    // aBase is often from a uint32_t and assumed less than 2^32.
+    MOZ_DIAGNOSTIC_ASSERT(mBase <= UINT32_MAX);
   }
 
   explicit constexpr TimeUnit(CheckedInt64 aTicks)
@@ -92,8 +94,13 @@ class TimeUnit final {
     return std::numeric_limits<int64_t>::max() - 1;
   }
 
-  // This is only precise up to a point, which is aValue * aBase <= 2^53 - 1
+  // These are only precise up to a point, which is aValue * aBase <= 2^53 - 1
   static TimeUnit FromSeconds(double aValue, int64_t aBase = USECS_PER_S);
+  static TimeUnit FromSecondsWithBaseOf(double aSeconds,
+                                        const TimeUnit& aOtherForBase) {
+    return FromSeconds(aSeconds, aOtherForBase.mBase);
+  }
+
   static constexpr TimeUnit FromMicroseconds(int64_t aValue) {
     return TimeUnit(aValue, USECS_PER_S);
   }
@@ -118,6 +125,9 @@ class TimeUnit final {
   int64_t ToMicroseconds() const;
   int64_t ToNanoseconds() const;
   int64_t ToTicksAtRate(int64_t aRate) const;
+  // Only to be used in release assertions or unit testing, returns true if this
+  // TimeUnit has base aBase
+  bool IsBase(int64_t aBase) const;
   double ToSeconds() const;
   nsCString ToString() const;
   TimeDuration ToTimeDuration() const;
@@ -166,10 +176,24 @@ class TimeUnit final {
     }
   };
 
+  struct FloorPolicy {
+    template <typename T>
+    static T policy(T& aValue) {
+      return std::floor(aValue);
+    }
+  };
+
   struct RoundPolicy {
     template <typename T>
     static T policy(T& aValue) {
       return std::round(aValue);
+    }
+  };
+
+  struct CeilingPolicy {
+    template <typename T>
+    static T policy(T& aValue) {
+      return std::ceil(aValue);
     }
   };
 
@@ -195,6 +219,10 @@ class TimeUnit final {
   template <class RoundingPolicy = TruncatePolicy>
   TimeUnit ToBase(int64_t aTargetBase, double& aOutError) const {
     aOutError = 0.0;
+    if (mTicks.value() == INT64_MAX || mTicks.value() == INT64_MIN) {
+      // -ve or +ve infinity
+      return TimeUnit(mTicks, aTargetBase);
+    }
     CheckedInt<int64_t> ticks = mTicks * aTargetBase;
     if (ticks.isValid()) {
       imaxdiv_t rv = imaxdiv(ticks.value(), mBase);
@@ -267,6 +295,18 @@ class TimeIntervals : public IntervalSet<TimeUnit> {
   }
   bool IsInvalid() const {
     return Length() == 1 && Start(0).IsNegInf() && End(0).IsNegInf();
+  }
+
+  // Returns the same interval, with a given base resolution.
+  TimeIntervals ToBase(const TimeUnit& aBase) const {
+    TimeIntervals output;
+    for (const auto& interval : mIntervals) {
+      TimeInterval convertedInterval{interval.mStart.ToBase(aBase),
+                                     interval.mEnd.ToBase(aBase),
+                                     interval.mFuzz.ToBase(aBase)};
+      output += convertedInterval;
+    }
+    return output;
   }
 
   // Returns the same interval, with a microsecond resolution. This is used to

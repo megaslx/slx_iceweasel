@@ -18,10 +18,10 @@ add_task(async function runTests() {
     info("# part 1");
     await whenPageShown(browser, () =>
       // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-      BrowserTestUtils.loadURIString(browser, "http://www.example.com/")
+      BrowserTestUtils.startLoadingURIString(browser, "http://www.example.com/")
     );
     await checkListenersAsync("newentry", "shistory has a new entry");
-    ok(browser.canGoBack, "we can go back");
+    ok(browser.canGoBackIgnoringUserInteraction, "we can go back");
 
     await whenPageShown(browser, () => browser.goBack());
     await checkListenersAsync("gotoindex", "back to the first shentry");
@@ -121,10 +121,10 @@ add_task(async function runTests() {
   info("# part 1");
   await whenPageShown(browser, () =>
     // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-    BrowserTestUtils.loadURIString(browser, "http://www.example.com/")
+    BrowserTestUtils.startLoadingURIString(browser, "http://www.example.com/")
   );
   checkListeners("newentry", "shistory has a new entry");
-  ok(browser.canGoBack, "we can go back");
+  ok(browser.canGoBackIgnoringUserInteraction, "we can go back");
 
   await whenPageShown(browser, () => browser.goBack());
   checkListeners("gotoindex", "back to the first shentry");
@@ -172,7 +172,7 @@ class SHistoryListener {
     this.last = "initial";
   }
 
-  OnHistoryNewEntry(aNewURI) {
+  OnHistoryNewEntry() {
     this.last = "newentry";
   }
 

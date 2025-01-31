@@ -15,6 +15,7 @@
 #include "mozilla/intl/OSPreferences.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/ServoUtils.h"
+#include "mozilla/StaticPtr.h"
 
 using namespace mozilla;
 using mozilla::intl::OSPreferences;
@@ -81,12 +82,12 @@ static constexpr struct {
     {"Thai", nsGkAtoms::th},
     {"Tibt", nsGkAtoms::x_tibt}};
 
-static UniquePtr<nsLanguageAtomService> gLangAtomService;
+static StaticAutoPtr<nsLanguageAtomService> gLangAtomService;
 
 // static
 nsLanguageAtomService* nsLanguageAtomService::GetService() {
   if (!gLangAtomService) {
-    gLangAtomService = MakeUnique<nsLanguageAtomService>();
+    gLangAtomService = new nsLanguageAtomService();
   }
   return gLangAtomService.get();
 }
@@ -109,7 +110,7 @@ already_AddRefed<nsAtom> nsLanguageAtomService::LookupCharSet(
   aEncoding->Name(charset);
   nsAutoCString group;
   if (NS_FAILED(nsUConvPropertySearch::SearchPropertyValue(
-          encodingsGroups, ArrayLength(encodingsGroups), charset, group))) {
+          encodingsGroups, std::size(encodingsGroups), charset, group))) {
     return RefPtr<nsAtom>(nsGkAtoms::Unicode).forget();
   }
   return NS_Atomize(group);
@@ -222,7 +223,7 @@ nsStaticAtom* nsLanguageAtomService::GetUncachedLanguageGroup(
       Span<const char> scriptAsSpan = loc.Script().Span();
       nsDependentCSubstring script(scriptAsSpan.data(), scriptAsSpan.size());
       if (BinarySearchIf(
-              kScriptLangGroup, 0, ArrayLength(kScriptLangGroup),
+              kScriptLangGroup, 0, std::size(kScriptLangGroup),
               [script](const auto& entry) -> int {
                 return Compare(script, nsDependentCString(entry.mTag));
               },

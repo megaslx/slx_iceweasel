@@ -14,13 +14,15 @@
  */
 
 use crate::{BinaryReader, BinaryReaderError, Result};
-use std::fmt;
-use std::marker;
-use std::ops::Range;
+use ::core::fmt;
+use ::core::marker;
+use ::core::ops::Range;
 
+#[cfg(feature = "component-model")]
 mod component;
 mod core;
 
+#[cfg(feature = "component-model")]
 pub use self::component::*;
 pub use self::core::*;
 
@@ -83,8 +85,7 @@ impl<'a, T> SectionLimited<'a, T> {
     /// # Errors
     ///
     /// Returns an error if a 32-bit count couldn't be read from the `data`.
-    pub fn new(data: &'a [u8], offset: usize) -> Result<Self> {
-        let mut reader = BinaryReader::new_with_offset(data, offset);
+    pub fn new(mut reader: BinaryReader<'a>) -> Result<Self> {
         let count = reader.read_var_u32()?;
         Ok(SectionLimited {
             reader,
@@ -255,9 +256,9 @@ pub struct Subsections<'a, T> {
 impl<'a, T> Subsections<'a, T> {
     /// Creates a new reader for the specified section contents starting at
     /// `offset` within the original wasm file.
-    pub fn new(data: &'a [u8], offset: usize) -> Self {
+    pub fn new(reader: BinaryReader<'a>) -> Self {
         Subsections {
-            reader: BinaryReader::new_with_offset(data, offset),
+            reader,
             _marker: marker::PhantomData,
         }
     }
@@ -278,7 +279,7 @@ impl<'a, T> Subsections<'a, T> {
         T: Subsection<'a>,
     {
         let subsection_id = self.reader.read_u7()?;
-        let reader = self.reader.read_reader("unexpected end of section")?;
+        let reader = self.reader.read_reader()?;
         T::from_reader(subsection_id, reader)
     }
 }

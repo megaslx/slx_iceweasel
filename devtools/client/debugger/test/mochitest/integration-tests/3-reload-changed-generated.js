@@ -65,6 +65,16 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
       expectedGeneratedFileContentOnBreakpointLine
     );
   }
+  info(
+    "Check that the source code snipper shown in the breakpoint panel is correct"
+  );
+  assertBreakpointSnippet(
+    dbg,
+    1,
+    isCompressed
+      ? `baabar(),console.log("YO")},foobar()}]);`
+      : `await baabar();`
+  );
 
   await closeTab(dbg, "bundle-with-another-original.js");
 
@@ -90,7 +100,7 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
     // early, therefore is pauses at the old position, where no breakpoint is
     // displayed in the UI
     info("Assert that the breakpoint paused in the other original file");
-    assertPausedAtSourceAndLine(
+    await assertPausedAtSourceAndLine(
       dbg,
       findSource(dbg, "another-original.js").id,
       5
@@ -100,7 +110,7 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
 
     info("Switch to generated source and assert that the location is correct");
     await dbg.actions.jumpToMappedSelectedLocation();
-    assertPausedAtSourceAndLine(
+    await assertPausedAtSourceAndLine(
       dbg,
       findSource(dbg, "bundle-with-another-original.js").id,
       82
@@ -116,7 +126,7 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
     info(
       "Check that the breakpoint is displayed and paused on the correct line"
     );
-    assertPausedAtSourceAndLine(
+    await assertPausedAtSourceAndLine(
       dbg,
       findSource(dbg, "original-with-no-update.js").id,
       6
@@ -126,6 +136,7 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
     // Assert that it does not pause in commpressed files
     assertNotPaused(dbg);
   }
+  await waitForBreakpoint(dbg, "original-with-no-update.js", 6);
   await assertBreakpoint(dbg, 6);
 
   info(
@@ -139,12 +150,12 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
   await selectSource(dbg, "bundle-with-another-original.js");
   // This scrolls the line into view so the content
   // on the line is rendered and avaliable for dom querying.
-  getCM(dbg).scrollIntoView({ line: 103, ch: 0 });
+  await scrollEditorIntoView(dbg, 103, 0);
 
   if (isCompressed) {
     await assertBreakpoint(dbg, 1);
   } else {
-    assertPausedAtSourceAndLine(
+    await assertPausedAtSourceAndLine(
       dbg,
       findSource(dbg, "bundle-with-another-original.js").id,
       103
@@ -169,6 +180,15 @@ addIntegrationTask(async function testReloadingChangedGeneratedSource(
   } else {
     is(breakpoint.generatedLocation.line, 103);
   }
+
+  info("Check that the breakpoint snippet is still the same");
+  assertBreakpointSnippet(
+    dbg,
+    1,
+    isCompressed
+      ? `baabar(),console.log("YO")},foobar()}]);`
+      : `await baabar();`
+  );
 
   if (!isCompressed) {
     await resume(dbg);

@@ -46,6 +46,7 @@
 
 #include "updatecommon.h"
 #ifdef XP_MACOSX
+#  include "UpdateSettingsUtil.h"
 #  include "updaterfileutils_osx.h"
 #endif  // XP_MACOSX
 
@@ -73,15 +74,18 @@
 void CleanupElevatedMacUpdate(bool aFailureOccurred);
 bool IsOwnedByGroupAdmin(const char* aAppBundle);
 bool IsRecursivelyWritable(const char* aPath);
-void LaunchChild(int argc, const char** argv);
+void LaunchMacApp(int argc, const char** argv);
 void LaunchMacPostProcess(const char* aAppBundle);
-bool ObtainUpdaterArguments(int* argc, char*** argv);
-bool ServeElevatedUpdate(int argc, const char** argv);
+bool ObtainUpdaterArguments(int* aArgc, char*** aArgv,
+                            MARChannelStringTable* aMARStrings);
+bool ServeElevatedUpdate(int aArgc, const char** aArgv,
+                         const char* aMARChannelID);
 void SetGroupOwnershipAndPermissions(const char* aAppBundle);
 bool PerformInstallationFromDMG(int argc, char** argv);
 struct UpdateServerThreadArgs {
   int argc;
   const NS_tchar** argv;
+  const char* marChannelID;
 };
 #endif
 
@@ -161,16 +165,10 @@ class AutoFile {
  public:
   explicit AutoFile(FILE* file = nullptr) : mFile(file) {}
 
-  ~AutoFile() {
-    if (mFile != nullptr) {
-      fclose(mFile);
-    }
-  }
+  ~AutoFile() { close(); }
 
   AutoFile& operator=(FILE* file) {
-    if (mFile != 0) {
-      fclose(mFile);
-    }
+    close();
     mFile = file;
     return *this;
   }
@@ -181,15 +179,16 @@ class AutoFile {
 
  private:
   FILE* mFile;
-};
 
-struct MARChannelStringTable {
-  MARChannelStringTable() {
-    MARChannelID = mozilla::MakeUnique<char[]>(1);
-    MARChannelID[0] = '\0';
+  void close() {
+    if (mFile != nullptr) {
+      int rv = fclose(mFile);
+      if (rv != 0) {
+        LOG(("File close did not execute successfully"));
+      }
+      mFile = nullptr;
+    }
   }
-
-  mozilla::UniquePtr<char[]> MARChannelID;
 };
 
 //-----------------------------------------------------------------------------
@@ -278,11 +277,19 @@ class Thread {
 static NS_tchar gPatchDirPath[MAXPATHLEN];
 static NS_tchar gInstallDirPath[MAXPATHLEN];
 static NS_tchar gWorkingDirPath[MAXPATHLEN];
-static ArchiveReader gArchiveReader;
+MOZ_RUNINIT static ArchiveReader gArchiveReader;
 static bool gSucceeded = false;
 static bool sStagedUpdate = false;
 static bool sReplaceRequest = false;
 static bool sUsingService = false;
+// The updater binary can potentially run twice. It will always initially run
+// with `gIsElevated == false`. If it is run an additional time with elevation,
+// that iteration will run with `gIsElevated == true`.
+static bool gIsElevated = false;
+
+// This string contains the MAR channel IDs that are later extracted by one of
+// the `ReadMARChannelIDsFrom` variants.
+MOZ_RUNINIT static MARChannelStringTable gMARStrings;
 
 // Normally, we run updates as a result of user action (the user started Firefox
 // or clicked a "Restart to Update" button). But there are some cases when
@@ -306,10 +313,11 @@ static NS_tchar gCallbackRelPath[MAXPATHLEN];
 static NS_tchar gCallbackBackupPath[MAXPATHLEN];
 static NS_tchar gDeleteDirPath[MAXPATHLEN];
 
-// Whether to copy the update.log and update.status file to the update patch
-// directory from a secure directory.
+// Whether to copy the update-elevated.log and update.status file to the update
+// patch directory from a secure directory.
 static bool gCopyOutputFiles = false;
-// Whether to write the update.log and update.status file to a secure directory.
+// Whether to write the update-elevated.log and update.status file to a secure
+// directory.
 static bool gUseSecureOutputPath = false;
 #endif
 
@@ -364,6 +372,13 @@ static bool EnvHasValue(const char* name) {
   return (val && *val);
 }
 #endif
+
+static const NS_tchar* UpdateLogFilename() {
+  if (gIsElevated) {
+    return NS_T("update-elevated.log");
+  }
+  return NS_T("update.log");
+}
 
 #ifdef XP_WIN
 /**
@@ -422,8 +437,13 @@ static void output_finish() {
     NS_tchar srcLogPath[MAXPATHLEN + 1] = {NS_T('\0')};
     if (GetSecureOutputFilePath(gPatchDirPath, L".log", srcLogPath)) {
       NS_tchar dstLogPath[MAXPATHLEN + 1] = {NS_T('\0')};
+      // Unconditionally use "update-elevated.log" here rather than
+      // `UpdateLogFilename` since (a) secure output files are only created by
+      // elevated instances and (b) the copying of the secure output file is
+      // done by the unelevated instance, so `UpdateLogFilename` will return
+      // the wrong thing for this.
       NS_tsnprintf(dstLogPath, sizeof(dstLogPath) / sizeof(dstLogPath[0]),
-                   NS_T("%s\\update.log"), gPatchDirPath);
+                   NS_T("%s\\update-elevated.log"), gPatchDirPath);
       CopyFileW(srcLogPath, dstLogPath, false);
     }
   }
@@ -1985,6 +2005,9 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   WCHAR inifile[MAX_PATH + 1] = {L'\0'};
   wcsncpy(inifile, installationDir, MAX_PATH);
   if (!PathAppendSafe(inifile, L"updater.ini")) {
+    LOG(
+        ("LaunchWinPostProcess failed because PathAppendSafe failed when "
+         "getting INI path"));
     return false;
   }
 
@@ -1992,11 +2015,13 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   WCHAR exearg[MAX_PATH + 1];
   if (!GetPrivateProfileStringW(L"PostUpdateWin", L"ExeRelPath", nullptr,
                                 exefile, MAX_PATH + 1, inifile)) {
+    LOG(("LaunchWinPostProcess failed due to failure to retrieve ExeRelPath"));
     return false;
   }
 
   if (!GetPrivateProfileStringW(L"PostUpdateWin", L"ExeArg", nullptr, exearg,
                                 MAX_PATH + 1, inifile)) {
+    LOG(("LaunchWinPostProcess failed due to failure to retrieve ExeArg"));
     return false;
   }
 
@@ -2004,45 +2029,63 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   // or colons.
   if (wcsstr(exefile, L"..") != nullptr || wcsstr(exefile, L"./") != nullptr ||
       wcsstr(exefile, L".\\") != nullptr || wcsstr(exefile, L":") != nullptr) {
+    LOG(
+        ("LaunchWinPostProcess failed because executable path contains "
+         "disallowed characters"));
     return false;
   }
 
   // The relative path must not start with a decimal point, backslash, or
   // forward slash.
   if (exefile[0] == L'.' || exefile[0] == L'\\' || exefile[0] == L'/') {
+    LOG(("LaunchWinPostProcess failed because first character is invalid"));
     return false;
   }
 
   WCHAR exefullpath[MAX_PATH + 1] = {L'\0'};
   wcsncpy(exefullpath, installationDir, MAX_PATH);
   if (!PathAppendSafe(exefullpath, exefile)) {
+    LOG(
+        ("LaunchWinPostProcess failed because PathAppendSafe failed when "
+         "getting full executable path"));
     return false;
   }
 
   if (!IsValidFullPath(exefullpath)) {
+    LOG(
+        ("LaunchWinPostProcess failed because executable path is not a valid, "
+         "full path"));
     return false;
   }
 
 #  if !defined(TEST_UPDATER) && defined(MOZ_MAINTENANCE_SERVICE)
   if (sUsingService &&
       !DoesBinaryMatchAllowedCertificates(installationDir, exefullpath)) {
+    LOG(
+        ("LaunchWinPostProcess failed because the binary doesn't match the "
+         "allowed certificates"));
     return false;
   }
 #  endif
 
   WCHAR dlogFile[MAX_PATH + 1];
   if (!PathGetSiblingFilePath(dlogFile, exefullpath, L"uninstall.update")) {
+    LOG(("LaunchWinPostProcess failed because dlogFile path is unavailable"));
     return false;
   }
 
   WCHAR slogFile[MAX_PATH + 1] = {L'\0'};
   if (gCopyOutputFiles) {
     if (!GetSecureOutputFilePath(gPatchDirPath, L".log", slogFile)) {
+      LOG(
+          ("LaunchWinPostProcess failed because a secure slogFile path is "
+           "unavailable"));
       return false;
     }
   } else {
     wcsncpy(slogFile, updateInfoDir, MAX_PATH);
-    if (!PathAppendSafe(slogFile, L"update.log")) {
+    if (!PathAppendSafe(slogFile, UpdateLogFilename())) {
+      LOG(("LaunchWinPostProcess failed because slogFile path is unavailable"));
       return false;
     }
   }
@@ -2054,6 +2097,10 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   size_t len = wcslen(exearg) + wcslen(dummyArg);
   WCHAR* cmdline = (WCHAR*)malloc((len + 1) * sizeof(WCHAR));
   if (!cmdline) {
+    LOG(
+        ("LaunchWinPostProcess failed due to failure to allocate %zu wchars "
+         "for cmdline",
+         len + 1));
     return false;
   }
 
@@ -2069,18 +2116,32 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   si.lpDesktop = const_cast<LPWSTR>(L"");  // -Wwritable-strings
   PROCESS_INFORMATION pi = {0};
 
-  bool ok = CreateProcessW(exefullpath, cmdline,
-                           nullptr,  // no special security attributes
-                           nullptr,  // no special thread attributes
-                           false,    // don't inherit filehandles
-                           0,        // No special process creation flags
-                           nullptr,  // inherit my environment
-                           workingDirectory, &si, &pi);
+  // Invoke post-update with a minimal environment to avoid environment
+  // variables intended to relaunch Firefox impacting post-update operations, in
+  // particular background tasks.  The updater will invoke the callback
+  // application with the current (non-minimal) environment.
+  //
+  // N.b.: two null terminating characters!  The first terminates a non-existent
+  // key-value pair, the second (automatically added) terminates the block of
+  // key-value pairs.
+  const WCHAR* emptyEnvironment = L"\0";
+
+  bool ok =
+      CreateProcessW(exefullpath, cmdline,
+                     nullptr,  // no special security attributes
+                     nullptr,  // no special thread attributes
+                     false,    // don't inherit filehandles
+                     0,        // No special process creation flags
+                     (LPVOID)emptyEnvironment, workingDirectory, &si, &pi);
   free(cmdline);
   if (ok) {
+    LOG(("LaunchWinPostProcess - Waiting for process to complete"));
     WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    LOG(("LaunchWinPostProcess - Process completed"));
+  } else {
+    LOG(("LaunchWinPostProcess - CreateProcessW failed: %lu", GetLastError()));
   }
   return ok;
 }
@@ -2099,7 +2160,7 @@ static void LaunchCallbackApp(const NS_tchar* workingDir, int argc,
 #if defined(USE_EXECV)
   execv(argv[0], argv);
 #elif defined(XP_MACOSX)
-  LaunchChild(argc, (const char**)argv);
+  LaunchMacApp(argc, (const char**)argv);
 #elif defined(XP_WIN)
   // Do not allow the callback to run when running an update through the
   // service as session 0.  The unelevated updater.exe will do the launching.
@@ -2119,10 +2180,13 @@ static void LaunchCallbackApp(const NS_tchar* workingDir, int argc,
 }
 
 static bool WriteToFile(const NS_tchar* aFilename, const char* aStatus) {
+  LOG(("Writing status to file: %s", aStatus));
+
   NS_tchar statusFilePath[MAXPATHLEN + 1] = {NS_T('\0')};
 #if defined(XP_WIN)
   if (gUseSecureOutputPath) {
     if (!GetSecureOutputFilePath(gPatchDirPath, L".status", statusFilePath)) {
+      LOG(("WriteToFile failed to get secure output path"));
       return false;
     }
   } else {
@@ -2136,16 +2200,19 @@ static bool WriteToFile(const NS_tchar* aFilename, const char* aStatus) {
                NS_T("%s/%s"), gPatchDirPath, aFilename);
   // Make sure that the directory for the update status file exists
   if (ensure_parent_dir(statusFilePath)) {
+    LOG(("WriteToFile failed to ensure parent directory's existence"));
     return false;
   }
 #endif
 
   AutoFile statusFile(NS_tfopen(statusFilePath, NS_T("wb+")));
   if (statusFile == nullptr) {
+    LOG(("WriteToFile failed to open status file: %d", errno));
     return false;
   }
 
   if (fwrite(aStatus, strlen(aStatus), 1, statusFile) != 1) {
+    LOG(("WriteToFile failed to write to status file: %d", errno));
     return false;
   }
 
@@ -2155,6 +2222,7 @@ static bool WriteToFile(const NS_tchar* aFilename, const char* aStatus) {
     // write to the update status file fails an existing update status file
     // won't be used.
     if (!WriteSecureIDFile(gPatchDirPath)) {
+      LOG(("WriteToFile failed to write secure ID file"));
       return false;
     }
   }
@@ -2300,11 +2368,16 @@ static bool CompareSecureUpdateStatus(
     mozilla::Maybe<int>* errorCode = nullptr) {
   NS_tchar statusFilePath[MAX_PATH + 1] = {L'\0'};
   if (!GetSecureOutputFilePath(gPatchDirPath, L".status", statusFilePath)) {
+    LOG(
+        ("CompareSecureUpdateStatus failed due to GetSecureOutputFilePath "
+         "failure"));
     return false;
   }
 
   AutoFile file(NS_tfopen(statusFilePath, NS_T("rb")));
   if (file == nullptr) {
+    LOG(("CompareSecureUpdateStatus failed to open the secure status file: %d",
+         errno));
     return false;
   }
 
@@ -2312,11 +2385,14 @@ static bool CompareSecureUpdateStatus(
   char buf[bufferLength] = {0};
   size_t charsRead = fread(buf, sizeof(buf[0]), bufferLength - 1, file);
   if (ferror(file)) {
+    LOG(("CompareSecureUpdateStatus failed to read status file"));
     return false;
   }
   buf[charsRead] = '\0';
 
   statusMatch = UpdateStatusIs(buf, expectedStatus, errorCode);
+  LOG(("CompareSecureUpdateStatus %s %s %s", buf,
+       statusMatch ? "matches" : "does not match", expectedStatus));
   return true;
 }
 
@@ -2592,23 +2668,67 @@ static void WaitForServiceFinishThread(void* param) {
 #endif
 
 #ifdef MOZ_VERIFY_MAR_SIGNATURE
+#  ifndef XP_MACOSX
 /**
  * This function reads in the ACCEPTED_MAR_CHANNEL_IDS from update-settings.ini
  *
- * @param path    The path to the ini file that is to be read
- * @param results A pointer to the location to store the read strings
+ * @param aPath    The path to the ini file that is to be read
+ * @param aResults A pointer to the location to store the read strings
  * @return OK on success
  */
-static int ReadMARChannelIDs(const NS_tchar* path,
-                             MARChannelStringTable* results) {
+static int ReadMARChannelIDsFromPath(const NS_tchar* aPath,
+                                     MARChannelStringTable* aResults) {
   const unsigned int kNumStrings = 1;
   const char* kUpdaterKeys = "ACCEPTED_MAR_CHANNEL_IDS\0";
-  int result = ReadStrings(path, kUpdaterKeys, kNumStrings,
-                           &results->MARChannelID, "Settings");
-
-  return result;
+  return ReadStrings(aPath, kUpdaterKeys, kNumStrings, &aResults->MARChannelID,
+                     "Settings");
 }
-#endif
+#  else   // XP_MACOSX
+/**
+ * This function reads in the ACCEPTED_MAR_CHANNEL_IDS from a string buffer.
+ *
+ * @param aChannels   A string buffer containing the MAR channel(s).
+ * @param aResults    A pointer to the location to store the read strings.
+ * @return OK on success
+ */
+static int ReadMARChannelIDsFromBuffer(char* aChannels,
+                                       MARChannelStringTable* aResults) {
+  const unsigned int kNumStrings = 1;
+  const char* kUpdaterKeys = "ACCEPTED_MAR_CHANNEL_IDS\0";
+  return ReadStringsFromBuffer(aChannels, kUpdaterKeys, kNumStrings,
+                               &aResults->MARChannelID, "Settings");
+}
+#  endif  // XP_MACOSX
+
+/**
+ * This function reads in the `ACCEPTED_MAR_CHANNEL_IDS` from the appropriate
+ * (platform-dependent) source and populates `gMARStrings`.
+ *
+ * @return
+ *        `OK` on success, `UPDATE_SETTINGS_FILE_CHANNEL` on failure.
+ */
+static int PopulategMARStrings() {
+  int rv = UPDATE_SETTINGS_FILE_CHANNEL;
+#  ifdef XP_MACOSX
+  if (gIsElevated) {
+    // An elevated update process will have already populated gMARStrings when
+    // it connected to the unelevated update process to obtain the command line
+    // args. See `ObtainUpdaterArguments`.
+    rv = OK;
+  } else if (auto marChannels =
+                 UpdateSettingsUtil::GetAcceptedMARChannelsValue()) {
+    rv = ReadMARChannelIDsFromBuffer(marChannels->data(), &gMARStrings);
+  }
+#  else
+  NS_tchar updateSettingsPath[MAXPATHLEN];
+  NS_tsnprintf(updateSettingsPath,
+               sizeof(updateSettingsPath) / sizeof(updateSettingsPath[0]),
+               NS_T("%s/update-settings.ini"), gInstallDirPath);
+  rv = ReadMARChannelIDsFromPath(updateSettingsPath, &gMARStrings);
+#  endif
+  return rv == OK ? OK : UPDATE_SETTINGS_FILE_CHANNEL;
+}
+#endif  // MOZ_VERIFY_MAR_SIGNATURE
 
 static int GetUpdateFileName(NS_tchar* fileName, int maxChars) {
   NS_tsnprintf(fileName, maxChars, NS_T("%s/update.mar"), gPatchDirPath);
@@ -2633,21 +2753,10 @@ static void UpdateThreadFunc(void* param) {
     }
 
     if (rv == OK) {
-      NS_tchar updateSettingsPath[MAXPATHLEN];
-      NS_tsnprintf(updateSettingsPath,
-                   sizeof(updateSettingsPath) / sizeof(updateSettingsPath[0]),
-#  ifdef XP_MACOSX
-                   NS_T("%s/Contents/Resources/update-settings.ini"),
-#  else
-                   NS_T("%s/update-settings.ini"),
-#  endif
-                   gInstallDirPath);
-      MARChannelStringTable MARStrings;
-      if (ReadMARChannelIDs(updateSettingsPath, &MARStrings) != OK) {
-        rv = UPDATE_SETTINGS_FILE_CHANNEL;
-      } else {
+      rv = PopulategMARStrings();
+      if (rv == OK) {
         rv = gArchiveReader.VerifyProductInformation(
-            MARStrings.MARChannelID.get(), MOZ_APP_VERSION);
+            gMARStrings.MARChannelID.get(), MOZ_APP_VERSION);
       }
     }
 #endif
@@ -2752,7 +2861,8 @@ static void UpdateThreadFunc(void* param) {
 #ifdef XP_MACOSX
 static void ServeElevatedUpdateThreadFunc(void* param) {
   UpdateServerThreadArgs* threadArgs = (UpdateServerThreadArgs*)param;
-  gSucceeded = ServeElevatedUpdate(threadArgs->argc, threadArgs->argv);
+  gSucceeded = ServeElevatedUpdate(threadArgs->argc, threadArgs->argv,
+                                   threadArgs->marChannelID);
   if (!gSucceeded) {
     WriteStatusFile(ELEVATION_CANCELED);
   }
@@ -2775,11 +2885,30 @@ int LaunchCallbackAndPostProcessApps(int argc, NS_tchar** argv,
                                      HANDLE updateLockFileHandle
 #elif XP_MACOSX
                                      ,
-                                     bool isElevated,
                                      mozilla::UniquePtr<UmaskContext>
                                          umaskContext
 #endif
 ) {
+  // We want to make sure to call `output_finish` before we leave this function
+  // and, if we end up launching the callback app, we want to call it before
+  // we do that (so that the callback app can operate on the output).
+  // But we want to do this as late as possible to make the log as detailed as
+  // possible.
+  class RaiiOutputFinish {
+   public:
+    RaiiOutputFinish() : mCalled(false) {}
+    ~RaiiOutputFinish() { call(); }
+    void call() {
+      if (!mCalled) {
+        mCalled = true;
+        output_finish();
+      }
+    }
+
+   private:
+    bool mCalled;
+  } raii_output_finish;
+
 #ifdef XP_MACOSX
   umaskContext.reset();
 #endif
@@ -2787,8 +2916,9 @@ int LaunchCallbackAndPostProcessApps(int argc, NS_tchar** argv,
   if (argc > callbackIndex) {
 #if defined(XP_WIN)
     if (gSucceeded) {
+      LOG(("Launching Windows post update process"));
       if (!LaunchWinPostProcess(gInstallDirPath, gPatchDirPath)) {
-        fprintf(stderr, "The post update process was not launched");
+        LOG(("The post update process was not launched successfully"));
       }
 
 #  ifdef MOZ_MAINTENANCE_SERVICE
@@ -2800,23 +2930,42 @@ int LaunchCallbackAndPostProcessApps(int argc, NS_tchar** argv,
       // the service to a newer version in that case. If we are not running
       // through the service, then MOZ_USING_SERVICE will not exist.
       if (!sUsingService) {
+        LOG(("Starting Service Update before launching callback app"));
         StartServiceUpdate(gInstallDirPath);
+      } else {
+        LOG(("Not starting service update. MMS will handle it."));
       }
 #  endif
+    } else {
+      LOG(("Not launching Windows post update process because !gSucceeded"));
     }
+
     EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 0);
 #elif XP_MACOSX
-    if (!isElevated) {
+    if (!gIsElevated) {
       if (gSucceeded) {
+        LOG(("Launching macOS post update process"));
         LaunchMacPostProcess(gInstallDirPath);
+      } else {
+        LOG(("Not launching macOS post update process because !gSucceeded"));
       }
 #endif
 
+    raii_output_finish.call();
     LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
                       sUsingService);
 #ifdef XP_MACOSX
-  }    // if (!isElevated)
+  } else {  // isElevated
+    LOG(
+        ("Not elevated. Skipping LaunchMacPostProcess and "
+         "LaunchCallbackApp"));
+  }
 #endif /* XP_MACOSX */
+}
+else {
+  LOG(
+      ("No callback arg. Skipping LaunchWinPostProcess and "
+       "LaunchCallbackApp"));
 }
 return 0;
 }
@@ -2851,6 +3000,21 @@ int NS_main(int argc, NS_tchar** argv) {
   putenv(const_cast<char*>("MOZ_USING_SERVICE="));
 #endif
 
+  if (argc == 2 && NS_tstrcmp(argv[1], NS_T("--channels-allowed")) == 0) {
+#ifdef MOZ_VERIFY_MAR_SIGNATURE
+    int rv = PopulategMARStrings();
+    if (rv == OK) {
+      printf("Channels Allowed: '%s'\n", gMARStrings.MARChannelID.get());
+      return 0;
+    }
+    printf("Error: %d\n", rv);
+    return 1;
+#else
+      printf("Not Applicable: No support for signature verification\n");
+      return 0;
+#endif
+  }
+
   // The callback is the remaining arguments starting at callbackIndex.
   // The argument specified by callbackIndex is the callback executable and the
   // argument prior to callbackIndex is the working directory.
@@ -2861,17 +3025,28 @@ int NS_main(int argc, NS_tchar** argv) {
   bool isDMGInstall = false;
 
 #ifdef XP_MACOSX
+  if (argc > 2 && NS_tstrcmp(argv[1], NS_T("--openAppBundle")) == 0) {
+    // We have been asked to open a .app bundle. The path to the .app bundle and
+    // any command line arguments have been passed to us as arguments after
+    // "--openAppBundle", so remove the first two arguments and launch the .app
+    // bundle.
+    LaunchMacApp(argc - 2, (const char**)argv + 2);
+    return 0;
+  }
+
   // We want to control file permissions explicitly, or else we could end up
   // corrupting installs for other users on the system. Accordingly, set the
   // umask to 0 for all file creations below and reset it on exit. See Bug
   // 1337007
   mozilla::UniquePtr<UmaskContext> umaskContext(new UmaskContext(0));
 
+  // This will be used to set `gIsElevated`, but we are going to do it later
+  // when we are ready to set it for every OS to avoid inconsistency.
   bool isElevated =
       strstr(argv[0], "/Library/PrivilegedHelperTools/org.mozilla.updater") !=
       0;
   if (isElevated) {
-    if (!ObtainUpdaterArguments(&argc, &argv)) {
+    if (!ObtainUpdaterArguments(&argc, &argv, &gMARStrings)) {
       // Won't actually get here because ObtainUpdaterArguments will terminate
       // the current process on failure.
       return 1;
@@ -2954,6 +3129,16 @@ int NS_main(int argc, NS_tchar** argv) {
                NS_T("%s\\update_elevated.lock"), gPatchDirPath);
   gUseSecureOutputPath =
       sUsingService || (NS_tremove(elevatedLockFilePath) && errno != ENOENT);
+
+  // Even if a file has no sharing access, you can still get its attributes
+  // If we are running elevated, this file will exist, having been opened by
+  // the unelevated updater that started this one.
+  gIsElevated =
+      GetFileAttributesW(elevatedLockFilePath) != INVALID_FILE_ATTRIBUTES;
+#elif defined(XP_MACOSX)
+    // This is only ever true on macOS and Windows. We don't currently have a
+    // way of elevating on other platforms.
+    gIsElevated = isElevated;
 #endif
 
   if (!isDMGInstall) {
@@ -3172,6 +3357,7 @@ int NS_main(int argc, NS_tchar** argv) {
       UpdateServerThreadArgs threadArgs;
       threadArgs.argc = argc;
       threadArgs.argv = const_cast<const NS_tchar**>(argv);
+      threadArgs.marChannelID = gMARStrings.MARChannelID.get();
 
       Thread t1;
       if (t1.Run(ServeElevatedUpdateThreadFunc, &threadArgs) == 0) {
@@ -3184,7 +3370,7 @@ int NS_main(int argc, NS_tchar** argv) {
       t1.Join();
     }
 
-    LaunchCallbackAndPostProcessApps(argc, argv, callbackIndex, false,
+    LaunchCallbackAndPostProcessApps(argc, argv, callbackIndex,
                                      std::move(umaskContext));
     return gSucceeded ? 0 : 1;
   }
@@ -3205,13 +3391,22 @@ int NS_main(int argc, NS_tchar** argv) {
       (void)GetSecureOutputFilePath(gPatchDirPath, L".log", logFilePath);
     } else {
       NS_tsnprintf(logFilePath, sizeof(logFilePath) / sizeof(logFilePath[0]),
-                   NS_T("%s\\update.log"), gPatchDirPath);
+                   NS_T("%s\\%s"), gPatchDirPath, UpdateLogFilename());
     }
 #else
       NS_tsnprintf(logFilePath, sizeof(logFilePath) / sizeof(logFilePath[0]),
-                   NS_T("%s/update.log"), gPatchDirPath);
+                   NS_T("%s/%s"), gPatchDirPath, UpdateLogFilename());
 #endif
     LogInit(logFilePath);
+
+    LOG(("sUsingService=%s", sUsingService ? "true" : "false"));
+    LOG(("sUpdateSilently=%s", sUpdateSilently ? "true" : "false"));
+#ifdef XP_WIN
+    LOG(("gUseSecureOutputPath=%s", gUseSecureOutputPath ? "true" : "false"));
+    // Note that this is not the final value of useService
+    LOG(("useService=%s", useService ? "true" : "false"));
+#endif
+    LOG(("gIsElevated=%s", gIsElevated ? "true" : "false"));
 
     if (!WriteStatusFile("applying")) {
       LOG(("failed setting status to 'applying'"));
@@ -3319,6 +3514,8 @@ int NS_main(int argc, NS_tchar** argv) {
     // to the installation directory.
     if (!sUsingService &&
         (argc > callbackIndex || sStagedUpdate || sReplaceRequest)) {
+      LOG(("Checking whether elevation is needed"));
+
       NS_tchar updateLockFilePath[MAXPATHLEN];
       if (sStagedUpdate) {
         // When staging an update, the lock file is:
@@ -3367,9 +3564,11 @@ int NS_main(int argc, NS_tchar** argv) {
           CreateFileW(updateLockFilePath, GENERIC_READ | GENERIC_WRITE, 0,
                       nullptr, OPEN_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, nullptr);
 
-      // Even if a file has no sharing access, you can still get its attributes
-      bool startedFromUnelevatedUpdater =
-          GetFileAttributesW(elevatedLockFilePath) != INVALID_FILE_ATTRIBUTES;
+      if (updateLockFileHandle == INVALID_HANDLE_VALUE) {
+        LOG(("Failed to open update lock file: %lu", GetLastError()));
+      } else {
+        LOG(("Successfully opened lock file"));
+      }
 
       // If we're running from the service, then we were started with the same
       // token as the service so the permissions are already dropped.  If we're
@@ -3377,7 +3576,7 @@ int NS_main(int argc, NS_tchar** argv) {
       // updater, then we drop the permissions here. We do not drop the
       // permissions on the originally called updater because we use its token
       // to start the callback application.
-      if (startedFromUnelevatedUpdater) {
+      if (gIsElevated) {
         // Disable every privilege we don't need. Processes started using
         // CreateProcess will use the same token as this process.
         UACHelper::DisablePrivileges(nullptr);
@@ -3386,6 +3585,8 @@ int NS_main(int argc, NS_tchar** argv) {
       if (updateLockFileHandle == INVALID_HANDLE_VALUE ||
           (useService && testOnlyFallbackKeyExists &&
            (noServiceFallback || forceServiceFallback))) {
+        LOG(("Can't open lock file - seems like we need elevation"));
+
         HANDLE elevatedFileHandle;
         if (NS_tremove(elevatedLockFilePath) && errno != ENOENT) {
           LOG(("Unable to create elevated lock file! Exiting"));
@@ -3404,6 +3605,7 @@ int NS_main(int argc, NS_tchar** argv) {
 
         auto cmdLine = mozilla::MakeCommandLine(argc - 1, argv + 1);
         if (!cmdLine) {
+          LOG(("Failed to make command line! Exiting"));
           CloseHandle(elevatedFileHandle);
           output_finish();
           return 1;
@@ -3416,6 +3618,8 @@ int NS_main(int argc, NS_tchar** argv) {
 #    ifndef TEST_UPDATER
         if (useService) {
           useService = IsProgramFilesPath(gInstallDirPath);
+          LOG(("After checking IsProgramFilesPath, useService=%s",
+               useService ? "true" : "false"));
         }
 #    endif
 
@@ -3425,6 +3629,8 @@ int NS_main(int argc, NS_tchar** argv) {
         if (useService) {
           BOOL isLocal = FALSE;
           useService = IsLocalFile(argv[0], isLocal) && isLocal;
+          LOG(("After checking IsLocalFile, useService=%s",
+               useService ? "true" : "false"));
         }
 
         // If we have unprompted elevation we should NOT use the service
@@ -3437,10 +3643,12 @@ int NS_main(int argc, NS_tchar** argv) {
           BOOL unpromptedElevation;
           if (IsUnpromptedElevation(unpromptedElevation)) {
             useService = !unpromptedElevation;
+            LOG(("After checking IsUnpromptedElevation, useService=%s",
+                 useService ? "true" : "false"));
           }
         }
 
-        // Make sure the service registry entries for the instsallation path
+        // Make sure the service registry entries for the installation path
         // are available.  If not don't use the service.
         if (useService) {
           WCHAR maintenanceServiceKey[MAX_PATH + 1];
@@ -3454,6 +3662,8 @@ int NS_main(int argc, NS_tchar** argv) {
             } else {
 #    ifdef TEST_UPDATER
               useService = testOnlyFallbackKeyExists;
+              LOG(("After failing to open maintenanceServiceKey, useService=%s",
+                   useService ? "true" : "false"));
 #    endif
               if (!useService) {
                 lastFallbackError = FALLBACKKEY_NOKEY_ERROR;
@@ -3462,6 +3672,7 @@ int NS_main(int argc, NS_tchar** argv) {
           } else {
             useService = false;
             lastFallbackError = FALLBACKKEY_REGPATH_ERROR;
+            LOG(("Can't get registry certificate location. useService=false"));
           }
         }
 
@@ -3472,7 +3683,7 @@ int NS_main(int argc, NS_tchar** argv) {
         // on our own.
 
         // If we still want to use the service try to launch the service
-        // comamnd for the update.
+        // command for the update.
         if (useService) {
           // Get the secure ID before trying to update so it is possible to
           // determine if the updater or the maintenance service has created a
@@ -3494,11 +3705,12 @@ int NS_main(int argc, NS_tchar** argv) {
 
           // If the update couldn't be started, then set useService to false so
           // we do the update the old way.
-          DWORD ret =
+          DWORD launchResult =
               LaunchServiceSoftwareUpdateCommand(serviceArgc, (LPCWSTR*)argv);
-          useService = (ret == ERROR_SUCCESS);
+          useService = (launchResult == ERROR_SUCCESS);
           // If the command was launched then wait for the service to be done.
           if (useService) {
+            LOG(("Launched service successfully"));
             bool showProgressUI = false;
             // Never show the progress UI when staging updates or in a
             // background task.
@@ -3527,7 +3739,9 @@ int NS_main(int argc, NS_tchar** argv) {
               // something seriously wrong.
               lastFallbackError = FALLBACKKEY_SERVICE_NO_STOP_ERROR;
               useService = false;
+              LOG(("Service didn't stop after 10 minutes. useService=false"));
             } else {
+              LOG(("Service stop detected."));
               // Copy the secure output files if the secure ID has changed.
               gCopyOutputFiles = true;
               char uuidStringAfter[UUID_LEN] = {'\0'};
@@ -3553,10 +3767,13 @@ int NS_main(int argc, NS_tchar** argv) {
                 if (success && updateFailed && maybeErrorCode.isSome() &&
                     IsServiceSpecificErrorCode(maybeErrorCode.value())) {
                   useService = false;
+                  LOG(("Service-specific failure detected. useService=false"));
                 }
               }
             }
           } else {
+            LOG(("Launching service failed. useService=false, launchResult=%lu",
+                 launchResult));
             lastFallbackError = FALLBACKKEY_LAUNCH_ERROR;
           }
         }
@@ -3588,7 +3805,7 @@ int NS_main(int argc, NS_tchar** argv) {
           }
           // Set an error so we don't get into an update loop when the callback
           // runs. This will be reset to pending by handleUpdateFailure in
-          // UpdateService.jsm.
+          // UpdateService.sys.mjs.
           WriteStatusFile(SILENT_UPDATE_NEEDED_ELEVATION_ERROR);
           LOG(("Skipping update to avoid UAC prompt from background task."));
           output_finish();
@@ -3607,6 +3824,7 @@ int NS_main(int argc, NS_tchar** argv) {
         if (!useService && !noServiceFallback &&
             (updateLockFileHandle == INVALID_HANDLE_VALUE ||
              forceServiceFallback)) {
+          LOG(("Elevating via a UAC prompt"));
           // Get the secure ID before trying to update so it is possible to
           // determine if the updater has created a new one.
           char uuidStringBefore[UUID_LEN] = {'\0'};
@@ -3653,7 +3871,9 @@ int NS_main(int argc, NS_tchar** argv) {
           bool result = ShellExecuteEx(&sinfo);
 
           if (result) {
+            LOG(("Elevation successful. Waiting for elevated updater to run."));
             WaitForSingleObject(sinfo.hProcess, INFINITE);
+            LOG(("Elevated updater has finished running."));
             CloseHandle(sinfo.hProcess);
 
             // Copy the secure output files if the secure ID has changed.
@@ -3675,7 +3895,16 @@ int NS_main(int argc, NS_tchar** argv) {
             // point and to prevent future changes from regressing this code.
             gCopyOutputFiles = false;
             WriteStatusFile(ELEVATION_CANCELED);
+            LOG(("Elevation canceled."));
           }
+        } else {
+          LOG(("Not showing a UAC prompt."));
+          LOG(("useService=%s", useService ? "true" : "false"));
+          LOG(("noServiceFallback=%s", noServiceFallback ? "true" : "false"));
+          LOG(("updateLockFileHandle%sINVALID_HANDLE_VALUE",
+               updateLockFileHandle == INVALID_HANDLE_VALUE ? "==" : "!="));
+          LOG(("forceServiceFallback=%s",
+               forceServiceFallback ? "true" : "false"));
         }
 
         // If we started the elevated updater, and it finished, check the secure
@@ -3688,11 +3917,14 @@ int NS_main(int argc, NS_tchar** argv) {
           bool updateStatusSucceeded = false;
           if (IsSecureUpdateStatusSucceeded(updateStatusSucceeded) &&
               updateStatusSucceeded) {
+            LOG(("Running LaunchWinPostProcess"));
             if (!LaunchWinPostProcess(gInstallDirPath, gPatchDirPath)) {
-              fprintf(stderr,
-                      "The post update process which runs as the user"
-                      " for service update could not be launched.");
+              LOG(("Failed to run LaunchWinPostProcess"));
             }
+          } else {
+            LOG(
+                ("Not running LaunchWinPostProcess because update status is not"
+                 "'succeeded'."));
           }
         }
 
@@ -3716,6 +3948,7 @@ int NS_main(int argc, NS_tchar** argv) {
         // application so the update status file contains the value from the
         // secure directory used by the maintenance service and the elevated
         // updater.
+        LOG(("Update complete"));
         output_finish();
         if (argc > callbackIndex) {
           LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
@@ -3735,6 +3968,7 @@ int NS_main(int argc, NS_tchar** argv) {
     // If we made it this far this is the updater instance that will perform the
     // actual update and gCopyOutputFiles will be false (e.g. the default
     // value).
+    LOG(("Going to update via this updater instance."));
 #endif
 
     if (sStagedUpdate) {
@@ -3965,7 +4199,7 @@ int NS_main(int argc, NS_tchar** argv) {
                 "NS_main: callback app file in use, failed to exclusively open "
                 "executable file from background task: " LOG_S,
                 argv[callbackIndex]));
-            WriteStatusFile(WRITE_ERROR_BACKGROUND_TASK_SHARING_VIOLATION);
+            WriteStatusFile(BACKGROUND_TASK_SHARING_VIOLATION);
 
             proceedWithoutExclusive = false;
           }
@@ -4016,7 +4250,7 @@ int NS_main(int argc, NS_tchar** argv) {
     // Run update process on a background thread. ShowProgressUI may return
     // before QuitProgressUI has been called, so wait for UpdateThreadFunc to
     // terminate. Avoid showing the progress UI when staging an update, or if
-    // this is an elevated process on OSX.
+    // this is an elevated process on macOS.
     Thread t;
     if (t.Run(UpdateThreadFunc, nullptr) == 0) {
       if (!sStagedUpdate && !sReplaceRequest && !sUpdateSilently
@@ -4084,7 +4318,7 @@ int NS_main(int argc, NS_tchar** argv) {
   }
 #endif /* XP_MACOSX */
 
-  output_finish();
+  LOG(("Running LaunchCallbackAndPostProcessApps"));
 
   int retVal = LaunchCallbackAndPostProcessApps(argc, argv, callbackIndex
 #ifdef XP_WIN
@@ -4093,7 +4327,6 @@ int NS_main(int argc, NS_tchar** argv) {
                                                 updateLockFileHandle
 #elif XP_MACOSX
                                                   ,
-                                                  isElevated,
                                                   std::move(umaskContext)
 #endif
   );
@@ -4237,12 +4470,14 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
         rv = add_dir_entries(foundpath, list);
         if (rv) {
           LOG(("add_dir_entries error: " LOG_S ", err: %d", foundpath, rv));
+          FindClose(hFindFile);
           return rv;
         }
       } else {
         // Add the file to be removed to the ActionList.
         NS_tchar* quotedpath = get_quoted_path(foundpath);
         if (!quotedpath) {
+          FindClose(hFindFile);
           return PARSE_ERROR;
         }
 
@@ -4252,6 +4487,7 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
           LOG(("add_dir_entries Parse error on recurse: " LOG_S ", err: %d",
                quotedpath, rv));
           free(quotedpath);
+          FindClose(hFindFile);
           return rv;
         }
         free(quotedpath);
@@ -4722,6 +4958,7 @@ int DoUpdate() {
 
     rv = action->Parse(line);
     if (rv) {
+      delete action;
       free(buf);
       return rv;
     }

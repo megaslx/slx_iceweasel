@@ -31,6 +31,10 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () =>
 var localProviderModules = {
   UrlbarProviderAboutPages:
     "resource:///modules/UrlbarProviderAboutPages.sys.mjs",
+  UrlbarProviderActionsSearchMode:
+    "resource:///modules/UrlbarProviderActionsSearchMode.sys.mjs",
+  UrlbarProviderGlobalActions:
+    "resource:///modules/UrlbarProviderGlobalActions.sys.mjs",
   UrlbarProviderAliasEngines:
     "resource:///modules/UrlbarProviderAliasEngines.sys.mjs",
   UrlbarProviderAutofill: "resource:///modules/UrlbarProviderAutofill.sys.mjs",
@@ -38,8 +42,8 @@ var localProviderModules = {
     "resource:///modules/UrlbarProviderBookmarkKeywords.sys.mjs",
   UrlbarProviderCalculator:
     "resource:///modules/UrlbarProviderCalculator.sys.mjs",
-  UrlbarProviderContextualSearch:
-    "resource:///modules/UrlbarProviderContextualSearch.sys.mjs",
+  UrlbarProviderClipboard:
+    "resource:///modules/UrlbarProviderClipboard.sys.mjs",
   UrlbarProviderHeuristicFallback:
     "resource:///modules/UrlbarProviderHeuristicFallback.sys.mjs",
   UrlbarProviderHistoryUrlHeuristic:
@@ -52,12 +56,18 @@ var localProviderModules = {
   UrlbarProviderPlaces: "resource:///modules/UrlbarProviderPlaces.sys.mjs",
   UrlbarProviderPrivateSearch:
     "resource:///modules/UrlbarProviderPrivateSearch.sys.mjs",
-  UrlbarProviderQuickActions:
-    "resource:///modules/UrlbarProviderQuickActions.sys.mjs",
   UrlbarProviderQuickSuggest:
     "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+  UrlbarProviderQuickSuggestContextualOptIn:
+    "resource:///modules/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs",
+  UrlbarProviderRecentSearches:
+    "resource:///modules/UrlbarProviderRecentSearches.sys.mjs",
   UrlbarProviderRemoteTabs:
     "resource:///modules/UrlbarProviderRemoteTabs.sys.mjs",
+  UrlbarProviderRestrictKeywords:
+    "resource:///modules/UrlbarProviderRestrictKeywords.sys.mjs",
+  UrlbarProviderRestrictKeywordsAutofill:
+    "resource:///modules/UrlbarProviderRestrictKeywordsAutofill.sys.mjs",
   UrlbarProviderSearchTips:
     "resource:///modules/UrlbarProviderSearchTips.sys.mjs",
   UrlbarProviderSearchSuggestions:
@@ -69,7 +79,6 @@ var localProviderModules = {
   UrlbarProviderTopSites: "resource:///modules/UrlbarProviderTopSites.sys.mjs",
   UrlbarProviderUnitConversion:
     "resource:///modules/UrlbarProviderUnitConversion.sys.mjs",
-  UrlbarProviderWeather: "resource:///modules/UrlbarProviderWeather.sys.mjs",
 };
 
 // List of available local muxers, each is implemented in its own jsm module.
@@ -90,10 +99,17 @@ class ProvidersManager {
     // Tracks the available providers.  This is a sorted array, with HEURISTIC
     // providers at the front.
     this.providers = [];
+    this.providersByNotificationType = {
+      onEngagement: new Set(),
+      onImpression: new Set(),
+      onAbandonment: new Set(),
+      onSearchSessionEnd: new Set(),
+    };
     for (let [symbol, module] of Object.entries(localProviderModules)) {
       let { [symbol]: provider } = ChromeUtils.importESModule(module);
       this.registerProvider(provider);
     }
+
     // Tracks ongoing Query instances by queryContext.
     this.queries = new Map();
 
@@ -114,10 +130,7 @@ class ProvidersManager {
     // To improve dataflow and reduce UI work, when a result is added we may notify
     // it to the controller after a delay, so that we can chunk results in that
     // timeframe into a single call. See _notifyResultsFromProvider for details.
-    // Note: to avoid handling events too early, the heuristic timer should be
-    // smaller than UrlbarEventBufferer.DEFERRING_TIMEOUT_MS.
-    this.CHUNK_HEURISTIC_RESULTS_DELAY_MS = 200;
-    this.CHUNK_OTHER_RESULTS_DELAY_MS = 16;
+    this.CHUNK_RESULTS_DELAY_MS = 16;
   }
 
   /**
@@ -148,6 +161,14 @@ class ProvidersManager {
       index = this.providers.length;
     }
     this.providers.splice(index, 0, provider);
+
+    for (const notificationType of Object.keys(
+      this.providersByNotificationType
+    )) {
+      if (typeof provider[notificationType] === "function") {
+        this.providersByNotificationType[notificationType].add(provider);
+      }
+    }
   }
 
   /**
@@ -162,6 +183,10 @@ class ProvidersManager {
     if (index != -1) {
       this.providers.splice(index, 1);
     }
+
+    Object.values(this.providersByNotificationType).forEach(providers =>
+      providers.delete(provider)
+    );
   }
 
   /**
@@ -226,6 +251,24 @@ class ProvidersManager {
       ? this.providers.filter(p => queryContext.providers.includes(p.name))
       : this.providers;
 
+    queryContext.canceled = false;
+    try {
+      // The tokenizer needs to synchronously check whether the first token is a
+      // keyword, thus here we must ensure the keywords cache is up.
+      await lazy.PlacesUtils.keywords.ensureCacheInitialized();
+    } catch (ex) {
+      lazy.logger.error(
+        "Unable to ensure keyword cache is initialization. A keyword may not be \
+         detected at the beginning of the search string.",
+        ex
+      );
+    }
+
+    // The query may have been canceled while awaiting for asynchronous work.
+    if (queryContext.canceled) {
+      return;
+    }
+
     // Apply tokenization.
     lazy.UrlbarTokenizer.tokenize(queryContext);
 
@@ -267,25 +310,6 @@ class ProvidersManager {
       return;
     }
 
-    // Update the behavior of extension providers.
-    let updateBehaviorPromises = [];
-    for (let provider of this.providers) {
-      if (
-        provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.EXTENSION &&
-        provider.name != "Omnibox"
-      ) {
-        updateBehaviorPromises.push(
-          provider.tryMethod("updateBehavior", queryContext)
-        );
-      }
-    }
-    if (updateBehaviorPromises.length) {
-      await Promise.all(updateBehaviorPromises);
-      if (query.canceled) {
-        return;
-      }
-    }
-
     await query.start();
   }
 
@@ -296,9 +320,13 @@ class ProvidersManager {
    */
   cancelQuery(queryContext) {
     lazy.logger.info(`Query cancel "${queryContext.searchString}"`);
+    queryContext.canceled = true;
+
     let query = this.queries.get(queryContext);
     if (!query) {
-      throw new Error("Couldn't find a matching query for the given context");
+      // The query object may have not been created yet, if the query was
+      // canceled immediately.
+      return;
     }
     query.cancel();
     if (!this.interruptLevel) {
@@ -327,12 +355,12 @@ class ProvidersManager {
   }
 
   /**
-   * Notifies all providers when the user starts and ends an engagement with the
-   * urlbar.  For details on parameters, see UrlbarProvider.onEngagement().
+   * Notifies all providers about changes in user engagement with the urlbar.
+   * This function centralizes the dispatch of engagement-related events to the
+   * appropriate providers based on the current state of interaction.
    *
    * @param {string} state
-   *   The state of the engagement, one of: start, engagement, abandonment,
-   *   discard
+   *   The state of the engagement, one of: engagement, abandonment
    * @param {UrlbarQueryContext} queryContext
    *   The engagement's query context, if available.
    * @param {object} details
@@ -341,13 +369,119 @@ class ProvidersManager {
    *   The controller associated with the engagement
    */
   notifyEngagementChange(state, queryContext, details = {}, controller) {
-    for (let provider of this.providers) {
-      provider.tryMethod(
-        "onEngagement",
+    if (!["engagement", "abandonment"].includes(state)) {
+      lazy.logger.error(`Unsupported state for engagement change: ${state}`);
+      return;
+    }
+
+    const visibleResults = controller.view?.visibleResults ?? [];
+    const visibleResultsByProviderName = new Map();
+
+    visibleResults.forEach((result, index) => {
+      const providerName = result.providerName;
+      let results = visibleResultsByProviderName.get(providerName);
+      if (!results) {
+        results = [];
+        visibleResultsByProviderName.set(providerName, results);
+      }
+      results.push({ index, result });
+    });
+
+    if (!details.isSessionOngoing) {
+      this.#notifyImpression(
+        this.providersByNotificationType.onImpression,
         state,
         queryContext,
-        details,
-        controller
+        controller,
+        visibleResultsByProviderName
+      );
+    }
+
+    if (state === "engagement") {
+      if (details.result) {
+        this.#notifyEngagement(
+          this.providersByNotificationType.onEngagement,
+          queryContext,
+          controller,
+          details
+        );
+      }
+    } else {
+      this.#notifyAbandonment(
+        this.providersByNotificationType.onAbandonment,
+        queryContext,
+        controller,
+        visibleResultsByProviderName
+      );
+    }
+
+    if (!details.isSessionOngoing) {
+      this.#notifySearchSessionEnd(
+        this.providersByNotificationType.onSearchSessionEnd,
+        queryContext,
+        controller,
+        details
+      );
+    }
+  }
+
+  #notifyEngagement(engagementProviders, queryContext, controller, details) {
+    for (const provider of engagementProviders) {
+      if (details.result.providerName == provider.name) {
+        provider.tryMethod("onEngagement", queryContext, controller, details);
+        break;
+      }
+    }
+  }
+
+  #notifyImpression(
+    impressionProviders,
+    state,
+    queryContext,
+    controller,
+    visibleResultsByProviderName
+  ) {
+    for (const provider of impressionProviders) {
+      const providerVisibleResults =
+        visibleResultsByProviderName.get(provider.name) ?? [];
+
+      if (providerVisibleResults.length) {
+        provider.tryMethod(
+          "onImpression",
+          state,
+          queryContext,
+          controller,
+          providerVisibleResults
+        );
+      }
+    }
+  }
+
+  #notifyAbandonment(
+    abandomentProviders,
+    queryContext,
+    controller,
+    visibleResultsByProviderName
+  ) {
+    for (const provider of abandomentProviders) {
+      if (visibleResultsByProviderName.has(provider.name)) {
+        provider.tryMethod("onAbandonment", queryContext, controller);
+      }
+    }
+  }
+
+  #notifySearchSessionEnd(
+    searchSessionEndProviders,
+    queryContext,
+    controller,
+    details
+  ) {
+    for (const provider of searchSessionEndProviders) {
+      provider.tryMethod(
+        "onSearchSessionEnd",
+        queryContext,
+        controller,
+        details
       );
     }
   }
@@ -420,7 +554,9 @@ class Query {
         // Not all isActive implementations are async, so wrap the call in a
         // promise so we can be sure we can call `then` on it.  Note that
         // Promise.resolve returns its arg directly if it's already a promise.
-        Promise.resolve(provider.tryMethod("isActive", this.context))
+        Promise.resolve(
+          provider.tryMethod("isActive", this.context, this.controller)
+        )
           .then(isActive => {
             if (isActive && !this.canceled) {
               let priority = provider.tryMethod("getPriority", this.context);
@@ -472,13 +608,8 @@ class Query {
     let queryPromises = [];
     for (let provider of activeProviders) {
       // Track heuristic providers. later we'll use this Set to wait for them
-      // before returning results to the user. We skip the Omnibox provider
-      // because being implemented in an add-on we have no control over its
-      // performance characteristics.
-      if (
-        provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC &&
-        provider.name != "Omnibox"
-      ) {
+      // before returning results to the user.
+      if (provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC) {
         this.context.pendingHeuristicProviders.add(provider.name);
         queryPromises.push(
           startQuery(provider).finally(() => {
@@ -618,35 +749,19 @@ class Query {
 
   _notifyResultsFromProvider(provider) {
     // We use a timer to reduce UI flicker, by adding results in chunks.
-    if (!this._chunkTimer && this.context.pendingHeuristicProviders.size) {
-      // This is the first time we see a result, and some heuristic providers
-      // are still pending. We start a longer "heuristic" timeout, because we
-      // don't want to surprise the user with an unexpected default action (e.g.
-      // searching instead of handling a bookmark keyword).
-      // Since heuristic providers return results pretty quickly, this timer
-      // will often be skipped early.
-      // Note that if the heuristic timer elapses, we may still cause an
-      // imperfect default action, but that's still better than looking stale.
-      this._chunkTimer = new lazy.SkippableTimer({
-        name: "heuristic",
-        callback: () => this._notifyResults(),
-        time: UrlbarProvidersManager.CHUNK_HEURISTIC_RESULTS_DELAY_MS,
-        logger: provider.logger,
-      });
-    } else if (!this._chunkTimer || this._chunkTimer.done) {
+    if (!this._chunkTimer || this._chunkTimer.done) {
       // Either there's no heuristic provider pending at all, or the previous
       // timer is done, but we're still getting results. Start a short timer
       // to chunk remaining results.
       this._chunkTimer = new lazy.SkippableTimer({
         name: "chunking",
         callback: () => this._notifyResults(),
-        time: UrlbarProvidersManager.CHUNK_OTHER_RESULTS_DELAY_MS,
+        time: UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS,
         logger: provider.logger,
       });
     } else if (
-      this._chunkTimer.name == "heuristic" &&
-      !this._chunkTimer.done &&
-      !this.context.pendingHeuristicProviders.size
+      !this.context.pendingHeuristicProviders.size &&
+      provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC
     ) {
       // All the active heuristic providers have returned results, we can skip
       // the heuristic chunk timer and start showing results immediately.
@@ -658,7 +773,6 @@ class Query {
 
   _notifyResults() {
     this.muxer.sort(this.context, this.unsortedResults);
-
     // We don't want to notify consumers if there are no results since they
     // generally expect at least one result when notified, so bail, but only
     // after nulling out the chunk timer above so that it will be restarted

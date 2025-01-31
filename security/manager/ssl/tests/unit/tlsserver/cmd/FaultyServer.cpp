@@ -21,6 +21,7 @@ enum FaultType {
   None = 0,
   ZeroRtt,
   UnknownSNI,
+  Mlkem768x25519,
 };
 
 struct FaultyServerHost {
@@ -37,19 +38,26 @@ const char* kHostZeroRttAlertVersion =
 const char* kHostZeroRttAlertUnexpected = "0rtt-alert-unexpected.example.com";
 const char* kHostZeroRttAlertDowngrade = "0rtt-alert-downgrade.example.com";
 
+const char* kHostMlkem768x25519NetInterrupt =
+    "mlkem768x25519-net-interrupt.example.com";
+const char* kHostMlkem768x25519AlertAfterServerHello =
+    "mlkem768x25519-alert-after-server-hello.example.com";
+
 const char* kCertWildcard = "default-ee";
 
 /* Each type of failure gets a different SNI.
  * the "default-ee" cert has a SAN for *.example.com
  * the "no-san-ee" cert is signed by the test-ca, but it doesn't have any SANs.
  */
-const FaultyServerHost sFaultyServerHosts[]{
+MOZ_RUNINIT const FaultyServerHost sFaultyServerHosts[]{
     {kHostOk, kCertWildcard, None},
     {kHostUnknown, kCertWildcard, UnknownSNI},
     {kHostZeroRttAlertBadMac, kCertWildcard, ZeroRtt},
     {kHostZeroRttAlertVersion, kCertWildcard, ZeroRtt},
     {kHostZeroRttAlertUnexpected, kCertWildcard, ZeroRtt},
     {kHostZeroRttAlertDowngrade, kCertWildcard, ZeroRtt},
+    {kHostMlkem768x25519NetInterrupt, kCertWildcard, Mlkem768x25519},
+    {kHostMlkem768x25519AlertAfterServerHello, kCertWildcard, Mlkem768x25519},
     {nullptr, nullptr},
 };
 
@@ -150,17 +158,55 @@ void SecretCallbackFailZeroRtt(PRFileDesc* fd, PRUint16 epoch,
     } else if (!strcmp(host->mHostName, kHostZeroRttAlertVersion)) {
       SSL3_SendAlert(ss, alert_fatal, protocol_version);
     } else if (!strcmp(host->mHostName, kHostZeroRttAlertUnexpected)) {
-      SSL3_SendAlert(ss, alert_fatal, no_alert);
+      SSL3_SendAlert(ss, alert_fatal, unexpected_message);
     }
   }
 }
 
-/* An SSLRecordWriteCallback can replace the TLS record layer. */
-SECStatus WriteCallbackExample(PRFileDesc* fd, PRUint16 epoch,
+SECStatus FailingWriteCallback(PRFileDesc* fd, PRUint16 epoch,
                                SSLContentType contentType, const PRUint8* data,
                                unsigned int len, void* arg) {
-  /* do something */
-  return SECSuccess;
+  return SECFailure;
+}
+
+void SecretCallbackFailMlkem768x25519(PRFileDesc* fd, PRUint16 epoch,
+                                      SSLSecretDirection dir,
+                                      PK11SymKey* secret, void* arg) {
+  fprintf(stderr, "Mlkem768x25519 handler epoch=%d dir=%d\n", epoch,
+          (uint32_t)dir);
+  FaultyServerHost* host = static_cast<FaultyServerHost*>(arg);
+
+  if (epoch == 2 && dir == ssl_secret_write) {
+    sslSocket* ss = ssl_FindSocket(fd);
+    if (!ss) {
+      fprintf(stderr, "Mlkem768x25519 handler, no ss!\n");
+      return;
+    }
+
+    if (!ss->sec.keaGroup) {
+      fprintf(stderr, "Mlkem768x25519 handler, no ss->sec.keaGroup!\n");
+      return;
+    }
+
+    char path[256];
+    SprintfLiteral(path, "/callback/%u", ss->sec.keaGroup->name);
+    DoCallback(path);
+
+    if (ss->sec.keaGroup->name != ssl_grp_kem_mlkem768x25519) {
+      return;
+    }
+
+    fprintf(stderr, "Mlkem768x25519 handler, configuring alert\n");
+    if (strcmp(host->mHostName, kHostMlkem768x25519NetInterrupt) == 0) {
+      // Install a record write callback that causes the next write to fail.
+      // The client will see this as a PR_END_OF_FILE / NS_ERROR_NET_INTERRUPT
+      // error.
+      ss->recordWriteCallback = FailingWriteCallback;
+    } else if (!strcmp(host->mHostName,
+                       kHostMlkem768x25519AlertAfterServerHello)) {
+      SSL3_SendAlert(ss, alert_fatal, close_notify);
+    }
+  }
 }
 
 int32_t DoSNISocketConfig(PRFileDesc* aFd, const SECItem* aSrvNameArr,
@@ -176,9 +222,17 @@ int32_t DoSNISocketConfig(PRFileDesc* aFd, const SECItem* aSrvNameArr,
     fprintf(stderr, "found pre-defined host '%s'\n", host->mHostName);
   }
 
+  const SSLNamedGroup mlkemTestNamedGroups[] = {ssl_grp_kem_mlkem768x25519,
+                                                ssl_grp_ec_curve25519};
+
   switch (host->mFaultType) {
     case ZeroRtt:
       SSL_SecretCallback(aFd, &SecretCallbackFailZeroRtt, (void*)host);
+      break;
+    case Mlkem768x25519:
+      SSL_SecretCallback(aFd, &SecretCallbackFailMlkem768x25519, (void*)host);
+      SSL_NamedGroupConfig(aFd, mlkemTestNamedGroups,
+                           std::size(mlkemTestNamedGroups));
       break;
     case None:
       break;

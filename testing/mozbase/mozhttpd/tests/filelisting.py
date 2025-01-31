@@ -6,12 +6,12 @@
 
 import os
 import re
+from urllib.request import urlopen
 
 import mozhttpd
 import mozunit
 import pytest
 from six import ensure_str
-from six.moves.urllib.request import urlopen
 
 
 @pytest.fixture(name="docroot")
@@ -45,7 +45,7 @@ def test_filelist(httpd, docroot, path):
 
     filelist = os.listdir(docroot)
 
-    pattern = "\<[a-zA-Z0-9\-\_\.\=\"'\/\\\%\!\@\#\$\^\&\*\(\) :;]*\>"
+    pattern = r"""\<[a-zA-Z0-9\-\_\.\="'\/\\%\!\@\#\$\^\&\*\(\) :;]*\>"""
 
     for line in f.readlines():
         subbed_lined = re.sub(pattern, "", ensure_str(line).strip("\n"))

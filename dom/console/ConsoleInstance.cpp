@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/ConsoleInstance.h"
+#include "Console.h"
 #include "mozilla/dom/ConsoleBinding.h"
 #include "mozilla/Preferences.h"
 #include "ConsoleCommon.h"
@@ -44,7 +45,8 @@ ConsoleUtils::Level WebIDLevelToConsoleUtilsLevel(ConsoleLevel aLevel) {
 
 ConsoleInstance::ConsoleInstance(JSContext* aCx,
                                  const ConsoleInstanceOptions& aOptions)
-    : mConsole(new Console(aCx, nullptr, 0, 0)) {
+    : mMaxLogLevel(ConsoleLogLevel::All),
+      mConsole(new Console(aCx, nullptr, 0, 0, aOptions.mPrefix)) {
   mConsole->mConsoleID = aOptions.mConsoleID;
   mConsole->mPassedInnerID = aOptions.mInnerID;
 
@@ -52,33 +54,102 @@ ConsoleInstance::ConsoleInstance(JSContext* aCx,
     mConsole->mDumpFunction = &aOptions.mDump.Value();
   }
 
-  mConsole->mPrefix = aOptions.mPrefix;
-
   // Let's inform that this is a custom instance.
   mConsole->mChromeInstance = true;
 
   if (aOptions.mMaxLogLevel.WasPassed()) {
-    mConsole->mMaxLogLevel = aOptions.mMaxLogLevel.Value();
+    mMaxLogLevel = aOptions.mMaxLogLevel.Value();
   }
 
   if (!aOptions.mMaxLogLevelPref.IsEmpty()) {
-    mConsole->mMaxLogLevelPref = aOptions.mMaxLogLevelPref;
-    NS_ConvertUTF16toUTF8 pref(aOptions.mMaxLogLevelPref);
-    nsAutoCString value;
-    nsresult rv = Preferences::GetCString(pref.get(), value);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      nsString message;
-      message.AssignLiteral(
-          "Console.maxLogLevelPref used with a non-existing pref: ");
-      message.Append(aOptions.mMaxLogLevelPref);
+    if (!NS_IsMainThread()) {
+      // Set the log level based on what we have.
+      SetLogLevel();
 
-      nsContentUtils::LogSimpleConsoleError(message, "chrome"_ns, false,
-                                            true /* from chrome context*/);
+      // Flag an error to the console.
+      JS::Rooted<JS::Value> msg(aCx);
+      if (!ToJSValue(
+              aCx,
+              nsLiteralCString(
+                  "Console.maxLogLevelPref is not supported within workers!"),
+              &msg)) {
+        JS_ClearPendingException(aCx);
+        return;
+      }
+
+      AutoTArray<JS::Value, 1> sequence;
+      SequenceRooter rootedSequence(aCx, &sequence);
+      sequence.AppendElement(std::move(msg));
+      this->Error(aCx, std::move(sequence));
+      return;
     }
+
+    mMaxLogLevelPref = aOptions.mMaxLogLevelPref;
+
+    Preferences::RegisterCallback(MaxLogLevelPrefChangedCallback,
+                                  mMaxLogLevelPref, this);
   }
+  SetLogLevel();
 }
 
-ConsoleInstance::~ConsoleInstance() = default;
+ConsoleInstance::~ConsoleInstance() {
+  // We should only ever have set `mMaxLogLevelPref` when on the main thread,
+  // but check it here to be safe.
+  if (!mMaxLogLevelPref.IsEmpty() && NS_IsMainThread()) {
+    Preferences::UnregisterCallback(MaxLogLevelPrefChangedCallback,
+                                    mMaxLogLevelPref, this);
+  }
+};
+
+ConsoleLogLevel PrefToValue(const nsACString& aPref,
+                            const ConsoleLogLevel aLevel) {
+  if (aPref.IsEmpty()) {
+    return aLevel;
+  }
+
+  nsAutoCString value;
+  nsresult rv = Preferences::GetCString(PromiseFlatCString(aPref).get(), value);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    nsString message;
+    message.AssignLiteral(
+        "Console.maxLogLevelPref used with a non-existing pref: ");
+    message.Append(NS_ConvertUTF8toUTF16(aPref));
+
+    nsContentUtils::LogSimpleConsoleError(message, "chrome"_ns, false,
+                                          true /* from chrome context*/);
+    return aLevel;
+  }
+
+  Maybe<ConsoleLogLevel> level = StringToEnum<ConsoleLogLevel>(value);
+  if (NS_WARN_IF(level.isNothing())) {
+    nsString message;
+    message.AssignLiteral("Invalid Console.maxLogLevelPref value: ");
+    message.Append(NS_ConvertUTF8toUTF16(value));
+
+    nsContentUtils::LogSimpleConsoleError(message, "chrome"_ns, false,
+                                          true /* from chrome context*/);
+    return aLevel;
+  }
+
+  return level.value();
+}
+
+void ConsoleInstance::SetLogLevel() {
+  mConsole->mCurrentLogLevel = mConsole->WebIDLLogLevelToInteger(
+      PrefToValue(mMaxLogLevelPref, mMaxLogLevel));
+}
+
+// static
+void ConsoleInstance::MaxLogLevelPrefChangedCallback(
+    const char* /* aPrefName */, void* aSelf) {
+  auto* instance = static_cast<ConsoleInstance*>(aSelf);
+  if (MOZ_UNLIKELY(!instance->mConsole)) {
+    // We've been unlinked already but not destroyed yet. Bail.
+    return;
+  }
+  RefPtr pin{instance};
+  pin->SetLogLevel();
+}
 
 JSObject* ConsoleInstance::WrapObject(JSContext* aCx,
                                       JS::Handle<JSObject*> aGivenProto) {
@@ -188,9 +259,14 @@ void ConsoleInstance::Clear(JSContext* aCx) {
   console->MethodInternal(aCx, Console::MethodClear, u"clear"_ns, data);
 }
 
+bool ConsoleInstance::ShouldLog(ConsoleLogLevel aLevel) {
+  return mConsole->mCurrentLogLevel <=
+         mConsole->WebIDLLogLevelToInteger(aLevel);
+}
+
 void ConsoleInstance::ReportForServiceWorkerScope(const nsAString& aScope,
                                                   const nsAString& aMessage,
-                                                  const nsAString& aFilename,
+                                                  const nsACString& aFilename,
                                                   uint32_t aLineNumber,
                                                   uint32_t aColumnNumber,
                                                   ConsoleLevel aLevel) {

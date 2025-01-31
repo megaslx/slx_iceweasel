@@ -16,6 +16,9 @@ add_task(async function test_clicking_global_rules() {
     ],
   });
 
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
+
   info("Clearing existing rules");
   Services.cookieBanners.resetRules(false);
 
@@ -73,8 +76,6 @@ add_task(async function test_clicking_global_rules() {
   );
   Services.cookieBanners.insertRule(ruleD);
 
-  await testClickResultTelemetry({});
-
   info("The global rule ruleA should handle both test pages with div#banner.");
   await openPageAndVerify({
     domain: TEST_DOMAIN_A,
@@ -83,13 +84,7 @@ add_task(async function test_clicking_global_rules() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 1,
-      success_dom_content_loaded: 1,
-    },
-    false
-  );
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
   await openPageAndVerify({
     domain: TEST_DOMAIN_B,
@@ -98,13 +93,7 @@ add_task(async function test_clicking_global_rules() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 2,
-      success_dom_content_loaded: 2,
-    },
-    false
-  );
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
   info("No global rule should handle TEST_PAGE_C with div#bannerB.");
   await openPageAndVerify({
@@ -115,15 +104,12 @@ add_task(async function test_clicking_global_rules() {
     bannerId: "bannerB",
   });
 
-  await testClickResultTelemetry(
-    {
-      success: 2,
-      success_dom_content_loaded: 2,
-      fail: 1,
-      fail_banner_not_found: 1,
-    },
-    false
-  );
+  await SpecialPowers.pushPrefEnv({
+    set: [["cookiebanners.bannerClicking.timeoutAfterLoad", 10000]],
+  });
+
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
   info("Test delayed banner handling with global rules.");
   let TEST_PAGE =
@@ -135,13 +121,7 @@ add_task(async function test_clicking_global_rules() {
     expected: "OptOut",
   });
 
-  await testClickResultTelemetry({
-    success: 3,
-    success_dom_content_loaded: 2,
-    fail: 1,
-    fail_banner_not_found: 1,
-    success_mutation_pre_load: 1,
-  });
+  await SpecialPowers.popPrefEnv();
 });
 
 /**
@@ -157,6 +137,9 @@ add_task(async function test_clicking_global_rules_precedence() {
       ["cookiebanners.service.enableGlobalRules", true],
     ],
   });
+
+  // Clear the executed records before testing.
+  Services.cookieBanners.removeAllExecutedRecords(false);
 
   info("Clearing existing rules");
   Services.cookieBanners.resetRules(false);
@@ -197,8 +180,6 @@ add_task(async function test_clicking_global_rules_precedence() {
   );
   Services.cookieBanners.insertRule(ruleDomain);
 
-  await testClickResultTelemetry({});
-
   info("Test that the domain-specific rule applies, not the global one.");
   await openPageAndVerify({
     domain: TEST_DOMAIN_A,
@@ -207,10 +188,5 @@ add_task(async function test_clicking_global_rules_precedence() {
     // Because of the way the rules are setup OptOut would mean the global rule
     // applies, opt-in means the domain specific rule applies.
     expected: "OptIn",
-  });
-
-  await testClickResultTelemetry({
-    success: 1,
-    success_dom_content_loaded: 1,
   });
 });

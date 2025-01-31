@@ -8,7 +8,6 @@
 
 #include "mozilla/BinarySearch.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
 
 #include <algorithm>
@@ -20,6 +19,8 @@
 #include "jit/BaselineCodeGen.h"
 #include "jit/BaselineIC.h"
 #include "jit/CalleeToken.h"
+#include "jit/Ion.h"
+#include "jit/IonOptimizationLevels.h"
 #include "jit/JitCommon.h"
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
@@ -37,7 +38,6 @@
 
 using mozilla::BinarySearchIf;
 using mozilla::CheckedInt;
-using mozilla::DebugOnly;
 
 using namespace js;
 using namespace js::jit;
@@ -131,7 +131,6 @@ static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
   data.result.setInt32(data.numActualArgs);
   {
     AssertRealmUnchanged aru(cx);
-    ActivationEntryMonitor entryMonitor(cx, data.calleeToken);
     JitActivation activation(cx);
 
     data.osrFrame->setRunningInJit();
@@ -218,17 +217,30 @@ MethodStatus jit::BaselineCompile(JSContext* cx, JSScript* script,
   TempAllocator temp(&cx->tempLifoAlloc());
   JitContext jctx(cx);
 
-  BaselineCompiler compiler(cx, temp, script);
+  StackMacroAssembler masm(cx, temp);
+
+  GlobalLexicalEnvironmentObject* globalLexical =
+      &cx->global()->lexicalEnvironment();
+  JSObject* globalThis = globalLexical->thisObject();
+  uint32_t baseWarmUpThreshold =
+      OptimizationInfo::baseWarmUpThresholdForScript(cx, script);
+  BaselineCompiler compiler(cx, temp, masm, script, globalLexical, globalThis,
+                            baseWarmUpThreshold);
   if (!compiler.init()) {
     ReportOutOfMemory(cx);
     return Method_Error;
+  }
+
+  bool ionCompileable = IsIonEnabled(cx) && CanIonCompileScript(cx, script);
+  if (!ionCompileable) {
+    compiler.setIonCompileable(false);
   }
 
   if (forceDebugInstrumentation) {
     compiler.setCompileDebugInstrumentation();
   }
 
-  MethodStatus status = compiler.compile();
+  MethodStatus status = compiler.compile(cx);
 
   MOZ_ASSERT_IF(status == Method_Compiled, script->hasBaselineScript());
   MOZ_ASSERT_IF(status != Method_Compiled, !script->hasBaselineScript());
@@ -309,13 +321,13 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
     }
   }
 
-  // Check this before calling ensureJitRealmExists, so we're less
+  // Check this before calling ensureJitZoneExists, so we're less
   // likely to report OOM in JSRuntime::createJitRuntime.
   if (!CanLikelyAllocateMoreExecutableMemory()) {
     return Method_Skipped;
   }
 
-  if (!cx->realm()->ensureJitRealmExists(cx)) {
+  if (!cx->zone()->ensureJitZoneExists(cx)) {
     return Method_Error;
   }
 
@@ -400,7 +412,7 @@ static MethodStatus CanEnterBaselineInterpreter(JSContext* cx,
     return Method_Skipped;
   }
 
-  if (!cx->realm()->ensureJitRealmExists(cx)) {
+  if (!cx->zone()->ensureJitZoneExists(cx)) {
     return Method_Error;
   }
 
@@ -425,7 +437,7 @@ MethodStatus jit::CanEnterBaselineInterpreterAtBranch(JSContext* cx,
 
   // JITs do not respect the debugger's OnNativeCall hook, so JIT execution is
   // disabled if this hook might need to be called.
-  if (cx->insideDebuggerEvaluationWithOnNativeCallHook) {
+  if (cx->realm()->debuggerObservesNativeCall()) {
     return Method_CantCompile;
   }
 
@@ -762,8 +774,7 @@ jsbytecode* BaselineScript::approximatePcForNativeAddress(
   // Return the last entry's pc. Every BaselineScript has at least one
   // RetAddrEntry for the prologue stack overflow check.
   MOZ_ASSERT(!retAddrEntries().empty());
-  const RetAddrEntry& lastEntry = retAddrEntries()[retAddrEntries().size() - 1];
-  return script->offsetToPC(lastEntry.pcOffset());
+  return script->offsetToPC(retAddrEntries().crbegin()->pcOffset());
 }
 
 void BaselineScript::toggleDebugTraps(JSScript* script, jsbytecode* pc) {
@@ -921,7 +932,7 @@ void BaselineInterpreter::toggleCodeCoverageInstrumentation(bool enable) {
 
 void jit::FinishDiscardBaselineScript(JS::GCContext* gcx, JSScript* script) {
   MOZ_ASSERT(script->hasBaselineScript());
-  MOZ_ASSERT(!script->jitScript()->active());
+  MOZ_ASSERT(!script->jitScript()->icScript()->active());
 
   BaselineScript* baseline =
       script->jitScript()->clearBaselineScript(gcx, script);
@@ -999,8 +1010,9 @@ bool jit::GenerateBaselineInterpreter(JSContext* cx,
                                       BaselineInterpreter& interpreter) {
   if (IsBaselineInterpreterEnabled()) {
     TempAllocator temp(&cx->tempLifoAlloc());
-    BaselineInterpreterGenerator generator(cx, temp);
-    return generator.generate(interpreter);
+    StackMacroAssembler masm(cx, temp);
+    BaselineInterpreterGenerator generator(cx, temp, masm);
+    return generator.generate(cx, interpreter);
   }
 
   return true;

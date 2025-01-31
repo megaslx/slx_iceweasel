@@ -37,11 +37,10 @@ class BlockReflowState {
           mHasLineAdjacentToTop(false),
           mBlockNeedsFloatManager(false),
           mIsLineLayoutEmpty(false),
-          mIsFloatListInBlockPropertyTable(false),
           mCanHaveOverflowMarkers(false) {}
 
     // Set in the BlockReflowState constructor when reflowing a "block margin
-    // root" frame (i.e. a frame with the NS_BLOCK_MARGIN_ROOT flag set, for
+    // root" frame (i.e. a frame with any of the NS_BLOCK_BFC flag set, for
     // which margins apply by default).
     //
     // The flag is also set when reflowing a frame whose computed BStart border
@@ -49,7 +48,7 @@ class BlockReflowState {
     bool mIsBStartMarginRoot : 1;
 
     // Set in the BlockReflowState constructor when reflowing a "block margin
-    // root" frame (i.e. a frame with the NS_BLOCK_MARGIN_ROOT flag set, for
+    // root" frame (i.e. a frame with any of the NS_BLOCK_BFC flag set, for
     // which margins apply by default).
     //
     // The flag is also set when reflowing a frame whose computed BEnd border
@@ -79,15 +78,12 @@ class BlockReflowState {
     // Set when mLineAdjacentToTop is valid.
     bool mHasLineAdjacentToTop : 1;
 
-    // Set when the block has the equivalent of NS_BLOCK_FLOAT_MGR.
+    // Set when the block has the equivalent of NS_BLOCK_*_BFC.
     bool mBlockNeedsFloatManager : 1;
 
     // Set when nsLineLayout::LineIsEmpty was true at the end of reflowing
     // the current line.
     bool mIsLineLayoutEmpty : 1;
-
-    // Set when our mPushedFloats list is stored on the block's property table.
-    bool mIsFloatListInBlockPropertyTable : 1;
 
     // Set when we need text-overflow or -webkit-line-clamp processing.
     bool mCanHaveOverflowMarkers : 1;
@@ -98,13 +94,24 @@ class BlockReflowState {
                    nsBlockFrame* aFrame, bool aBStartMarginRoot,
                    bool aBEndMarginRoot, bool aBlockNeedsFloatManager,
                    const nscoord aConsumedBSize,
-                   const nscoord aEffectiveContentBoxBSize);
+                   const nscoord aEffectiveContentBoxBSize,
+                   const nscoord aInset = 0);
+
+  /**
+   * Unshifts coords, restores availableBSize to reality.
+   * (Constructor applies any cached shift before reflow
+   *  so that frames are reflowed with cached shift)
+   */
+  void UndoAlignContentShift();
 
   /**
    * Get the available reflow space (the area not occupied by floats)
    * for the current y coordinate. The available space is relative to
    * our coordinate system, which is the content box, with (0, 0) in the
    * upper left.
+   *
+   * The parameter aCBWM is the containing block's writing mode, which is
+   * NOT necessarily the mode currently being used by the float manager.
    *
    * Returns whether there are floats present at the given block-direction
    * coordinate and within the inline size of the content rect.
@@ -117,21 +124,24 @@ class BlockReflowState {
    * negative value (in which case a 0-ISize float-avoiding block *should not*
    * be considered as fitting, because it would intersect some float).
    */
-  nsFlowAreaRect GetFloatAvailableSpace() const {
-    return GetFloatAvailableSpace(mBCoord);
+  nsFlowAreaRect GetFloatAvailableSpace(WritingMode aCBWM) const {
+    return GetFloatAvailableSpace(aCBWM, mBCoord);
   }
-  nsFlowAreaRect GetFloatAvailableSpaceForPlacingFloat(nscoord aBCoord) const {
-    return GetFloatAvailableSpaceWithState(aBCoord, ShapeType::Margin, nullptr);
-  }
-  nsFlowAreaRect GetFloatAvailableSpace(nscoord aBCoord) const {
-    return GetFloatAvailableSpaceWithState(aBCoord, ShapeType::ShapeOutside,
+  nsFlowAreaRect GetFloatAvailableSpaceForPlacingFloat(WritingMode aCBWM,
+                                                       nscoord aBCoord) const {
+    return GetFloatAvailableSpaceWithState(aCBWM, aBCoord, ShapeType::Margin,
                                            nullptr);
   }
+  nsFlowAreaRect GetFloatAvailableSpace(WritingMode aCBWM,
+                                        nscoord aBCoord) const {
+    return GetFloatAvailableSpaceWithState(aCBWM, aBCoord,
+                                           ShapeType::ShapeOutside, nullptr);
+  }
   nsFlowAreaRect GetFloatAvailableSpaceWithState(
-      nscoord aBCoord, ShapeType aShapeType,
+      WritingMode aCBWM, nscoord aBCoord, ShapeType aShapeType,
       nsFloatManager::SavedState* aState) const;
   nsFlowAreaRect GetFloatAvailableSpaceForBSize(
-      nscoord aBCoord, nscoord aBSize,
+      WritingMode aCBWM, nscoord aBCoord, nscoord aBSize,
       nsFloatManager::SavedState* aState) const;
 
   // @return true if AddFloat was able to place the float; false if the float
@@ -164,7 +174,7 @@ class BlockReflowState {
     FloatsPushedOrSplit,
   };
   std::tuple<nscoord, ClearFloatsResult> ClearFloats(
-      nscoord aBCoord, StyleClear aClearType,
+      nscoord aBCoord, UsedClear aClearType,
       nsIFrame* aFloatAvoidingBlock = nullptr);
 
   nsFloatManager* FloatManager() const {
@@ -243,9 +253,9 @@ class BlockReflowState {
   // the block.
 
   // The block frame that is using this object
-  nsBlockFrame* mBlock;
+  nsBlockFrame* const mBlock;
 
-  nsPresContext* mPresContext;
+  nsPresContext* const mPresContext;
 
   const ReflowInput& mReflowInput;
 
@@ -301,23 +311,25 @@ class BlockReflowState {
     return mContentArea.Size(wm).ConvertTo(aWM, wm);
   }
 
+  // Amount of inset to apply during line-breaking, used by text-wrap:balance
+  // to adjust line-breaks for more consistent lengths throughout the block.
+  nscoord mInsetForBalance;
+
   // Physical size. Use only for physical <-> logical coordinate conversion.
+  //
+  // Note: for vertical-rl writing-mode, if mContainerSize's width is
+  // initialized to zero due to unconstrained block-size, lines will be
+  // positioned (physically) incorrectly. We will fix them up at the end of
+  // nsBlockFrame::Reflow() after we know the total block-size of the frame.
   nsSize mContainerSize;
   const nsSize& ContainerSize() const { return mContainerSize; }
 
-  // Continuation out-of-flow float frames that need to move to our
-  // next in flow are placed here during reflow.  It's a pointer to
-  // a frame list stored in the block's property table.
-  nsFrameList* mPushedFloats;
-  // This method makes sure pushed floats are accessible to
-  // StealFrame. Call it before adding any frames to mPushedFloats.
-  void SetupPushedFloatList();
   /**
-   * Append aFloatCont and its next-in-flows within the same block to
-   * mPushedFloats.  aFloatCont should not be on any child list when
-   * making this call.  Its next-in-flows will be removed from
-   * mBlock using StealFrame() before being added to mPushedFloats.
-   * All appended frames will be marked NS_FRAME_IS_PUSHED_FLOAT.
+   * Append aFloatCont and its next-in-flows within the same block to mBlock's
+   * pushed floats list. aFloatCont should not be on any child list when making
+   * this call. Its next-in-flows will be removed from mBlock using StealFrame()
+   * before being added to mBlock's pushed floats list. All appended frames will
+   * be marked NS_FRAME_IS_PUSHED_FLOAT.
    */
   void AppendPushedFloatChain(nsIFrame* aFloatCont);
 
@@ -345,7 +357,7 @@ class BlockReflowState {
 
   // mBlock's computed logical border+padding with pre-reflow skip sides applied
   // (See the constructor and nsIFrame::PreReflowBlockLevelLogicalSkipSides).
-  LogicalMargin mBorderPadding;
+  const LogicalMargin mBorderPadding;
 
   // The overflow areas of all floats placed so far
   OverflowAreas mFloatOverflowAreas;
@@ -355,7 +367,7 @@ class BlockReflowState {
   nsIFrame* mPrevChild;
 
   // The previous child frames collapsed bottom margin value.
-  nsCollapsingMargin mPrevBEndMargin;
+  CollapsingMargin mPrevBEndMargin;
 
   // The current next-in-flow for the block. When lines are pulled
   // from a next-in-flow, this is used to know which next-in-flow to
@@ -383,7 +395,7 @@ class BlockReflowState {
   // placed, since we're on a nowrap context.
   nsTArray<nsIFrame*> mNoWrapFloats;
 
-  nscoord mMinLineHeight;
+  const nscoord mMinLineHeight;
 
   int32_t mLineNumber;
 
@@ -391,11 +403,16 @@ class BlockReflowState {
 
   // Cache the result of nsBlockFrame::FindTrailingClear() from mBlock's
   // prev-in-flows. See nsBlockFrame::ReflowPushedFloats().
-  StyleClear mTrailingClearFromPIF;
+  UsedClear mTrailingClearFromPIF;
 
   // The amount of computed content block-size "consumed" by our previous
   // continuations.
   const nscoord mConsumedBSize;
+
+  // The amount of block-axis alignment shift to assume during reflow.
+  // Cached between reflows in the AlignContentShift property.
+  // (This system optimizes reflow for not changing the shift.)
+  nscoord mAlignContentShift;
 
   // Cache the current line's BSize if nsBlockFrame::PlaceLine() fails to
   // place the line. When redoing the line, it will be used to query the

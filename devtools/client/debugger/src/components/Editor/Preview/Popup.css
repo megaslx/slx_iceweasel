@@ -2,14 +2,99 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-.popover .preview-popup {
-  background: var(--theme-body-background);
-  width: 350px;
+.preview-popup {
   border: 1px solid var(--theme-splitter-color);
-  padding: 10px;
   height: auto;
   overflow: auto;
-  box-shadow: 1px 2px 3px var(--popup-shadow-color);
+  background: var(--theme-body-background);
+  box-shadow: 1px 1px 3px var(--popup-shadow-color);
+}
+
+/* Popover is used when previewing objects */
+.popover .preview-popup {
+  max-width: 450px;
+  min-width: 200px;
+
+  &.preview-type-pause {
+    padding: 5px 10px;
+  }
+
+  /* Because of tracer header, we can't put a padding on the popup */
+  /* Nor can we put a margin on the .tree or .objectBox which causes overflows */
+  &.preview-type-tracer {
+    padding-bottom: 5px;
+    .tree {
+      padding: 0 5px;
+    }
+  }
+}
+
+/* Tooltip is used when previewing primitives */
+.tooltip .preview-popup {
+  max-width: inherit;
+  min-height: inherit;
+  max-height: 200px;
+
+  &.preview-type-pause {
+    padding: 5px;
+  }
+
+  &.preview-type-tracer {
+    padding-bottom: 5px;
+
+    .preview-tracer-header {
+      margin-bottom: 5px;
+    }
+    .objectBox {
+      padding: 0 5px;
+    }
+  }
+}
+
+.preview-tracer-header {
+  --icon-url: url("chrome://devtools/content/debugger/images/trace.svg");
+  --icon-color: var(--theme-inline-preview-label-trace-color);
+  color: var(--theme-inline-preview-label-trace-color);
+  background-color: var(--theme-inline-preview-label-trace-background);
+  border-block-end: 1px solid oklch(from var(--theme-inline-preview-label-trace-color) l c h / 0.25);
+
+  /* Make sure the header is always visible */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* Add a bit more padding on the end to balance the icon, especially when have a small primitive value in preview */
+  padding-inline-end: 10px !important;
+}
+
+.preview-tracer-warning {
+  --icon-url: url("chrome://devtools/skin/images/info.svg");
+  --icon-color: currentColor;
+  background-color: var(--theme-body-alternate-emphasized-background);
+  border-bottom: 1px solid var(--theme-splitter-color);
+  margin-bottom: 5px;
+}
+
+.preview-tracer-header, .preview-tracer-warning {
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  align-items: center;
+
+  &::before {
+    flex-shrink: 0;
+    content: "";
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+
+    background-image: var(--icon-url);
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+
+    -moz-context-properties: fill;
+    fill: var(--icon-color);
+  }
 }
 
 .preview-popup .tree {
@@ -26,40 +111,8 @@
   pointer-events: auto;
 }
 
-.theme-dark .popover .preview-popup {
-  box-shadow: 1px 2px 3px var(--popup-shadow-color);
-}
-
-.popover .preview-popup .header-container {
-  width: 100%;
-  line-height: 15px;
-  display: flex;
-  flex-direction: row;
-  margin-bottom: 5px;
-}
-
-.popover .preview-popup .logo {
-  width: 20px;
-  margin-right: 5px;
-}
-
-.popover .preview-popup .header-container h3 {
-  margin: 0;
-  margin-bottom: 5px;
-  font-weight: normal;
-  font-size: 14px;
-  line-height: 20px;
-  margin-left: 4px;
-}
-
-.popover .preview-popup .header .link {
-  align-self: flex-end;
-  color: var(--theme-highlight-blue);
-  text-decoration: underline;
-}
-
 .popover .preview-popup .object-node {
-  padding-inline-start: 0px;
+  padding-inline-start: 0;
 }
 
 .preview-token:hover {
@@ -81,10 +134,6 @@
   color: #e7ebee;
 }
 
-.popover .preview-popup .function-signature {
-  padding-top: 10px;
-}
-
 .theme-dark .popover .preview-popup {
   border-color: var(--theme-body-color);
 }
@@ -94,17 +143,7 @@
   z-index: 100;
 }
 
-.tooltip .preview-popup {
-  background: var(--theme-toolbar-background);
-  max-width: inherit;
-  border: 1px solid var(--theme-splitter-color);
-  box-shadow: 1px 2px 4px 1px var(--theme-toolbar-background-alt);
-  padding: 5px;
-  height: auto;
-  min-height: inherit;
-  max-height: 200px;
-  overflow: auto;
-}
+
 
 .theme-dark .tooltip .preview-popup {
   border-color: var(--theme-body-color);
@@ -112,36 +151,7 @@
 
 .tooltip .gap {
   height: 4px;
-  padding-top: 0px;
-}
-
-.add-to-expression-bar {
-  border: 1px solid var(--theme-splitter-color);
-  border-top: none;
-  display: -webkit-box;
-  display: -ms-flexbox;
-  display: flex;
-  -webkit-box-align: center;
-  -ms-flex-align: center;
-  align-items: center;
-  font-size: 14px;
-  line-height: 30px;
-  background: var(--theme-toolbar-background);
-  color: var(--theme-text-color-inactive);
-  padding: 0 4px;
-}
-
-.add-to-expression-bar .prompt {
-  width: 1em;
-}
-
-.add-to-expression-bar .expression-to-save-label {
-  width: calc(100% - 4em);
-}
-
-.add-to-expression-bar .expression-to-save-button {
-  font-size: 14px;
-  color: var(--theme-comment);
+  padding-top: 0;
 }
 
 /* Exception popup */
@@ -166,7 +176,7 @@
   display: grid;
   grid-template-columns: auto 1fr;
   grid-column-gap: 8px;
-  padding-inline: 2px 3px;
+  padding-inline: 20px 3px;
   line-height: var(--theme-code-line-height);
 }
 

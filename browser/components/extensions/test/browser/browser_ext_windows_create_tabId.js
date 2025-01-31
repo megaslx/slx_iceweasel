@@ -32,16 +32,14 @@ add_task(async function testWindowCreate() {
 
     let promiseTabUpdated = expected => {
       return new Promise(resolve => {
-        browser.tabs.onUpdated.addListener(function listener(
-          tabId,
-          changeInfo,
-          tab
-        ) {
-          if (changeInfo.url === expected) {
-            browser.tabs.onUpdated.removeListener(listener);
-            resolve();
+        browser.tabs.onUpdated.addListener(
+          function listener(tabId, changeInfo) {
+            if (changeInfo.url === expected) {
+              browser.tabs.onUpdated.removeListener(listener);
+              resolve();
+            }
           }
-        });
+        );
       });
     };
 

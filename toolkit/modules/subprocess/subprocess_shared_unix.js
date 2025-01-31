@@ -16,7 +16,7 @@
 
 var LIBC = ChromeUtils.getLibcConstants();
 
-const LIBC_CHOICES = ["libc.so", "libSystem.B.dylib", "a.out"];
+const LIBC_CHOICES = ["a.out"];
 
 const unix = {
   pid_t: ctypes.int32_t,
@@ -53,6 +53,8 @@ var libc = new Library("libc", LIBC_CHOICES, {
   chdir: [ctypes.default_abi, ctypes.int, ctypes.char.ptr /* path */],
 
   close: [ctypes.default_abi, ctypes.int, ctypes.int /* fildes */],
+
+  dup: [ctypes.default_abi, ctypes.int, ctypes.int],
 
   fcntl: [
     ctypes.default_abi,

@@ -13,7 +13,7 @@
 ########################################################################
 
 # Currently used BorringSSL version
-BOGO_VERSION=48f794765b0df3310649e6a6c6f71c5cd845f445
+BOGO_VERSION=73030794f7aaf4f614486b511908841852807936
 
 bogo_init()
 {

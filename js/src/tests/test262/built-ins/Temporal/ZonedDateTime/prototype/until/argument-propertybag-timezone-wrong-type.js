@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty('Temporal')) -- Temporal is not enabled unconditionally
+// |reftest| shell-option(--enable-temporal) skip-if(!this.hasOwnProperty('Temporal')||!xulRuntime.shell) -- Temporal is not enabled unconditionally, requires shell-options
 // Copyright (C) 2022 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -6,13 +6,13 @@
 esid: sec-temporal.zoneddatetime.prototype.until
 description: >
   Appropriate error thrown when argument cannot be converted to a valid string
-  or object for TimeZone
+  for time zone
 features: [BigInt, Symbol, Temporal]
 ---*/
 
-const instance = new Temporal.ZonedDateTime(0n, new Temporal.TimeZone("UTC"));
+const instance = new Temporal.ZonedDateTime(0n, "UTC");
 
-const rangeErrorTests = [
+const primitiveTests = [
   [null, "null"],
   [true, "boolean"],
   ["", "empty string"],
@@ -21,14 +21,18 @@ const rangeErrorTests = [
   [1n, "bigint"],
 ];
 
-for (const [timeZone, description] of rangeErrorTests) {
-  assert.throws(RangeError, () => instance.until({ year: 2020, month: 5, day: 2, timeZone }), `${description} does not convert to a valid ISO string`);
+for (const [timeZone, description] of primitiveTests) {
+  assert.throws(
+    typeof timeZone === 'string' ? RangeError : TypeError,
+    () => instance.until({ year: 2020, month: 5, day: 2, timeZone }),
+    `${description} does not convert to a valid ISO string`
+  );
 }
 
 const typeErrorTests = [
   [Symbol(), "symbol"],
-  [{}, "object not implementing time zone protocol"],
-  [new Temporal.Calendar("iso8601"), "calendar instance"],
+  [{}, "object"],
+  [new Temporal.Duration(), "duration instance"],
 ];
 
 for (const [timeZone, description] of typeErrorTests) {

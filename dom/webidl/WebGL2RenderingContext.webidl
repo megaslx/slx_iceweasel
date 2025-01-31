@@ -10,21 +10,15 @@
 typedef long long GLint64;
 typedef unsigned long long GLuint64;
 
-[Pref="webgl.enable-webgl2",
- Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread",
- Exposed=(Window,Worker)]
+[Pref="webgl.enable-webgl2", Exposed=(Window,Worker)]
 interface WebGLSampler {
 };
 
-[Pref="webgl.enable-webgl2",
- Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread",
- Exposed=(Window,Worker)]
+[Pref="webgl.enable-webgl2", Exposed=(Window,Worker)]
 interface WebGLSync {
 };
 
-[Pref="webgl.enable-webgl2",
- Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread",
- Exposed=(Window,Worker)]
+[Pref="webgl.enable-webgl2", Exposed=(Window,Worker)]
 interface WebGLTransformFeedback {
 };
 
@@ -32,9 +26,7 @@ typedef ([AllowShared] Uint32Array or sequence<GLuint>) Uint32List;
 
 // WebGL2 spec has this as an empty interface that pulls in everything
 // via WebGL2RenderingContextBase.
-[Pref="webgl.enable-webgl2",
- Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread",
- Exposed=(Window,Worker)]
+[Pref="webgl.enable-webgl2", Exposed=(Window,Worker)]
 interface WebGL2RenderingContext
 {
 };
@@ -379,6 +371,9 @@ interface mixin WebGL2RenderingContextBase
     [Throws] // Another overhead throws.
     undefined texImage2D(GLenum target, GLint level, GLint internalformat,
                          GLenum format, GLenum type, OffscreenCanvas source);
+    [Throws] // Another overhead throws.
+    undefined texImage2D(GLenum target, GLint level, GLint internalformat,
+                         GLenum format, GLenum type, VideoFrame source);
 
     [Throws] // Another overhead throws.
     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -402,6 +397,9 @@ interface mixin WebGL2RenderingContextBase
     [Throws] // Another overhead throws.
     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                             GLenum format, GLenum type, OffscreenCanvas source);
+    [Throws] // Another overhead throws.
+    undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                            GLenum format, GLenum type, VideoFrame source);
 
     // WebGL2 entrypoints:
     [Throws] // Another overhead throws.
@@ -431,6 +429,10 @@ interface mixin WebGL2RenderingContextBase
     undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
                          GLint border, GLenum format, GLenum type,
                          OffscreenCanvas source);
+    [Throws] // Another overhead throws.
+    undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
+                         GLint border, GLenum format, GLenum type,
+                         VideoFrame source);
     [Throws] // Another overhead throws.
     undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
                          GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData,
@@ -463,6 +465,10 @@ interface mixin WebGL2RenderingContextBase
     undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
                          GLsizei depth, GLint border, GLenum format, GLenum type,
                          OffscreenCanvas source);
+    [Throws] // Another overhead throws.
+    undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
+                         GLsizei depth, GLint border, GLenum format, GLenum type,
+                         VideoFrame source);
     [Throws] // Another overhead throws.
     undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
                          GLsizei depth, GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView? srcData);
@@ -500,6 +506,10 @@ interface mixin WebGL2RenderingContextBase
                             OffscreenCanvas source);
     [Throws] // Another overhead throws.
     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+                            GLsizei height, GLenum format, GLenum type,
+                            VideoFrame source);
+    [Throws] // Another overhead throws.
+    undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
                             GLsizei height, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData,
                             GLuint srcOffset);
 
@@ -531,6 +541,10 @@ interface mixin WebGL2RenderingContextBase
     undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
                             GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
                             OffscreenCanvas source);
+    [Throws] // Another overhead throws.
+    undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                            GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                            VideoFrame source);
     [Throws] // Another overhead throws.
     undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
                             GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
@@ -664,7 +678,7 @@ interface mixin WebGL2RenderingContextBase
     undefined clearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
 
     /* Query Objects */
-    WebGLQuery? createQuery();
+    WebGLQuery createQuery();
     undefined deleteQuery(WebGLQuery? query);
     [WebGLHandlesContextLoss] GLboolean isQuery(WebGLQuery? query);
     undefined beginQuery(GLenum target, WebGLQuery query);
@@ -673,7 +687,7 @@ interface mixin WebGL2RenderingContextBase
     any getQueryParameter(WebGLQuery query, GLenum pname);
 
     /* Sampler Objects */
-    WebGLSampler? createSampler();
+    WebGLSampler createSampler();
     undefined deleteSampler(WebGLSampler? sampler);
     [WebGLHandlesContextLoss] GLboolean isSampler(WebGLSampler? sampler);
     undefined bindSampler(GLuint unit, WebGLSampler? sampler);
@@ -690,7 +704,7 @@ interface mixin WebGL2RenderingContextBase
     any getSyncParameter(WebGLSync sync, GLenum pname);
 
     /* Transform Feedback */
-    WebGLTransformFeedback? createTransformFeedback();
+    WebGLTransformFeedback createTransformFeedback();
     undefined deleteTransformFeedback(WebGLTransformFeedback? tf);
     [WebGLHandlesContextLoss] GLboolean isTransformFeedback(WebGLTransformFeedback? tf);
     undefined bindTransformFeedback(GLenum target, WebGLTransformFeedback? tf);
@@ -716,7 +730,7 @@ interface mixin WebGL2RenderingContextBase
     undefined uniformBlockBinding(WebGLProgram program, GLuint uniformBlockIndex, GLuint uniformBlockBinding);
 
     /* Vertex Array Objects */
-    WebGLVertexArrayObject? createVertexArray();
+    WebGLVertexArrayObject createVertexArray();
     undefined deleteVertexArray(WebGLVertexArrayObject? vertexArray);
     [WebGLHandlesContextLoss] GLboolean isVertexArray(WebGLVertexArrayObject? vertexArray);
     undefined bindVertexArray(WebGLVertexArrayObject? array);

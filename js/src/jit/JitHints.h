@@ -11,6 +11,7 @@
 #include "mozilla/HashTable.h"
 #include "mozilla/LinkedList.h"
 #include "jit/JitOptions.h"
+#include "vm/BytecodeLocation.h"
 #include "vm/JSScript.h"
 
 namespace js::jit {
@@ -41,21 +42,32 @@ class JitHintsMap {
    * that the cache does not exceed |IonHintMaxEntries| entries.
    *
    * After a script has entered Ion the first time, an eager threshold hint
-   * value of |JitOptions.trialInliningWarmUpThreshold+50| is set and if that
-   * script is bailout invalidated, the threshold value is incremented by
-   * |InvalidationThresholdIncrement| up to a maximum value of
+   * value is set using the warmup counter of when the last IC stub was
+   * attached, if available. This minimizes the risk that the script will
+   * bailout. If that script is bailout invalidated, the threshold value
+   * is incremented by |InvalidationThresholdIncrement| up to a maximum value of
    * |JitOptions.normalIonWarmUpThreshold|.
+   *
+   * Each IonHint object also contains a list of bytecode offsets for locations
+   * of monomorphic inline calls that is used as a hint for future compilations.
    *
    */
   class IonHint : public mozilla::LinkedListElement<IonHint> {
     ScriptKey key_ = 0;
+
+    // We use a value of 0 to indicate that the script has not entered Ion
+    // yet, but has been monomorphically inlined and Ion compiled into
+    // another script and contains bytecode offsets of a nested call.
     uint32_t threshold_ = 0;
 
+    // List of bytecode offsets that have been successfully inlined with
+    // a state of monomorphic inline.
+    Vector<uint32_t, 0, SystemAllocPolicy> monomorphicInlineOffsets;
+
    public:
-    explicit IonHint(ScriptKey key) {
-      key_ = key;
-      threshold_ = IonHintEagerThresholdValue();
-    }
+    explicit IonHint(ScriptKey key) { key_ = key; }
+
+    void initThreshold(uint32_t threshold) { threshold_ = threshold; }
 
     uint32_t threshold() { return threshold_; }
 
@@ -64,6 +76,28 @@ class JitHintsMap {
       threshold_ = (newThreshold > JitOptions.normalIonWarmUpThreshold)
                        ? JitOptions.normalIonWarmUpThreshold
                        : newThreshold;
+    }
+
+    bool hasSpaceForMonomorphicInlineEntry() {
+      return monomorphicInlineOffsets.length() < MonomorphicInlineMaxEntries;
+    }
+
+    bool hasMonomorphicInlineOffset(uint32_t offset) {
+      for (uint32_t iterOffset : monomorphicInlineOffsets) {
+        if (iterOffset == offset) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    bool addMonomorphicInlineOffset(uint32_t newOffset) {
+      MOZ_ASSERT(hasSpaceForMonomorphicInlineEntry());
+
+      if (hasMonomorphicInlineOffset(newOffset)) {
+        return true;
+      }
+      return monomorphicInlineOffsets.append(newOffset);
     }
 
     ScriptKey key() {
@@ -79,18 +113,10 @@ class JitHintsMap {
 
   static constexpr uint32_t InvalidationThresholdIncrement = 500;
   static constexpr uint32_t IonHintMaxEntries = 5000;
-  static constexpr uint32_t InitialIonHintThresholdModifier = 50;
+  static constexpr uint32_t MonomorphicInlineMaxEntries = 16;
 
-  static uint32_t IonHintEagerThresholdValue() {
-    uint32_t eagerThreshold = JitOptions.trialInliningWarmUpThreshold +
-                              InitialIonHintThresholdModifier;
-
-    // Check if the Ion threshold was set to an even more eager value,
-    // e.g. with --ion-eager, and use that if it was set.
-    return (eagerThreshold > JitOptions.normalIonWarmUpThreshold)
-               ? JitOptions.normalIonWarmUpThreshold
-               : eagerThreshold;
-  }
+  static uint32_t IonHintEagerThresholdValue(uint32_t lastStubCounter,
+                                             bool hasPretenuredAllocSites);
 
   ScriptToHintMap ionHintMap_;
   IonHintPriorityQueue ionHintQueue_;
@@ -136,6 +162,9 @@ class JitHintsMap {
 
   bool recordIonCompilation(JSScript* script);
   bool getIonThresholdHint(JSScript* script, uint32_t& thresholdOut);
+
+  bool addMonomorphicInlineLocation(JSScript* script, BytecodeLocation loc);
+  bool hasMonomorphicInlineHintAtOffset(JSScript* script, uint32_t offset);
 
   void recordInvalidation(JSScript* script);
 };

@@ -7,8 +7,14 @@
 #include "QuotaRequestBase.h"
 
 #include "mozilla/dom/quota/PQuotaUsageRequest.h"
+#include "mozilla/dom/quota/QuotaManager.h"
 
 namespace mozilla::dom::quota {
+
+QuotaRequestBase::~QuotaRequestBase() {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mActorDestroyed);
+}
 
 void QuotaRequestBase::SendResults() {
   AssertIsOnOwningThread();

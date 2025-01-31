@@ -6,6 +6,7 @@
 
 EXPORTS.mozilla.dom = [
     "CrashReport.h",
+    "CSPViolationReportBody.h",
     "DeprecationReportBody.h",
     "EndpointForReportChild.h",
     "EndpointForReportParent.h",
@@ -21,6 +22,7 @@ EXPORTS.mozilla.dom = [
 
 UNIFIED_SOURCES += [
     "CrashReport.cpp",
+    "CSPViolationReportBody.cpp",
     "DeprecationReportBody.cpp",
     "EndpointForReportChild.cpp",
     "EndpointForReportParent.cpp",
@@ -45,7 +47,7 @@ with Files("**"):
 
 FINAL_LIBRARY = "xul"
 
-MOCHITEST_MANIFESTS += ["tests/mochitest.ini"]
-BROWSER_CHROME_MANIFESTS += ["tests/browser.ini"]
+MOCHITEST_MANIFESTS += ["tests/mochitest.toml"]
+BROWSER_CHROME_MANIFESTS += ["tests/browser.toml"]
 
 TEST_DIRS += ["tests/gtest"]

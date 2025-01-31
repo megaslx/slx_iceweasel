@@ -3,6 +3,11 @@
 
 "use strict";
 
+ChromeUtils.defineESModuleGetters(this, {
+  ContentBlockingAllowList:
+    "resource://gre/modules/ContentBlockingAllowList.sys.mjs",
+});
+
 const TEST_SANDBOX_URL =
   "https://example.com/browser/toolkit/components/antitracking/test/browser/sandboxed.html";
 
@@ -90,7 +95,7 @@ function createFrame(browser, src, id, sandboxAttr) {
   );
 }
 
-add_task(async setup => {
+add_task(async () => {
   // Disable heuristics. We don't need them and if enabled the resulting
   // telemetry can race with the telemetry in the next test.
   // See Bug 1686836, Bug 1686894.
@@ -108,7 +113,7 @@ add_task(async setup => {
  * Test that we get the correct allow list principal which matches the content
  * principal for an https site.
  */
-add_task(async test_contentPrincipalHTTPS => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode("https://example.com", browser => {
     checkAllowListPrincipal(browser, "content");
   });
@@ -118,7 +123,7 @@ add_task(async test_contentPrincipalHTTPS => {
  * Tests that the scheme of the allowlist principal is HTTPS, even though the
  * site is loaded via HTTP.
  */
-add_task(async test_contentPrincipalHTTP => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode(
     "http://example.net",
     (browser, isPrivateBrowsing) => {
@@ -136,7 +141,7 @@ add_task(async test_contentPrincipalHTTP => {
  * Tests that the allow list principal is a system principal for the preferences
  * about site.
  */
-add_task(async test_systemPrincipal => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode("about:preferences", browser => {
     checkAllowListPrincipal(browser, "system");
   });
@@ -146,7 +151,7 @@ add_task(async test_systemPrincipal => {
  * Tests that we get a valid content principal for top level sandboxed pages,
  * and not the document principal which is a null principal.
  */
-add_task(async test_TopLevelSandbox => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode(
     TEST_SANDBOX_URL,
     (browser, isPrivateBrowsing) => {
@@ -168,7 +173,7 @@ add_task(async test_TopLevelSandbox => {
  * Tests that we get a valid content principal for a new tab opened via
  * window.open.
  */
-add_task(async test_windowOpen => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode("https://example.com", async browser => {
     checkAllowListPrincipal(browser, "content");
 
@@ -195,7 +200,7 @@ add_task(async test_windowOpen => {
  * Tests that we get a valid content principal for a new tab opened via
  * window.open from a sandboxed iframe.
  */
-add_task(async test_windowOpenFromSandboxedFrame => {
+add_task(async () => {
   await runTestInNormalAndPrivateMode(
     "https://example.com",
     async (browser, isPrivateBrowsing) => {
@@ -234,4 +239,77 @@ add_task(async test_windowOpenFromSandboxedFrame => {
       BrowserTestUtils.removeTab(tab);
     }
   );
+});
+
+/**
+ * Tests that the usingStorageAccess flag is correctly set for window contexts
+ * when the content blocking allow list is set.
+ */
+add_task(async () => {
+  // Add content blocking allow list exception for example.com in both normal
+  // and private mode.
+  let tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "https://example.com"
+  );
+  ContentBlockingAllowList.add(tab.linkedBrowser);
+  BrowserTestUtils.removeTab(tab);
+
+  // Creating a private window to add the content blocking allow list exception
+  // for example.com. Note that we need to keep the private window opened to
+  // keep the allow list exception alive.
+  let privateWin = await BrowserTestUtils.openNewBrowserWindow({
+    private: true,
+  });
+  let privateTab = await BrowserTestUtils.openNewForegroundTab(
+    privateWin.gBrowser,
+    "https://example.com"
+  );
+  ContentBlockingAllowList.add(privateTab.linkedBrowser);
+  BrowserTestUtils.removeTab(privateTab);
+
+  await runTestInNormalAndPrivateMode(
+    "https://example.com",
+    async (browser, _) => {
+      // Check the usingStorageAccess flag of the top level window context. It
+      // should always be false.
+      ok(
+        !browser.browsingContext.currentWindowGlobal.usingStorageAccess,
+        "The usingStorageAccess flag should be false for the top-level context"
+      );
+
+      // Create a third-party iframe.
+      await createFrame(browser, "https://example.org", "iframe");
+      // Iframe BC is the only child of the test browser.
+      let [frameBrowsingContext] = browser.browsingContext.children;
+
+      // Check the usingStorageAccess flag of the iframe's window context. It
+      // should be true.
+      ok(
+        frameBrowsingContext.currentWindowGlobal.usingStorageAccess,
+        "The usingStorageAccess flag should be true for the iframe's context"
+      );
+
+      // Create a ABA iframe.
+      await createFrame(
+        frameBrowsingContext,
+        "https://example.com",
+        "ABAiframe"
+      );
+      // ABA iframe is the only child of the iframe BC.
+      let [abaFrameBrowsingContext] = frameBrowsingContext.children;
+
+      // Check the usingStorageAccess flag of the ABA iframe's window context.
+      // It should be true.
+      ok(
+        abaFrameBrowsingContext.currentWindowGlobal.usingStorageAccess,
+        "The usingStorageAccess flag should be true for the ABA iframe's context"
+      );
+
+      // Clean the content blocking allow list.
+      ContentBlockingAllowList.remove(browser);
+    }
+  );
+
+  await BrowserTestUtils.closeWindow(privateWin);
 });

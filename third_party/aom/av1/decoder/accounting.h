@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -42,7 +42,7 @@ typedef struct {
 
 /** Dictionary for translating strings into id. */
 typedef struct {
-  char *(strs[MAX_SYMBOL_TYPES]);
+  char *strs[MAX_SYMBOL_TYPES];
   int num_strs;
 } AccountingDictionary;
 

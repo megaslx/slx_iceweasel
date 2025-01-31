@@ -125,6 +125,7 @@ function setupChannel(params) {
 }
 
 add_task(async function testShouldClassify() {
+  Services.prefs.setBoolPref("dom.security.https_first", false);
   Services.prefs.setBoolPref(
     "privacy.trackingprotection.annotate_channels",
     true
@@ -141,7 +142,7 @@ add_task(async function testShouldClassify() {
 
     await new Promise(resolve => {
       channel.asyncOpen({
-        onStartRequest: (request, context) => {
+        onStartRequest: request => {
           Assert.equal(
             !!(
               request.QueryInterface(Ci.nsIClassifiedChannel)
@@ -154,8 +155,8 @@ add_task(async function testShouldClassify() {
           resolve();
         },
 
-        onDataAvailable: (request, context, stream, offset, count) => {},
-        onStopRequest: (request, context, status) => {},
+        onDataAvailable: () => {},
+        onStopRequest: () => {},
       });
     });
   }

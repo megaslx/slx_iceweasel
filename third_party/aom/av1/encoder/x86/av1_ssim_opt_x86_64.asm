@@ -1,5 +1,5 @@
 ;
-; Copyright (c) 2016, Alliance for Open Media. All rights reserved
+; Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 ;
 ; This source code is subject to the terms of the BSD 2 Clause License and
 ; the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -67,7 +67,7 @@ SECTION .text
 ; or pavgb At this point this is just meant to be first pass for calculating
 ; all the parms needed for 16x16 ssim so we can play with dssim as distortion
 ; in mode selection code.
-global sym(av1_ssim_parms_16x16_sse2) PRIVATE
+globalsym(av1_ssim_parms_16x16_sse2)
 sym(av1_ssim_parms_16x16_sse2):
     push        rbp
     mov         rbp, rsp
@@ -157,7 +157,7 @@ sym(av1_ssim_parms_16x16_sse2):
 ; or pavgb At this point this is just meant to be first pass for calculating
 ; all the parms needed for 16x16 ssim so we can play with dssim as distortion
 ; in mode selection code.
-global sym(av1_ssim_parms_8x8_sse2) PRIVATE
+globalsym(av1_ssim_parms_8x8_sse2)
 sym(av1_ssim_parms_8x8_sse2):
     push        rbp
     mov         rbp, rsp

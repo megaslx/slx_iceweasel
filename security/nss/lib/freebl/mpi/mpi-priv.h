@@ -173,7 +173,7 @@ void s_mp_sqr_comba_32(const mp_int *A, mp_int *B);
 #endif /* end NSS_USE_COMBA */
 
 /* ------ mpv functions, operate on arrays of digits, not on mp_int's ------ */
-#if defined(__OS2__) && defined(__IBMC__)
+#if defined(__IBMC__)
 #define MPI_ASM_DECL __cdecl
 #else
 #define MPI_ASM_DECL
@@ -204,6 +204,9 @@ void MPI_ASM_DECL s_mpv_mul_d_add(const mp_digit *a, mp_size a_len,
 void MPI_ASM_DECL s_mpv_mul_d_add_prop(const mp_digit *a,
                                        mp_size a_len, mp_digit b,
                                        mp_digit *c);
+void MPI_ASM_DECL s_mpv_mul_d_add_propCT(const mp_digit *a,
+                                         mp_size a_len, mp_digit b,
+                                         mp_digit *c, mp_size c_len);
 void MPI_ASM_DECL s_mpv_sqr_add_prop(const mp_digit *a,
                                      mp_size a_len,
                                      mp_digit *sqrs);

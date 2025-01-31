@@ -13,14 +13,14 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
-#include "absl/types/optional.h"
+#include "api/audio/audio_device.h"
 #include "api/peer_connection_interface.h"
 #include "call/call.h"
-#include "modules/audio_device/include/audio_device.h"
 #include "pc/jsep_transport_controller.h"
 #include "pc/peer_connection_message_handler.h"
 #include "pc/rtp_transceiver.h"
@@ -47,7 +47,7 @@ class PeerConnectionSdpMethods {
   // bundling, returns false.
   virtual bool NeedsIceRestart(const std::string& content_name) const = 0;
 
-  virtual absl::optional<std::string> sctp_mid() const = 0;
+  virtual std::optional<std::string> sctp_mid() const = 0;
 
   // Functions below this comment are known to only be accessed
   // from SdpOfferAnswerHandler.
@@ -76,13 +76,7 @@ class PeerConnectionSdpMethods {
   virtual LegacyStatsCollector* legacy_stats() = 0;
   // Returns the observer. Will crash on CHECK if the observer is removed.
   virtual PeerConnectionObserver* Observer() const = 0;
-  // TODO(webrtc:11547): Remove `GetSctpSslRole` and require `GetSctpSslRole_n`
-  // instead. Currently `GetSctpSslRole` relied upon by `DataChannelController`.
-  // Once that path has been updated to use `GetSctpSslRole_n`, this method
-  // can be removed.
-  virtual bool GetSctpSslRole(rtc::SSLRole* role) = 0;
-  virtual absl::optional<rtc::SSLRole> GetSctpSslRole_n(
-      absl::optional<bool> is_caller) = 0;
+  virtual std::optional<rtc::SSLRole> GetSctpSslRole_n() = 0;
   virtual PeerConnectionInterface::IceConnectionState
   ice_connection_state_internal() = 0;
   virtual void SetIceConnectionState(
@@ -101,7 +95,6 @@ class PeerConnectionSdpMethods {
       const std::map<std::string, const cricket::ContentGroup*>&
           bundle_groups_by_mid) = 0;
 
-  virtual absl::optional<std::string> GetDataMid() const = 0;
   // Internal implementation for AddTransceiver family of methods. If
   // `fire_callback` is set, fires OnRenegotiationNeeded callback if successful.
   virtual RTCErrorOr<rtc::scoped_refptr<RtpTransceiverInterface>>
@@ -123,14 +116,20 @@ class PeerConnectionSdpMethods {
   // Returns true if SRTP (either using DTLS-SRTP or SDES) is required by
   // this session.
   virtual bool SrtpRequired() const = 0;
-  virtual bool SetupDataChannelTransport_n(const std::string& mid) = 0;
-  virtual void TeardownDataChannelTransport_n() = 0;
-  virtual void SetSctpDataMid(const std::string& mid) = 0;
-  virtual void ResetSctpDataMid() = 0;
-
+  // Initializes the data channel transport for the peerconnection instance.
+  // This will have the effect that `sctp_mid()` and `sctp_transport_name()`
+  // will return a set value (even though it might be an empty string) and the
+  // dc transport will be initialized on the network thread.
+  virtual bool CreateDataChannelTransport(absl::string_view mid) = 0;
+  // Tears down the data channel transport state and clears the `sctp_mid()` and
+  // `sctp_transport_name()` properties.
+  virtual void DestroyDataChannelTransport(RTCError error) = 0;
   virtual const FieldTrialsView& trials() const = 0;
 
   virtual void ClearStatsCache() = 0;
+  // Keeps track of assigned payload types and comes up with reasonable
+  // suggestions when new PTs need to be assigned.
+  virtual PayloadTypePicker& payload_type_picker() = 0;
 };
 
 // Functions defined in this class are called by other objects,
@@ -154,7 +153,7 @@ class PeerConnectionInternal : public PeerConnectionInterface,
     return {};
   }
 
-  virtual absl::optional<std::string> sctp_transport_name() const = 0;
+  virtual std::optional<std::string> sctp_transport_name() const = 0;
 
   virtual cricket::CandidateStatsList GetPooledCandidateStats() const = 0;
 
@@ -166,7 +165,7 @@ class PeerConnectionInternal : public PeerConnectionInterface,
 
   virtual Call::Stats GetCallStats() = 0;
 
-  virtual absl::optional<AudioDeviceModule::Stats> GetAudioDeviceStats() = 0;
+  virtual std::optional<AudioDeviceModule::Stats> GetAudioDeviceStats() = 0;
 
   virtual bool GetLocalCertificate(
       const std::string& transport_name,
@@ -183,8 +182,11 @@ class PeerConnectionInternal : public PeerConnectionInterface,
   // Functions needed by DataChannelController
   virtual void NoteDataAddedEvent() {}
   // Handler for sctp data channel state changes.
+  // The `channel_id` is the same unique identifier as used in
+  // `DataChannelStats::internal_id and
+  // `RTCDataChannelStats::data_channel_identifier`.
   virtual void OnSctpDataChannelStateChanged(
-      DataChannelInterface* channel,
+      int channel_id,
       DataChannelInterface::DataState state) {}
 };
 

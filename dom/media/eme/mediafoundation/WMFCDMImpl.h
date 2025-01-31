@@ -34,10 +34,6 @@ class WMFCDMImpl final {
 
   explicit WMFCDMImpl(const nsAString& aKeySystem) : mKeySystem(aKeySystem) {}
 
-  static bool Supports(const nsAString& aKeySystem);
-  // TODO: make this async?
-  bool GetCapabilities(nsTArray<KeySystemConfig>& aOutConfigs);
-
   using InitPromise = GenericPromise;
   struct InitParams {
     nsString mOrigin;
@@ -86,6 +82,18 @@ class WMFCDMImpl final {
     return mCDM->RemoveSession(aPromiseId, aSessionId);
   }
 
+  RefPtr<GenericPromise> SetServerCertificate(uint32_t aPromiseId,
+                                              nsTArray<uint8_t>& aCert) {
+    MOZ_DIAGNOSTIC_ASSERT(mCDM);
+    return mCDM->SetServerCertificate(aPromiseId, aCert);
+  }
+
+  RefPtr<GenericPromise> GetStatusForPolicy(
+      uint32_t aPromiseId, const dom::HDCPVersion& aMinHdcpVersion) {
+    MOZ_DIAGNOSTIC_ASSERT(mCDM);
+    return mCDM->GetStatusForPolicy(aPromiseId, aMinHdcpVersion);
+  }
+
   uint64_t Id() {
     MOZ_DIAGNOSTIC_ASSERT(mCDM,
                           "Should be called only after Init() is resolved");
@@ -105,6 +113,26 @@ class WMFCDMImpl final {
   RefPtr<MFCDMChild> mCDM;
 
   MozPromiseHolder<InitPromise> mInitPromiseHolder;
+};
+
+// A helper class to get multiple capabilities from different key systems.
+class WMFCDMCapabilites final {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WMFCDMCapabilites);
+  WMFCDMCapabilites() = default;
+
+  using SupportedConfigsPromise = KeySystemConfig::SupportedConfigsPromise;
+  RefPtr<SupportedConfigsPromise> GetCapabilities(
+      const nsTArray<KeySystemConfigRequest>& aRequests);
+
+ private:
+  ~WMFCDMCapabilites();
+
+  nsTArray<RefPtr<MFCDMChild>> mCDMs;
+  MozPromiseHolder<SupportedConfigsPromise> mCapabilitiesPromiseHolder;
+  MozPromiseRequestHolder<
+      MFCDMChild::CapabilitiesPromise::AllSettledPromiseType>
+      mCapabilitiesPromisesRequest;
 };
 
 }  // namespace mozilla

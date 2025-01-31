@@ -24,20 +24,25 @@ class AdjustedRating extends MozLitElement {
   }
 
   render() {
-    if (!this.rating) {
+    if (!this.rating && this.rating !== 0) {
       this.hidden = true;
       return null;
     }
+
+    this.hidden = false;
 
     return html`
       <shopping-card
         data-l10n-id="shopping-adjusted-rating-label"
         data-l10n-attrs="label"
       >
-        <moz-five-star slot="rating" rating="${this.rating}"></moz-five-star>
+        <moz-five-star
+          slot="rating"
+          rating="${this.rating === 0 ? 0.5 : this.rating}"
+        ></moz-five-star>
         <div slot="content">
           <span
-            data-l10n-id="shopping-adjusted-rating-unreliable-reviews"
+            data-l10n-id="shopping-adjusted-rating-based-reliable-reviews"
           ></span>
         </div>
       </shopping-card>

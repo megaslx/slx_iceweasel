@@ -131,7 +131,7 @@ addAccessibleTask(
   <button id="button" aria-label="Start"></button>
   </div>
   `,
-  async (browser, accDoc) => {
+  async browser => {
     let liveRegionChanged = waitForMacEvent("AXLiveRegionChanged", "live");
     await SpecialPowers.spawn(browser, [], () => {
       content.document.getElementById("time").textContent = "4:56pm";
@@ -161,5 +161,19 @@ addAccessibleTask(
     });
     await liveRegionChanged;
     ok(true, "changed aria-label");
+
+    liveRegionChanged = waitForMacEvent("AXLiveRegionChanged", "live");
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document.getElementById("live").firstChild.data = "The hour is ";
+    });
+    await liveRegionChanged;
+    ok(true, "changed text leaf contents");
+
+    liveRegionChanged = waitForMacEvent("AXLiveRegionChanged", "live");
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document.getElementById("live").firstChild.data = "";
+    });
+    await liveRegionChanged;
+    ok(true, "delete text leaf contents");
   }
 );

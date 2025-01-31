@@ -67,7 +67,7 @@ class InterleavedReassemblyStreams : public ReassemblyStreams {
           parent_(*parent),
           next_mid_(mid_unwrapper_.Unwrap(next_mid)) {}
     int Add(UnwrappedTSN tsn, Data data);
-    size_t EraseTo(MID message_id);
+    size_t EraseTo(MID mid);
     void Reset() {
       mid_unwrapper_.Reset();
       next_mid_ = mid_unwrapper_.Unwrap(MID(0));
@@ -81,7 +81,9 @@ class InterleavedReassemblyStreams : public ReassemblyStreams {
     // Try to assemble one message identified by `mid`.
     // Returns the number of bytes assembled if a message was assembled.
     size_t TryToAssembleMessage(UnwrappedMID mid);
-    size_t AssembleMessage(const ChunkMap& tsn_chunks);
+    size_t AssembleMessage(ChunkMap& tsn_chunks);
+    size_t AssembleMessage(UnwrappedTSN tsn, Data data);
+
     // Try to assemble one or several messages in order from the stream.
     // Returns the number of bytes assembled if one or more messages were
     // assembled.

@@ -3,10 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 <%namespace name="helpers" file="/helpers.mako.rs" />
+<% from data import DEFAULT_RULES_AND_POSITION_TRY %>
 
 <%helpers:shorthand name="flex-flow"
-                    engines="gecko servo-2013 servo-2020",
-                    servo_2020_pref="layout.flexbox.enabled",
+                    engines="gecko servo",
+                    servo_pref="layout.flexbox.enabled",
                     sub_properties="flex-direction flex-wrap"
                     extra_prefixes="webkit"
                     spec="https://drafts.csswg.org/css-flexbox/#flex-flow-property">
@@ -60,8 +61,8 @@
 </%helpers:shorthand>
 
 <%helpers:shorthand name="flex"
-                    engines="gecko servo-2013 servo-2020",
-                    servo_2020_pref="layout.flexbox.enabled",
+                    engines="gecko servo",
+                    servo_pref="layout.flexbox.enabled",
                     sub_properties="flex-grow flex-shrink flex-basis"
                     extra_prefixes="webkit"
                     derive_serialize="True"
@@ -128,7 +129,8 @@
 
 <%helpers:shorthand
     name="gap"
-    engines="gecko"
+    engines="gecko servo"
+    servo_pref="layout.flexbox.enabled",
     aliases="grid-gap"
     sub_properties="row-gap column-gap"
     spec="https://drafts.csswg.org/css-align-3/#gap-shorthand"
@@ -164,7 +166,8 @@
 <%helpers:shorthand
     name="grid-${kind}"
     sub_properties="grid-${kind}-start grid-${kind}-end"
-    engines="gecko",
+    engines="gecko servo",
+    servo_pref="layout.grid.enabled",
     spec="https://drafts.csswg.org/css-grid/#propdef-grid-${kind}"
 >
     use crate::values::specified::GridLine;
@@ -218,7 +221,8 @@
 
 <%helpers:shorthand
     name="grid-area"
-    engines="gecko"
+    engines="gecko servo"
+    servo_pref="layout.grid.enabled",
     sub_properties="grid-row-start grid-row-end grid-column-start grid-column-end"
     spec="https://drafts.csswg.org/css-grid/#propdef-grid-area"
 >
@@ -313,7 +317,8 @@
 
 <%helpers:shorthand
     name="grid-template"
-    engines="gecko"
+    engines="gecko servo"
+    servo_pref="layout.grid.enabled",
     sub_properties="grid-template-rows grid-template-columns grid-template-areas"
     spec="https://drafts.csswg.org/css-grid/#propdef-grid-template"
 >
@@ -323,7 +328,7 @@
     use crate::values::generics::grid::{TrackListValue, concat_serialize_idents};
     use crate::values::specified::{GridTemplateComponent, GenericGridTemplateComponent};
     use crate::values::specified::grid::parse_line_names;
-    use crate::values::specified::position::{GridTemplateAreas, TemplateAreas, TemplateAreasArc};
+    use crate::values::specified::position::{GridTemplateAreas, TemplateAreasParser, TemplateAreasArc};
 
     /// Parsing for `<grid-template>` shorthand (also used by `grid` shorthand).
     pub fn parse_grid_template<'i, 't>(
@@ -352,21 +357,19 @@
         % endfor
 
         let first_line_names = input.try_parse(parse_line_names).unwrap_or_default();
-        if let Ok(string) = input.try_parse(|i| i.expect_string().map(|s| s.as_ref().to_owned().into())) {
-            let mut strings = vec![];
+        let mut areas_parser = TemplateAreasParser::default();
+        if areas_parser.try_parse_string(input).is_ok() {
             let mut values = vec![];
             let mut line_names = vec![];
             line_names.push(first_line_names);
-            strings.push(string);
             loop {
                 let size = input.try_parse(|i| TrackSize::parse(context, i)).unwrap_or_default();
                 values.push(TrackListValue::TrackSize(size));
                 let mut names = input.try_parse(parse_line_names).unwrap_or_default();
                 let more_names = input.try_parse(parse_line_names);
 
-                match input.try_parse(|i| i.expect_string().map(|s| s.as_ref().to_owned().into())) {
-                    Ok(string) => {
-                        strings.push(string);
+                match areas_parser.try_parse_string(input) {
+                    Ok(()) => {
                         if let Ok(v) = more_names {
                             // We got `[names] [more_names] "string"` - merge the two name lists.
                             let mut names_vec = names.into_vec();
@@ -379,7 +382,7 @@
                         if more_names.is_ok() {
                             // We've parsed `"string" [names] [more_names]` but then failed to parse another `"string"`.
                             // The grammar doesn't allow two trailing `<line-names>` so this is an invalid value.
-                            return Err(e.into());
+                            return Err(e);
                         }
                         // only the named area determines whether we should bail out
                         line_names.push(names);
@@ -393,7 +396,7 @@
                 line_names.push(Default::default());
             }
 
-            let template_areas = TemplateAreas::from_vec(strings)
+            let template_areas = areas_parser.finish()
                 .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?;
             let template_rows = TrackList {
                 values: values.into(),
@@ -556,7 +559,8 @@
 
 <%helpers:shorthand
     name="grid"
-    engines="gecko"
+    engines="gecko servo"
+    servo_pref="layout.grid.enabled",
     sub_properties="grid-template-rows grid-template-columns grid-template-areas
                     grid-auto-rows grid-auto-columns grid-auto-flow"
     spec="https://drafts.csswg.org/css-grid/#propdef-grid"
@@ -718,7 +722,7 @@
 
 <%helpers:shorthand
     name="place-content"
-    engines="gecko"
+    engines="gecko servo"
     sub_properties="align-content justify-content"
     spec="https://drafts.csswg.org/css-align/#propdef-place-content"
 >
@@ -773,9 +777,10 @@
 
 <%helpers:shorthand
     name="place-self"
-    engines="gecko"
+    engines="gecko servo"
     sub_properties="align-self justify-self"
     spec="https://drafts.csswg.org/css-align/#place-self-property"
+    rule_types_allowed="Style PositionTry"
 >
     use crate::values::specified::align::{AlignSelf, JustifySelf, SelfAlignment, AxisDirection};
 
@@ -799,7 +804,6 @@
             justify_self: JustifySelf(justify),
         })
     }
-
     impl<'a> ToCss for LonghandsToSerialize<'a> {
         fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
             self.align_self.to_css(dest)?;
@@ -814,7 +818,7 @@
 
 <%helpers:shorthand
     name="place-items"
-    engines="gecko"
+    engines="gecko servo"
     sub_properties="align-items justify-items"
     spec="https://drafts.csswg.org/css-align/#place-items-property"
 >
@@ -855,13 +859,47 @@
     }
 </%helpers:shorthand>
 
+<%helpers:shorthand
+    name="position-try"
+    engines="gecko"
+    gecko_pref="layout.css.anchor-positioning.enabled",
+    sub_properties="position-try-order position-try-fallbacks"
+    spec="https://drafts.csswg.org/css-anchor-position-1/#position-try-prop"
+>
+    use crate::values::specified::position::{PositionTryOrder, PositionTryFallbacks};
+    use crate::parser::Parse;
+
+    pub fn parse_value<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Longhands, ParseError<'i>> {
+        let order = input.try_parse(|i| PositionTryOrder::parse(i)).unwrap_or(PositionTryOrder::normal());
+        let fallbacks = PositionTryFallbacks::parse(context, input)?;
+        Ok(expanded! {
+            position_try_order: order,
+            position_try_fallbacks: fallbacks,
+        })
+    }
+
+    impl<'a> ToCss for LonghandsToSerialize<'a> {
+        fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
+            if *self.position_try_order != PositionTryOrder::Normal {
+                self.position_try_order.to_css(dest)?;
+                dest.write_char(' ')?;
+            }
+            self.position_try_fallbacks.to_css(dest)
+        }
+    }
+</%helpers:shorthand>
+
 // See https://github.com/w3c/csswg-drafts/issues/3525 for the quirks stuff.
 ${helpers.four_sides_shorthand(
     "inset",
     "%s",
-    "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
+    "specified::Inset::parse",
+    engines="gecko servo",
     spec="https://drafts.csswg.org/css-logical/#propdef-inset",
+    rule_types_allowed=DEFAULT_RULES_AND_POSITION_TRY,
     allow_quirks="No",
 )}
 
@@ -869,18 +907,20 @@ ${helpers.two_properties_shorthand(
     "inset-block",
     "inset-block-start",
     "inset-block-end",
-    "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
-    spec="https://drafts.csswg.org/css-logical/#propdef-inset-block"
+    "specified::Inset::parse",
+    engines="gecko servo",
+    spec="https://drafts.csswg.org/css-logical/#propdef-inset-block",
+    rule_types_allowed=DEFAULT_RULES_AND_POSITION_TRY,
 )}
 
 ${helpers.two_properties_shorthand(
     "inset-inline",
     "inset-inline-start",
     "inset-inline-end",
-    "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
-    spec="https://drafts.csswg.org/css-logical/#propdef-inset-inline"
+    "specified::Inset::parse",
+    engines="gecko servo",
+    spec="https://drafts.csswg.org/css-logical/#propdef-inset-inline",
+    rule_types_allowed=DEFAULT_RULES_AND_POSITION_TRY,
 )}
 
 ${helpers.two_properties_shorthand(

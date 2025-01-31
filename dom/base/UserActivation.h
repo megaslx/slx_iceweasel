@@ -4,16 +4,49 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_UserAcitvation_h
-#define mozilla_dom_UserAcitvation_h
+#ifndef mozilla_dom_UserActivation_h
+#define mozilla_dom_UserActivation_h
 
+#include "mozilla/Assertions.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/TimeStamp.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsWrapperCache.h"
+#include "nsPIDOMWindow.h"
+
+namespace IPC {
+template <class P>
+struct ParamTraits;
+}  // namespace IPC
 
 namespace mozilla::dom {
 
-class UserActivation final {
+/**
+ * Most of this class is for the old user activation model. The new model
+ * defined in the spec [1] is implemented by `dom::WindowContext` (see
+ * `WindowContext::GetUserActivationState` etc.) since the state defined in the
+ * spec is associated with the `window` object.
+ *
+ * [1]:
+ * https://html.spec.whatwg.org/multipage/interaction.html#user-activation-data-model
+ */
+class UserActivation final : public nsISupports, public nsWrapperCache {
  public:
+  // WebIDL UserActivation
+
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(UserActivation)
+
+  explicit UserActivation(nsPIDOMWindowInner* aWindow);
+
+  nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
+  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
+
+  bool HasBeenActive() const;
+  bool IsActive() const;
+
+  // End of WebIDL UserActivation
+
   enum class State : uint8_t {
     // Not activated.
     None,
@@ -24,6 +57,79 @@ class UserActivation final {
     // haven't timed out.
     FullActivated,
     EndGuard_
+  };
+
+  class StateAndModifiers;
+
+  // Modifier keys held while the user activation.
+  class Modifiers {
+   public:
+    static constexpr uint8_t Shift = 0x10;
+    static constexpr uint8_t Meta = 0x20;
+    static constexpr uint8_t Control = 0x40;
+    static constexpr uint8_t Alt = 0x80;
+    static constexpr uint8_t MiddleMouse = 0x08;
+
+    static constexpr uint8_t Mask = 0xF8;
+
+    static_assert((uint8_t(State::EndGuard_) & ~Mask) ==
+                  uint8_t(State::EndGuard_));
+
+    constexpr Modifiers() = default;
+    explicit constexpr Modifiers(uint8_t aModifiers) : mModifiers(aModifiers) {}
+
+    static constexpr Modifiers None() { return Modifiers(0); }
+
+    void SetShift() { mModifiers |= Shift; }
+    void SetMeta() { mModifiers |= Meta; }
+    void SetControl() { mModifiers |= Control; }
+    void SetAlt() { mModifiers |= Alt; }
+    void SetMiddleMouse() { mModifiers |= MiddleMouse; }
+
+    bool IsShift() const { return mModifiers & Shift; }
+    bool IsMeta() const { return mModifiers & Meta; }
+    bool IsControl() const { return mModifiers & Control; }
+    bool IsAlt() const { return mModifiers & Alt; }
+    bool IsMiddleMouse() const { return mModifiers & MiddleMouse; }
+
+   private:
+    uint8_t mModifiers = 0;
+
+    friend class StateAndModifiers;
+    template <class P>
+    friend struct IPC::ParamTraits;
+  };
+
+  // State and Modifiers encoded into single data, for WindowContext field.
+  class StateAndModifiers {
+   public:
+    using DataT = uint8_t;
+
+    constexpr StateAndModifiers() = default;
+    explicit constexpr StateAndModifiers(DataT aStateAndModifiers)
+        : mStateAndModifiers(aStateAndModifiers) {}
+
+    DataT GetRawData() const { return mStateAndModifiers; }
+
+    State GetState() const { return State(RawState()); }
+    void SetState(State aState) {
+      MOZ_ASSERT((uint8_t(aState) & Modifiers::Mask) == 0);
+      mStateAndModifiers = uint8_t(aState) | RawModifiers();
+    }
+
+    Modifiers GetModifiers() const { return Modifiers(RawModifiers()); }
+    void SetModifiers(Modifiers aModifiers) {
+      mStateAndModifiers = RawState() | aModifiers.mModifiers;
+    }
+
+   private:
+    uint8_t RawState() const { return mStateAndModifiers & ~Modifiers::Mask; }
+
+    uint8_t RawModifiers() const {
+      return mStateAndModifiers & Modifiers::Mask;
+    }
+
+    uint8_t mStateAndModifiers = 0;
   };
 
   /**
@@ -64,6 +170,11 @@ class UserActivation final {
    * the epoch.
    */
   static TimeStamp LatestUserInputStart();
+
+ private:
+  ~UserActivation() = default;
+
+  nsCOMPtr<nsPIDOMWindowInner> mWindow;
 };
 
 /**
@@ -83,4 +194,4 @@ class MOZ_RAII AutoHandlingUserInputStatePusher final {
 
 }  // namespace mozilla::dom
 
-#endif  // mozilla_dom_UserAcitvation_h
+#endif  // mozilla_dom_UserActivation_h

@@ -86,7 +86,7 @@ struct AnyRegister {
     MOZ_ASSERT_IF(aliasIdx == 0, ret == *this);
     return ret;
   }
-  uint8_t numAliased() const {
+  uint32_t numAliased() const {
     if (isFloat()) {
       return fpu().numAliased();
     }
@@ -564,7 +564,7 @@ class AllocatableSetAccessors<RegisterSet> {
   }
 
  public:
-  AllocatableSetAccessors() : set_() {}
+  AllocatableSetAccessors() = default;
   explicit constexpr AllocatableSetAccessors(SetType) = delete;
   explicit constexpr AllocatableSetAccessors(RegisterSet set) : set_(set) {}
 
@@ -641,7 +641,7 @@ class LiveSetAccessors<RegisterSet> {
   }
 
  public:
-  LiveSetAccessors() : set_() {}
+  LiveSetAccessors() = default;
   explicit constexpr LiveSetAccessors(SetType) = delete;
   explicit constexpr LiveSetAccessors(RegisterSet set) : set_(set) {}
 
@@ -658,9 +658,9 @@ class LiveSetAccessors<RegisterSet> {
 };
 
 #define DEFINE_ACCESSOR_CONSTRUCTORS_(REGSET)             \
-  typedef typename Parent::RegSet RegSet;                 \
-  typedef typename Parent::RegType RegType;               \
-  typedef typename Parent::SetType SetType;               \
+  using typename Parent::RegSet;                          \
+  using typename Parent::RegType;                         \
+  using typename Parent::SetType;                         \
                                                           \
   constexpr REGSET() : Parent() {}                        \
   explicit constexpr REGSET(SetType set) : Parent(set) {} \
@@ -900,7 +900,7 @@ class SpecializedRegSet<Accessors, RegisterSet> : public Accessors {
 // |TypedOrValueRegister|, and |Register64|.
 template <class Accessors, typename Set>
 class CommonRegSet : public SpecializedRegSet<Accessors, Set> {
-  typedef SpecializedRegSet<Accessors, Set> Parent;
+  using Parent = SpecializedRegSet<Accessors, Set>;
 
  public:
   DEFINE_ACCESSOR_CONSTRUCTORS_(CommonRegSet)
@@ -1019,7 +1019,7 @@ class CommonRegSet : public SpecializedRegSet<Accessors, Set> {
 // only benefit of these classes is to provide user friendly names.
 template <typename Set>
 class LiveSet : public CommonRegSet<LiveSetAccessors<Set>, Set> {
-  typedef CommonRegSet<LiveSetAccessors<Set>, Set> Parent;
+  using Parent = CommonRegSet<LiveSetAccessors<Set>, Set>;
 
  public:
   DEFINE_ACCESSOR_CONSTRUCTORS_(LiveSet)
@@ -1027,7 +1027,7 @@ class LiveSet : public CommonRegSet<LiveSetAccessors<Set>, Set> {
 
 template <typename Set>
 class AllocatableSet : public CommonRegSet<AllocatableSetAccessors<Set>, Set> {
-  typedef CommonRegSet<AllocatableSetAccessors<Set>, Set> Parent;
+  using Parent = CommonRegSet<AllocatableSetAccessors<Set>, Set>;
 
  public:
   DEFINE_ACCESSOR_CONSTRUCTORS_(AllocatableSet)
@@ -1036,9 +1036,9 @@ class AllocatableSet : public CommonRegSet<AllocatableSetAccessors<Set>, Set> {
 };
 
 #define DEFINE_ACCESSOR_CONSTRUCTORS_FOR_REGISTERSET_(REGSET)          \
-  typedef Parent::RegSet RegSet;                                       \
-  typedef Parent::RegType RegType;                                     \
-  typedef Parent::SetType SetType;                                     \
+  using typename Parent::RegSet;                                       \
+  using typename Parent::RegType;                                      \
+  using typename Parent::SetType;                                      \
                                                                        \
   constexpr REGSET() : Parent() {}                                     \
   explicit constexpr REGSET(SetType) = delete;                         \
@@ -1054,7 +1054,7 @@ class LiveSet<RegisterSet>
   // Note: We have to provide a qualified name for LiveSetAccessors, as it is
   // interpreted as being the specialized class name inherited from the parent
   // class specialization.
-  typedef CommonRegSet<jit::LiveSetAccessors<RegisterSet>, RegisterSet> Parent;
+  using Parent = CommonRegSet<jit::LiveSetAccessors<RegisterSet>, RegisterSet>;
 
  public:
   DEFINE_ACCESSOR_CONSTRUCTORS_FOR_REGISTERSET_(LiveSet)
@@ -1066,8 +1066,8 @@ class AllocatableSet<RegisterSet>
   // Note: We have to provide a qualified name for AllocatableSetAccessors, as
   // it is interpreted as being the specialized class name inherited from the
   // parent class specialization.
-  typedef CommonRegSet<jit::AllocatableSetAccessors<RegisterSet>, RegisterSet>
-      Parent;
+  using Parent =
+      CommonRegSet<jit::AllocatableSetAccessors<RegisterSet>, RegisterSet>;
 
  public:
   DEFINE_ACCESSOR_CONSTRUCTORS_FOR_REGISTERSET_(AllocatableSet)

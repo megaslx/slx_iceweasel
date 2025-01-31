@@ -14,8 +14,6 @@
 #include "nsContentUtils.h"
 #include "nsCSSAnonBoxes.h"
 #include "nsFontMetrics.h"
-#include "nsGfxScrollFrame.h"
-#include "nsIScrollableFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include "nsRect.h"
@@ -24,13 +22,13 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Likely.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/dom/Selection.h"
 #include "TextDrawTarget.h"
 
 using mozilla::layout::TextDrawTarget;
 
-namespace mozilla {
-namespace css {
+namespace mozilla::css {
 
 class LazyReferenceRenderingDrawTargetGetterFromFrame final
     : public gfxFontGroup::LazyReferenceDrawTargetGetter {
@@ -76,7 +74,7 @@ static bool IsAtomicElement(nsIFrame* aFrame, LayoutFrameType aFrameType) {
              "unexpected block frame");
   MOZ_ASSERT(aFrameType != LayoutFrameType::Placeholder,
              "unexpected placeholder frame");
-  return !aFrame->IsFrameOfType(nsIFrame::eLineParticipant);
+  return !aFrame->IsLineParticipant();
 }
 
 static bool IsFullyClipped(nsTextFrame* aFrame, nscoord aLeft, nscoord aRight,
@@ -95,7 +93,7 @@ static bool IsInlineAxisOverflowVisible(nsIFrame* aFrame) {
              "expected a block frame");
 
   nsIFrame* f = aFrame;
-  while (f && f->Style()->IsAnonBox() && !f->IsScrollFrame()) {
+  while (f && f->Style()->IsAnonBox() && !f->IsScrollContainerFrame()) {
     f = f->GetParent();
   }
   if (!f) {
@@ -160,13 +158,12 @@ class nsDisplayTextOverflowMarker final : public nsPaintedDisplayItem {
     MOZ_COUNT_CTOR(nsDisplayTextOverflowMarker);
   }
 
-  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayTextOverflowMarker)
+  MOZ_COUNTED_DTOR_FINAL(nsDisplayTextOverflowMarker)
 
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {
     *aSnap = false;
-    nsRect shadowRect = nsLayoutUtils::GetTextShadowRectsUnion(mRect, mFrame);
-    return mRect.Union(shadowRect);
+    return nsLayoutUtils::GetTextShadowRectsUnion(mRect, mFrame);
   }
 
   virtual nsRect GetComponentAlphaBounds(
@@ -210,7 +207,7 @@ static void PaintTextShadowCallback(gfxContext* aCtx, nsPoint aShadowOffset,
 void nsDisplayTextOverflowMarker::Paint(nsDisplayListBuilder* aBuilder,
                                         gfxContext* aCtx) {
   nscolor foregroundColor =
-      nsLayoutUtils::GetColor(mFrame, &nsStyleText::mWebkitTextFillColor);
+      nsLayoutUtils::GetTextColor(mFrame, &nsStyleText::mWebkitTextFillColor);
 
   // Paint the text-shadows for the overflow marker
   nsLayoutUtils::PaintTextShadow(mFrame, aCtx, mRect,
@@ -244,13 +241,14 @@ void nsDisplayTextOverflowMarker::PaintTextToContext(gfxContext* aCtx,
       NS_ASSERTION(!textRun->IsRightToLeft(),
                    "Ellipsis textruns should always be LTR!");
       gfx::Point gfxPt(pt.x, pt.y);
+      auto& paletteCache = mFrame->PresContext()->FontPaletteCache();
       textRun->Draw(gfxTextRun::Range(textRun), gfxPt,
-                    gfxTextRun::DrawParams(aCtx));
+                    gfxTextRun::DrawParams(aCtx, paletteCache));
     }
   } else {
     RefPtr<nsFontMetrics> fm =
         nsLayoutUtils::GetInflatedFontMetricsForFrame(mFrame);
-    NS_ConvertUTF8toUTF16 str16{mStyle.AsString().AsString()};
+    nsDependentAtomString str16(mStyle.AsString().AsAtom());
     nsLayoutUtils::DrawString(mFrame, *fm, aCtx, str16.get(), str16.Length(),
                               pt);
   }
@@ -288,17 +286,19 @@ TextOverflow::TextOverflow(nsDisplayListBuilder* aBuilder,
                    aBlockFrame->GetSize()),
       mBuilder(aBuilder),
       mBlock(aBlockFrame),
-      mScrollableFrame(nsLayoutUtils::GetScrollableFrameFor(aBlockFrame)),
+      mScrollContainerFrame(
+          nsLayoutUtils::GetScrollContainerFrameFor(aBlockFrame)),
       mMarkerList(aBuilder),
       mBlockSize(aBlockFrame->GetSize()),
       mBlockWM(aBlockFrame->GetWritingMode()),
       mCanHaveInlineAxisScrollbar(false),
       mInLineClampContext(aBlockFrame->IsInLineClampContext()),
       mAdjustForPixelSnapping(false) {
-  if (mScrollableFrame) {
-    auto scrollbarStyle = mBlockWM.IsVertical()
-                              ? mScrollableFrame->GetScrollStyles().mVertical
-                              : mScrollableFrame->GetScrollStyles().mHorizontal;
+  if (mScrollContainerFrame) {
+    auto scrollbarStyle =
+        mBlockWM.IsVertical()
+            ? mScrollContainerFrame->GetScrollStyles().mVertical
+            : mScrollContainerFrame->GetScrollStyles().mHorizontal;
     mCanHaveInlineAxisScrollbar = scrollbarStyle != StyleOverflow::Hidden;
     if (!mAdjustForPixelSnapping) {
       // Scrolling to the end position can leave some text still overflowing due
@@ -308,8 +308,9 @@ TextOverflow::TextOverflow(nsDisplayListBuilder* aBuilder,
     // Use a null containerSize to convert a vector from logical to physical.
     const nsSize nullContainerSize;
     mContentArea.MoveBy(
-        mBlockWM, LogicalPoint(mBlockWM, mScrollableFrame->GetScrollPosition(),
-                               nullContainerSize));
+        mBlockWM,
+        LogicalPoint(mBlockWM, mScrollContainerFrame->GetScrollPosition(),
+                     nullContainerSize));
   }
   StyleDirection direction = aBlockFrame->StyleVisibility()->mDirection;
   const nsStyleTextReset* style = aBlockFrame->StyleTextReset();
@@ -342,9 +343,9 @@ Maybe<TextOverflow> TextOverflow::WillProcessLines(
       !CanHaveOverflowMarkers(aBlockFrame)) {
     return Nothing();
   }
-  nsIScrollableFrame* scrollableFrame =
-      nsLayoutUtils::GetScrollableFrameFor(aBlockFrame);
-  if (scrollableFrame && scrollableFrame->IsTransformingByAPZ()) {
+  ScrollContainerFrame* scrollContainerFrame =
+      nsLayoutUtils::GetScrollContainerFrameFor(aBlockFrame);
+  if (scrollContainerFrame && scrollContainerFrame->IsTransformingByAPZ()) {
     // If the APZ is actively scrolling this, don't bother with markers.
     return Nothing();
   }
@@ -490,9 +491,9 @@ LogicalRect TextOverflow::ExamineLineFrames(nsLineBox* aLine,
   bool suppressIStart = mIStart.IsSuppressed(mInLineClampContext);
   bool suppressIEnd = mIEnd.IsSuppressed(mInLineClampContext);
   if (mCanHaveInlineAxisScrollbar) {
-    LogicalPoint pos(mBlockWM, mScrollableFrame->GetScrollPosition(),
+    LogicalPoint pos(mBlockWM, mScrollContainerFrame->GetScrollPosition(),
                      mBlockSize);
-    LogicalRect scrollRange(mBlockWM, mScrollableFrame->GetScrollRange(),
+    LogicalRect scrollRange(mBlockWM, mScrollContainerFrame->GetScrollRange(),
                             mBlockSize);
     // No ellipsing when nothing to scroll to on that side (this includes
     // overflow:auto that doesn't trigger a horizontal scrollbar).
@@ -749,7 +750,7 @@ void TextOverflow::ProcessLine(const nsDisplayListSet& aLists, nsLineBox* aLine,
 
   // Clip and remove display items as needed at the final marker edges.
   nsDisplayList* lists[] = {aLists.Content(), aLists.PositionedDescendants()};
-  for (uint32_t i = 0; i < ArrayLength(lists); ++i) {
+  for (uint32_t i = 0; i < std::size(lists); ++i) {
     PruneDisplayListContents(lists[i], framesToHide, insideMarkersArea);
   }
   CreateMarkers(aLine, needIStart, needIEnd, insideMarkersArea, contentArea,
@@ -809,7 +810,7 @@ bool TextOverflow::HasClippedTextOverflow(nsIFrame* aBlockFrame) {
 /* static */
 bool TextOverflow::HasBlockEllipsis(nsIFrame* aBlockFrame) {
   nsBlockFrame* f = do_QueryFrame(aBlockFrame);
-  return f && f->HasAnyStateBits(NS_BLOCK_HAS_LINE_CLAMP_ELLIPSIS);
+  return f && f->HasLineClampEllipsis();
 }
 
 static bool BlockCanHaveLineClampEllipsis(nsBlockFrame* aBlockFrame,
@@ -817,7 +818,7 @@ static bool BlockCanHaveLineClampEllipsis(nsBlockFrame* aBlockFrame,
   if (aBeforeReflow) {
     return aBlockFrame->IsInLineClampContext();
   }
-  return aBlockFrame->HasAnyStateBits(NS_BLOCK_HAS_LINE_CLAMP_ELLIPSIS);
+  return aBlockFrame->HasLineClampEllipsis();
 }
 
 /* static */
@@ -834,9 +835,10 @@ bool TextOverflow::CanHaveOverflowMarkers(nsBlockFrame* aBlockFrame,
     return false;
   }
 
-  // Skip ComboboxControlFrame because it would clip the drop-down arrow.
-  // Its anon block inherits 'text-overflow' and does what is expected.
-  if (aBlockFrame->IsComboboxControlFrame()) {
+  // Skip the combobox anonymous block because it would clip the drop-down
+  // arrow. The inner label inherits 'text-overflow' and does the right thing.
+  if (aBlockFrame->GetParent() &&
+      aBlockFrame->GetParent()->IsComboboxControlFrame()) {
     return false;
   }
 
@@ -925,11 +927,10 @@ void TextOverflow::Marker::SetupString(nsIFrame* aFrame) {
     RefPtr<nsFontMetrics> fm =
         nsLayoutUtils::GetInflatedFontMetricsForFrame(aFrame);
     mISize = nsLayoutUtils::AppUnitWidthOfStringBidi(
-        NS_ConvertUTF8toUTF16(mStyle->AsString().AsString()), aFrame, *fm, *rc);
+        nsDependentAtomString(mStyle->AsString().AsAtom()), aFrame, *fm, *rc);
   }
   mIntrinsicISize = mISize;
   mInitialized = true;
 }
 
-}  // namespace css
-}  // namespace mozilla
+}  // namespace mozilla::css

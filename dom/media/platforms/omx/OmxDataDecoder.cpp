@@ -521,14 +521,14 @@ nsTArray<RefPtr<OmxPromiseLayer::BufferData>>* OmxDataDecoder::GetBuffers(
   return &mOutPortBuffers;
 }
 
-void OmxDataDecoder::ResolveInitPromise(const char* aMethodName) {
+void OmxDataDecoder::ResolveInitPromise(StaticString aMethodName) {
   MOZ_ASSERT(mOmxTaskQueue->IsCurrentThreadIn());
-  LOG("called from %s", aMethodName);
+  LOG("called from %s", aMethodName.get());
   mInitPromise.ResolveIfExists(mTrackInfo->GetType(), aMethodName);
 }
 
 void OmxDataDecoder::RejectInitPromise(MediaResult aError,
-                                       const char* aMethodName) {
+                                       StaticString aMethodName) {
   MOZ_ASSERT(mOmxTaskQueue->IsCurrentThreadIn());
   mInitPromise.RejectIfExists(aError, aMethodName);
 }
@@ -652,7 +652,7 @@ bool OmxDataDecoder::Event(OMX_EVENTTYPE aEvent, OMX_U32 aData1,
         //
         // So client needs to disable port and reallocate buffers.
         MOZ_ASSERT(mPortSettingsChanged == -1);
-        mPortSettingsChanged = aData1;
+        mPortSettingsChanged = AssertedCast<int32_t>(aData1);
       }
       LOG("Got OMX_EventPortSettingsChanged event");
       break;
@@ -664,7 +664,7 @@ bool OmxDataDecoder::Event(OMX_EVENTTYPE aEvent, OMX_U32 aData1,
                     MediaResult(NS_ERROR_DOM_MEDIA_DECODE_ERR, __func__));
         return true;
       }
-      LOG("WARNING: got none handle event: %d, aData1: %ld, aData2: %ld",
+      LOG("WARNING: got none handle event: %d, aData1: %lu, aData2: %lu",
           aEvent, aData1, aData2);
       return false;
     }
@@ -929,7 +929,7 @@ already_AddRefed<VideoData> MediaDataHelper::CreateYUV420VideoData(
     BufferData* aBufferData) {
   uint8_t* yuv420p_buffer = (uint8_t*)aBufferData->mBuffer->pBuffer;
   int32_t stride = mOutputPortDef.format.video.nStride;
-  int32_t slice_height = mOutputPortDef.format.video.nSliceHeight;
+  uint32_t slice_height = mOutputPortDef.format.video.nSliceHeight;
   int32_t width = mTrackInfo->GetAsVideoInfo()->mImage.width;
   int32_t height = mTrackInfo->GetAsVideoInfo()->mImage.height;
 
@@ -980,15 +980,26 @@ already_AddRefed<VideoData> MediaDataHelper::CreateYUV420VideoData(
   }
   b.mColorPrimaries = *maybeColorPrimaries;
 
-  RefPtr<VideoData> data = VideoData::CreateAndCopyData(
-      info, mImageContainer,
-      0,                                     // Filled later by caller.
-      media::TimeUnit::Zero(),               // Filled later by caller.
-      media::TimeUnit::FromMicroseconds(1),  // We don't know the duration.
-      b,
-      0,  // Filled later by caller.
-      media::TimeUnit::FromMicroseconds(-1), info.ImageRect(), nullptr);
+  Result<already_AddRefed<VideoData>, MediaResult> result =
+      VideoData::CreateAndCopyData(
+          info, mImageContainer,
+          0,                                     // Filled later by caller.
+          media::TimeUnit::Zero(),               // Filled later by caller.
+          media::TimeUnit::FromMicroseconds(1),  // We don't know the duration.
+          b,
+          false,  // Filled later by caller.
+          media::TimeUnit::FromMicroseconds(-1), info.ImageRect(), nullptr);
 
+  if (result.isErr()) {
+    MediaResult r = result.unwrapErr();
+    MOZ_LOG(sPDMLog, mozilla::LogLevel::Debug,
+            ("Failed to create a YUV420 VideoData - %s: %s",
+             r.ErrorName().get(), r.Message().get()));
+    return nullptr;
+  }
+
+  RefPtr<VideoData> data = result.unwrap();
+  MOZ_ASSERT(data);
   MOZ_LOG(sPDMLog, mozilla::LogLevel::Debug,
           ("YUV420 VideoData: disp width %d, height %d, pic width %d, height "
            "%d, time %lld",

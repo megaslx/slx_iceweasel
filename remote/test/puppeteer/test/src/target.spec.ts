@@ -1,25 +1,14 @@
 /**
- * Copyright 2018 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2018 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
-import {ServerResponse} from 'http';
+import type {ServerResponse} from 'http';
 
 import expect from 'expect';
-import {TimeoutError} from 'puppeteer';
-import {Page} from 'puppeteer-core/internal/api/Page.js';
-import {Target} from 'puppeteer-core/internal/common/Target.js';
+import {type Target, TimeoutError} from 'puppeteer';
+import type {Page} from 'puppeteer-core/internal/api/Page.js';
 
 import {getTestState, setupTestBrowserHooks} from './mocha-utils.js';
 import {waitEvent} from './utils.js';
@@ -80,11 +69,16 @@ describe('Target', function () {
 
     const [otherPage] = await Promise.all([
       context
-        .waitForTarget(target => {
-          return target.page().then(page => {
-            return page!.url() === server.CROSS_PROCESS_PREFIX + '/empty.html';
-          });
-        })
+        .waitForTarget(
+          target => {
+            return target.page().then(page => {
+              return (
+                page!.url() === server.CROSS_PROCESS_PREFIX + '/empty.html'
+              );
+            });
+          },
+          {timeout: 3000}
+        )
         .then(target => {
           return target.page();
         }),
@@ -95,16 +89,19 @@ describe('Target', function () {
     expect(otherPage!.url()).toEqual(
       server.CROSS_PROCESS_PREFIX + '/empty.html'
     );
-    expect(page).not.toEqual(otherPage);
+    expect(page).not.toBe(otherPage);
   });
   it('should report when a new page is created and closed', async () => {
     const {page, server, context} = await getTestState();
 
     const [otherPage] = await Promise.all([
       context
-        .waitForTarget(target => {
-          return target.url() === server.CROSS_PROCESS_PREFIX + '/empty.html';
-        })
+        .waitForTarget(
+          target => {
+            return target.url() === server.CROSS_PROCESS_PREFIX + '/empty.html';
+          },
+          {timeout: 3000}
+        )
         .then(target => {
           return target.page();
         }),
@@ -168,16 +165,43 @@ describe('Target', function () {
 
     await page.goto(server.PREFIX + '/serviceworkers/empty/sw.html');
 
-    const target = await context.waitForTarget(target => {
-      return target.type() === 'service_worker';
-    });
+    const target = await context.waitForTarget(
+      target => {
+        return target.type() === 'service_worker';
+      },
+      {timeout: 3000}
+    );
     const worker = (await target.worker())!;
+
     expect(
       await worker.evaluate(() => {
         return self.toString();
       })
     ).toBe('[object ServiceWorkerGlobalScope]');
   });
+
+  it('should close a service worker', async () => {
+    const {page, server, context} = await getTestState();
+
+    await page.goto(server.PREFIX + '/serviceworkers/empty/sw.html');
+
+    const target = await context.waitForTarget(
+      target => {
+        return target.type() === 'service_worker';
+      },
+      {timeout: 3000}
+    );
+    const worker = (await target.worker())!;
+
+    const onceDestroyed = new Promise(resolve => {
+      context.once('targetdestroyed', event => {
+        resolve(event);
+      });
+    });
+    await worker.close();
+    expect(await onceDestroyed).toBe(target);
+  });
+
   it('should create a worker from a shared worker', async () => {
     const {page, server, context} = await getTestState();
 
@@ -185,9 +209,12 @@ describe('Target', function () {
     await page.evaluate(() => {
       new SharedWorker('data:text/javascript,console.log("hi")');
     });
-    const target = await context.waitForTarget(target => {
-      return target.type() === 'shared_worker';
-    });
+    const target = await context.waitForTarget(
+      target => {
+        return target.type() === 'shared_worker';
+      },
+      {timeout: 3000}
+    );
     const worker = (await target.worker())!;
     expect(
       await worker.evaluate(() => {
@@ -195,6 +222,31 @@ describe('Target', function () {
       })
     ).toBe('[object SharedWorkerGlobalScope]');
   });
+
+  it('should close a shared worker', async () => {
+    const {page, server, context} = await getTestState();
+
+    await page.goto(server.EMPTY_PAGE);
+    await page.evaluate(() => {
+      new SharedWorker('data:text/javascript,console.log("hi2")');
+    });
+    const target = await context.waitForTarget(
+      target => {
+        return target.type() === 'shared_worker';
+      },
+      {timeout: 3000}
+    );
+    const worker = (await target.worker())!;
+
+    const onceDestroyed = new Promise(resolve => {
+      context.once('targetdestroyed', event => {
+        resolve(event);
+      });
+    });
+    await worker.close();
+    expect(await onceDestroyed).toBe(target);
+  });
+
   it('should report when a target url changes', async () => {
     const {page, server, context} = await getTestState();
 
@@ -212,7 +264,7 @@ describe('Target', function () {
 
     let targetChanged = false;
     const listener = () => {
-      return (targetChanged = true);
+      targetChanged = true;
     };
     context.on('targetchanged', listener);
     const targetPromise = waitEvent<Target>(context, 'targetcreated');
@@ -232,6 +284,7 @@ describe('Target', function () {
     expect(targetChanged).toBe(false);
     context.off('targetchanged', listener);
   });
+
   it('should not crash while redirecting if original request was missed', async () => {
     const {page, server, context} = await getTestState();
 
@@ -247,15 +300,19 @@ describe('Target', function () {
       server.waitForRequest('/one-style.css'),
     ]);
     // Connect to the opened page.
-    const target = await context.waitForTarget(target => {
-      return target.url().includes('one-style.html');
-    });
+    const target = await context.waitForTarget(
+      target => {
+        return target.url().includes('one-style.html');
+      },
+      {timeout: 3000}
+    );
     const newPage = (await target.page())!;
+    const loadEvent = waitEvent(newPage, 'load');
     // Issue a redirect.
     serverResponse.writeHead(302, {location: '/injectedstyle.css'});
     serverResponse.end();
     // Wait for the new page to load.
-    await waitEvent(newPage, 'load');
+    await loadEvent;
     // Cleanup.
     await newPage.close();
   });
@@ -276,12 +333,15 @@ describe('Target', function () {
 
   describe('Browser.waitForTarget', () => {
     it('should wait for a target', async () => {
-      const {browser, server} = await getTestState();
+      const {browser, server, context} = await getTestState();
 
       let resolved = false;
-      const targetPromise = browser.waitForTarget(target => {
-        return target.url() === server.EMPTY_PAGE;
-      });
+      const targetPromise = browser.waitForTarget(
+        target => {
+          return target.url() === server.EMPTY_PAGE;
+        },
+        {timeout: 3000}
+      );
       targetPromise
         .then(() => {
           return (resolved = true);
@@ -294,7 +354,7 @@ describe('Target', function () {
             throw error;
           }
         });
-      const page = await browser.newPage();
+      const page = await context.newPage();
       expect(resolved).toBe(false);
       await page.goto(server.EMPTY_PAGE);
       try {
@@ -316,7 +376,7 @@ describe('Target', function () {
       await browser
         .waitForTarget(
           target => {
-            return target.url() === server.EMPTY_PAGE;
+            return target.url() === server.PREFIX + '/does-not-exist.html';
           },
           {
             timeout: 1,
@@ -326,6 +386,21 @@ describe('Target', function () {
           return (error = error_);
         });
       expect(error).toBeInstanceOf(TimeoutError);
+    });
+    it('should be able to abort', async () => {
+      const {browser} = await getTestState();
+      const abortController = new AbortController();
+      const task = browser.waitForTarget(
+        () => {
+          return false;
+        },
+        {
+          signal: abortController.signal,
+        }
+      );
+
+      abortController.abort();
+      await expect(task).rejects.toThrow(/aborted/);
     });
   });
 });

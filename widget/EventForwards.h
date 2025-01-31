@@ -72,6 +72,31 @@ enum EventMessage : EventMessageType {
 const char* ToChar(EventMessage aEventMessage);
 
 /**
+ * Return true if aMessage should be dispatched as a WidgetPointerEvent.
+ */
+[[nodiscard]] bool IsPointerEventMessage(EventMessage aMessage);
+
+/**
+ * Return true if aMessage should be dispatched as a WidgetPointerEvent and
+ * the message was dispatched as a WidgetMouseEvent.  So, this returns true
+ * if the event message is ePointerClick, ePointerAuxClick or eContextMenu.
+ */
+[[nodiscard]] bool IsPointerEventMessageOriginallyMouseEventMessage(
+    EventMessage aMessage);
+
+/**
+ * Return true if aMessage is not allowed to dispatch to a content node except
+ * Element node when we dispatch the event as a trusted event which .
+ *
+ * NOTE: This is currently designed for PresShell to consider whether a content
+ * node is proper event target for aMessage.  So, this may not work the expected
+ * way in other cases.  Therefore, when you use this method in a new place, you
+ * should check whether this returns the expected result for you.
+ */
+[[nodiscard]] bool IsForbiddenDispatchingToNonElementContent(
+    EventMessage aMessage);
+
+/**
  * Event class IDs
  */
 
@@ -270,9 +295,6 @@ inline bool IsCancelableBeforeInputEvent(EditorInputType aInputType) {
       return true;
     case EditorInputType::eInsertLink:
       return true;
-    case EditorInputType::eDeleteByComposition:
-      MOZ_ASSERT(!StaticPrefs::dom_input_events_conform_to_level_1());
-      return true;
     case EditorInputType::eDeleteCompositionText:
       MOZ_ASSERT(!StaticPrefs::dom_input_events_conform_to_level_1());
       return false;
@@ -459,6 +481,29 @@ enum MouseButtonsFlag {
   e5thFlag = 0x10,
   eEraserFlag = 0x20
 };
+
+/**
+ * Returns a MouseButtonsFlag value which is changed by a button state change
+ * event whose mButton is aMouseButton.
+ */
+inline MouseButtonsFlag MouseButtonsFlagToChange(MouseButton aMouseButton) {
+  switch (aMouseButton) {
+    case MouseButton::ePrimary:
+      return MouseButtonsFlag::ePrimaryFlag;
+    case MouseButton::eMiddle:
+      return MouseButtonsFlag::eMiddleFlag;
+    case MouseButton::eSecondary:
+      return MouseButtonsFlag::eSecondaryFlag;
+    case MouseButton::eX1:
+      return MouseButtonsFlag::e4thFlag;
+    case MouseButton::eX2:
+      return MouseButtonsFlag::e5thFlag;
+    case MouseButton::eEraser:
+      return MouseButtonsFlag::eEraserFlag;
+    default:
+      return MouseButtonsFlag::eNoButtons;
+  }
+}
 
 enum class TextRangeType : RawTextRangeType;
 

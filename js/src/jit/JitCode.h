@@ -14,8 +14,8 @@
 
 #include "jstypes.h"
 
-#include "gc/Allocator.h"  // AllowGC
 #include "gc/Cell.h"       // gc::TenuredCellWithNonGCPointer
+#include "gc/GCEnum.h"     // AllowGC
 #include "js/TraceKind.h"  // JS::TraceKind
 #include "js/UbiNode.h"    // ubi::{TracerConcrete, Size, CourseType}
 
@@ -47,6 +47,10 @@ class JitCode : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   // Raw code pointer, stored in the cell header.
   uint8_t* raw() const { return headerPtr(); }
 
+  // Raw pointer to the allocated memory to be able to modify the JitCodePointer
+  // which is stored above the code.
+  uint8_t* allocatedMemory() const { return headerPtr() - headerSize_; }
+
  protected:
   ExecutablePool* pool_;
   uint32_t bufferSize_;  // Total buffer size. Does not include headerSize_.
@@ -60,6 +64,7 @@ class JitCode : public gc::TenuredCellWithNonGCPointer<uint8_t> {
                              // This is necessary to prevent GC tracing.
   bool hasBytecodeMap_ : 1;  // Whether the code object has been registered with
                              // native=>bytecode mapping tables.
+  uint8_t localTracingSlots_;
 
   JitCode() = delete;
   JitCode(uint8_t* code, uint32_t bufferSize, uint32_t headerSize,
@@ -74,7 +79,8 @@ class JitCode : public gc::TenuredCellWithNonGCPointer<uint8_t> {
         headerSize_(headerSize),
         kind_(uint8_t(kind)),
         invalidated_(false),
-        hasBytecodeMap_(false) {
+        hasBytecodeMap_(false),
+        localTracingSlots_(0) {
     MOZ_ASSERT(CodeKind(kind_) == kind);
     MOZ_ASSERT(headerSize_ == headerSize);
   }
@@ -94,12 +100,19 @@ class JitCode : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   size_t instructionsSize() const { return insnSize_; }
   size_t bufferSize() const { return bufferSize_; }
   size_t headerSize() const { return headerSize_; }
+  size_t allocatedSize() const { return bufferSize_ + headerSize_; }
 
   void traceChildren(JSTracer* trc);
   void finalize(JS::GCContext* gcx);
   void setInvalidated() { invalidated_ = true; }
 
   void setHasBytecodeMap() { hasBytecodeMap_ = true; }
+
+  void setLocalTracingSlots(uint8_t localTracingSlots) {
+    localTracingSlots_ = localTracingSlots;
+  }
+
+  uint8_t localTracingSlots() { return localTracingSlots_; }
 
   // If this JitCode object has been, effectively, corrupted due to
   // invalidation patching, then we have to remember this so we don't try and

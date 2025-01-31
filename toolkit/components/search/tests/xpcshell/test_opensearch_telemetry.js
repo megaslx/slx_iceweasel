@@ -7,8 +7,6 @@ const { TelemetryTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/TelemetryTestUtils.sys.mjs"
 );
 
-const { promiseStartupManager, promiseShutdownManager } = AddonTestUtils;
-
 const openSearchEngineFiles = [
   "secure-and-securely-updated1.xml",
   "secure-and-securely-updated2.xml",
@@ -39,19 +37,16 @@ async function verifyTelemetry(probeNameFragment, engineCount, type) {
   );
 }
 
-add_task(async function setup() {
-  useHttpServer("opensearch");
+add_setup(async function () {
+  useHttpServer();
 
-  await promiseStartupManager();
   await Services.search.init();
 
   for (let file of openSearchEngineFiles) {
-    await Services.search.addOpenSearchEngine(gDataUrl + file, null);
+    await SearchTestUtils.installOpenSearchEngine({
+      url: `${gHttpURL}/opensearch/${file}`,
+    });
   }
-
-  registerCleanupFunction(async () => {
-    await promiseShutdownManager();
-  });
 });
 
 add_task(async function () {

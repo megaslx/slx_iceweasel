@@ -12,12 +12,12 @@
 #define TEST_PC_E2E_ANALYZER_VIDEO_DEFAULT_VIDEO_QUALITY_ANALYZER_FRAME_IN_FLIGHT_H_
 
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "absl/types/optional.h"
 #include "api/numerics/samples_stats_counter.h"
 #include "api/units/data_size.h"
 #include "api/units/time_delta.h"
@@ -34,19 +34,22 @@ struct ReceiverFrameStats {
   Timestamp decode_start_time = Timestamp::MinusInfinity();
   Timestamp decode_end_time = Timestamp::MinusInfinity();
   Timestamp rendered_time = Timestamp::MinusInfinity();
-  Timestamp prev_frame_rendered_time = Timestamp::MinusInfinity();
 
-  TimeDelta time_between_rendered_frames = TimeDelta::Zero();
+  // Will be set if there is frame rendered before this one.
+  std::optional<Timestamp> prev_frame_rendered_time = std::nullopt;
+  std::optional<TimeDelta> time_between_rendered_frames = std::nullopt;
 
   // Type and encoded size of received frame.
   VideoFrameType frame_type = VideoFrameType::kEmptyFrame;
   DataSize encoded_image_size = DataSize::Bytes(0);
 
-  absl::optional<int> decoded_frame_width = absl::nullopt;
-  absl::optional<int> decoded_frame_height = absl::nullopt;
+  std::optional<int> decoded_frame_width = std::nullopt;
+  std::optional<int> decoded_frame_height = std::nullopt;
+
+  std::optional<uint8_t> decoded_frame_qp = std::nullopt;
 
   // Can be not set if frame was dropped in the network.
-  absl::optional<StreamCodecInfo> used_decoder = absl::nullopt;
+  std::optional<StreamCodecInfo> used_decoder = std::nullopt;
 
   bool dropped = false;
   bool decoder_failed = false;
@@ -68,6 +71,7 @@ class FrameInFlight {
   FrameInFlight(size_t stream,
                 uint16_t frame_id,
                 Timestamp captured_time,
+                std::optional<TimeDelta> time_between_captured_frames,
                 std::set<size_t> expected_receivers);
 
   size_t stream() const { return stream_; }
@@ -89,6 +93,7 @@ class FrameInFlight {
   void SetPreEncodeTime(Timestamp time) { pre_encode_time_ = time; }
 
   void OnFrameEncoded(Timestamp time,
+                      std::optional<TimeDelta> time_between_encoded_frames,
                       VideoFrameType frame_type,
                       DataSize encoded_image_size,
                       uint32_t target_encode_bitrate,
@@ -110,7 +115,9 @@ class FrameInFlight {
                       Timestamp time,
                       int width,
                       int height,
-                      const StreamCodecInfo& used_decoder);
+                      const StreamCodecInfo& used_decoder,
+                      const std::optional<uint8_t> qp);
+
   void OnDecoderError(size_t peer, const StreamCodecInfo& used_decoder);
 
   bool HasDecodeEndTime(size_t peer) const;
@@ -156,14 +163,16 @@ class FrameInFlight {
   // any peer or can be safely deleted. It is responsibility of the user of this
   // object to decide when it should be deleted.
   std::set<size_t> expected_receivers_;
-  // Store frame id separately because `frame_` can be removed when we have too
-  // much memory consuption.
   uint16_t frame_id_ = VideoFrame::kNotSetId;
 
   // Frame events timestamp.
   Timestamp captured_time_;
   Timestamp pre_encode_time_ = Timestamp::MinusInfinity();
   Timestamp encoded_time_ = Timestamp::MinusInfinity();
+
+  std::optional<TimeDelta> time_between_captured_frames_ = std::nullopt;
+  std::optional<TimeDelta> time_between_encoded_frames_ = std::nullopt;
+
   // Type and encoded size of sent frame.
   VideoFrameType frame_type_ = VideoFrameType::kEmptyFrame;
   DataSize encoded_image_size_ = DataSize::Bytes(0);
@@ -172,7 +181,7 @@ class FrameInFlight {
   // spatial or simulcast index is set in `EncodedImage`, 0 is used.
   std::map<int, SamplesStatsCounter> stream_layers_qp_;
   // Can be not set if frame was dropped by encoder.
-  absl::optional<StreamCodecInfo> used_encoder_ = absl::nullopt;
+  std::optional<StreamCodecInfo> used_encoder_ = std::nullopt;
   // Map from the receiver peer's index to frame stats for that peer.
   std::unordered_map<size_t, ReceiverFrameStats> receiver_stats_;
 };

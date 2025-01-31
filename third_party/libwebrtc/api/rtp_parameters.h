@@ -14,12 +14,12 @@
 #include <stdint.h>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "api/media_types.h"
 #include "api/priority.h"
 #include "api/rtp_transceiver_direction.h"
@@ -28,6 +28,8 @@
 #include "rtc_base/system/rtc_export.h"
 
 namespace webrtc {
+
+using CodecParameterMap = std::map<std::string, std::string>;
 
 // These structures are intended to mirror those defined by:
 // http://draft.ortc.org/#rtcrtpdictionaries*
@@ -107,7 +109,7 @@ struct RTC_EXPORT RtcpFeedback {
   // 1. It's an enum instead of a string.
   // 2. Generic NACK feedback is represented by a GENERIC_NACK message type,
   //    rather than an unset "parameter" value.
-  absl::optional<RtcpFeedbackMessageType> message_type;
+  std::optional<RtcpFeedbackMessageType> message_type;
 
   // Constructors for convenience.
   RtcpFeedback();
@@ -122,12 +124,10 @@ struct RTC_EXPORT RtcpFeedback {
   bool operator!=(const RtcpFeedback& o) const { return !(*this == o); }
 };
 
-// RtpCodecCapability is to RtpCodecParameters as RtpCapabilities is to
-// RtpParameters. This represents the static capabilities of an endpoint's
-// implementation of a codec.
-struct RTC_EXPORT RtpCodecCapability {
-  RtpCodecCapability();
-  ~RtpCodecCapability();
+struct RTC_EXPORT RtpCodec {
+  RtpCodec();
+  RtpCodec(const RtpCodec&);
+  virtual ~RtpCodec();
 
   // Build MIME "type/subtype" string from `name` and `kind`.
   std::string mime_type() const { return MediaTypeToString(kind) + "/" + name; }
@@ -138,25 +138,18 @@ struct RTC_EXPORT RtpCodecCapability {
   // The media type of this codec. Equivalent to MIME top-level type.
   cricket::MediaType kind = cricket::MEDIA_TYPE_AUDIO;
 
-  // Clock rate in Hertz. If unset, the codec is applicable to any clock rate.
-  absl::optional<int> clock_rate;
+  // If unset, the implementation default is used.
+  std::optional<int> clock_rate;
 
-  // Default payload type for this codec. Mainly needed for codecs that use
-  // that have statically assigned payload types.
-  absl::optional<int> preferred_payload_type;
+  // The number of audio channels used. Unset for video codecs. If unset for
+  // audio, the implementation default is used.
+  // TODO(deadbeef): The "implementation default" part isn't fully implemented.
+  // Only defaults to 1, even though some codecs (such as opus) should really
+  // default to 2.
+  std::optional<int> num_channels;
 
-  // Maximum packetization time supported by an RtpReceiver for this codec.
-  // TODO(deadbeef): Not implemented.
-  absl::optional<int> max_ptime;
-
-  // Preferred packetization time for an RtpReceiver or RtpSender of this codec.
-  // TODO(deadbeef): Not implemented.
-  absl::optional<int> ptime;
-
-  // The number of audio channels supported. Unused for video codecs.
-  absl::optional<int> num_channels;
-
-  // Feedback mechanisms supported for this codec.
+  // Feedback mechanisms to be used for this codec.
+  // TODO(deadbeef): Not implemented with PeerConnection senders/receivers.
   std::vector<RtcpFeedback> rtcp_feedback;
 
   // Codec-specific parameters that must be signaled to the remote party.
@@ -168,39 +161,33 @@ struct RTC_EXPORT RtpCodecCapability {
   // Boolean values are represented by the string "1".
   std::map<std::string, std::string> parameters;
 
-  // Codec-specific parameters that may optionally be signaled to the remote
-  // party.
-  // TODO(deadbeef): Not implemented.
-  std::map<std::string, std::string> options;
+  bool operator==(const RtpCodec& o) const {
+    return name == o.name && kind == o.kind && clock_rate == o.clock_rate &&
+           num_channels == o.num_channels && rtcp_feedback == o.rtcp_feedback &&
+           parameters == o.parameters;
+  }
+  bool operator!=(const RtpCodec& o) const { return !(*this == o); }
+  bool IsResiliencyCodec() const;
+  bool IsMediaCodec() const;
+};
 
-  // Maximum number of temporal layer extensions supported by this codec.
-  // For example, a value of 1 indicates that 2 total layers are supported.
-  // TODO(deadbeef): Not implemented.
-  int max_temporal_layer_extensions = 0;
+// RtpCodecCapability is to RtpCodecParameters as RtpCapabilities is to
+// RtpParameters. This represents the static capabilities of an endpoint's
+// implementation of a codec.
+struct RTC_EXPORT RtpCodecCapability : public RtpCodec {
+  RtpCodecCapability();
+  virtual ~RtpCodecCapability();
 
-  // Maximum number of spatial layer extensions supported by this codec.
-  // For example, a value of 1 indicates that 2 total layers are supported.
-  // TODO(deadbeef): Not implemented.
-  int max_spatial_layer_extensions = 0;
+  // Default payload type for this codec. Mainly needed for codecs that have
+  // statically assigned payload types.
+  std::optional<int> preferred_payload_type;
 
-  // Whether the implementation can send/receive SVC layers with distinct SSRCs.
-  // Always false for audio codecs. True for video codecs that support scalable
-  // video coding with MRST.
-  // TODO(deadbeef): Not implemented.
-  bool svc_multi_stream_support = false;
-
-  // https://w3c.github.io/webrtc-svc/#dom-rtcrtpcodeccapability-scalabilitymodes
+  // List of scalability modes supported by the video codec.
   absl::InlinedVector<ScalabilityMode, kScalabilityModeCount> scalability_modes;
 
   bool operator==(const RtpCodecCapability& o) const {
-    return name == o.name && kind == o.kind && clock_rate == o.clock_rate &&
+    return RtpCodec::operator==(o) &&
            preferred_payload_type == o.preferred_payload_type &&
-           max_ptime == o.max_ptime && ptime == o.ptime &&
-           num_channels == o.num_channels && rtcp_feedback == o.rtcp_feedback &&
-           parameters == o.parameters && options == o.options &&
-           max_temporal_layer_extensions == o.max_temporal_layer_extensions &&
-           max_spatial_layer_extensions == o.max_spatial_layer_extensions &&
-           svc_multi_stream_support == o.svc_multi_stream_support &&
            scalability_modes == o.scalability_modes;
   }
   bool operator!=(const RtpCodecCapability& o) const { return !(*this == o); }
@@ -222,10 +209,9 @@ struct RTC_EXPORT RtpHeaderExtensionCapability {
   std::string uri;
 
   // Preferred value of ID that goes in the packet.
-  absl::optional<int> preferred_id;
+  std::optional<int> preferred_id;
 
   // If true, it's preferred that the value in the header is encrypted.
-  // TODO(deadbeef): Not implemented.
   bool preferred_encrypt = false;
 
   // The direction of the extension. The kStopped value is only used with
@@ -239,6 +225,10 @@ struct RTC_EXPORT RtpHeaderExtensionCapability {
   RtpHeaderExtensionCapability(absl::string_view uri, int preferred_id);
   RtpHeaderExtensionCapability(absl::string_view uri,
                                int preferred_id,
+                               RtpTransceiverDirection direction);
+  RtpHeaderExtensionCapability(absl::string_view uri,
+                               int preferred_id,
+                               bool preferred_encrypt,
                                RtpTransceiverDirection direction);
   ~RtpHeaderExtensionCapability();
 
@@ -390,6 +380,10 @@ struct RTC_EXPORT RtpExtension {
   static constexpr char kCsrcAudioLevelsUri[] =
       "urn:ietf:params:rtp-hdrext:csrc-audio-level";
 
+  // Header extension for automatic corruption detection.
+  static constexpr char kCorruptionDetectionUri[] =
+      "http://www.webrtc.org/experiments/rtp-hdrext/corruption-detection";
+
   // Inclusive min and max IDs for two-byte header extensions and one-byte
   // header extensions, per RFC8285 Section 4.2-4.3.
   static constexpr int kMinId = 1;
@@ -406,7 +400,7 @@ struct RTC_EXPORT RtpExtension {
 struct RTC_EXPORT RtpFecParameters {
   // If unset, a value is chosen by the implementation.
   // Works just like RtpEncodingParameters::ssrc.
-  absl::optional<uint32_t> ssrc;
+  std::optional<uint32_t> ssrc;
 
   FecMechanism mechanism = FecMechanism::RED;
 
@@ -426,7 +420,7 @@ struct RTC_EXPORT RtpFecParameters {
 struct RTC_EXPORT RtpRtxParameters {
   // If unset, a value is chosen by the implementation.
   // Works just like RtpEncodingParameters::ssrc.
-  absl::optional<uint32_t> ssrc;
+  std::optional<uint32_t> ssrc;
 
   // Constructors for convenience.
   RtpRtxParameters();
@@ -449,7 +443,7 @@ struct RTC_EXPORT RtpEncodingParameters {
   // may change due to an SSRC conflict, in which case the conflict is handled
   // internally without any event. Another way of looking at this is that an
   // unset SSRC acts as a "wildcard" SSRC.
-  absl::optional<uint32_t> ssrc;
+  std::optional<uint32_t> ssrc;
 
   // The relative bitrate priority of this encoding. Currently this is
   // implemented for the entire rtp sender by using the value of the first
@@ -484,24 +478,24 @@ struct RTC_EXPORT RtpEncodingParameters {
   // bandwidth for the entire bandwidth estimator (audio and video). This is
   // just always how "b=AS" was handled, but it's not correct and should be
   // fixed.
-  absl::optional<int> max_bitrate_bps;
+  std::optional<int> max_bitrate_bps;
 
   // Specifies the minimum bitrate in bps for video.
-  absl::optional<int> min_bitrate_bps;
+  std::optional<int> min_bitrate_bps;
 
   // Specifies the maximum framerate in fps for video.
-  absl::optional<double> max_framerate;
+  std::optional<double> max_framerate;
 
   // Specifies the number of temporal layers for video (if the feature is
   // supported by the codec implementation).
   // Screencast support is experimental.
-  absl::optional<int> num_temporal_layers;
+  std::optional<int> num_temporal_layers;
 
   // For video, scale the resolution down by this factor.
-  absl::optional<double> scale_resolution_down_by;
+  std::optional<double> scale_resolution_down_by;
 
   // https://w3c.github.io/webrtc-svc/#rtcrtpencodingparameters
-  absl::optional<std::string> scalability_mode;
+  std::optional<std::string> scalability_mode;
 
   // Requested encode resolution.
   //
@@ -519,7 +513,7 @@ struct RTC_EXPORT RtpEncodingParameters {
   //
   // It is an error to set both `requested_resolution` and
   // `scale_resolution_down_by`.
-  absl::optional<Resolution> requested_resolution;
+  std::optional<Resolution> requested_resolution;
 
   // For an RtpSender, set to true to cause this encoding to be encoded and
   // sent, and false for it not to be encoded and sent. This allows control
@@ -532,10 +526,14 @@ struct RTC_EXPORT RtpEncodingParameters {
   // Value to use for RID RTP header extension.
   // Called "encodingId" in ORTC.
   std::string rid;
+  bool request_key_frame = false;
 
   // Allow dynamic frame length changes for audio:
   // https://w3c.github.io/webrtc-extensions/#dom-rtcrtpencodingparameters-adaptiveptime
   bool adaptive_ptime = false;
+
+  // Allow changing the used codec for this encoding.
+  std::optional<RtpCodec> codec;
 
   bool operator==(const RtpEncodingParameters& o) const {
     return ssrc == o.ssrc && bitrate_priority == o.bitrate_priority &&
@@ -547,70 +545,25 @@ struct RTC_EXPORT RtpEncodingParameters {
            scale_resolution_down_by == o.scale_resolution_down_by &&
            active == o.active && rid == o.rid &&
            adaptive_ptime == o.adaptive_ptime &&
-           requested_resolution == o.requested_resolution;
+           requested_resolution == o.requested_resolution && codec == o.codec;
   }
   bool operator!=(const RtpEncodingParameters& o) const {
     return !(*this == o);
   }
 };
 
-struct RTC_EXPORT RtpCodecParameters {
+struct RTC_EXPORT RtpCodecParameters : public RtpCodec {
   RtpCodecParameters();
   RtpCodecParameters(const RtpCodecParameters&);
-  ~RtpCodecParameters();
-
-  // Build MIME "type/subtype" string from `name` and `kind`.
-  std::string mime_type() const { return MediaTypeToString(kind) + "/" + name; }
-
-  // Used to identify the codec. Equivalent to MIME subtype.
-  std::string name;
-
-  // The media type of this codec. Equivalent to MIME top-level type.
-  cricket::MediaType kind = cricket::MEDIA_TYPE_AUDIO;
+  virtual ~RtpCodecParameters();
 
   // Payload type used to identify this codec in RTP packets.
   // This must always be present, and must be unique across all codecs using
   // the same transport.
   int payload_type = 0;
 
-  // If unset, the implementation default is used.
-  absl::optional<int> clock_rate;
-
-  // The number of audio channels used. Unset for video codecs. If unset for
-  // audio, the implementation default is used.
-  // TODO(deadbeef): The "implementation default" part isn't fully implemented.
-  // Only defaults to 1, even though some codecs (such as opus) should really
-  // default to 2.
-  absl::optional<int> num_channels;
-
-  // The maximum packetization time to be used by an RtpSender.
-  // If `ptime` is also set, this will be ignored.
-  // TODO(deadbeef): Not implemented.
-  absl::optional<int> max_ptime;
-
-  // The packetization time to be used by an RtpSender.
-  // If unset, will use any time up to max_ptime.
-  // TODO(deadbeef): Not implemented.
-  absl::optional<int> ptime;
-
-  // Feedback mechanisms to be used for this codec.
-  // TODO(deadbeef): Not implemented with PeerConnection senders/receivers.
-  std::vector<RtcpFeedback> rtcp_feedback;
-
-  // Codec-specific parameters that must be signaled to the remote party.
-  //
-  // Corresponds to "a=fmtp" parameters in SDP.
-  //
-  // Contrary to ORTC, these parameters are named using all lowercase strings.
-  // This helps make the mapping to SDP simpler, if an application is using SDP.
-  // Boolean values are represented by the string "1".
-  std::map<std::string, std::string> parameters;
-
   bool operator==(const RtpCodecParameters& o) const {
-    return name == o.name && kind == o.kind && payload_type == o.payload_type &&
-           clock_rate == o.clock_rate && num_channels == o.num_channels &&
-           max_ptime == o.max_ptime && ptime == o.ptime &&
-           rtcp_feedback == o.rtcp_feedback && parameters == o.parameters;
+    return RtpCodec::operator==(o) && payload_type == o.payload_type;
   }
   bool operator!=(const RtpCodecParameters& o) const { return !(*this == o); }
 };
@@ -647,7 +600,7 @@ struct RtcpParameters final {
   // The SSRC to be used in the "SSRC of packet sender" field. If not set, one
   // will be chosen by the implementation.
   // TODO(deadbeef): Not implemented.
-  absl::optional<uint32_t> ssrc;
+  std::optional<uint32_t> ssrc;
 
   // The Canonical Name (CNAME) used by RTCP (e.g. in SDES messages).
   //
@@ -703,7 +656,7 @@ struct RTC_EXPORT RtpParameters {
   // When bandwidth is constrained and the RtpSender needs to choose between
   // degrading resolution or degrading framerate, degradationPreference
   // indicates which is preferred. Only for video tracks.
-  absl::optional<DegradationPreference> degradation_preference;
+  std::optional<DegradationPreference> degradation_preference;
 
   bool operator==(const RtpParameters& o) const {
     return mid == o.mid && codecs == o.codecs &&

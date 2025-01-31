@@ -7,6 +7,7 @@
 
 #include "nsHttp.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Components.h"
 #include "mozilla/ContentPrincipal.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/net/ExtensionProtocolHandler.h"
@@ -85,7 +86,7 @@ NeckoParent::NeckoParent() : mSocketProcessBridgeInited(false) {
 static PBOverrideStatus PBOverrideStatusFromLoadContext(
     const SerializedLoadContext& aSerialized) {
   if (!aSerialized.IsNotNull() && aSerialized.IsPrivateBitValid()) {
-    return (aSerialized.mOriginAttributes.mPrivateBrowsingId > 0)
+    return aSerialized.mOriginAttributes.IsPrivateBrowsing()
                ? kPBOverride_Private
                : kPBOverride_NotPrivate;
   }
@@ -93,14 +94,9 @@ static PBOverrideStatus PBOverrideStatusFromLoadContext(
 }
 
 static already_AddRefed<nsIPrincipal> GetRequestingPrincipal(
-    const Maybe<LoadInfoArgs>& aOptionalLoadInfoArgs) {
-  if (aOptionalLoadInfoArgs.isNothing()) {
-    return nullptr;
-  }
-
-  const LoadInfoArgs& loadInfoArgs = aOptionalLoadInfoArgs.ref();
+    const LoadInfoArgs& aLoadInfoArgs) {
   const Maybe<PrincipalInfo>& optionalPrincipalInfo =
-      loadInfoArgs.requestingPrincipalInfo();
+      aLoadInfoArgs.requestingPrincipalInfo();
 
   if (optionalPrincipalInfo.isNothing()) {
     return nullptr;
@@ -122,35 +118,29 @@ static already_AddRefed<nsIPrincipal> GetRequestingPrincipal(
   return GetRequestingPrincipal(args.loadInfo());
 }
 
-const char* NeckoParent::GetValidatedOriginAttributes(
+void NeckoParent::GetValidatedOriginAttributes(
     const SerializedLoadContext& aSerialized, PContentParent* aContent,
     nsIPrincipal* aRequestingPrincipal, OriginAttributes& aAttrs) {
   if (!aSerialized.IsNotNull()) {
     // If serialized is null, we cannot validate anything. We have to assume
     // that this requests comes from a SystemPrincipal.
-    aAttrs = OriginAttributes(false);
+    aAttrs = OriginAttributes();
   } else {
     aAttrs = aSerialized.mOriginAttributes;
   }
-  return nullptr;
 }
 
-const char* NeckoParent::CreateChannelLoadContext(
+void NeckoParent::CreateChannelLoadContext(
     PBrowserParent* aBrowser, PContentParent* aContent,
     const SerializedLoadContext& aSerialized,
     nsIPrincipal* aRequestingPrincipal, nsCOMPtr<nsILoadContext>& aResult) {
   OriginAttributes attrs;
-  const char* error = GetValidatedOriginAttributes(aSerialized, aContent,
-                                                   aRequestingPrincipal, attrs);
-  if (error) {
-    return error;
-  }
+  GetValidatedOriginAttributes(aSerialized, aContent, aRequestingPrincipal,
+                               attrs);
 
-  // if !UsingNeckoIPCSecurity(), we may not have a LoadContext to set. This is
-  // the common case for most xpcshell tests.
   if (aSerialized.IsNotNull()) {
     attrs.SyncAttributesWithPrivateBrowsing(
-        aSerialized.mOriginAttributes.mPrivateBrowsingId > 0);
+        aSerialized.mOriginAttributes.IsPrivateBrowsing());
 
     RefPtr<BrowserParent> browserParent = BrowserParent::GetFrom(aBrowser);
     dom::Element* topFrameElement = nullptr;
@@ -159,8 +149,6 @@ const char* NeckoParent::CreateChannelLoadContext(
     }
     aResult = new LoadContext(aSerialized, topFrameElement, attrs);
   }
-
-  return nullptr;
 }
 
 void NeckoParent::ActorDestroy(ActorDestroyReason aWhy) {
@@ -175,15 +163,8 @@ already_AddRefed<PHttpChannelParent> NeckoParent::AllocPHttpChannelParent(
       GetRequestingPrincipal(aOpenArgs);
 
   nsCOMPtr<nsILoadContext> loadContext;
-  const char* error = CreateChannelLoadContext(
-      aBrowser, Manager(), aSerialized, requestingPrincipal, loadContext);
-  if (error) {
-    printf_stderr(
-        "NeckoParent::AllocPHttpChannelParent: "
-        "FATAL error: %s: KILLING CHILD PROCESS\n",
-        error);
-    return nullptr;
-  }
+  CreateChannelLoadContext(aBrowser, Manager(), aSerialized,
+                           requestingPrincipal, loadContext);
   PBOverrideStatus overrideStatus =
       PBOverrideStatusFromLoadContext(aSerialized);
   RefPtr<HttpChannelParent> p = new HttpChannelParent(
@@ -291,7 +272,7 @@ mozilla::ipc::IPCResult NeckoParent::RecvPDocumentChannelConstructor(
 }
 
 PCookieServiceParent* NeckoParent::AllocPCookieServiceParent() {
-  return new CookieServiceParent();
+  return new CookieServiceParent(static_cast<ContentParent*>(Manager()));
 }
 
 bool NeckoParent::DeallocPCookieServiceParent(PCookieServiceParent* cs) {
@@ -303,15 +284,8 @@ PWebSocketParent* NeckoParent::AllocPWebSocketParent(
     PBrowserParent* browser, const SerializedLoadContext& serialized,
     const uint32_t& aSerial) {
   nsCOMPtr<nsILoadContext> loadContext;
-  const char* error = CreateChannelLoadContext(browser, Manager(), serialized,
-                                               nullptr, loadContext);
-  if (error) {
-    printf_stderr(
-        "NeckoParent::AllocPWebSocketParent: "
-        "FATAL error: %s: KILLING CHILD PROCESS\n",
-        error);
-    return nullptr;
-  }
+  CreateChannelLoadContext(browser, Manager(), serialized, nullptr,
+                           loadContext);
 
   RefPtr<BrowserParent> browserParent = BrowserParent::GetFrom(browser);
   PBOverrideStatus overrideStatus = PBOverrideStatusFromLoadContext(serialized);
@@ -342,17 +316,13 @@ bool NeckoParent::DeallocPWebSocketEventListenerParent(
   return true;
 }
 
-already_AddRefed<PDataChannelParent> NeckoParent::AllocPDataChannelParent(
-    const uint32_t& channelId) {
+already_AddRefed<PDataChannelParent> NeckoParent::AllocPDataChannelParent() {
   RefPtr<DataChannelParent> p = new DataChannelParent();
   return p.forget();
 }
 
 mozilla::ipc::IPCResult NeckoParent::RecvPDataChannelConstructor(
-    PDataChannelParent* actor, const uint32_t& channelId) {
-  DataChannelParent* p = static_cast<DataChannelParent*>(actor);
-  DebugOnly<bool> rv = p->Init(channelId);
-  MOZ_ASSERT(rv);
+    PDataChannelParent* actor) {
   return IPC_OK();
 }
 
@@ -374,15 +344,8 @@ PGIOChannelParent* NeckoParent::AllocPGIOChannelParent(
       GetRequestingPrincipal(aOpenArgs);
 
   nsCOMPtr<nsILoadContext> loadContext;
-  const char* error = CreateChannelLoadContext(
-      aBrowser, Manager(), aSerialized, requestingPrincipal, loadContext);
-  if (error) {
-    printf_stderr(
-        "NeckoParent::AllocPGIOChannelParent: "
-        "FATAL error: %s: KILLING CHILD PROCESS\n",
-        error);
-    return nullptr;
-  }
+  CreateChannelLoadContext(aBrowser, Manager(), aSerialized,
+                           requestingPrincipal, loadContext);
   PBOverrideStatus overrideStatus =
       PBOverrideStatusFromLoadContext(aSerialized);
   GIOChannelParent* p = new GIOChannelParent(BrowserParent::GetFrom(aBrowser),
@@ -427,17 +390,13 @@ mozilla::ipc::IPCResult NeckoParent::RecvPSimpleChannelConstructor(
   return IPC_OK();
 }
 
-already_AddRefed<PFileChannelParent> NeckoParent::AllocPFileChannelParent(
-    const uint32_t& channelId) {
+already_AddRefed<PFileChannelParent> NeckoParent::AllocPFileChannelParent() {
   RefPtr<FileChannelParent> p = new FileChannelParent();
   return p.forget();
 }
 
 mozilla::ipc::IPCResult NeckoParent::RecvPFileChannelConstructor(
-    PFileChannelParent* actor, const uint32_t& channelId) {
-  FileChannelParent* p = static_cast<FileChannelParent*>(actor);
-  DebugOnly<bool> rv = p->Init(channelId);
-  MOZ_ASSERT(rv);
+    PFileChannelParent* actor) {
   return IPC_OK();
 }
 
@@ -577,8 +536,8 @@ mozilla::ipc::IPCResult NeckoParent::RecvPredPredict(
     const OriginAttributes& aOriginAttributes, const bool& hasVerifier) {
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictor> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictor> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_OK());
 
   nsCOMPtr<nsINetworkPredictorVerifier> verifier;
@@ -595,8 +554,8 @@ mozilla::ipc::IPCResult NeckoParent::RecvPredLearn(
     const OriginAttributes& aOriginAttributes) {
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictor> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictor> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_OK());
 
   predictor->LearnNative(aTargetURI, aSourceURI, aReason, aOriginAttributes);
@@ -606,8 +565,8 @@ mozilla::ipc::IPCResult NeckoParent::RecvPredLearn(
 mozilla::ipc::IPCResult NeckoParent::RecvPredReset() {
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictor> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictor> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_OK());
 
   predictor->Reset();
@@ -744,7 +703,7 @@ mozilla::ipc::IPCResult NeckoParent::RecvInitSocketProcessBridge(
       return;
     }
 
-    SocketProcessParent* parent = SocketProcessParent::GetSingleton();
+    RefPtr<SocketProcessParent> parent = SocketProcessParent::GetSingleton();
     if (NS_WARN_IF(!parent)) {
       resolver(std::move(invalidEndpoint));
       return;
@@ -753,7 +712,8 @@ mozilla::ipc::IPCResult NeckoParent::RecvInitSocketProcessBridge(
     Endpoint<PSocketProcessBridgeParent> parentEndpoint;
     Endpoint<PSocketProcessBridgeChild> childEndpoint;
     if (NS_WARN_IF(NS_FAILED(PSocketProcessBridge::CreateEndpoints(
-            parent->OtherPid(), self->Manager()->OtherPid(), &parentEndpoint,
+            parent->OtherEndpointProcInfo(),
+            self->Manager()->OtherEndpointProcInfo(), &parentEndpoint,
             &childEndpoint)))) {
       resolver(std::move(invalidEndpoint));
       return;
@@ -794,7 +754,7 @@ mozilla::ipc::IPCResult NeckoParent::RecvEnsureHSTSData(
 }
 
 mozilla::ipc::IPCResult NeckoParent::RecvGetPageThumbStream(
-    nsIURI* aURI, const Maybe<LoadInfoArgs>& aLoadInfoArgs,
+    nsIURI* aURI, const LoadInfoArgs& aLoadInfoArgs,
     GetPageThumbStreamResolver&& aResolver) {
   // Only the privileged about content process is allowed to access
   // things over the moz-page-thumb protocol. Any other content process
@@ -839,7 +799,7 @@ mozilla::ipc::IPCResult NeckoParent::RecvGetPageThumbStream(
 }
 
 mozilla::ipc::IPCResult NeckoParent::RecvGetPageIconStream(
-    nsIURI* aURI, const Maybe<LoadInfoArgs>& aLoadInfoArgs,
+    nsIURI* aURI, const LoadInfoArgs& aLoadInfoArgs,
     GetPageIconStreamResolver&& aResolver) {
 #ifdef MOZ_PLACES
   const nsACString& remoteType =
@@ -853,10 +813,6 @@ mozilla::ipc::IPCResult NeckoParent::RecvGetPageIconStream(
   // likely-compromised content process.
   if (remoteType != PRIVILEGEDABOUT_REMOTE_TYPE) {
     return IPC_FAIL(this, "Wrong process type");
-  }
-
-  if (aLoadInfoArgs.isNothing()) {
-    return IPC_FAIL(this, "Page-icon request must include loadInfo");
   }
 
   nsCOMPtr<nsILoadInfo> loadInfo;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Alliance for Open Media. All rights reserved
+ * Copyright (c) 2016, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -32,14 +32,14 @@ void aom_subtract_block_c(int rows, int cols, int16_t *diff,
   }
 }
 
+#if CONFIG_AV1_HIGHBITDEPTH
 void aom_highbd_subtract_block_c(int rows, int cols, int16_t *diff,
                                  ptrdiff_t diff_stride, const uint8_t *src8,
                                  ptrdiff_t src_stride, const uint8_t *pred8,
-                                 ptrdiff_t pred_stride, int bd) {
+                                 ptrdiff_t pred_stride) {
   int r, c;
   uint16_t *src = CONVERT_TO_SHORTPTR(src8);
   uint16_t *pred = CONVERT_TO_SHORTPTR(pred8);
-  (void)bd;
 
   for (r = 0; r < rows; r++) {
     for (c = 0; c < cols; c++) {
@@ -51,3 +51,4 @@ void aom_highbd_subtract_block_c(int rows, int cols, int16_t *diff,
     src += src_stride;
   }
 }
+#endif

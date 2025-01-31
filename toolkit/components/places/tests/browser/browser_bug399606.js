@@ -6,12 +6,12 @@ add_task(async function () {
   registerCleanupFunction(PlacesUtils.history.clear);
 
   const URIS = [
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-window.location.href.html",
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-history.go-0.html",
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-location.replace.html",
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-location.reload.html",
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-httprefresh.html",
-    "http://example.com/tests/toolkit/components/places/tests/browser/399606-window.location.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-window.location.href.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-history.go-0.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-location.replace.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-location.reload.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-httprefresh.html",
+    "https://example.com/tests/toolkit/components/places/tests/browser/399606-window.location.html",
   ];
 
   // Create and add history observer.
@@ -31,7 +31,7 @@ add_task(async function () {
     expectedURI = uri;
     let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
     PlacesObservers.addListener(["page-visited"], onVisitsListener);
-    BrowserTestUtils.loadURIString(gBrowser, uri);
+    BrowserTestUtils.startLoadingURIString(gBrowser, uri);
     await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, false, uri);
     await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, false, uri);
     await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, false, uri);

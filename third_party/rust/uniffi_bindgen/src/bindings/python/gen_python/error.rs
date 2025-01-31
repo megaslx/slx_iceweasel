@@ -2,7 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::backend::{CodeType, Literal};
+use crate::backend::{ Literal};
+use super::CodeType;
 
 #[derive(Debug)]
 pub struct ErrorCodeType {
@@ -21,7 +22,7 @@ impl CodeType for ErrorCodeType {
     }
 
     fn canonical_name(&self) -> String {
-        format!("Type{}", self.id)
+        format!("Type{}", self.type_label())
     }
 
     fn literal(&self, _literal: &Literal) -> String {

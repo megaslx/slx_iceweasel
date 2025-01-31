@@ -11,6 +11,7 @@ from datetime import datetime
 from io import BytesIO
 from pprint import pformat
 from subprocess import CalledProcessError
+from unittest.mock import Mock
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -39,6 +40,7 @@ base_schema = Schema(
         Required("do_not_optimize"): [str],
         Required("enable_always_target"): Any(bool, [str]),
         Required("existing_tasks"): {str: str},
+        Required("files_changed"): [str],
         Required("filters"): [str],
         Required("head_ref"): str,
         Required("head_repository"): str,
@@ -54,7 +56,7 @@ base_schema = Schema(
         Required("pushdate"): int,
         Required("pushlog_id"): str,
         Required("repository_type"): str,
-        # target-kind is not included, since it should never be
+        # target-kinds is not included, since it should never be
         # used at run-time
         Required("target_tasks_method"): str,
         Required("tasks_for"): str,
@@ -79,15 +81,22 @@ def get_version(repo_path):
 
 def _get_defaults(repo_root=None):
     repo_path = repo_root or os.getcwd()
-    repo = get_repository(repo_path)
+    try:
+        repo = get_repository(repo_path)
+    except RuntimeError:
+        # Use fake values if no repo is detected.
+        repo = Mock(branch="", head_rev="", tool="git")
+        repo.get_url.return_value = ""
+        repo.get_changed_files.return_value = []
+
     try:
         repo_url = repo.get_url()
         parsed_url = mozilla_repo_urls.parse(repo_url)
         project = parsed_url.repo_name
     except (
         CalledProcessError,
-        mozilla_repo_urls.errors.InvalidRepoUrlError,
-        mozilla_repo_urls.errors.UnsupportedPlatformError,
+        mozilla_repo_urls.InvalidRepoUrlError,
+        mozilla_repo_urls.UnsupportedPlatformError,
     ):
         repo_url = ""
         project = ""
@@ -101,6 +110,7 @@ def _get_defaults(repo_root=None):
         "do_not_optimize": [],
         "enable_always_target": True,
         "existing_tasks": {},
+        "files_changed": repo.get_changed_files("AM"),
         "filters": ["target_tasks_method"],
         "head_ref": repo.branch or repo.head_rev,
         "head_repository": repo_url,
@@ -183,7 +193,7 @@ class Parameters(ReadOnlyDict):
         if spec is None:
             return "defaults"
 
-        if any(spec.startswith(s) for s in ("task-id=", "project=")):
+        if any(spec.startswith(s) for s in ("task-id=", "project=", "index=")):
             return spec
 
         result = urlparse(spec)
@@ -277,7 +287,7 @@ class Parameters(ReadOnlyDict):
             else:
                 raise ParameterMismatch(
                     "Don't know how to determine file URL for non-github"
-                    "repo: {}".format(repo)
+                    f"repo: {repo}"
                 )
         else:
             raise RuntimeError(
@@ -317,16 +327,19 @@ def load_parameters_file(
         task_id = None
         if spec.startswith("task-id="):
             task_id = spec.split("=")[1]
-        elif spec.startswith("project="):
-            if trust_domain is None:
-                raise ValueError(
-                    "Can't specify parameters by project "
-                    "if trust domain isn't supplied.",
+        elif spec.startswith("project=") or spec.startswith("index="):
+            if spec.startswith("project="):
+                if trust_domain is None:
+                    raise ValueError(
+                        "Can't specify parameters by project "
+                        "if trust domain isn't supplied.",
+                    )
+                index = "{trust_domain}.v2.{project}.latest.taskgraph.decision".format(
+                    trust_domain=trust_domain,
+                    project=spec.split("=")[1],
                 )
-            index = "{trust_domain}.v2.{project}.latest.taskgraph.decision".format(
-                trust_domain=trust_domain,
-                project=spec.split("=")[1],
-            )
+            else:
+                index = spec.split("=")[1]
             task_id = find_task_id(index)
 
         if task_id:

@@ -5,7 +5,6 @@
 import { NetUtil } from "resource://gre/modules/NetUtil.sys.mjs";
 
 import { Log } from "resource://gre/modules/Log.sys.mjs";
-import { PromiseUtils } from "resource://gre/modules/PromiseUtils.sys.mjs";
 
 import { CommonUtils } from "resource://services-common/utils.sys.mjs";
 
@@ -25,7 +24,7 @@ function decodeString(data, charset) {
   let stringStream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
     Ci.nsIStringInputStream
   );
-  stringStream.setData(data, data.length);
+  stringStream.setByteStringData(data);
 
   let converterStream = Cc[
     "@mozilla.org/intl/converter-input-stream;1"
@@ -87,7 +86,7 @@ export function RESTRequest(uri) {
   this.uri = uri;
 
   this._headers = {};
-  this._deferred = PromiseUtils.defer();
+  this._deferred = Promise.withResolvers();
   this._log = Log.repository.getLogger(this._logName);
   this._log.manageLevelFromPref("services.common.log.logger.rest.request");
 }
@@ -327,7 +326,7 @@ RESTRequest.prototype = {
       let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
         Ci.nsIStringInputStream
       );
-      stream.setData(data, data.length);
+      stream.setByteStringData(data);
 
       channel.QueryInterface(Ci.nsIUploadChannel);
       channel.setUploadStream(stream, contentType, data.length);

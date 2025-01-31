@@ -40,27 +40,21 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
 #include "mozilla/gfx/Tools.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_widget.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
 
-//-------------------------------------------------------------------------
-//
-// DragService constructor
-//
-//-------------------------------------------------------------------------
-nsDragService::nsDragService()
-    : mDataObject(nullptr), mSentLocalDropEvent(false) {}
+nsDragSession::~nsDragSession() { NS_IF_RELEASE(mDataObject); }
 
-//-------------------------------------------------------------------------
-//
-// DragService destructor
-//
-//-------------------------------------------------------------------------
-nsDragService::~nsDragService() { NS_IF_RELEASE(mDataObject); }
+already_AddRefed<nsIDragSession> nsDragService::CreateDragSession() {
+  RefPtr<nsIDragSession> session = new nsDragSession();
+  return session.forget();
+}
 
-bool nsDragService::CreateDragImage(nsINode* aDOMNode,
+bool nsDragSession::CreateDragImage(nsINode* aDOMNode,
                                     const Maybe<CSSIntRegion>& aRegion,
                                     SHDRAGIMAGE* psdi) {
   if (!psdi) return false;
@@ -147,9 +141,9 @@ bool nsDragService::CreateDragImage(nsINode* aDOMNode,
 }
 
 //-------------------------------------------------------------------------
-nsresult nsDragService::InvokeDragSessionImpl(
-    nsIArray* anArrayTransferables, const Maybe<CSSIntRegion>& aRegion,
-    uint32_t aActionType) {
+nsresult nsDragSession::InvokeDragSessionImpl(
+    nsIWidget* aWidget, nsIArray* anArrayTransferables,
+    const Maybe<CSSIntRegion>& aRegion, uint32_t aActionType) {
   // Try and get source URI of the items that are being dragged
   nsIURI* uri = nullptr;
 
@@ -214,7 +208,7 @@ nsresult nsDragService::InvokeDragSessionImpl(
   }
 
   // Kick off the native drag session
-  return StartInvokingDragSession(itemToDrag, aActionType);
+  return StartInvokingDragSession(aWidget, itemToDrag, aActionType);
 }
 
 static HWND GetSourceWindow(dom::Document* aSourceDocument) {
@@ -236,7 +230,8 @@ static HWND GetSourceWindow(dom::Document* aSourceDocument) {
 }
 
 //-------------------------------------------------------------------------
-nsresult nsDragService::StartInvokingDragSession(IDataObject* aDataObj,
+nsresult nsDragSession::StartInvokingDragSession(nsIWidget* aWidget,
+                                                 IDataObject* aDataObj,
                                                  uint32_t aActionType) {
   // To do the drag we need to create an object that
   // implements the IDataObject interface (for OLE)
@@ -246,13 +241,13 @@ nsresult nsDragService::StartInvokingDragSession(IDataObject* aDataObj,
   // Now figure out what the native drag effect should be
   DWORD winDropRes;
   DWORD effects = DROPEFFECT_SCROLL;
-  if (aActionType & DRAGDROP_ACTION_COPY) {
+  if (aActionType & nsIDragService::DRAGDROP_ACTION_COPY) {
     effects |= DROPEFFECT_COPY;
   }
-  if (aActionType & DRAGDROP_ACTION_MOVE) {
+  if (aActionType & nsIDragService::DRAGDROP_ACTION_MOVE) {
     effects |= DROPEFFECT_MOVE;
   }
-  if (aActionType & DRAGDROP_ACTION_LINK) {
+  if (aActionType & nsIDragService::DRAGDROP_ACTION_LINK) {
     effects |= DROPEFFECT_LINK;
   }
 
@@ -262,7 +257,6 @@ nsresult nsDragService::StartInvokingDragSession(IDataObject* aDataObj,
   mSentLocalDropEvent = false;
 
   // Start dragging
-  StartDragSession();
   OpenDragPopup();
 
   RefPtr<IDataObjectAsyncCapability> pAsyncOp;
@@ -277,25 +271,34 @@ nsresult nsDragService::StartInvokingDragSession(IDataObject* aDataObj,
   // Call the native D&D method
   HRESULT res = ::DoDragDrop(aDataObj, nativeDragSrc, effects, &winDropRes);
 
-  // In  cases where the drop operation completed outside the application,
+  // In cases where the drop operation completed outside the application,
   // update the source node's DataTransfer dropEffect value so it is up to date.
   if (!mSentLocalDropEvent) {
     uint32_t dropResult;
     // Order is important, since multiple flags can be returned.
     if (winDropRes & DROPEFFECT_COPY)
-      dropResult = DRAGDROP_ACTION_COPY;
+      dropResult = nsIDragService::DRAGDROP_ACTION_COPY;
     else if (winDropRes & DROPEFFECT_LINK)
-      dropResult = DRAGDROP_ACTION_LINK;
+      dropResult = nsIDragService::DRAGDROP_ACTION_LINK;
     else if (winDropRes & DROPEFFECT_MOVE)
-      dropResult = DRAGDROP_ACTION_MOVE;
+      dropResult = nsIDragService::DRAGDROP_ACTION_MOVE;
     else
-      dropResult = DRAGDROP_ACTION_NONE;
+      dropResult = nsIDragService::DRAGDROP_ACTION_NONE;
 
     if (mDataTransfer) {
+      if (!mozilla::StaticPrefs::widget_windows_allow_external_tab_drag()) {
+        // Special case: if we're dropping a browser tab onto another
+        // application, assume that application is lying if they say they're
+        // prepared to handle it. (This is sadly common. See bug 1598915.)
+        if (mDataTransfer->HasType(u"application/x-moz-tabbrowser-tab"_ns)) {
+          dropResult = nsIDragService::DRAGDROP_ACTION_NONE;
+        }
+      }
+
       if (res == DRAGDROP_S_DROP)  // Success
         mDataTransfer->SetDropEffectInt(dropResult);
       else
-        mDataTransfer->SetDropEffectInt(DRAGDROP_ACTION_NONE);
+        mDataTransfer->SetDropEffectInt(nsIDragService::DRAGDROP_ACTION_NONE);
     }
   }
 
@@ -326,7 +329,8 @@ nsresult nsDragService::StartInvokingDragSession(IDataObject* aDataObj,
 
 //-------------------------------------------------------------------------
 // Make Sure we have the right kind of object
-nsDataObjCollection* nsDragService::GetDataObjCollection(
+/* static */
+nsDataObjCollection* nsDragSession::GetDataObjCollection(
     IDataObject* aDataObj) {
   nsDataObjCollection* dataObjCol = nullptr;
   if (aDataObj) {
@@ -343,7 +347,7 @@ nsDataObjCollection* nsDragService::GetDataObjCollection(
 
 //-------------------------------------------------------------------------
 NS_IMETHODIMP
-nsDragService::GetNumDropItems(uint32_t* aNumItems) {
+nsDragSession::GetNumDropItems(uint32_t* aNumItems) {
   if (!mDataObject) {
     *aNumItems = 0;
     return NS_OK;
@@ -402,7 +406,7 @@ nsDragService::GetNumDropItems(uint32_t* aNumItems) {
 
 //-------------------------------------------------------------------------
 NS_IMETHODIMP
-nsDragService::GetData(nsITransferable* aTransferable, uint32_t anItem) {
+nsDragSession::GetData(nsITransferable* aTransferable, uint32_t anItem) {
   // This typcially happens on a drop, the target would be asking
   // for it's transferable to be filled in
   // Use a static clipboard utility method for this
@@ -446,19 +450,34 @@ nsDragService::GetData(nsITransferable* aTransferable, uint32_t anItem) {
 }
 
 //---------------------------------------------------------
-NS_IMETHODIMP
-nsDragService::SetIDataObject(IDataObject* aDataObj) {
+void nsDragSession::SetIDataObject(IDataObject* aDataObj) {
   // When the native drag starts the DragService gets
   // the IDataObject that is being dragged
   NS_IF_RELEASE(mDataObject);
   mDataObject = aDataObj;
   NS_IF_ADDREF(mDataObject);
 
-  return NS_OK;
+  if (MOZ_DRAGSERVICE_LOG_ENABLED()) {
+    MOZ_DRAGSERVICE_LOG("nsDragSession::SetIDataObject (%p)", mDataObject);
+    IEnumFORMATETC* pEnum = nullptr;
+    if (mDataObject &&
+        S_OK == mDataObject->EnumFormatEtc(DATADIR_GET, &pEnum)) {
+      MOZ_DRAGSERVICE_LOG("    formats in DataObject:");
+
+      FORMATETC fEtc;
+      while (S_OK == pEnum->Next(1, &fEtc, nullptr)) {
+        nsAutoString format;
+        WinUtils::GetClipboardFormatAsString(fEtc.cfFormat, format);
+        MOZ_DRAGSERVICE_LOG("        FORMAT %s",
+                            NS_ConvertUTF16toUTF8(format).get());
+      }
+      pEnum->Release();
+    }
+  }
 }
 
 //---------------------------------------------------------
-void nsDragService::SetDroppedLocal() {
+void nsDragSession::SetDroppedLocal() {
   // Sent from the native drag handler, letting us know
   // a drop occurred within the application vs. outside of it.
   mSentLocalDropEvent = true;
@@ -467,10 +486,17 @@ void nsDragService::SetDroppedLocal() {
 
 //-------------------------------------------------------------------------
 NS_IMETHODIMP
-nsDragService::IsDataFlavorSupported(const char* aDataFlavor, bool* _retval) {
-  if (!aDataFlavor || !mDataObject || !_retval) return NS_ERROR_FAILURE;
+nsDragSession::IsDataFlavorSupported(const char* aDataFlavor, bool* _retval) {
+  if (!aDataFlavor || !mDataObject || !_retval) {
+    MOZ_DRAGSERVICE_LOG("%s: error", __PRETTY_FUNCTION__);
+    return NS_ERROR_FAILURE;
+  }
 
   *_retval = false;
+  auto logging = MakeScopeExit([&] {
+    MOZ_DRAGSERVICE_LOG("IsDataFlavorSupported: %s is%s found", aDataFlavor,
+                        *_retval ? "" : " not");
+  });
 
   FORMATETC fe;
   UINT format = 0;
@@ -488,53 +514,76 @@ nsDragService::IsDataFlavorSupported(const char* aDataFlavor, bool* _retval) {
       uint32_t cnt = dataObjCol->GetNumDataObjects();
       for (uint32_t i = 0; i < cnt; ++i) {
         IDataObject* dataObj = dataObjCol->GetDataObjectAt(i);
-        if (S_OK == dataObj->QueryGetData(&fe)) *_retval = true;  // found it!
+        if (S_OK == dataObj->QueryGetData(&fe)) {
+          *_retval = true;  // found it!
+        }
       }
     }
-  }  // if special collection object
-  else {
-    // Ok, so we have a single object. Check to see if has the correct
-    // data type. Since this can come from an outside app, we also
-    // need to see if we need to perform text->unicode conversion if
-    // the client asked for unicode and it wasn't available.
-    format = nsClipboard::GetFormat(aDataFlavor);
+    return NS_OK;
+  }
+
+  // Ok, so we have a single object. Check to see if has the correct
+  // data type. Since this can come from an outside app, we also
+  // need to see if we need to perform text->unicode conversion if
+  // the client asked for unicode and it wasn't available.
+  format = nsClipboard::GetFormat(aDataFlavor);
+  SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1,
+                TYMED_HGLOBAL | TYMED_FILE | TYMED_GDI);
+  if (mDataObject->QueryGetData(&fe) == S_OK) {
+    *_retval = true;  // found it!
+    return NS_OK;
+  }
+
+  // We haven't found the exact flavor the client asked for, but
+  // maybe we can still find it from something else that's in the
+  // data object.
+  if (strcmp(aDataFlavor, kTextMime) == 0) {
+    // If unicode wasn't there, it might exist as CF_TEXT, client asked
+    // for unicode and it wasn't present, check if we
+    // have CF_TEXT.  We'll handle the actual data substitution in
+    // the data object.
+    SET_FORMATETC(fe, CF_TEXT, 0, DVASPECT_CONTENT, -1,
+                  TYMED_HGLOBAL | TYMED_FILE | TYMED_GDI);
+    if (mDataObject->QueryGetData(&fe) == S_OK) {
+      *_retval = true;  // found it!
+    }
+    return NS_OK;
+  }
+
+  if (strcmp(aDataFlavor, kURLMime) == 0) {
+    // client asked for a url and it wasn't present, but if we
+    // have a file, then we have a URL to give them (the path, or
+    // the internal URL if an InternetShortcut).
+    format = nsClipboard::GetFormat(kFileMime);
     SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1,
                   TYMED_HGLOBAL | TYMED_FILE | TYMED_GDI);
     if (mDataObject->QueryGetData(&fe) == S_OK) {
       *_retval = true;  // found it!
-    } else {
-      // We haven't found the exact flavor the client asked for, but
-      // maybe we can still find it from something else that's on the
-      // clipboard
-      if (strcmp(aDataFlavor, kTextMime) == 0) {
-        // If unicode wasn't there, it might exist as CF_TEXT, client asked
-        // for unicode and it wasn't present, check if we
-        // have CF_TEXT.  We'll handle the actual data substitution in
-        // the data object.
-        SET_FORMATETC(fe, CF_TEXT, 0, DVASPECT_CONTENT, -1,
-                      TYMED_HGLOBAL | TYMED_FILE | TYMED_GDI);
-        if (mDataObject->QueryGetData(&fe) == S_OK) {
-          *_retval = true;  // found it!
-        }
-      } else if (strcmp(aDataFlavor, kURLMime) == 0) {
-        // client asked for a url and it wasn't present, but if we
-        // have a file, then we have a URL to give them (the path, or
-        // the internal URL if an InternetShortcut).
-        format = nsClipboard::GetFormat(kFileMime);
-        SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1,
-                      TYMED_HGLOBAL | TYMED_FILE | TYMED_GDI);
-        if (mDataObject->QueryGetData(&fe) == S_OK) {
-          *_retval = true;  // found it!
-        }
-      } else if (format == CF_HDROP) {
-        // if the client wants a file, maybe we find a virtual file
-        format = nsClipboard::GetClipboardFileDescriptorFormatW();
-        SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1, TYMED_HGLOBAL);
-        if (mDataObject->QueryGetData(&fe) == S_OK) {
-          *_retval = true;  // found it!
-        }
-      }
-    }  // else try again
+    }
+    return NS_OK;
+  }
+
+  if (format == CF_HDROP) {
+    // Dragging a link from browsers creates both a URL and a FILE which is a
+    // *.url shortcut in the data object. The file is useful when dropping in
+    // Windows Explorer to create a internet shortcut. But when dropping in the
+    // browser, users do not expect to have this file. So do not try to look up
+    // virtal file if there is a URL in the data object.
+    format = nsClipboard::GetFormat(kURLMime);
+    SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1, TYMED_HGLOBAL);
+    if (mDataObject->QueryGetData(&fe) == S_OK) {
+      return NS_OK;
+    }
+
+    // If the client wants a file, maybe we find a virtual file.
+    format = nsClipboard::GetClipboardFileDescriptorFormatW();
+    SET_FORMATETC(fe, format, 0, DVASPECT_CONTENT, -1, TYMED_HGLOBAL);
+    if (mDataObject->QueryGetData(&fe) == S_OK) {
+      *_retval = true;  // found it!
+    }
+
+    // XXX should we fall back to CFSTR_FILEDESCRIPTORA?
+    return NS_OK;
   }
 
   return NS_OK;
@@ -547,7 +596,8 @@ nsDragService::IsDataFlavorSupported(const char* aDataFlavor, bool* _retval) {
 // collection objects. We know the difference because our collection
 // object will respond to supporting the private |MULTI_MIME| format.
 //
-bool nsDragService::IsCollectionObject(IDataObject* inDataObj) {
+/* static */
+bool nsDragSession::IsCollectionObject(IDataObject* inDataObj) {
   bool isCollection = false;
 
   // setup the format object to ask for the MULTI_MIME format. We only
@@ -574,8 +624,8 @@ bool nsDragService::IsCollectionObject(IDataObject* inDataObj) {
 // when the drag ends. It seems that OLE doesn't like to let apps quit
 // w/out crashing when we're still holding onto their data
 //
-NS_IMETHODIMP
-nsDragService::EndDragSession(bool aDoneDrag, uint32_t aKeyModifiers) {
+nsresult nsDragSession::EndDragSessionImpl(bool aDoneDrag,
+                                           uint32_t aKeyModifiers) {
   // Bug 100180: If we've got mouse events captured, make sure we release it -
   // that way, if we happen to call EndDragSession before diving into a nested
   // event loop, we can still respond to mouse events.
@@ -583,20 +633,20 @@ nsDragService::EndDragSession(bool aDoneDrag, uint32_t aKeyModifiers) {
     ::ReleaseCapture();
   }
 
-  nsBaseDragService::EndDragSession(aDoneDrag, aKeyModifiers);
+  nsBaseDragSession::EndDragSessionImpl(aDoneDrag, aKeyModifiers);
   NS_IF_RELEASE(mDataObject);
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsDragService::UpdateDragImage(nsINode* aImage, int32_t aImageX,
+nsDragSession::UpdateDragImage(nsINode* aImage, int32_t aImageX,
                                int32_t aImageY) {
   if (!mDataObject) {
     return NS_OK;
   }
 
-  nsBaseDragService::UpdateDragImage(aImage, aImageX, aImageY);
+  nsBaseDragSession::UpdateDragImage(aImage, aImageX, aImageY);
 
   IDragSourceHelper* pdsh;
   if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, nullptr,

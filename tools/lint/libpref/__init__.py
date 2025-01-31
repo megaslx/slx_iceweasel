@@ -22,6 +22,7 @@ IGNORE_PREFS = {
     "browser.dom.window.dump.enabled",  # Uses the 'sticky' attribute.
     "apz.fling_curve_function_y2",  # This pref is a part of a series.
     "dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled",  # NOQA: E501; Uses the 'locked' attribute.
+    "extensions.backgroundServiceWorkerEnabled.enabled",  # NOQA: E501; Uses the 'locked' attribute.
 }
 PATTERN = re.compile(r"\s*pref\(\s*\"(?P<pref>.+)\"\s*,\s*(?P<val>.+)\)\s*;.*")
 
@@ -32,7 +33,7 @@ def get_names(pref_list_filename):
     # pattern does not happen in 'name', so it's fine to ignore these.
     # We also want to evaluate all branches of #ifdefs for pref names, so we
     # ignore anything else preprocessor related.
-    file = open(pref_list_filename).read().replace("@", "")
+    file = open(pref_list_filename, encoding="utf-8").read().replace("@", "")
     try:
         pref_list = yaml.safe_load(file)
     except (IOError, ValueError) as e:
@@ -76,7 +77,7 @@ def check_value_for_pref(some_pref, some_value, path):
 # matching to load in prefs.
 def read_prefs(path):
     prefs = []
-    with open(path) as source:
+    with open(path, encoding="utf-8") as source:
         for lineno, line in enumerate(source, start=1):
             match = PATTERN.match(line)
             if match:

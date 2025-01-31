@@ -19,10 +19,10 @@ add_task(async function test_profile_single_frame_page_info() {
   info(
     "Start the profiler to test the page information with single frame page."
   );
-  await startProfiler();
+  await ProfilerTestUtils.startProfiler();
 
   info("Open a tab with single_frame.html in it.");
-  const url = BASE_URL + "single_frame.html";
+  const url = BASE_URL_HTTPS + "single_frame.html";
   await BrowserTestUtils.withNewTab(url, async function (contentBrowser) {
     const contentPid = await SpecialPowers.spawn(contentBrowser, [], () => {
       return Services.appinfo.processID;
@@ -68,7 +68,7 @@ add_task(async function test_profile_private_browsing() {
   info(
     "Start the profiler to test the page information with single frame page."
   );
-  await startProfiler();
+  await ProfilerTestUtils.startProfiler();
 
   info("Open a private window with single_frame.html in it.");
   const win = await BrowserTestUtils.openNewBrowserWindow({
@@ -79,7 +79,7 @@ add_task(async function test_profile_private_browsing() {
   try {
     const url = BASE_URL_HTTPS + "single_frame.html";
     const contentBrowser = win.gBrowser.selectedBrowser;
-    BrowserTestUtils.loadURIString(contentBrowser, url);
+    BrowserTestUtils.startLoadingURIString(contentBrowser, url);
     await BrowserTestUtils.browserLoaded(contentBrowser, false, url);
 
     const contentPid = await SpecialPowers.spawn(contentBrowser, [], () => {

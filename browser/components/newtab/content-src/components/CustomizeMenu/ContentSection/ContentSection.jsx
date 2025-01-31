@@ -3,7 +3,10 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import React from "react";
-import { actionCreators as ac } from "common/Actions.sys.mjs";
+import { actionCreators as ac } from "common/Actions.mjs";
+import { SafeAnchor } from "../../DiscoveryStreamComponents/SafeAnchor/SafeAnchor";
+import { WallpapersSection } from "../../WallpapersSection/WallpapersSection";
+import { WallpaperCategories } from "../../WallpapersSection/WallpaperCategories";
 
 export class ContentSection extends React.PureComponent {
   constructor(props) {
@@ -15,19 +18,19 @@ export class ContentSection extends React.PureComponent {
     this.pocketDrawerRef = React.createRef();
   }
 
-  inputUserEvent(eventSource, status) {
+  inputUserEvent(eventSource, eventValue) {
     this.props.dispatch(
       ac.UserEvent({
         event: "PREF_CHANGED",
         source: eventSource,
-        value: { status, menu_source: "CUSTOMIZE_MENU" },
+        value: { status: eventValue, menu_source: "CUSTOMIZE_MENU" },
       })
     );
   }
 
   onPreferenceSelect(e) {
-    let prefName = e.target.getAttribute("preference");
-    const eventSource = e.target.getAttribute("eventSource"); // TOP_SITES, TOP_STORIES, HIGHLIGHTS
+    // eventSource: TOP_SITES | TOP_STORIES | HIGHLIGHTS | WEATHER
+    const { preference, eventSource } = e.target.dataset;
     let value;
     if (e.target.nodeName === "SELECT") {
       value = parseInt(e.target.value, 10);
@@ -36,8 +39,13 @@ export class ContentSection extends React.PureComponent {
       if (eventSource) {
         this.inputUserEvent(eventSource, value);
       }
+    } else if (e.target.nodeName === "MOZ-TOGGLE") {
+      value = e.target.pressed;
+      if (eventSource) {
+        this.inputUserEvent(eventSource, value);
+      }
     }
-    this.props.setPref(prefName, value);
+    this.props.setPref(preference, value);
   }
 
   componentDidMount() {
@@ -70,13 +78,12 @@ export class ContentSection extends React.PureComponent {
       return;
     }
 
-    let drawerHeight;
-
     if (drawerRef) {
-      drawerHeight = parseFloat(window.getComputedStyle(drawerRef)?.height);
+      let drawerHeight =
+        parseFloat(window.getComputedStyle(drawerRef)?.height) || 0;
 
       if (isOpen) {
-        drawerRef.style.marginTop = `0`;
+        drawerRef.style.marginTop = "var(--space-large)";
       } else {
         drawerRef.style.marginTop = `-${drawerHeight}px`;
       }
@@ -90,12 +97,19 @@ export class ContentSection extends React.PureComponent {
       pocketRegion,
       mayHaveSponsoredStories,
       mayHaveRecentSaves,
+      mayHaveWeather,
       openPreferences,
+      spocMessageVariant,
+      wallpapersEnabled,
+      wallpapersV2Enabled,
+      activeWallpaper,
+      setPref,
     } = this.props;
     const {
       topSitesEnabled,
       pocketEnabled,
       highlightsEnabled,
+      weatherEnabled,
       showSponsoredTopSitesEnabled,
       showSponsoredPocketEnabled,
       showRecentSavesEnabled,
@@ -104,192 +118,198 @@ export class ContentSection extends React.PureComponent {
 
     return (
       <div className="home-section">
-        <div id="shortcuts-section" className="section">
-          <label className="switch">
-            <input
-              id="shortcuts-toggle"
-              checked={topSitesEnabled}
-              type="checkbox"
-              onChange={this.onPreferenceSelect}
-              preference="feeds.topsites"
-              aria-labelledby="custom-shortcuts-title"
-              aria-describedby="custom-shortcuts-subtitle"
-              eventSource="TOP_SITES"
+        {!wallpapersV2Enabled && wallpapersEnabled && (
+          <div className="wallpapers-section">
+            <WallpapersSection
+              setPref={setPref}
+              activeWallpaper={activeWallpaper}
             />
-            <span className="slider" role="presentation"></span>
-          </label>
-          <div>
-            <h2 id="custom-shortcuts-title" className="title">
-              <label
-                htmlFor="shortcuts-toggle"
-                data-l10n-id="newtab-custom-shortcuts-title"
-              ></label>
-            </h2>
-            <p
-              id="custom-shortcuts-subtitle"
-              className="subtitle"
-              data-l10n-id="newtab-custom-shortcuts-subtitle"
-            ></p>
-            <div className="more-info-top-wrapper">
-              <div className="more-information" ref={this.topSitesDrawerRef}>
-                <select
-                  id="row-selector"
-                  className="selector"
-                  name="row-count"
-                  preference="topSitesRows"
-                  value={topSitesRowsCount}
-                  onChange={this.onPreferenceSelect}
-                  disabled={!topSitesEnabled}
-                  aria-labelledby="custom-shortcuts-title"
-                >
-                  <option
-                    value="1"
-                    data-l10n-id="newtab-custom-row-selector"
-                    data-l10n-args='{"num": 1}'
-                  />
-                  <option
-                    value="2"
-                    data-l10n-id="newtab-custom-row-selector"
-                    data-l10n-args='{"num": 2}'
-                  />
-                  <option
-                    value="3"
-                    data-l10n-id="newtab-custom-row-selector"
-                    data-l10n-args='{"num": 3}'
-                  />
-                  <option
-                    value="4"
-                    data-l10n-id="newtab-custom-row-selector"
-                    data-l10n-args='{"num": 4}'
-                  />
-                </select>
-                {mayHaveSponsoredTopSites && (
-                  <div className="check-wrapper" role="presentation">
-                    <input
-                      id="sponsored-shortcuts"
-                      className="sponsored-checkbox"
-                      disabled={!topSitesEnabled}
-                      checked={showSponsoredTopSitesEnabled}
-                      type="checkbox"
-                      onChange={this.onPreferenceSelect}
-                      preference="showSponsoredTopSites"
-                      eventSource="SPONSORED_TOP_SITES"
-                    />
-                    <label
-                      className="sponsored"
-                      htmlFor="sponsored-shortcuts"
-                      data-l10n-id="newtab-custom-sponsored-sites"
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
-        </div>
-
-        {pocketRegion && (
-          <div id="pocket-section" className="section">
-            <label className="switch">
-              <input
-                id="pocket-toggle"
-                checked={pocketEnabled}
-                type="checkbox"
-                onChange={this.onPreferenceSelect}
-                preference="feeds.section.topstories"
-                aria-labelledby="custom-pocket-title"
-                aria-describedby="custom-pocket-subtitle"
-                eventSource="TOP_STORIES"
-              />
-              <span className="slider" role="presentation"></span>
-            </label>
-            <div>
-              <h2 id="custom-pocket-title" className="title">
-                <label
-                  htmlFor="pocket-toggle"
-                  data-l10n-id="newtab-custom-pocket-title"
-                ></label>
-              </h2>
-              <p
-                id="custom-pocket-subtitle"
-                className="subtitle"
-                data-l10n-id="newtab-custom-pocket-subtitle"
-              />
-              {(mayHaveSponsoredStories || mayHaveRecentSaves) && (
-                <div className="more-info-pocket-wrapper">
-                  <div className="more-information" ref={this.pocketDrawerRef}>
-                    {mayHaveSponsoredStories && (
+        )}
+        {wallpapersV2Enabled && (
+          <div className="wallpapers-section">
+            <WallpaperCategories
+              setPref={setPref}
+              activeWallpaper={activeWallpaper}
+            />
+          </div>
+        )}
+        <div className="settings-toggles">
+          <div id="shortcuts-section" className="section">
+            <moz-toggle
+              id="shortcuts-toggle"
+              pressed={topSitesEnabled || null}
+              onToggle={this.onPreferenceSelect}
+              data-preference="feeds.topsites"
+              data-eventSource="TOP_SITES"
+              data-l10n-id="newtab-custom-shortcuts-toggle"
+            >
+              <div slot="nested">
+                <div className="more-info-top-wrapper">
+                  <div
+                    className="more-information"
+                    ref={this.topSitesDrawerRef}
+                  >
+                    <select
+                      id="row-selector"
+                      className="selector"
+                      name="row-count"
+                      data-preference="topSitesRows"
+                      value={topSitesRowsCount}
+                      onChange={this.onPreferenceSelect}
+                      disabled={!topSitesEnabled}
+                      aria-labelledby="custom-shortcuts-title"
+                    >
+                      <option
+                        value="1"
+                        data-l10n-id="newtab-custom-row-selector"
+                        data-l10n-args='{"num": 1}'
+                      />
+                      <option
+                        value="2"
+                        data-l10n-id="newtab-custom-row-selector"
+                        data-l10n-args='{"num": 2}'
+                      />
+                      <option
+                        value="3"
+                        data-l10n-id="newtab-custom-row-selector"
+                        data-l10n-args='{"num": 3}'
+                      />
+                      <option
+                        value="4"
+                        data-l10n-id="newtab-custom-row-selector"
+                        data-l10n-args='{"num": 4}'
+                      />
+                    </select>
+                    {mayHaveSponsoredTopSites && (
                       <div className="check-wrapper" role="presentation">
                         <input
-                          id="sponsored-pocket"
+                          id="sponsored-shortcuts"
                           className="sponsored-checkbox"
-                          disabled={!pocketEnabled}
-                          checked={showSponsoredPocketEnabled}
+                          disabled={!topSitesEnabled}
+                          checked={showSponsoredTopSitesEnabled}
                           type="checkbox"
                           onChange={this.onPreferenceSelect}
-                          preference="showSponsored"
-                          eventSource="POCKET_SPOCS"
+                          data-preference="showSponsoredTopSites"
+                          data-eventSource="SPONSORED_TOP_SITES"
                         />
                         <label
                           className="sponsored"
-                          htmlFor="sponsored-pocket"
-                          data-l10n-id="newtab-custom-pocket-sponsored"
-                        />
-                      </div>
-                    )}
-                    {mayHaveRecentSaves && (
-                      <div className="check-wrapper" role="presentation">
-                        <input
-                          id="recent-saves-pocket"
-                          className="sponsored-checkbox"
-                          disabled={!pocketEnabled}
-                          checked={showRecentSavesEnabled}
-                          type="checkbox"
-                          onChange={this.onPreferenceSelect}
-                          preference="showRecentSaves"
-                          eventSource="POCKET_RECENT_SAVES"
-                        />
-                        <label
-                          className="sponsored"
-                          htmlFor="recent-saves-pocket"
-                          data-l10n-id="newtab-custom-pocket-show-recent-saves"
+                          htmlFor="sponsored-shortcuts"
+                          data-l10n-id="newtab-custom-sponsored-sites"
                         />
                       </div>
                     )}
                   </div>
                 </div>
-              )}
+              </div>
+            </moz-toggle>
+          </div>
+
+          {pocketRegion && (
+            <div id="pocket-section" className="section">
+              <moz-toggle
+                id="pocket-toggle"
+                pressed={pocketEnabled || null}
+                onToggle={this.onPreferenceSelect}
+                aria-describedby="custom-pocket-subtitle"
+                data-preference="feeds.section.topstories"
+                data-eventSource="TOP_STORIES"
+                data-l10n-id="newtab-custom-stories-toggle"
+              >
+                <div slot="nested">
+                  {(mayHaveSponsoredStories || mayHaveRecentSaves) && (
+                    <div className="more-info-pocket-wrapper">
+                      <div
+                        className="more-information"
+                        ref={this.pocketDrawerRef}
+                      >
+                        {mayHaveSponsoredStories && (
+                          <div className="check-wrapper" role="presentation">
+                            <input
+                              id="sponsored-pocket"
+                              className="sponsored-checkbox"
+                              disabled={!pocketEnabled}
+                              checked={showSponsoredPocketEnabled}
+                              type="checkbox"
+                              onChange={this.onPreferenceSelect}
+                              data-preference="showSponsored"
+                              data-eventSource="POCKET_SPOCS"
+                            />
+                            <label
+                              className="sponsored"
+                              htmlFor="sponsored-pocket"
+                              data-l10n-id="newtab-custom-pocket-sponsored"
+                            />
+                          </div>
+                        )}
+                        {mayHaveRecentSaves && (
+                          <div className="check-wrapper" role="presentation">
+                            <input
+                              id="recent-saves-pocket"
+                              className="sponsored-checkbox"
+                              disabled={!pocketEnabled}
+                              checked={showRecentSavesEnabled}
+                              type="checkbox"
+                              onChange={this.onPreferenceSelect}
+                              data-preference="showRecentSaves"
+                              data-eventSource="POCKET_RECENT_SAVES"
+                            />
+                            <label
+                              className="sponsored"
+                              htmlFor="recent-saves-pocket"
+                              data-l10n-id="newtab-custom-pocket-show-recent-saves"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </moz-toggle>
             </div>
-          </div>
-        )}
+          )}
 
-        <div id="recent-section" className="section">
-          <label className="switch">
-            <input
+          <div id="recent-section" className="section">
+            <moz-toggle
               id="highlights-toggle"
-              checked={highlightsEnabled}
-              type="checkbox"
-              onChange={this.onPreferenceSelect}
-              preference="feeds.section.highlights"
-              eventSource="HIGHLIGHTS"
-              aria-labelledby="custom-recent-title"
-              aria-describedby="custom-recent-subtitle"
-            />
-            <span className="slider" role="presentation"></span>
-          </label>
-          <div>
-            <h2 id="custom-recent-title" className="title">
-              <label
-                htmlFor="highlights-toggle"
-                data-l10n-id="newtab-custom-recent-title"
-              ></label>
-            </h2>
-
-            <p
-              id="custom-recent-subtitle"
-              className="subtitle"
-              data-l10n-id="newtab-custom-recent-subtitle"
+              pressed={highlightsEnabled || null}
+              onToggle={this.onPreferenceSelect}
+              data-preference="feeds.section.highlights"
+              data-eventSource="HIGHLIGHTS"
+              data-l10n-id="newtab-custom-recent-toggle"
             />
           </div>
+
+          {mayHaveWeather && (
+            <div id="weather-section" className="section">
+              <moz-toggle
+                id="weather-toggle"
+                pressed={weatherEnabled || null}
+                onToggle={this.onPreferenceSelect}
+                data-preference="showWeather"
+                data-eventSource="WEATHER"
+                data-l10n-id="newtab-custom-weather-toggle"
+              />
+            </div>
+          )}
+
+          {pocketRegion &&
+            mayHaveSponsoredStories &&
+            spocMessageVariant === "variant-c" && (
+              <div className="sponsored-content-info">
+                <div className="icon icon-help"></div>
+                <div>
+                  Sponsored content supports our mission to build a better web.{" "}
+                  <SafeAnchor
+                    dispatch={this.props.dispatch}
+                    url="https://support.mozilla.org/kb/pocket-sponsored-stories-new-tabs"
+                  >
+                    Find out how
+                  </SafeAnchor>
+                </div>
+              </div>
+            )}
         </div>
 
         <span className="divider" role="separator"></span>

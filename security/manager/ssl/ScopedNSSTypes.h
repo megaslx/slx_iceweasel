@@ -192,7 +192,7 @@ class DigestBase {
  */
 class Digest : public DigestBase {
  public:
-  explicit Digest() : DigestBase() {}
+  explicit Digest() = default;
 
   static nsresult DigestBuf(SECOidTag hashAlg, Span<const uint8_t> buf,
                             /*out*/ nsTArray<uint8_t>& out) {
@@ -263,7 +263,7 @@ class Digest : public DigestBase {
 //   NS_ENSURE_SUCCESS(rv, rv);
 class HMAC : public DigestBase {
  public:
-  explicit HMAC() : DigestBase() {}
+  explicit HMAC() = default;
 
   nsresult Begin(SECOidTag hashAlg, Span<const uint8_t> key) {
     if (!EnsureNSSInitializedChromeOrContent()) {
@@ -369,6 +369,10 @@ inline void SECITEM_FreeItem_true(SECItem* s) {
   return SECITEM_FreeItem(s, true);
 }
 
+inline void SECITEM_FreeArray_true(SECItemArray* s) {
+  return SECITEM_FreeArray(s, true);
+}
+
 inline void SECOID_DestroyAlgorithmID_true(SECAlgorithmID* a) {
   return SECOID_DestroyAlgorithmID(a, true);
 }
@@ -432,6 +436,8 @@ MOZ_TYPE_SPECIFIC_UNIQUE_PTR_TEMPLATE(UniqueSECAlgorithmID, SECAlgorithmID,
                                       internal::SECOID_DestroyAlgorithmID_true)
 MOZ_TYPE_SPECIFIC_UNIQUE_PTR_TEMPLATE(UniqueSECItem, SECItem,
                                       internal::SECITEM_FreeItem_true)
+MOZ_TYPE_SPECIFIC_UNIQUE_PTR_TEMPLATE(UniqueSECItemArray, SECItemArray,
+                                      internal::SECITEM_FreeArray_true)
 MOZ_TYPE_SPECIFIC_UNIQUE_PTR_TEMPLATE(UniqueSECKEYPrivateKey, SECKEYPrivateKey,
                                       SECKEY_DestroyPrivateKey)
 MOZ_TYPE_SPECIFIC_UNIQUE_PTR_TEMPLATE(UniqueSECKEYPrivateKeyList,

@@ -20,7 +20,7 @@
 #include "nsXULAppAPI.h"
 #include "mozilla/PresState.h"
 #include "mozilla/StaticPrefs_fission.h"
-
+#include "mozilla/dom/BindingIPCUtils.h"
 #include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/ContentChild.h"
@@ -52,7 +52,6 @@ SessionHistoryInfo::SessionHistoryInfo(nsDocShellLoadState* aLoadState,
                       : Some(aLoadState->SrcdocData())),
       mBaseURI(aLoadState->BaseURI()),
       mLoadReplace(aLoadState->LoadReplace()),
-      mHasUserInteraction(false),
       mHasUserActivation(aLoadState->HasValidUserGestureActivation()),
       mSharedState(SharedState::Create(
           aLoadState->TriggeringPrincipal(), aLoadState->PrincipalToInherit(),
@@ -79,6 +78,7 @@ SessionHistoryInfo::SessionHistoryInfo(
     const SessionHistoryInfo& aSharedStateFrom, nsIURI* aURI)
     : mURI(aURI), mSharedState(aSharedStateFrom.mSharedState) {
   MaybeUpdateTitleFromURI();
+  mHasUserInteraction = aSharedStateFrom.mHasUserInteraction;
 }
 
 SessionHistoryInfo::SessionHistoryInfo(
@@ -288,7 +288,7 @@ void SessionHistoryInfo::FillLoadInfo(nsDocShellLoadState& aLoadState) const {
   // point in re-retrying to upgrade. On a reload we still want to check,
   // because the exemptions set by the user could have changed.
   if ((mLoadType & nsIDocShell::LOAD_CMD_RELOAD) == 0) {
-    aLoadState.SetIsExemptFromHTTPSOnlyMode(true);
+    aLoadState.SetIsExemptFromHTTPSFirstMode(true);
   }
 }
 /* static */
@@ -654,13 +654,13 @@ SessionHistoryEntry::SetReferrerInfo(nsIReferrerInfo* aReferrerInfo) {
 }
 
 NS_IMETHODIMP
-SessionHistoryEntry::GetContentViewer(nsIContentViewer** aContentViewer) {
-  *aContentViewer = nullptr;
+SessionHistoryEntry::GetDocumentViewer(nsIDocumentViewer** aDocumentViewer) {
+  *aDocumentViewer = nullptr;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-SessionHistoryEntry::SetContentViewer(nsIContentViewer* aContentViewer) {
+SessionHistoryEntry::SetDocumentViewer(nsIDocumentViewer* aDocumentViewer) {
   MOZ_CRASH("This lives in the child process");
   return NS_ERROR_FAILURE;
 }
@@ -1493,11 +1493,9 @@ void SessionHistoryEntry::SetFrameLoader(nsFrameLoader* aFrameLoader) {
   SharedInfo()->SetFrameLoader(aFrameLoader);
   if (aFrameLoader) {
     if (BrowsingContext* bc = aFrameLoader->GetMaybePendingBrowsingContext()) {
-      bc->PreOrderWalk([&](BrowsingContext* aContext) {
-        if (BrowserParent* bp = aContext->Canonical()->GetBrowserParent()) {
-          bp->Deactivated();
-        }
-      });
+      if (BrowserParent* bp = bc->Canonical()->GetBrowserParent()) {
+        bp->VisitAll([&](BrowserParent* aBp) { aBp->Deactivated(); });
+      }
     }
 
     // When a new frameloader is stored, try to evict some older
@@ -1508,7 +1506,7 @@ void SessionHistoryEntry::SetFrameLoader(nsFrameLoader* aFrameLoader) {
     if (shistory) {
       int32_t index = 0;
       shistory->GetIndex(&index);
-      shistory->EvictOutOfRangeContentViewers(index);
+      shistory->EvictOutOfRangeDocumentViewers(index);
     }
   }
 }
@@ -1797,10 +1795,8 @@ namespace IPC {
 // Allow sending mozilla::dom::WireframeRectType enums over IPC.
 template <>
 struct ParamTraits<mozilla::dom::WireframeRectType>
-    : public ContiguousEnumSerializer<
-          mozilla::dom::WireframeRectType,
-          mozilla::dom::WireframeRectType::Image,
-          mozilla::dom::WireframeRectType::EndGuard_> {};
+    : public mozilla::dom::WebIDLEnumSerializer<
+          mozilla::dom::WireframeRectType> {};
 
 template <>
 struct ParamTraits<mozilla::dom::WireframeTaggedRect> {

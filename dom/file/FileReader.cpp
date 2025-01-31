@@ -24,7 +24,6 @@
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/HoldDropJSObjects.h"
-#include "nsAlgorithm.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDOMJSUtils.h"
 #include "nsError.h"
@@ -131,7 +130,7 @@ FileReader::FileReader(nsIGlobalObject* aGlobal, WeakWorkerRef* aWorkerRef)
   MOZ_ASSERT_IF(NS_IsMainThread(), !mWeakWorkerRef);
 
   if (NS_IsMainThread()) {
-    mTarget = aGlobal->EventTargetFor(TaskCategory::Other);
+    mTarget = aGlobal->SerialEventTarget();
   } else {
     mTarget = GetCurrentSerialEventTarget();
   }
@@ -312,7 +311,7 @@ nsresult FileReader::DoReadData(uint64_t aCount) {
       while (aCount > 0) {
         char tmpBuffer[4096];
         uint32_t minCount =
-            XPCOM_MIN(aCount, static_cast<uint64_t>(sizeof(tmpBuffer)));
+            std::min(aCount, static_cast<uint64_t>(sizeof(tmpBuffer)));
         uint32_t read = 0;
 
         nsresult rv = mAsyncStream->Read(tmpBuffer, minCount, &read);

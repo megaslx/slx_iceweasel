@@ -21,10 +21,10 @@ JSObject* SVGFECompositeElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFECompositeElement::sNumberInfo[4] = {
-    {nsGkAtoms::k1, 0, false},
-    {nsGkAtoms::k2, 0, false},
-    {nsGkAtoms::k3, 0, false},
-    {nsGkAtoms::k4, 0, false}};
+    {nsGkAtoms::k1, 0},
+    {nsGkAtoms::k2, 0},
+    {nsGkAtoms::k3, 0},
+    {nsGkAtoms::k4, 0}};
 
 SVGEnumMapping SVGFECompositeElement::sOperatorMap[] = {
     {nsGkAtoms::over, SVG_FECOMPOSITE_OPERATOR_OVER},
@@ -93,9 +93,9 @@ FilterPrimitiveDescription SVGFECompositeElement::GetPrimitiveDescription(
   atts.mOperator = op;
 
   if (op == SVG_FECOMPOSITE_OPERATOR_ARITHMETIC) {
-    float k[4];
-    GetAnimatedNumberValues(k, k + 1, k + 2, k + 3, nullptr);
-    atts.mCoefficients.AppendElements(k, 4);
+    std::array<float, 4> k;
+    GetAnimatedNumberValues(&k[0], &k[1], &k[2], &k[3], nullptr);
+    atts.mCoefficients.AppendElements(Span(k));
   }
 
   return FilterPrimitiveDescription(AsVariant(std::move(atts)));
@@ -124,7 +124,7 @@ nsresult SVGFECompositeElement::BindToTree(BindContext& aCtx,
     aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feComposite);
   }
 
-  return SVGFE::BindToTree(aCtx, aParent);
+  return SVGFECompositeElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -132,16 +132,16 @@ nsresult SVGFECompositeElement::BindToTree(BindContext& aCtx,
 
 SVGElement::NumberAttributesInfo SVGFECompositeElement::GetNumberInfo() {
   return NumberAttributesInfo(mNumberAttributes, sNumberInfo,
-                              ArrayLength(sNumberInfo));
+                              std::size(sNumberInfo));
 }
 
 SVGElement::EnumAttributesInfo SVGFECompositeElement::GetEnumInfo() {
-  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, ArrayLength(sEnumInfo));
+  return EnumAttributesInfo(mEnumAttributes, sEnumInfo, std::size(sEnumInfo));
 }
 
 SVGElement::StringAttributesInfo SVGFECompositeElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
-                              ArrayLength(sStringInfo));
+                              std::size(sStringInfo));
 }
 
 }  // namespace mozilla::dom
