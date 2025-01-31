@@ -1400,10 +1400,27 @@ bool CycleCollectedJSRuntime::TraceNativeGrayRoots(
   return finished;
 }
 
+class GetHolderAddressFunctor : public JS::TracingContext::Functor {
+ public:
+  GetHolderAddressFunctor() = default;
+
+  virtual void operator()(JS::TracingContext* aTrc, const char* aName,
+                          char* aBuf, size_t aBufSize) override {
+    SprintfBuf(aBuf, aBufSize, "%s, holder 0x%p", aName, mHolder);
+  }
+
+  void SetHolder(void* aHolder) { mHolder = aHolder; }
+
+ private:
+  void* mHolder = nullptr;
+};
+
 bool CycleCollectedJSRuntime::TraceJSHolders(JSTracer* aTracer,
                                              JSHolderMap::Iter& aIter,
                                              JS::SliceBudget& aBudget) {
   bool checkSingleZoneHolders = ShouldCheckSingleZoneHolders();
+  GetHolderAddressFunctor functor;
+  JS::AutoTracingDetails tracingDetails(aTracer, functor);
 
   while (!aIter.Done() && !aBudget.isOverBudget()) {
     void* holder = aIter->mHolder;
@@ -1424,7 +1441,9 @@ bool CycleCollectedJSRuntime::TraceJSHolders(JSTracer* aTracer,
       _mm_prefetch((char *)aIter->mHolder + 64, _MM_HINT_NTA);
     }
 #endif
+    functor.SetHolder(holder);
     tracer->Trace(holder, JsGcTracer(), aTracer);
+    functor.SetHolder(nullptr);
 
     aBudget.step();
   }
